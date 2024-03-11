@@ -96,8 +96,11 @@ def get_video_data(path: str) -> [VideoInfo]:
     for stream in output_json["streams"]:
         stream_type = stream["codec_type"]
         if stream_type == "subtitle":
-            tags = stream["tags"]
-            language = tags.get("language", None)
+            if "tags" in stream:
+                tags = stream["tags"]
+                language = tags.get("language", None)
+            else:
+                language = None
             is_default = stream["disposition"]["default"]
             subtitles.append(Subtitle(language, is_default))
         elif stream_type == "video":
