@@ -1,3 +1,4 @@
+
 import argparse
 import langid
 import logging
@@ -116,7 +117,7 @@ class TwoTone:
             encoding = subtitle.encoding if subtitle.encoding != "UTF-8-SIG" else "utf-8"
 
             status = utils.start_process("ffmpeg",
-                                         ["-sub_charenc", encoding, "-i", subtitle.path, output_subtitle])
+                                         ["-hide_banner", "-sub_charenc", encoding, "-i", subtitle.path, output_subtitle])
 
             output_file.close()
 
