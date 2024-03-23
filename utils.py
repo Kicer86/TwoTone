@@ -10,7 +10,7 @@ from itertools import islice
 from pathlib import Path
 
 Subtitle = namedtuple("Subtitle", "language default")
-VideoTrack = namedtuple("VideoTrack", "")
+VideoTrack = namedtuple("VideoTrack", "fps")
 VideoInfo = namedtuple("VideoInfo", "video_tracks subtitles")
 ProcessResult = namedtuple("ProcessResult", "returncode stdout stderr")
 
@@ -74,6 +74,16 @@ def is_subtitle(file: str) -> bool:
     return False
 
 
+def is_subtitle_microdvd(subtitle: Subtitle) -> bool:
+    with open(subtitle.path, 'r', encoding = subtitle.encoding) as text_file:
+        head = "".join(islice(text_file, 5)).strip()
+
+        if subtitle_format2.match(head):
+            return True
+
+    return False
+
+
 def get_video_data(path: str) -> [VideoInfo]:
     args = []
     args.extend(["-v", "quiet"])
@@ -104,7 +114,8 @@ def get_video_data(path: str) -> [VideoInfo]:
             is_default = stream["disposition"]["default"]
             subtitles.append(Subtitle(language, is_default))
         elif stream_type == "video":
-            video_tracks.append(VideoTrack())
+            fps = stream["r_frame_rate"]
+            video_tracks.append(VideoTrack(fps=fps))
 
     return VideoInfo(video_tracks, subtitles)
 
@@ -113,3 +124,24 @@ def split_path(path: str) -> (str, str, str):
     info = Path(path)
 
     return str(info.parent), info.stem, info.suffix[1:]
+
+
+def compare_videos(lhs: [VideoTrack], rhs: [VideoTrack]) -> bool:
+    if len(lhs) != len(rhs):
+        return False
+
+    for lhs_item, rhs_item in zip(lhs, rhs):
+        lhs_fps = eval(lhs_item.fps)
+        rhs_fps = eval(rhs_item.fps)
+
+        if lhs_fps == rhs_fps:
+            return True
+
+        diff = abs(lhs_fps - rhs_fps)
+
+        # For videos with fps 1000000/33333 (≈30fps) mkvmerge generates video with 30/1 fps.
+        # I'm not sure it this is acceptable but at this moment let it be
+        if diff > 0.0005:
+            return False
+
+    return True

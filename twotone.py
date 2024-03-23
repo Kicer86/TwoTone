@@ -118,16 +118,19 @@ class TwoTone:
 
         return subtitles_sorted
 
-    def _convert_subtitle(self, subtitle: Subtitle) -> [Subtitle]:
+    def _convert_subtitle(self, video_fps: str, subtitle: Subtitle) -> [Subtitle]:
         converted_subtitle = subtitle
 
         if not self.dry_run:
             output_file = self._get_temporary_file("srt")
             encoding = subtitle.encoding if subtitle.encoding != "UTF-8-SIG" else "utf-8"
 
+            # ffmpeg apparently does not handle MicroDVD perfectly, do some preprocessing when fps is different than 25
+            if video_fps != "25/1" and utils.is_subtitle_microdvd(subtitle):
+                pass
+
             status = utils.start_process("ffmpeg",
                                          ["-hide_banner", "-y", "-sub_charenc", encoding, "-i", subtitle.path, output_file])
-
 
             if status.returncode != 0:
                 raise RuntimeError(f"ffmpeg exited with unexpected error:\n{status.stderr.decode('utf-8')}")
@@ -178,7 +181,10 @@ class TwoTone:
             self._register_input(subtitle.path)
 
             # Subtitles are buggy sometimes, use ffmpeg to fix them.
-            converted_subtitle = self._convert_subtitle(subtitle)
+            # Also makemkv does not handle MicroDVD subtitles, so convert all to SubRip.
+
+            fps = input_file_details.video_tracks[0].fps
+            converted_subtitle = self._convert_subtitle(fps, subtitle)
 
             lang = subtitle.language
             if lang and lang != "":
@@ -210,7 +216,7 @@ class TwoTone:
             # validate output file correctness
             output_file_details = utils.get_video_data(output_video)
 
-            if input_file_details.video_tracks != output_file_details.video_tracks or \
+            if not utils.compare_videos(input_file_details.video_tracks, output_file_details.video_tracks) or \
                     len(input_file_details.subtitles) + len(sorted_subtitles) != len(output_file_details.subtitles):
                 logging.error("Output file seems to be corrupted")
                 raise RuntimeError(f"{cmd} created a corrupted file")
