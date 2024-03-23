@@ -25,6 +25,12 @@ class TwoTone:
         self.to_be_removed = []
         self.lang_priority = [] if not lang_priority or lang_priority == "" else lang_priority.split(",")
 
+    def _get_temporary_file(self, ext: str) -> str:
+        tmp_file = tempfile.mkstemp(suffix="."+ext)
+        tmp_path = tmp_file[1]
+        self._remove_later(tmp_path)
+        return tmp_path
+
     def _remove_later(self, path: str):
         self.to_be_removed.append(path)
 
@@ -111,20 +117,17 @@ class TwoTone:
         converted_subtitle = subtitle
 
         if not self.dry_run:
-            output_file = tempfile.NamedTemporaryFile()
-            output_subtitle = output_file.name + ".srt"
-
+            output_file = self._get_temporary_file("srt")
             encoding = subtitle.encoding if subtitle.encoding != "UTF-8-SIG" else "utf-8"
 
             status = utils.start_process("ffmpeg",
-                                         ["-hide_banner", "-sub_charenc", encoding, "-i", subtitle.path, output_subtitle])
+                                         ["-hide_banner", "-y", "-sub_charenc", encoding, "-i", subtitle.path, output_file])
 
-            output_file.close()
 
             if status.returncode != 0:
                 raise RuntimeError(f"ffmpeg exited with unexpected error:\n{status.stderr.decode('utf-8')}")
 
-            converted_subtitle = Subtitle(output_subtitle, subtitle.language, "utf-8")
+            converted_subtitle = Subtitle(output_file, subtitle.language, "utf-8")
 
         return converted_subtitle
 
@@ -169,9 +172,8 @@ class TwoTone:
             logging.info(f"\tadd subtitles [{subtitle.language}]: {subtitle.path}")
             self._remove_later(subtitle.path)
 
-            # subtitles are buggy sometimes, use ffmpeg to fix them
+            # Subtitles are buggy sometimes, use ffmpeg to fix them.
             converted_subtitle = self._convert_subtitle(subtitle)
-            self._remove_later(converted_subtitle.path)
 
             lang = subtitle.language
             if lang and lang != "":
