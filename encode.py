@@ -20,17 +20,6 @@ def find_video_files(directory):
     return video_files
 
 
-def get_video_duration(video_file):
-    """Get the duration of a video in seconds."""
-    result = utils.start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
-
-    try:
-        return float(result.stdout.strip())
-    except ValueError:
-        logging.error(f"Failed to get duration for {video_file}")
-        return None
-
-
 def validate_ffmpeg_result(result: utils.ProcessResult):
     if result.returncode != 0:
         raise RuntimeError(result.stderr)
@@ -160,7 +149,7 @@ def extract_scenes(video_file, output_dir, segment_duration=5):
 def extract_segments(video_file, output_dir, segment_duration=5):
     segment_files = []
 
-    duration = get_video_duration(video_file)
+    duration = utils.get_video_duration(video_file)
     num_segments = max(3, min(10, int(duration // 30)))
     segments = select_random_segments(duration, num_segments)
 
@@ -230,7 +219,7 @@ def find_optimal_crf(input_file, requested_quality=0.98, allow_segments=True):
     """Find the optimal CRF using bisection."""
     original_size = os.path.getsize(input_file)
 
-    duration = get_video_duration(input_file)
+    duration = utils.get_video_duration(input_file)
     if not duration:
         return None
 

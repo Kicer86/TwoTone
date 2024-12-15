@@ -146,6 +146,7 @@ def fix_subtitles_fps(input_path: str, output_path: str, subtitles_fps: float):
         content = alter_subrip_subtitles_times(content, multiplier)
         outfile.write(content)
 
+
 def get_video_duration(video_file):
     """Get the duration of a video in seconds."""
     result = start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
@@ -155,6 +156,7 @@ def get_video_duration(video_file):
     except ValueError:
         logging.error(f"Failed to get duration for {video_file}")
         return None
+
 
 def get_video_full_info(path: str) -> str:
     args = []
