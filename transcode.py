@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import utils
 
 class Transcoder:
-    def find_video_files(self, directory):
+    def _find_video_files(self, directory):
         """Find video files with specified extensions."""
         video_files = []
         for root, _, files in os.walk(directory):
@@ -20,12 +20,12 @@ class Transcoder:
         return video_files
 
 
-    def validate_ffmpeg_result(self, result: utils.ProcessResult):
+    def _validate_ffmpeg_result(self, result: utils.ProcessResult):
         if result.returncode != 0:
             raise RuntimeError(result.stderr)
 
 
-    def select_random_segments(self, total_length, num_segments=5, segment_length=5):
+    def _select_random_segments(self, total_length, num_segments=5, segment_length=5):
         if total_length <= 0 or num_segments <= 0 or segment_length <= 0:
             raise ValueError("Total length, number of segments, and segment length must all be positive.")
         if segment_length > total_length:
@@ -37,7 +37,7 @@ class Transcoder:
         return [(round(i * step), segment_length) for i in range(num_segments)]
 
 
-    def calculate_quality(self, original, transcoded):
+    def _calculate_quality(self, original, transcoded):
         """Calculate SSIM between original and transcoded video."""
         args = [
             "-i", original, "-i", transcoded,
@@ -59,7 +59,7 @@ class Transcoder:
         return None
 
 
-    def transcode_video(self, input_file, output_file, crf, preset, input_params=[], output_params=[]):
+    def _transcode_video(self, input_file, output_file, crf, preset, input_params=[], output_params=[]):
         """Encode video with a given CRF, preset, and extra parameters."""
         args = [
             "-v", "error", "-stats", "-nostdin",
@@ -75,12 +75,12 @@ class Transcoder:
         ]
 
         result = utils.start_process("ffmpeg", args)
-        self.validate_ffmpeg_result(result)
+        self._validate_ffmpeg_result(result)
 
 
-    def extract_segment(self, video_file, start_time, segment_length, output_file):
+    def _extract_segment(self, video_file, start_time, segment_length, output_file):
         """ Extract video segment. Video is transcoded with lossless quality to rebuild damaged or troublesome videos """
-        self.transcode_video(
+        self._transcode_video(
             video_file,
             output_file,
             crf = 0,
@@ -90,7 +90,7 @@ class Transcoder:
         )
 
 
-    def extract_scenes(self, video_file, output_dir, segment_duration=5):
+    def _extract_scenes(self, video_file, output_dir, segment_duration=5):
         """
         Extracts video segments around detected scene changes, merging nearby timestamps.
 
@@ -141,30 +141,30 @@ class Transcoder:
 
         for i, (start, end) in enumerate(merged_segments):
             output_file = os.path.join(output_dir, f"{filename}.frag{i}.{ext}")
-            self.extract_segment(video_file, start, end - start, output_file)
+            self._extract_segment(video_file, start, end - start, output_file)
             output_files.append(output_file)
 
         return output_files
 
 
-    def extract_segments(self, video_file, output_dir, segment_duration=5):
+    def _extract_segments(self, video_file, output_dir, segment_duration=5):
         segment_files = []
 
         duration = utils.get_video_duration(video_file)
         num_segments = max(3, min(10, int(duration // 30)))
-        segments = self.select_random_segments(duration, num_segments)
+        segments = self._select_random_segments(duration, num_segments)
 
         _, filename, ext = utils.split_path(video_file)
 
         for segment, (start, length) in enumerate(segments):
             segment_output = os.path.join(output_dir, f"{filename}_frag{segment}.{ext}")
-            self.extract_segment(video_file, start, length, segment_output)
+            self._extract_segment(video_file, start, length, segment_output)
             segment_files.append(segment_output)
 
         return segment_files
 
 
-    def bisection_search(self, eval_func, min_value, max_value, target_condition):
+    def _bisection_search(self, eval_func, min_value, max_value, target_condition):
         """
         Generic bisection search algorithm.
 
@@ -201,9 +201,9 @@ class Transcoder:
 
         transcoded_segment_output = os.path.join(wd_dir, f"{filename}.transcoded.{ext}")
 
-        self.transcode_video(segment_file, transcoded_segment_output, crf, "veryfast")
+        self._transcode_video(segment_file, transcoded_segment_output, crf, "veryfast")
 
-        quality = self.calculate_quality(segment_file, transcoded_segment_output)
+        quality = self._calculate_quality(segment_file, transcoded_segment_output)
         return quality
 
 
@@ -228,9 +228,9 @@ class Transcoder:
             segment_files = []
             if allow_segments and duration > 30:
                 logging.info(f"Picking segments from {input_file}")
-                segment_files = self.extract_scenes(input_file, wd_dir)
+                segment_files = self._extract_scenes(input_file, wd_dir)
                 if len(segment_files) < 2:
-                    segment_files = self.extract_segments(input_file, wd_dir)
+                    segment_files = self._extract_segments(input_file, wd_dir)
 
                 logging.info(f"Starting CRF bisection for {input_file} with veryfast preset using {len(segment_files)} segments")
             else:
@@ -257,7 +257,7 @@ class Transcoder:
                 raise ValueError(f"Sanity check failed: top SSIM value: {top_quality} < 0.998")
 
             crf_min, crf_max = 0, 51
-            best_crf, best_quality = self.bisection_search(evaluate_crf, min_value = crf_min, max_value = crf_max, target_condition=lambda avg_quality: avg_quality >= requested_quality)
+            best_crf, best_quality = self._bisection_search(evaluate_crf, min_value = crf_min, max_value = crf_max, target_condition=lambda avg_quality: avg_quality >= requested_quality)
 
             if best_crf is not None and best_quality is not None:
                 logging.info(f"Finished CRF bisection. Optimal CRF: {best_crf} with quality: {best_quality}")
@@ -272,17 +272,17 @@ class Transcoder:
 
         logging.info(f"Starting final transcoding with CRF: {crf} and extra params: {extra_params}")
         final_output_file = f"{basename}.temp.{ext}"
-        self.transcode_video(input_file, final_output_file, crf, "veryslow", extra_params)
+        self._transcode_video(input_file, final_output_file, crf, "veryslow", extra_params)
 
         original_size = os.path.getsize(input_file)
         final_size = os.path.getsize(final_output_file)
         size_reduction = (final_size / original_size) * 100
 
         # Measure SSIM again after final transcoding
-        final_quality = self.calculate_quality(input_file, final_output_file)
+        final_quality = self._calculate_quality(input_file, final_output_file)
 
         if final_size < original_size:
-            subprocess.run(["exiftool", "-overwrite_original", "-TagsFromFile", input_file, "-all:all>all:all", final_output_file], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            utils.start_process("exiftool", ["-overwrite_original", "-TagsFromFile", input_file, "-all:all>all:all", final_output_file])
             os.rename(final_output_file, input_file)
             logging.info(
                 f"Final CRF: {crf}, Final Encoding SSIM: {final_quality}, Encoded Size: {final_size} bytes, "
@@ -300,7 +300,7 @@ class Transcoder:
 def main(directory):
     logging.info("Starting video processing")
     transcoder = Transcoder()
-    video_files = transcoder.find_video_files(directory)
+    video_files = transcoder._find_video_files(directory)
 
     for file in video_files:
         logging.info(f"Processing {file}")
