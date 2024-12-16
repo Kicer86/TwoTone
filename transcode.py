@@ -9,7 +9,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import utils
 
-class Transcoder:
+class Transcoder(utils.InterruptibleProcess):
+    def __init__(self):
+        super().__init__()
+
+
     def _find_video_files(self, directory):
         """Find video files with specified extensions."""
         video_files = []
@@ -140,6 +144,7 @@ class Transcoder:
         _, filename, ext = utils.split_path(video_file)
 
         for i, (start, end) in enumerate(merged_segments):
+            self._check_for_stop()
             output_file = os.path.join(output_dir, f"{filename}.frag{i}.{ext}")
             self._extract_segment(video_file, start, end - start, output_file)
             output_files.append(output_file)
@@ -157,6 +162,7 @@ class Transcoder:
         _, filename, ext = utils.split_path(video_file)
 
         for segment, (start, length) in enumerate(segments):
+            self._check_for_stop()
             segment_output = os.path.join(output_dir, f"{filename}_frag{segment}.{ext}")
             self._extract_segment(video_file, start, length, segment_output)
             segment_files.append(segment_output)
@@ -216,57 +222,7 @@ class Transcoder:
                 executor.submit(worker, segment)
 
 
-    def find_optimal_crf(self, input_file, requested_quality=0.98, allow_segments=True):
-        """Find the optimal CRF using bisection."""
-        original_size = os.path.getsize(input_file)
-
-        duration = utils.get_video_duration(input_file)
-        if not duration:
-            return None
-
-        with tempfile.TemporaryDirectory() as wd_dir:
-            segment_files = []
-            if allow_segments and duration > 30:
-                logging.info(f"Picking segments from {input_file}")
-                segment_files = self._extract_scenes(input_file, wd_dir)
-                if len(segment_files) < 2:
-                    segment_files = self._extract_segments(input_file, wd_dir)
-
-                logging.info(f"Starting CRF bisection for {input_file} with veryfast preset using {len(segment_files)} segments")
-            else:
-                segment_files = [input_file]
-                logging.info(f"Starting CRF bisection for {input_file} with veryfast preset using whole file")
-
-            def evaluate_crf(mid_crf):
-                qualities = []
-
-                def get_quality(wd_dir, segment_file):
-                    quality = self._transcode_segment_and_compare(wd_dir, segment_file, mid_crf)
-                    if quality:
-                        qualities.append(quality)
-
-                self._for_segments(segment_files, get_quality)
-
-                avg_quality = sum(qualities) / len(qualities) if qualities else 0
-                logging.info(f"CRF: {mid_crf}, Average Quality (SSIM): {avg_quality}")
-
-                return avg_quality
-
-            top_quality = evaluate_crf(0)
-            if top_quality < 0.9975:
-                raise ValueError(f"Sanity check failed: top SSIM value: {top_quality} < 0.998")
-
-            crf_min, crf_max = 0, 51
-            best_crf, best_quality = self._bisection_search(evaluate_crf, min_value = crf_min, max_value = crf_max, target_condition=lambda avg_quality: avg_quality >= requested_quality)
-
-            if best_crf is not None and best_quality is not None:
-                logging.info(f"Finished CRF bisection. Optimal CRF: {best_crf} with quality: {best_quality}")
-            else:
-                logging.warning(f"Finished CRF bisection. Could not find CRF matching desired quality ({requested_quality}).")
-            return best_crf
-
-
-    def final_transcode(self, input_file, crf, extra_params):
+    def _final_transcode(self, input_file, crf, extra_params):
         """Perform the final transcoding with the best CRF using the determined extra_params."""
         _, basename, ext = utils.split_path(input_file)
 
@@ -297,20 +253,71 @@ class Transcoder:
             )
 
 
-def main(directory):
-    logging.info("Starting video processing")
-    transcoder = Transcoder()
-    video_files = transcoder._find_video_files(directory)
+    def find_optimal_crf(self, input_file, requested_quality=0.98, allow_segments=True):
+        """Find the optimal CRF using bisection."""
+        original_size = os.path.getsize(input_file)
 
-    for file in video_files:
-        logging.info(f"Processing {file}")
-        best_crf = transcoder.find_optimal_crf(file)
-        if best_crf is not None and False:
-            # increase crf by one as veryslow preset will be used, so result should be above 0.98 quality anyway
-            transcoder.final_transcode(file, best_crf + 1, [])
-        logging.info(f"Finished processing {file}")
+        duration = utils.get_video_duration(input_file)
+        if not duration:
+            return None
 
-    logging.info("Video processing completed")
+        with tempfile.TemporaryDirectory() as wd_dir:
+            segment_files = []
+            if allow_segments and duration > 30:
+                logging.info(f"Picking segments from {input_file}")
+                segment_files = self._extract_scenes(input_file, wd_dir)
+                if len(segment_files) < 2:
+                    segment_files = self._extract_segments(input_file, wd_dir)
+
+                logging.info(f"Starting CRF bisection for {input_file} with veryfast preset using {len(segment_files)} segments")
+            else:
+                segment_files = [input_file]
+                logging.info(f"Starting CRF bisection for {input_file} with veryfast preset using whole file")
+
+            def evaluate_crf(mid_crf):
+                self._check_for_stop()
+                qualities = []
+
+                def get_quality(wd_dir, segment_file):
+                    quality = self._transcode_segment_and_compare(wd_dir, segment_file, mid_crf)
+                    if quality:
+                        qualities.append(quality)
+
+                self._for_segments(segment_files, get_quality)
+
+                avg_quality = sum(qualities) / len(qualities) if qualities else 0
+                logging.info(f"CRF: {mid_crf}, Average Quality (SSIM): {avg_quality}")
+
+                return avg_quality
+
+            top_quality = evaluate_crf(0)
+            if top_quality < 0.9975:
+                raise ValueError(f"Sanity check failed: top SSIM value: {top_quality} < 0.998")
+
+            crf_min, crf_max = 0, 51
+            best_crf, best_quality = self._bisection_search(evaluate_crf, min_value = crf_min, max_value = crf_max, target_condition=lambda avg_quality: avg_quality >= requested_quality)
+
+            if best_crf is not None and best_quality is not None:
+                logging.info(f"Finished CRF bisection. Optimal CRF: {best_crf} with quality: {best_quality}")
+            else:
+                logging.warning(f"Finished CRF bisection. Could not find CRF matching desired quality ({requested_quality}).")
+            return best_crf
+
+
+    def transcode(self, directory: str):
+        logging.info("Starting video processing")
+        video_files = self._find_video_files(directory)
+
+        for file in video_files:
+            self._check_for_stop()
+            logging.info(f"Processing {file}")
+            best_crf = self.find_optimal_crf(file)
+            if best_crf is not None and False:
+                # increase crf by one as veryslow preset will be used, so result should be above 0.98 quality anyway
+                self._final_transcode(file, best_crf + 1, [])
+            logging.info(f"Finished processing {file}")
+
+        logging.info("Video processing completed")
 
 
 if __name__ == "__main__":
@@ -320,4 +327,4 @@ if __name__ == "__main__":
 
     logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
     directory = sys.argv[1]
-    main(directory)
+    Transcoder().transcode(directory)
