@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import utils
 
-class Encoder:
+class Transcoder:
     def find_video_files(self, directory):
         """Find video files with specified extensions."""
         video_files = []
@@ -37,10 +37,10 @@ class Encoder:
         return [(round(i * step), segment_length) for i in range(num_segments)]
 
 
-    def calculate_quality(self, original, encoded):
-        """Calculate SSIM between original and encoded video."""
+    def calculate_quality(self, original, transcoded):
+        """Calculate SSIM between original and transcoded video."""
         args = [
-            "-i", original, "-i", encoded,
+            "-i", original, "-i", transcoded,
             "-lavfi", "ssim", "-f", "null", "-"
         ]
 
@@ -59,7 +59,7 @@ class Encoder:
         return None
 
 
-    def encode_video(self, input_file, output_file, crf, preset, input_params=[], output_params=[]):
+    def transcode_video(self, input_file, output_file, crf, preset, input_params=[], output_params=[]):
         """Encode video with a given CRF, preset, and extra parameters."""
         args = [
             "-v", "error", "-stats", "-nostdin",
@@ -79,8 +79,8 @@ class Encoder:
 
 
     def extract_segment(self, video_file, start_time, segment_length, output_file):
-        """ Extract video segment. Video is reencoded with lossless quality to rebuild damaged or troublesome videos """
-        self.encode_video(
+        """ Extract video segment. Video is transcoded with lossless quality to rebuild damaged or troublesome videos """
+        self.transcode_video(
             video_file,
             output_file,
             crf = 0,
@@ -196,14 +196,14 @@ class Encoder:
         return best_value, best_result
 
 
-    def _encode_segment_and_compare(self, wd_dir: str, segment_file: str, crf: int) -> float or None:
+    def _transcode_segment_and_compare(self, wd_dir: str, segment_file: str, crf: int) -> float or None:
         _, filename, ext = utils.split_path(segment_file)
 
-        encoded_segment_output = os.path.join(wd_dir, f"{filename}.enc.{ext}")
+        transcoded_segment_output = os.path.join(wd_dir, f"{filename}.transcoded.{ext}")
 
-        self.encode_video(segment_file, encoded_segment_output, crf, "veryfast")
+        self.transcode_video(segment_file, transcoded_segment_output, crf, "veryfast")
 
-        quality = self.calculate_quality(segment_file, encoded_segment_output)
+        quality = self.calculate_quality(segment_file, transcoded_segment_output)
         return quality
 
 
@@ -241,7 +241,7 @@ class Encoder:
                 qualities = []
 
                 def get_quality(wd_dir, segment_file):
-                    quality = self._encode_segment_and_compare(wd_dir, segment_file, mid_crf)
+                    quality = self._transcode_segment_and_compare(wd_dir, segment_file, mid_crf)
                     if quality:
                         qualities.append(quality)
 
@@ -266,19 +266,19 @@ class Encoder:
             return best_crf
 
 
-    def final_encode(self, input_file, crf, extra_params):
-        """Perform the final encoding with the best CRF using the determined extra_params."""
+    def final_transcode(self, input_file, crf, extra_params):
+        """Perform the final transcoding with the best CRF using the determined extra_params."""
         _, basename, ext = utils.split_path(input_file)
 
-        logging.info(f"Starting final encoding with CRF: {crf} and extra params: {extra_params}")
+        logging.info(f"Starting final transcoding with CRF: {crf} and extra params: {extra_params}")
         final_output_file = f"{basename}.temp.{ext}"
-        self.encode_video(input_file, final_output_file, crf, "veryslow", extra_params)
+        self.transcode_video(input_file, final_output_file, crf, "veryslow", extra_params)
 
         original_size = os.path.getsize(input_file)
         final_size = os.path.getsize(final_output_file)
         size_reduction = (final_size / original_size) * 100
 
-        # Measure SSIM again after final encoding
+        # Measure SSIM again after final transcoding
         final_quality = self.calculate_quality(input_file, final_output_file)
 
         if final_size < original_size:
@@ -299,15 +299,15 @@ class Encoder:
 
 def main(directory):
     logging.info("Starting video processing")
-    encoder = Encoder()
-    video_files = encoder.find_video_files(directory)
+    transcoder = Transcoder()
+    video_files = transcoder.find_video_files(directory)
 
     for file in video_files:
         logging.info(f"Processing {file}")
-        best_crf = encoder.find_optimal_crf(file)
+        best_crf = transcoder.find_optimal_crf(file)
         if best_crf is not None and False:
             # increase crf by one as veryslow preset will be used, so result should be above 0.98 quality anyway
-            encoder.final_encode(file, best_crf + 1, [])
+            transcoder.final_transcode(file, best_crf + 1, [])
         logging.info(f"Finished processing {file}")
 
     logging.info("Video processing completed")
@@ -315,7 +315,7 @@ def main(directory):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python encode_videos.py /path/to/directory")
+        print("Usage: python transcode.py /path/to/directory")
         sys.exit(1)
 
     logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
