@@ -11,10 +11,11 @@ from concurrent.futures import ThreadPoolExecutor
 import utils
 
 class Transcoder(utils.InterruptibleProcess):
-    def __init__(self, live_run: bool = False, target_ssim: float = 0.98):
+    def __init__(self, live_run: bool = False, target_ssim: float = 0.98, codec: str = "libx265"):
         super().__init__()
         self.live_run = live_run
         self.target_ssim = target_ssim
+        self.codec = codec
 
 
     def _find_video_files(self, directory):
@@ -72,7 +73,7 @@ class Transcoder(utils.InterruptibleProcess):
             "-v", "error", "-stats", "-nostdin",
             *input_params,
             "-i", input_file,
-            "-c:v", "libx265",
+            "-c:v", self.codec,
             "-crf", str(crf),
             "-preset", preset,
             "-profile:v", "main10",
@@ -311,7 +312,7 @@ class Transcoder(utils.InterruptibleProcess):
 
 
     def transcode(self, directory: str):
-        logging.info(f"Starting video processing. Target SSIM: {self.target_ssim}")
+        logging.info(f"Starting video transcoding with {self.codec}. Target SSIM: {self.target_ssim}")
         video_files = self._find_video_files(directory)
 
         for file in video_files:
