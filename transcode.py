@@ -164,7 +164,7 @@ class Transcoder(utils.InterruptibleProcess):
     def _select_segments(self, video_file, output_dir, segment_duration=5):
         segment_files = []
 
-        duration = utils.get_video_duration(video_file)
+        duration = utils.get_video_duration(video_file) / 1000
         num_segments = max(3, min(10, int(duration // 30)))
         segments = self._select_random_segments(duration, num_segments)
 
