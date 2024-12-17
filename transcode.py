@@ -35,18 +35,6 @@ class Transcoder(utils.InterruptibleProcess):
             raise RuntimeError(result.stderr)
 
 
-    def _select_random_segments(self, total_length, num_segments=5, segment_length=5):
-        if total_length <= 0 or num_segments <= 0 or segment_length <= 0:
-            raise ValueError("Total length, number of segments, and segment length must all be positive.")
-        if segment_length > total_length:
-            raise ValueError("Segment length cannot exceed total length.")
-        if num_segments * segment_length > total_length:
-            raise ValueError("Total segments cannot fit within the total length.")
-
-        step = (total_length - segment_length) / (num_segments - 1) if num_segments > 1 else 0
-        return [(round(i * step), segment_length) for i in range(num_segments)]
-
-
     def _calculate_quality(self, original, transcoded):
         """Calculate SSIM between original and transcoded video."""
         args = [
@@ -88,14 +76,14 @@ class Transcoder(utils.InterruptibleProcess):
         self._validate_ffmpeg_result(result)
 
 
-    def _extract_segment(self, video_file, start_time, segment_length, output_file):
+    def _extract_segment(self, video_file, start_time, end_time, output_file):
         """ Extract video segment. Video is transcoded with lossless quality to rebuild damaged or troublesome videos """
         self._transcode_video(
             video_file,
             output_file,
             crf = 0,
             preset = "veryfast",
-            input_params = ["-ss", str(start_time), "-t", str(segment_length)],
+            input_params = ["-ss", str(start_time), "-to", str(end_time)],
             output_params = ["-an"]            # remove audio - some codecs may cause issues with proper extraction
         )
 
@@ -106,10 +94,10 @@ class Transcoder(utils.InterruptibleProcess):
 
         i = 0
         with logging_redirect_tqdm():
-            for (start, length) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=utils.hide_progressbar()):
+            for (start, end) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=utils.hide_progressbar()):
                 self._check_for_stop()
                 output_file = os.path.join(output_dir, f"{filename}.frag{i}.{ext}")
-                self._extract_segment(video_file, start, length, output_file)
+                self._extract_segment(video_file, start, end, output_file)
                 output_files.append(output_file)
                 i += 1
 
@@ -152,7 +140,7 @@ class Transcoder(utils.InterruptibleProcess):
             end = timestamp + segment_duration / 2
             segments.append((start, end))
 
-        # Merge overlapping segments
+        # # Merge overlapping segments
         merged_segments = []
         for start, end in sorted(segments):
             if not merged_segments or start > merged_segments[-1][1]:  # No overlap
@@ -164,15 +152,20 @@ class Transcoder(utils.InterruptibleProcess):
 
 
     def _select_segments(self, video_file, segment_duration=5):
-        segment_files = []
-
         duration = utils.get_video_duration(video_file) / 1000
         num_segments = max(3, min(10, int(duration // 30)))
-        segments = self._select_random_segments(duration, num_segments)
 
-        _, filename, ext = utils.split_path(video_file)
+        if duration <= 0 or num_segments <= 0 or segment_duration <= 0:
+            raise ValueError("Total length, number of segments, and segment length must all be positive.")
+        if segment_duration > duration:
+            raise ValueError("Segment length cannot exceed total length.")
+        if num_segments * segment_duration > duration:
+            raise ValueError("Total segments cannot fit within the total length.")
 
-        segments = [(start, start + length) for (start, length) in segments]
+        step = (duration - segment_duration) / (num_segments - 1) if num_segments > 1 else 0
+
+        segments = [(round(i * step), round(i * step) + segment_duration) for i in range(num_segments)]
+
         return segments
 
 
