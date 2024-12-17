@@ -14,5 +14,5 @@ See \-\-help for details.
 ### Automatic video transcoding
 
 transcode.py takes video directory as an input parameter and transcodes all found videos with x265 codec.<br/>
-Script tries to find optimal CRF for each video by comparing original video with transcoded one and measuring quality.
-As of now it looks for a CRF value giving SSIM ≈ 0.98 result. 
+Script tries to find optimal CRF for each video by comparing original video with transcoded one and measuring quality using SSIM method. <br/>
+By default value of 0.98 (0.0 ÷ 1.0) is used, as desired quality, but this can be changed with command line parameters.
