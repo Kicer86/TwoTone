@@ -100,7 +100,7 @@ class Transcoder(utils.InterruptibleProcess):
         )
 
 
-    def _extract_scenes(self, video_file, output_dir, segment_duration=5):
+    def _select_scenes(self, video_file, output_dir, segment_duration=5):
         """
         Extracts video segments around detected scene changes, merging nearby timestamps.
 
@@ -161,7 +161,7 @@ class Transcoder(utils.InterruptibleProcess):
         return output_files
 
 
-    def _extract_segments(self, video_file, output_dir, segment_duration=5):
+    def _select_segments(self, video_file, output_dir, segment_duration=5):
         segment_files = []
 
         duration = utils.get_video_duration(video_file)
@@ -277,9 +277,9 @@ class Transcoder(utils.InterruptibleProcess):
             segment_files = []
             if allow_segments and duration > 30:
                 logging.info(f"Picking segments from {input_file}")
-                segment_files = self._extract_scenes(input_file, wd_dir)
+                segment_files = self._select_scenes(input_file, wd_dir)
                 if len(segment_files) < 2:
-                    segment_files = self._extract_segments(input_file, wd_dir)
+                    segment_files = self._select_segments(input_file, wd_dir)
 
                 logging.info(f"Starting CRF bisection for {input_file} with veryfast preset using {len(segment_files)} segments")
             else:
