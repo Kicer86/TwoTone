@@ -11,9 +11,9 @@ from concurrent.futures import ThreadPoolExecutor
 import utils
 
 class Transcoder(utils.InterruptibleProcess):
-    def __init__(self, no_dry_run: bool):
+    def __init__(self, live_run: bool = False):
         super().__init__()
-        self.no_dry_run = no_dry_run
+        self.live_run = live_run
 
 
     def _find_video_files(self, directory):
@@ -314,7 +314,7 @@ class Transcoder(utils.InterruptibleProcess):
             self._check_for_stop()
             logging.info(f"Processing {file}")
             best_crf = self.find_optimal_crf(file)
-            if best_crf is not None and self.no_dry_run:
+            if best_crf is not None and self.live_run:
                 # increase crf by one as veryslow preset will be used, so result should be above 0.98 quality anyway
                 self._final_transcode(file, best_crf + 1, [])
             logging.info(f"Finished processing {file}")
