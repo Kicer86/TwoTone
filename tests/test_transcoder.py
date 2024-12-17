@@ -15,7 +15,7 @@ class TranscoderTests(unittest.TestCase):
         self.assertEqual(best_enc, 28)
 
     def test_video_with_segments_and_no_segments(self):
-        encoder = Transcoder()
+        encoder = Transcoder(target_ssim = 0.99999)
         for test_video, crf in [(get_video("10189155-hd_1920_1080_25fps.mp4"), 27),
                                 (get_video("big_buck_bunny_720p_10mb.mp4"), 29)]:
             best_enc_segments = encoder.find_optimal_crf(test_video, allow_segments=True)

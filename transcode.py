@@ -11,9 +11,10 @@ from concurrent.futures import ThreadPoolExecutor
 import utils
 
 class Transcoder(utils.InterruptibleProcess):
-    def __init__(self, live_run: bool = False):
+    def __init__(self, live_run: bool = False, target_ssim: float = 0.98):
         super().__init__()
         self.live_run = live_run
+        self.target_ssim = target_ssim
 
 
     def _find_video_files(self, directory):
@@ -255,7 +256,7 @@ class Transcoder(utils.InterruptibleProcess):
             )
 
 
-    def find_optimal_crf(self, input_file, requested_quality=0.98, allow_segments=True):
+    def find_optimal_crf(self, input_file, allow_segments=True):
         """Find the optimal CRF using bisection."""
         original_size = os.path.getsize(input_file)
 
@@ -296,13 +297,16 @@ class Transcoder(utils.InterruptibleProcess):
             if top_quality < 0.9975:
                 raise ValueError(f"Sanity check failed: top SSIM value: {top_quality} < 0.998")
 
+            if top_quality < self.target_ssim:
+                raise ValueError(f"Top SSIM value: {top_quality} < requested SSIM: {self.target_ssim}")
+
             crf_min, crf_max = 0, 51
-            best_crf, best_quality = self._bisection_search(evaluate_crf, min_value = crf_min, max_value = crf_max, target_condition=lambda avg_quality: avg_quality >= requested_quality)
+            best_crf, best_quality = self._bisection_search(evaluate_crf, min_value = crf_min, max_value = crf_max, target_condition=lambda avg_quality: avg_quality >= self.target_ssim)
 
             if best_crf is not None and best_quality is not None:
                 logging.info(f"Finished CRF bisection. Optimal CRF: {best_crf} with quality: {best_quality}")
             else:
-                logging.warning(f"Finished CRF bisection. Could not find CRF matching desired quality ({requested_quality}).")
+                logging.warning(f"Finished CRF bisection. Could not find CRF matching desired quality ({self.target_ssim}).")
             return best_crf
 
 
@@ -315,7 +319,7 @@ class Transcoder(utils.InterruptibleProcess):
             logging.info(f"Processing {file}")
             best_crf = self.find_optimal_crf(file)
             if best_crf is not None and self.live_run:
-                # increase crf by one as veryslow preset will be used, so result should be above 0.98 quality anyway
+                # increase crf by one as veryslow preset will be used, so result should be above requested quality anyway
                 self._final_transcode(file, best_crf + 1, [])
             logging.info(f"Finished processing {file}")
 
