@@ -295,10 +295,10 @@ class Transcoder(utils.InterruptibleProcess):
 
             top_quality = evaluate_crf(0)
             if top_quality < 0.9975:
-                raise ValueError(f"Sanity check failed: top SSIM value: {top_quality} < 0.998")
+                raise RuntimeError(f"Sanity check failed: top SSIM value: {top_quality} < 0.998")
 
             if top_quality < self.target_ssim:
-                raise ValueError(f"Top SSIM value: {top_quality} < requested SSIM: {self.target_ssim}")
+                raise RuntimeError(f"Top SSIM value: {top_quality} < requested SSIM: {self.target_ssim}")
 
             crf_min, crf_max = 0, 51
             best_crf, best_quality = self._bisection_search(evaluate_crf, min_value = crf_min, max_value = crf_max, target_condition=lambda avg_quality: avg_quality >= self.target_ssim)
@@ -311,7 +311,7 @@ class Transcoder(utils.InterruptibleProcess):
 
 
     def transcode(self, directory: str):
-        logging.info("Starting video processing")
+        logging.info(f"Starting video processing. Target SSIM: {self.target_ssim}")
         video_files = self._find_video_files(directory)
 
         for file in video_files:
@@ -327,12 +327,26 @@ class Transcoder(utils.InterruptibleProcess):
 
 
 def run(sys_args: [str]):
+    def valid_ssim_value(value):
+        try:
+            fvalue = float(value)
+            if 0 <= fvalue <= 1:
+                return fvalue
+            else:
+                raise argparse.ArgumentTypeError(f"SSIM value must be between 0 and 1. Got {value}")
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"Invalid SSIM value: {value}")
+
     parser = argparse.ArgumentParser(description='Transcode videos from provided directory preserving quality.')
 
     parser.add_argument("--no-dry-run", "-r",
                         action='store_true',
                         default=False,
                         help='Perform actual operation.')
+    parser.add_argument("--ssim", "-s",
+                        type=valid_ssim_value,
+                        default=0.98,
+                        help='Requested SSIM value (video quality). Valid values are between 0 and 1. Default is 0.98.')
     parser.add_argument('videos_path',
                         nargs=1,
                         help='Path with videos to transcode.')
@@ -343,7 +357,7 @@ def run(sys_args: [str]):
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    transcoder = Transcoder(args.no_dry_run)
+    transcoder = Transcoder(live_run = args.no_dry_run, target_ssim = args.ssim)
     transcoder.transcode(args.videos_path[0])
 
 
