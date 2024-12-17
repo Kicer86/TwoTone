@@ -100,13 +100,28 @@ class Transcoder(utils.InterruptibleProcess):
         )
 
 
-    def _select_scenes(self, video_file, output_dir, segment_duration=5):
+    def _extract_segments(self, video_file: str, segments, output_dir: str):
+        output_files = []
+        _, filename, ext = utils.split_path(video_file)
+
+        i = 0
+        with logging_redirect_tqdm():
+            for (start, length) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=utils.hide_progressbar()):
+                self._check_for_stop()
+                output_file = os.path.join(output_dir, f"{filename}.frag{i}.{ext}")
+                self._extract_segment(video_file, start, length, output_file)
+                output_files.append(output_file)
+                i += 1
+
+        return output_files
+
+
+    def _select_scenes(self, video_file, segment_duration=5):
         """
-        Extracts video segments around detected scene changes, merging nearby timestamps.
+        Select video segments around detected scene changes, merging nearby timestamps.
 
         Parameters:
             video_file (str): Path to the input video file.
-            output_dir (str): Directory where the extracted video segments will be saved.
             segment_duration (int): Minimum duration (in seconds) of each segment.
 
         Returns:
@@ -145,23 +160,10 @@ class Transcoder(utils.InterruptibleProcess):
             else:  # Overlap detected, merge
                 merged_segments[-1] = (merged_segments[-1][0], max(merged_segments[-1][1], end))
 
-        # Extract and save the merged segments
-        output_files = []
-        _, filename, ext = utils.split_path(video_file)
-
-        i = 0
-        with logging_redirect_tqdm():
-            for (start, end) in tqdm(merged_segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=utils.hide_progressbar()):
-                self._check_for_stop()
-                output_file = os.path.join(output_dir, f"{filename}.frag{i}.{ext}")
-                self._extract_segment(video_file, start, end - start, output_file)
-                output_files.append(output_file)
-                i += 1
-
-        return output_files
+        return merged_segments
 
 
-    def _select_segments(self, video_file, output_dir, segment_duration=5):
+    def _select_segments(self, video_file, segment_duration=5):
         segment_files = []
 
         duration = utils.get_video_duration(video_file) / 1000
@@ -170,16 +172,8 @@ class Transcoder(utils.InterruptibleProcess):
 
         _, filename, ext = utils.split_path(video_file)
 
-        segment = 0
-        with logging_redirect_tqdm():
-            for (start, length) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=utils.hide_progressbar()):
-                self._check_for_stop()
-                segment_output = os.path.join(output_dir, f"{filename}_frag{segment}.{ext}")
-                self._extract_segment(video_file, start, length, segment_output)
-                segment_files.append(segment_output)
-                segment += 1
-
-        return segment_files
+        segments = [(start, start + length) for (start, length) in segments]
+        return segments
 
 
     def _bisection_search(self, eval_func, min_value, max_value, target_condition):
@@ -277,9 +271,10 @@ class Transcoder(utils.InterruptibleProcess):
             segment_files = []
             if allow_segments and duration > 30:
                 logging.info(f"Picking segments from {input_file}")
-                segment_files = self._select_scenes(input_file, wd_dir)
-                if len(segment_files) < 2:
-                    segment_files = self._select_segments(input_file, wd_dir)
+                segments = self._select_scenes(input_file)
+                if len(segments) < 2:
+                    segments = self._select_segments(input_file)
+                segment_files = self._extract_segments(input_file, segments, wd_dir)
 
                 logging.info(f"Starting CRF bisection for {input_file} with veryfast preset using {len(segment_files)} segments")
             else:
