@@ -7,6 +7,8 @@ import re
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 import utils
 
@@ -147,11 +149,14 @@ class Transcoder(utils.InterruptibleProcess):
         output_files = []
         _, filename, ext = utils.split_path(video_file)
 
-        for i, (start, end) in enumerate(merged_segments):
-            self._check_for_stop()
-            output_file = os.path.join(output_dir, f"{filename}.frag{i}.{ext}")
-            self._extract_segment(video_file, start, end - start, output_file)
-            output_files.append(output_file)
+        i = 0
+        with logging_redirect_tqdm():
+            for (start, end) in tqdm(merged_segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=utils.hide_progressbar()):
+                self._check_for_stop()
+                output_file = os.path.join(output_dir, f"{filename}.frag{i}.{ext}")
+                self._extract_segment(video_file, start, end - start, output_file)
+                output_files.append(output_file)
+                i += 1
 
         return output_files
 
@@ -165,11 +170,14 @@ class Transcoder(utils.InterruptibleProcess):
 
         _, filename, ext = utils.split_path(video_file)
 
-        for segment, (start, length) in enumerate(segments):
-            self._check_for_stop()
-            segment_output = os.path.join(output_dir, f"{filename}_frag{segment}.{ext}")
-            self._extract_segment(video_file, start, length, segment_output)
-            segment_files.append(segment_output)
+        segment = 0
+        with logging_redirect_tqdm():
+            for (start, length) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=utils.hide_progressbar()):
+                self._check_for_stop()
+                segment_output = os.path.join(output_dir, f"{filename}_frag{segment}.{ext}")
+                self._extract_segment(video_file, start, length, segment_output)
+                segment_files.append(segment_output)
+                segment += 1
 
         return segment_files
 
