@@ -93,12 +93,12 @@ class JellyfinSource(DuplicatesSource):
                 if len(data) > 1:
                     names, paths = zip(*data)
 
+                    fixed_paths = [self._fix_path(path) for path in paths]
+
                     # all names should be the same
                     same = all(x == names[0] for x in names)
 
                     if same:
-                        fixed_paths = [self._fix_path(path) for path in paths]
-
                         name = names[0]
                         duplicates[name] = fixed_paths
                     else:
@@ -117,14 +117,23 @@ class Melter():
 
 
     def _process_duplicates(self, duplicates: Dict[str, List[str]]):
-        pass
+        for title, files in duplicates.items():
+            logging.info(f"Analyzing duplicates for {title}")
+
+            video_details = [utils.get_video_data(video) for video in files]
+            video_lengths = {video.video_tracks[0].length for video in video_details}
+
+            if len(video_lengths) == 1:
+                logging.info(json.dumps(video_details, indent=4))
+            else:
+                logging.warning("Videos have different lengths, skipping")
 
 
     def melt(self):
         self.logger.info("Finding duplicates")
         duplicates = self.duplicates_source.collect_duplicates()
         self._process_duplicates(duplicates)
-        print(json.dumps(duplicates, indent=4))
+        #print(json.dumps(duplicates, indent=4))
 
 
 class RequireJellyfinServer(argparse.Action):
