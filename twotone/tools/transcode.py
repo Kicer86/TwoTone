@@ -31,11 +31,6 @@ class Transcoder(utils.InterruptibleProcess):
         return video_files
 
 
-    def _validate_ffmpeg_result(self, result: utils.ProcessResult):
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr)
-
-
     def _calculate_quality(self, original, transcoded):
         """Calculate SSIM between original and transcoded video."""
         args = [
@@ -79,8 +74,7 @@ class Transcoder(utils.InterruptibleProcess):
             output_file
         ]
 
-        result = utils.start_process("ffmpeg", args, show_progress=show_progress)
-        self._validate_ffmpeg_result(result)
+        utils.raise_on_error(utils.start_process("ffmpeg", args, show_progress=show_progress))
 
 
     def _extract_segment(self, video_file, start_time, end_time, output_file):
