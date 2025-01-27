@@ -6,7 +6,7 @@ from typing import Dict, List
 
 import twotone.tools.utils as utils
 from twotone.tools.melt import Melter, DuplicatesSource
-from common import WorkingDirectoryForTest, add_test_media
+from common import WorkingDirectoryForTest, add_test_media, list_files
 
 
 
@@ -38,9 +38,17 @@ class MeltingTest(unittest.TestCase):
             duplicates = Duplicates(interruption)
             duplicates.setDuplicates({"Grass": files})
 
-            melter = Melter(interruption, duplicates)
+            files_before = list_files(td.path)
+            self.assertEqual(len(files_before), 2)
+
+            melter = Melter(interruption, duplicates, live_run = True)
             melter.melt()
 
+            # expect second file to be removed
+            files_after = list_files(td.path)
+            self.assertEqual(len(files_after), 1)
+
+            self.assertEqual(files_before[0], files_after[0])
 
 
 if __name__ == '__main__':
