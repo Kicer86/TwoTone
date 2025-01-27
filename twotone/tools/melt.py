@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import requests
+import os
 
 from collections import defaultdict
 from typing import Dict, List, Tuple
@@ -108,28 +109,38 @@ class JellyfinSource(DuplicatesSource):
 
 
 class Melter():
-    def __init__(self, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource):
+    def __init__(self, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool):
         self.interruption = interruption
         self.duplicates_source = duplicates_source
+        self.live_run = live_run
 
 
-    def _process_duplicates(self, duplicates: Dict[str, List[str]]):
+    def _process_duplicates(self, files: List[str]):
+        video_details = [utils.get_video_data(video) for video in files]
+        video_lengths = {video.video_tracks[0].length for video in video_details}
+
+        if len(video_lengths) == 1:
+            # all files are of the same lenght
+            # remove all but first one
+            logging.info("Removing exact duplicates. Leaving one copy")
+            if self.live_run:
+                for file in files[1:]:
+                    os.remove(file)
+        else:
+            logging.warning("Videos have different lengths, skipping")
+
+
+    def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
         for title, files in duplicates.items():
             logging.info(f"Analyzing duplicates for {title}")
 
-            video_details = [utils.get_video_data(video) for video in files]
-            video_lengths = {video.video_tracks[0].length for video in video_details}
-
-            if len(video_lengths) == 1:
-                logging.info(json.dumps(video_details, indent=4))
-            else:
-                logging.warning("Videos have different lengths, skipping")
+            self._process_duplicates(files)
 
 
     def melt(self):
         logging.info("Finding duplicates")
         duplicates = self.duplicates_source.collect_duplicates()
-        self._process_duplicates(duplicates)
+        self._process_duplicates_set(duplicates)
         #print(json.dumps(duplicates, indent=4))
 
 
@@ -175,5 +186,5 @@ def run(args):
                                      token=args.jellyfin_token,
                                      path_fix=path_fix)
 
-    melter = Melter(interruption, data_source)
+    melter = Melter(interruption, data_source, live_run = args.no_dry_run)
     melter.melt()
