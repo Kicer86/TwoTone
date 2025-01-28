@@ -50,6 +50,26 @@ class MeltingTest(unittest.TestCase):
 
             self.assertEqual(files_before[0], files_after[0])
 
+    def test_dry_run_is_being_respected(self):
+        with WorkingDirectoryForTest() as td:
+            file1 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v1"])
+            file2 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v2"])
+            files = [*file1, *file2]
+
+            interruption = utils.InterruptibleProcess()
+            duplicates = Duplicates(interruption)
+            duplicates.setDuplicates({"Grass": files})
+
+            files_before = list_files(td.path)
+            self.assertEqual(len(files_before), 2)
+
+            melter = Melter(interruption, duplicates, live_run = False)
+            melter.melt()
+
+            # expect no changes in files
+            files_after = list_files(td.path)
+            self.assertEqual(files_before, files_after)
+
 
 if __name__ == '__main__':
     unittest.main()
