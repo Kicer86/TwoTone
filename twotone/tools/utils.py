@@ -257,7 +257,7 @@ def get_video_data(path: str) -> [VideoInfo]:
     return VideoInfo(video_tracks, subtitles, path)
 
 
-def generate_mkv(input_video: str, output_path: str, subtitles: [SubtitleFile]):
+def generate_mkv(output_path: str, input_video: str, subtitles: [SubtitleFile]):
     # output
     options = ["-o", output_path]
 
