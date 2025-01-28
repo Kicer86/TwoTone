@@ -153,7 +153,6 @@ class RequireJellyfinServer(argparse.Action):
 
 
 def setup_parser(parser: argparse.ArgumentParser):
-
     jellyfin_group = parser.add_argument_group("Jellyfin source")
     jellyfin_group.add_argument('--jellyfin-server',
                                 help='URL to the Jellyfin server which will be used as a source of video files duplicates')
