@@ -1,7 +1,6 @@
 
 import argparse
 import glob
-import py3langid as langid
 import logging
 import os
 import shutil
@@ -28,10 +27,9 @@ class Merge(utils.InterruptibleProcess):
         self.lang_priority = [] if not lang_priority or lang_priority == "" else lang_priority.split(",")
 
     def _build_subtitle_from_path(self, path: str) -> utils.SubtitleFile:
-        encoding = utils.file_encoding(path)
-        language = self.language if self.language != "auto" else self._guess_language(path, encoding)
+        language = None if self.language == "auto" else self.language
 
-        return utils.SubtitleFile(path, language, encoding)
+        return utils.build_subtitle_from_path(path, language)
 
     def _directory_subtitle_matcher(self, dir_path: str) -> Dict[str, List[utils.SubtitleFile]]:
         """
@@ -167,17 +165,6 @@ class Merge(utils.InterruptibleProcess):
             converted_subtitle = utils.SubtitleFile(output_file, subtitle.language, "utf-8")
 
         return converted_subtitle
-
-    @staticmethod
-    def _guess_language(path: str, encoding: str) -> str:
-        result = ""
-
-        with open(path, "r", encoding=encoding) as sf:
-            content = sf.readlines()
-            content_joined = "".join(content)
-            result = langid.classify(content_joined)[0]
-
-        return result
 
     def _merge(self, input_video: str, subtitles: [utils.SubtitleFile]):
         self.logger.info(f"Merging video file: {input_video} with subtitles:")
