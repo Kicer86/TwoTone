@@ -283,7 +283,7 @@ def split_path(path: str) -> (str, str, str):
     return str(info.parent), info.stem, info.suffix[1:]
 
 
-def generate_mkv(input_video: str, output_path: str, subtitles: [SubtitleFile]):
+def generate_mkv(output_path: str, input_video: str, subtitles: [SubtitleFile]):
     # output
     options = ["-o", output_path]
 
