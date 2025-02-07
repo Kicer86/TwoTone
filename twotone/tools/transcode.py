@@ -101,7 +101,7 @@ class Transcoder(utils.InterruptibleProcess):
         with logging_redirect_tqdm():
             for (start, end) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=utils.hide_progressbar()):
                 self._check_for_stop()
-                output_file = os.path.join(output_dir, f"{filename}.frag{i}.{ext}")
+                output_file = os.path.join(output_dir, f"{filename}.frag{i}.mp4")
                 self._extract_segment(video_file, start, end, output_file)
                 output_files.append(output_file)
                 i += 1
@@ -124,7 +124,7 @@ class Transcoder(utils.InterruptibleProcess):
         # FFmpeg command to detect scene changes and log timestamps
         args = [
             "-i", video_file,
-            "-vf", "select='gt(scene,0.6)',showinfo",
+            "-vf", "select='gt(scene,0.4)',showinfo",
             "-vsync", "vfr", "-f", "null", "/dev/null"
         ]
 
@@ -230,18 +230,26 @@ class Transcoder(utils.InterruptibleProcess):
 
     def _final_transcode(self, input_file, crf):
         """Perform the final transcoding with the best CRF using the determined extra_params."""
-        _, basename, ext = files.split_path(input_file)
+        dir, basename, ext = files.split_path(input_file)
+
+        # As of now ffmpeg does not support rmvb outputs and copying cook audio codec
+        overwrite_input = True
+        audio_codec = ["-c:a", "copy"]
+        if ext == "rmvb":
+            ext = "mp4"
+            audio_codec = ["-c:a", "libopus", "-b:a", "192k"]
+            overwrite_input = False
 
         self.logger.info(f"Starting final transcoding with CRF: {crf}")
-        final_output_file = f"{basename}.temp.{ext}"
-        self._transcode_video(input_file, final_output_file, crf, "veryslow", audio_codec=["-c:a", "copy"], output_params = ["-vsync", "passthrough"], show_progress=True)
+        temp_file = os.path.join(dir, f"{basename}.temp.{ext}")
+        self._transcode_video(input_file, temp_file, crf, "veryslow", audio_codec = audio_codec, output_params = ["-vsync", "passthrough"], show_progress=True)
 
         original_size = os.path.getsize(input_file)
-        final_size = os.path.getsize(final_output_file)
+        final_size = os.path.getsize(temp_file)
         size_reduction = (final_size / original_size) * 100
 
         # Measure SSIM again after final transcoding
-        final_quality = self._calculate_quality(input_file, final_output_file)
+        final_quality = self._calculate_quality(input_file, temp_file)
 
         try:
             if final_quality < self.target_ssim:
@@ -259,12 +267,22 @@ class Transcoder(utils.InterruptibleProcess):
                 raise ValueError()
 
 
-            utils.start_process("exiftool", ["-overwrite_original", "-TagsFromFile", input_file, "-all:all>all:all", final_output_file])
+            utils.start_process("exiftool", ["-overwrite_original", "-TagsFromFile", input_file, "-all:all>all:all", temp_file])
 
-            try:
-                os.replace(final_output_file, input_file)
-            except OSError:
-                shutil.move(final_output_file, input_file)
+            if overwrite_input:
+                try:
+                    logging.debug(f"Replacing {input_file} with {temp_file}")
+                    os.replace(temp_file, input_file)
+
+                except OSError:
+                    logging.debug(f"Replacing {input_file} with {temp_file} (second attempt)")
+                    shutil.move(temp_file, input_file)
+            else:
+                final_output_file = os.path.join(dir, f"{basename}.{ext}")
+                logging.debug(f"Renaming {temp_file} to {final_output_file}")
+                shutil.move(temp_file, final_output_file)
+                logging.debug(f"Removing {input_file}")
+                os.remove(input_file)
 
             self.logger.info(
                 f"Final CRF: {crf}, SSIM: {final_quality}, "
@@ -274,7 +292,8 @@ class Transcoder(utils.InterruptibleProcess):
             )
 
         except ValueError:
-            os.remove(final_output_file)
+            logging.error(f"Error occured, removing temporary file {temp_file}")
+            os.remove(temp_file)
 
 
 
