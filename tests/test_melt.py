@@ -1,12 +1,13 @@
 
 import logging
 import unittest
+import os
 from overrides import override
 from typing import Dict, List
 
 import twotone.tools.utils as utils
 from twotone.tools.melt import Melter, DuplicatesSource
-from common import WorkingDirectoryForTest, add_test_media, list_files
+from common import WorkingDirectoryForTest, add_test_media, hashes, list_files
 
 
 
@@ -38,17 +39,19 @@ class MeltingTest(unittest.TestCase):
             duplicates = Duplicates(interruption)
             duplicates.setDuplicates({"Grass": files})
 
-            files_before = list_files(td.path)
+            files_before = hashes(td.path)
             self.assertEqual(len(files_before), 2)
 
             melter = Melter(interruption, duplicates, live_run = True)
             melter.melt()
 
             # expect second file to be removed
-            files_after = list_files(td.path)
+            files_after = hashes(td.path)
             self.assertEqual(len(files_after), 1)
 
-            self.assertEqual(files_before[0], files_after[0])
+            # check if file was not altered
+            self.assertTrue(files_after.items() < files_before.items())
+
 
     def test_dry_run_is_being_respected(self):
         with WorkingDirectoryForTest() as td:
@@ -60,14 +63,14 @@ class MeltingTest(unittest.TestCase):
             duplicates = Duplicates(interruption)
             duplicates.setDuplicates({"Grass": files})
 
-            files_before = list_files(td.path)
+            files_before = hashes(td.path)
             self.assertEqual(len(files_before), 2)
 
             melter = Melter(interruption, duplicates, live_run = False)
             melter.melt()
 
             # expect no changes in files
-            files_after = list_files(td.path)
+            files_after = hashes(td.path)
             self.assertEqual(files_before, files_after)
 
 
