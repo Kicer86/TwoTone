@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 import twotone.twotone as twotone
 
@@ -88,8 +88,8 @@ def get_video(name: str) -> str:
     return os.path.join(current_path, "videos", name)
 
 
-def hashes(path: str) -> [()]:
-    results = []
+def hashes(path: str) -> Dict[str, str]:
+    results = {}
 
     files = list_files(path)
 
@@ -99,7 +99,7 @@ def hashes(path: str) -> [()]:
             while chunk := f.read(8192):
                 file_hash.update(chunk)
 
-            results.append((filepath, file_hash.hexdigest()))
+            results[filepath] = file_hash.hexdigest()
 
     return results
 
