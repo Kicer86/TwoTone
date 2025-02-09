@@ -207,9 +207,6 @@ def setup_parser(parser: argparse.ArgumentParser):
 
 
 def run(args):
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
     for tool in ["mkvmerge", "mkvextract", "ffprobe"]:
         path = shutil.which(tool)
         if path is None:

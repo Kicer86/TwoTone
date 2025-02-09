@@ -393,8 +393,5 @@ def setup_parser(parser: argparse.ArgumentParser):
 
 
 def run(args):
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
     transcoder = Transcoder(live_run = args.no_dry_run, target_ssim = args.ssim)
     transcoder.transcode(args.videos_path[0])
