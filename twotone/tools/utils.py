@@ -213,7 +213,7 @@ def fix_subtitles_fps(input_path: str, output_path: str, subtitles_fps: float):
 
 
 def get_video_duration(video_file):
-    """Get the duration of a video in seconds."""
+    """Get the duration of a video in milliseconds."""
     result = start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
 
     try:
@@ -255,8 +255,10 @@ def get_video_full_info(path: str) -> str:
 
 def get_video_data(path: str) -> [VideoInfo]:
 
-    def get_length(stream):
-
+    def get_length(stream) -> int:
+        """
+            get lenght in milliseconds
+        """
         length = None
 
         if "tags" in stream:
@@ -268,7 +270,7 @@ def get_video_data(path: str) -> [VideoInfo]:
         if length is None:
             length = stream.get("duration", None)
             if length is not None:
-                length = float(length)
+                length = int(float(length) * 1000)
 
         return length
 
