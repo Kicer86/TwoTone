@@ -1,6 +1,7 @@
 
 import argparse
 import logging
+import math
 import os
 import re
 
@@ -10,7 +11,7 @@ from .tool import Tool
 from .utils2 import video, process, files
 
 
-def extract_scenes(video_path, output_folder):
+def extract_scenes(video_path, output_dir):
     """
     Extracts all video frames, names them based on their timestamp, and groups them into scene subdirectories.
 
@@ -18,14 +19,14 @@ def extract_scenes(video_path, output_folder):
         video_path (str): Path to the input video file.
         output_folder (str): Directory where scene frame folders will be stored.
     """
-    os.makedirs(output_folder, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     # Get scene change timestamps
     scene_changes = video.detect_scene_changes(video_path)
-    scene_changes.append(None)  # Ensure last segment is included
+    scene_changes.append(math.inf)
 
     # Extract all frames while capturing PTS times
-    temp_folder = os.path.join(output_folder, "temp_frames")
+    temp_folder = os.path.join(output_dir, "temp_frames")
     os.makedirs(temp_folder, exist_ok=True)
 
     output_pattern = os.path.join(temp_folder, "frame_%06d.png")
@@ -51,29 +52,35 @@ def extract_scenes(video_path, output_folder):
             pts_time = float(match.group(2))
             frame_pts_map[frame_number] = pts_time
 
-    # Prepare initial scene directory
     scene_index = 0
-    scene_folder = os.path.join(output_folder, f"scene_{scene_index}")
-    os.makedirs(scene_folder, exist_ok=True)
+    created_scenes = set()
 
     # Process frames: rename and move in the same loop
-    for frame_number, frame_file in enumerate(sorted(os.listdir(temp_folder))):
+    frame_files = sorted(os.listdir(temp_folder))
+    for frame_number, frame_file in enumerate(frame_files):
         if frame_number in frame_pts_map:
             timestamp = frame_pts_map[frame_number]
-            new_name = f"frame_{timestamp:.3f}.png"
+
+            if timestamp >= scene_changes[scene_index]:
+                scene_index += 1
+
+            scene_dir = os.path.join(output_dir, f"scene_{scene_index}")
+
+            if scene_index not in created_scenes:
+                os.makedirs(scene_dir, exist_ok = False)
+                created_scenes.add(scene_index)
+
+            _, _, ext = files.split_path(frame_file)
+
+            new_name = f"frame_{timestamp:.3f}.{ext}"
 
             old_path = os.path.join(temp_folder, frame_file)
-            new_path = os.path.join(scene_folder, new_name)
-
-            # If we've reached a scene change, update scene directory
-            if scene_changes[scene_index] is not None and timestamp >= scene_changes[scene_index]:
-                scene_index += 1
-                scene_folder = os.path.join(output_folder, f"scene_{scene_index}")
-                os.makedirs(scene_folder, exist_ok=True)
-                new_path = os.path.join(scene_folder, new_name)
+            new_path = os.path.join(scene_dir, new_name)
 
             # Rename and move the file in one step
             os.rename(old_path, new_path)
+        else:
+            print("Error")
 
     # Cleanup temp folder
     os.rmdir(temp_folder)

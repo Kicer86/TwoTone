@@ -21,13 +21,12 @@ def collect_files(directory: str):
     return file_list
 
 
-
 class UtilitiesScenesTests(unittest.TestCase):
 
     def test_video_1_for_scenes_extraction(self):
         with WorkingDirectoryForTest() as wd:
             test_video = get_video("big_buck_bunny_720p_10mb.mp4")
-            best_enc = extract_scenes(video_path = test_video, output_folder = wd.path)
+            best_enc = extract_scenes(video_path = test_video, output_dir = wd.path)
 
             files = collect_files(wd.path)
 
