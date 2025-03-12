@@ -100,4 +100,4 @@ def setup_parser(parser: argparse.ArgumentParser):
 
 def run(args):
     if args.subtool == "scenes":
-        extract_scenes(video_path = args.video_path[0], output = args.output)
+        extract_scenes(video_path = args.video_path[0], output_dir = args.output)
