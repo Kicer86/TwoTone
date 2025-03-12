@@ -12,6 +12,7 @@ from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from . import utils
+from twotone.tools.utils2 import files
 
 class Transcoder(utils.InterruptibleProcess):
     def __init__(self, logger: logging.Logger, live_run: bool = False, target_ssim: float = 0.98, codec: str = "libx265"):
@@ -97,7 +98,7 @@ class Transcoder(utils.InterruptibleProcess):
 
     def _extract_segments(self, video_file: str, segments, output_dir: str):
         output_files = []
-        _, filename, ext = utils.split_path(video_file)
+        _, filename, ext = files.split_path(video_file)
 
         i = 0
         with logging_redirect_tqdm():
@@ -209,7 +210,7 @@ class Transcoder(utils.InterruptibleProcess):
 
 
     def _transcode_segment_and_compare(self, wd_dir: str, segment_file: str, crf: int) -> float or None:
-        _, filename, ext = utils.split_path(segment_file)
+        _, filename, ext = files.split_path(segment_file)
 
         transcoded_segment_output = os.path.join(wd_dir, f"{filename}.transcoded.{ext}")
 
@@ -232,7 +233,7 @@ class Transcoder(utils.InterruptibleProcess):
 
     def _final_transcode(self, input_file, crf):
         """Perform the final transcoding with the best CRF using the determined extra_params."""
-        _, basename, ext = utils.split_path(input_file)
+        _, basename, ext = files.split_path(input_file)
 
         self.logger.info(f"Starting final transcoding with CRF: {crf}")
         final_output_file = f"{basename}.temp.{ext}"

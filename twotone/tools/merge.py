@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from . import utils
+from twotone.tools.utils2 import files
 
 
 work = True
@@ -54,12 +55,12 @@ class Merge(utils.InterruptibleProcess):
         subtitles = sorted(subtitles, reverse = True, key = lambda k: len(k))
 
         for video in videos:
-            video_parts = utils.split_path(video)
+            video_parts = files.split_path(video)
             video_file_name = video_parts[1]
 
             matching_subtitles = []
             for subtitle in subtitles:
-                subtitle_parts = utils.split_path(subtitle)
+                subtitle_parts = files.split_path(subtitle)
                 subtitle_file_name = subtitle_parts[1]
 
                 if subtitle_file_name.startswith(video_file_name):
@@ -169,7 +170,7 @@ class Merge(utils.InterruptibleProcess):
     def _merge(self, input_video: str, subtitles: [utils.SubtitleFile]):
         self.logger.info(f"Merging video file: {input_video} with subtitles:")
 
-        video_dir, video_name, video_extension = utils.split_path(input_video)
+        video_dir, video_name, video_extension = files.split_path(input_video)
         output_video = video_dir + "/" + video_name + "." + "mkv"
         temporary_output_video = video_dir + "/_tt_merge_" + video_name + "." + "mkv"
 

@@ -257,12 +257,6 @@ def get_video_data(path: str) -> [VideoInfo]:
     return VideoInfo(video_tracks, subtitles, path)
 
 
-def split_path(path: str) -> (str, str, str):
-    info = Path(path)
-
-    return str(info.parent), info.stem, info.suffix[1:]
-
-
 def generate_mkv(input_video: str, output_path: str, subtitles: [SubtitleFile]):
     # output
     options = ["-o", output_path]
