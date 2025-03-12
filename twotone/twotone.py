@@ -8,7 +8,8 @@ from .tools import          \
     melt,                   \
     merge,                  \
     subtitles_fixer,        \
-    transcode
+    transcode,              \
+    utilities
 
 TOOLS = {
     "concatenate": (concatenate.setup_parser, concatenate.run, "Concatenate multifile movies into one file"),
@@ -16,12 +17,14 @@ TOOLS = {
     "merge": (merge.setup_parser, merge.run, "Merge video files with corresponding subtitles into one MKV file"),
     "subtitles_fix": (subtitles_fixer.setup_parser, subtitles_fixer.run, "Fixes some specific issues with subtitles. Do not use until you are sure it will help for your problems."),
     "transcode": (transcode.setup_parser, transcode.run, "Transcode videos from provided directory preserving quality."),
+    "utilities": (utilities.setup_parser, utilities.run, "Various smaller tools"),
 }
 
 
 class CustomFormatter(argparse.HelpFormatter):
     def _split_lines(self, text, width):
         return text.splitlines()
+
 
 def execute(argv):
     parser = argparse.ArgumentParser(
@@ -69,12 +72,14 @@ def execute(argv):
         logging.error(f"Error: Unknown tool {args.tool}")
         sys.exit(1)
 
+
 def main():
     logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
     try:
         execute(sys.argv[1:])
     except RuntimeError as e:
         logging.error(f"Error occurred: {e}. Terminating")
+
 
 if __name__ == '__main__':
     main()
