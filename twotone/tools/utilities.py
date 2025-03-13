@@ -5,7 +5,10 @@ import math
 import os
 import re
 
+from overrides import override
+
 from .utils2 import video, process, files
+from .tool import Tool
 
 
 def extract_scenes(video_path, output_dir):
@@ -83,21 +86,24 @@ def extract_scenes(video_path, output_dir):
     os.rmdir(temp_folder)
 
 
-def setup_parser(parser: argparse.ArgumentParser):
-    subparsers = parser.add_subparsers(dest="subtool", help="Available subtools:")
+class UtilitiesTool(Tool):
+    @override
+    def setup_parser(self, parser: argparse.ArgumentParser):
+        subparsers = parser.add_subparsers(dest="subtool", help="Available subtools:")
 
-    scenes_extractor = subparsers.add_parser(
-        "scenes",
-        help = "extract scenes from videos"
-    )
-    scenes_extractor.add_argument('video_path',
-                                  nargs=1,
-                                  help='Path to video file')
-    scenes_extractor.add_argument("--output", "-o",
-                                  required=True,
-                                  help='Output directory')
+        scenes_extractor = subparsers.add_parser(
+            "scenes",
+            help = "extract scenes from videos"
+        )
+        scenes_extractor.add_argument('video_path',
+                                    nargs=1,
+                                    help='Path to video file')
+        scenes_extractor.add_argument("--output", "-o",
+                                    required=True,
+                                    help='Output directory')
 
 
-def run(args):
-    if args.subtool == "scenes":
-        extract_scenes(video_path = args.video_path[0], output_dir = args.output)
+    @override
+    def run(self, args):
+        if args.subtool == "scenes":
+            extract_scenes(video_path = args.video_path[0], output_dir = args.output)
