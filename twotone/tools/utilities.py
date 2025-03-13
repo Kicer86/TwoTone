@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import re
+import sys
 
 from overrides import override
 
@@ -11,7 +12,7 @@ from .tool import Tool
 from .utils2 import video, process, files
 
 
-def extract_scenes(video_path, output_dir):
+def extract_scenes(video_path, output_dir, format: str, scale: float):
     """
     Extracts all video frames, names them based on their timestamp, and groups them into scene subdirectories.
 
@@ -29,13 +30,14 @@ def extract_scenes(video_path, output_dir):
     temp_folder = os.path.join(output_dir, "temp_frames")
     os.makedirs(temp_folder, exist_ok=True)
 
-    output_pattern = os.path.join(temp_folder, "frame_%06d.png")
+    ascale = 100/scale
+    output_pattern = os.path.join(temp_folder, f"frame_%06d.{format}")
     args = [
         "-i", video_path,
         "-frame_pts", "true",
         "-vsync", "0",
-        "-q:v", "2",  # High-quality PNG output
-        "-vf", "showinfo",  # Enable frame metadata output
+        "-q:v", "2",
+        "-vf", f"showinfo,scale=iw/{ascale}:ih/{ascale}",
         output_pattern
     ]
 
@@ -96,16 +98,21 @@ class UtilitiesTool(Tool):
             help = "extract scenes from videos"
         )
         scenes_extractor.add_argument('video_path',
-                                    nargs=1,
-                                    help='Path to video file')
+                                      nargs=1,
+                                      help='Path to video file')
         scenes_extractor.add_argument("--output", "-o",
-                                    required=True,
-                                    help='Output directory')
+                                      required=True,
+                                      help='Output directory')
+        scenes_extractor.add_argument("--format", "-f",
+                                      default = "jpeg",
+                                      help = "File format for frames. Pass file extension like tiff, jpeg, png. jpeg is default")
+        scenes_extractor.add_argument("--scale", "-s",
+                                      default = 100,
+                                      help = "Frames scale in %%. Default is 100")
 
     @override
     def run(self, args, no_dry_run: bool, logger: logging.Logger):
         if args.subtool == "scenes":
-            extract_scenes(video_path = args.video_path[0], output = args.output)
+            extract_scenes(video_path = args.video_path[0], output_dir = args.output, format = args.format, scale = args.scale)
         else:
-            logger.error(f"Error: Unknown subtool {args.subtool}")
-            sys.exit(1)
+            logging.error(f"Error: Unknown subtool {args.subtool}")
