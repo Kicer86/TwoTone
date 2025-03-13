@@ -6,12 +6,14 @@ import os
 import shutil
 import sys
 import tempfile
+from overrides import override
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 from . import utils
+from .tool import Tool
 from twotone.tools.utils2 import files
 
 
@@ -281,32 +283,34 @@ class Merge(utils.InterruptibleProcess):
                 self._merge(video, subtitles)
 
 
-def setup_parser(parser: argparse.ArgumentParser):
-    parser.add_argument('videos_path',
-                        nargs=1,
-                        help='Path with videos to combine.')
-    parser.add_argument("--language", "-l",
-                        help='Language code for found subtitles. By default none is used. See mkvmerge '
-                             '--list-languages for available languages. For automatic detection use: auto')
-    parser.add_argument("--languages-priority", "-p",
-                        help='Comma separated list of two letter language codes. Order on the list defines order of '
-                             'subtitles appending.\nFor example, for --languages-priority pl,de,en,fr all '
-                             'found subtitles will be ordered so polish goes as first, then german, english and '
-                             'french. If there are subtitles in any other language, they will be append at '
-                             'the end in undefined order')
+class MergeTool(Tool):
+    @override
+    def setup_parser(self, parser: argparse.ArgumentParser):
+        parser.add_argument('videos_path',
+                            nargs=1,
+                            help='Path with videos to combine.')
+        parser.add_argument("--language", "-l",
+                            help='Language code for found subtitles. By default none is used. See mkvmerge '
+                                '--list-languages for available languages. For automatic detection use: auto')
+        parser.add_argument("--languages-priority", "-p",
+                            help='Comma separated list of two letter language codes. Order on the list defines order of '
+                                'subtitles appending.\nFor example, for --languages-priority pl,de,en,fr all '
+                                'found subtitles will be ordered so polish goes as first, then german, english and '
+                                'french. If there are subtitles in any other language, they will be append at '
+                                'the end in undefined order')
 
+    @override
+    def run(self, args, logger: logging.Logger):
+        for tool in ["mkvmerge", "ffmpeg", "ffprobe"]:
+            path = shutil.which(tool)
+            if path is None:
+                raise RuntimeError(f"{tool} not found in PATH")
+            else:
+                logger.debug(f"{tool} path: {path}")
 
-def run(args, logger: logging.Logger):
-    for tool in ["mkvmerge", "ffmpeg", "ffprobe"]:
-        path = shutil.which(tool)
-        if path is None:
-            raise RuntimeError(f"{tool} not found in PATH")
-        else:
-            logger.debug(f"{tool} path: {path}")
-
-    logger.info("Searching for movie and subtitle files to be merged")
-    two_tone = Merge(logger,
-                     dry_run=not args.no_dry_run,
-                     language=args.language,
-                     lang_priority=args.languages_priority)
-    two_tone.process_dir(args.videos_path[0])
+        logger.info("Searching for movie and subtitle files to be merged")
+        two_tone = Merge(logger,
+                         dry_run=not args.no_dry_run,
+                         language=args.language,
+                         lang_priority=args.languages_priority)
+        two_tone.process_dir(args.videos_path[0])
