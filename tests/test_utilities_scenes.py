@@ -26,7 +26,7 @@ class UtilitiesScenesTests(unittest.TestCase):
     def test_video_1_for_scenes_extraction(self):
         with WorkingDirectoryForTest() as wd:
             test_video = get_video("big_buck_bunny_720p_10mb.mp4")
-            best_enc = extract_scenes(video_path = test_video, output_dir = wd.path)
+            best_enc = extract_scenes(video_path = test_video, output_dir = wd.path, format = "png", scale = 10)
 
             files = collect_files(wd.path)
 
