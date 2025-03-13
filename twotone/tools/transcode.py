@@ -399,6 +399,6 @@ class TranscodeTool(Tool):
 
 
     @override
-    def run(self, args):
-        transcoder = Transcoder(live_run = args.no_dry_run, target_ssim = args.ssim)
+    def run(self, args, no_dry_run: bool):
+        transcoder = Transcoder(live_run = no_dry_run, target_ssim = args.ssim)
         transcoder.transcode(args.videos_path[0])

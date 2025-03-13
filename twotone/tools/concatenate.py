@@ -138,6 +138,6 @@ class ConcatenateTool(Tool):
                             help='Path with videos to concatenate.')
 
     @override
-    def run(self, args):
-        concatenate = Concatenate(args.no_dry_run)
+    def run(self, args, no_dry_run):
+        concatenate = Concatenate(no_dry_run)
         concatenate.run(args.videos_path[0])

@@ -104,6 +104,6 @@ class UtilitiesTool(Tool):
 
 
     @override
-    def run(self, args):
+    def run(self, args, no_dry_run: bool):
         if args.subtool == "scenes":
             extract_scenes(video_path = args.video_path[0], output_dir = args.output)

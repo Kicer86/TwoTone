@@ -175,7 +175,7 @@ class MeltTool(Tool):
 
 
     @override
-    def run(self, args):
+    def run(self, args, no_dry_run: bool):
         interruption = utils.InterruptibleProcess()
 
         data_source = None
@@ -190,5 +190,5 @@ class MeltTool(Tool):
                                         token=args.jellyfin_token,
                                         path_fix=path_fix)
 
-        melter = Melter(interruption, data_source, live_run = args.no_dry_run)
+        melter = Melter(interruption, data_source, live_run = no_dry_run)
         melter.melt()

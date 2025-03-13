@@ -299,7 +299,7 @@ class MergeTool(Tool):
                                 'the end in undefined order')
 
     @override
-    def run(self, args):
+    def run(self, args, no_dry_run: bool):
         for tool in ["mkvmerge", "ffmpeg", "ffprobe"]:
             path = shutil.which(tool)
             if path is None:
@@ -308,7 +308,7 @@ class MergeTool(Tool):
                 logging.debug(f"{tool} path: {path}")
 
         logging.info("Searching for movie and subtitle files to be merged")
-        two_tone = Merge(dry_run=not args.no_dry_run,
+        two_tone = Merge(dry_run=not no_dry_run,
                         language=args.language,
                         lang_priority=args.languages_priority)
         two_tone.process_dir(args.videos_path[0])
