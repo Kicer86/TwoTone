@@ -11,6 +11,7 @@ from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from . import utils
+from .utils2 import generic
 from .tool import Tool
 
 
@@ -39,11 +40,11 @@ class Fixer(utils.InterruptibleProcess):
         begin_pos = last_timestamp.start(1)
         end_pos = last_timestamp.end(2)
 
-        content = content[:begin_pos] + f"{utils.ms_to_time(time_from)} --> {utils.ms_to_time(new_time_to)}" + content[end_pos:]
+        content = content[:begin_pos] + f"{generic.ms_to_time(time_from)} --> {generic.ms_to_time(new_time_to)}" + content[end_pos:]
         return content
 
     def _fps_scale_resolver(self, video_track: utils.VideoTrack, content: str):
-        target_fps = utils.fps_str_to_float(video_track.fps)
+        target_fps = generic.fps_str_to_float(video_track.fps)
         multiplier = utils.ffmpeg_default_fps / target_fps
 
         return utils.alter_subrip_subtitles_times(content, multiplier)
