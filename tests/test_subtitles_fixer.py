@@ -7,13 +7,14 @@ import tempfile
 import twotone.tools.utils as utils
 
 from common import WorkingDirectoryForTest, add_test_media, hashes, current_path, generate_microdvd_subtitles, run_twotone
+from twotone.tools.utils2 import generic, process
 
 
 def create_broken_video_with_scaled_subtitle_timings(output_video_path: str, input_video: str):
     with tempfile.TemporaryDirectory() as subtitle_dir:
         input_video_info = utils.get_video_data(input_video)
         default_video_track = input_video_info.video_tracks[0]
-        fps = utils.fps_str_to_float(default_video_track.fps)
+        fps = generic.fps_str_to_float(default_video_track.fps)
 
         if abs(fps - utils.ffmpeg_default_fps) < 1:
             raise RuntimeError("source video is not suitable, has nearly default fps")
@@ -39,11 +40,11 @@ def create_broken_video_with_too_long_last_subtitle(output_video_path: str, inpu
         subtitle_path = f"{subtitle_dir}/sub.srt"
         with open(subtitle_path, 'w', encoding='utf-8') as file:
             file.write(f"1\n")
-            file.write(f"{utils.ms_to_time(0)} --> {utils.ms_to_time(1000)}\n")
+            file.write(f"{generic.ms_to_time(0)} --> {generic.ms_to_time(1000)}\n")
             file.write(f"1\n\n")
 
             file.write(f"2\n")
-            file.write(f"{utils.ms_to_time(1000)} --> {utils.ms_to_time((length + 10) * 1000)}\n")
+            file.write(f"{generic.ms_to_time(1000)} --> {generic.ms_to_time((length + 10) * 1000)}\n")
             file.write(f"2\n")
 
         utils.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [utils.SubtitleFile(subtitle_path, "eng", "utf8")])
@@ -53,7 +54,7 @@ def create_broken_video_with_incompatible_subtitles(output_video_path: str, inpu
     with tempfile.TemporaryDirectory() as subtitle_dir:
         input_video_info = utils.get_video_data(input_video)
         default_video_track = input_video_info.video_tracks[0]
-        fps = utils.fps_str_to_float(default_video_track.fps)
+        fps = generic.fps_str_to_float(default_video_track.fps)
 
         if abs(fps - utils.ffmpeg_default_fps) < 1:
             raise RuntimeError("source video is not suitable, has nearly default fps")
@@ -63,7 +64,7 @@ def create_broken_video_with_incompatible_subtitles(output_video_path: str, inpu
         subtitle_path = f"{subtitle_dir}/sub.sub"
         generate_microdvd_subtitles(subtitle_path, int(length), fps)
 
-        utils.start_process("ffmpeg", ["-hide_banner", "-i", input_video, "-i", subtitle_path, "-map", "0", "-map", "1", "-c:v", "copy", "-c:a", "copy", output_video_path])
+        process.start_process("ffmpeg", ["-hide_banner", "-i", input_video, "-i", subtitle_path, "-map", "0", "-map", "1", "-c:v", "copy", "-c:a", "copy", output_video_path])
 
 
 class SubtitlesFixer(unittest.TestCase):
