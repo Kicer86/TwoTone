@@ -14,7 +14,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from . import utils
 from .tool import Tool
-from twotone.tools.utils2 import files
+from twotone.tools.utils2 import files, process
 
 
 class Transcoder(utils.InterruptibleProcess):
@@ -43,7 +43,7 @@ class Transcoder(utils.InterruptibleProcess):
             "-lavfi", "ssim", "-f", "null", "-"
         ]
 
-        result = utils.start_process("ffmpeg", args)
+        result = process.start_process("ffmpeg", args)
         ssim_line = [line for line in result.stderr.splitlines() if "All:" in line]
 
         if ssim_line:
@@ -79,7 +79,7 @@ class Transcoder(utils.InterruptibleProcess):
             output_file
         ]
 
-        utils.raise_on_error(utils.start_process("ffmpeg", args, show_progress=show_progress))
+        process.raise_on_error(process.start_process("ffmpeg", args, show_progress=show_progress))
 
 
     def _extract_segment(self, video_file, start_time, end_time, output_file):
@@ -128,7 +128,7 @@ class Transcoder(utils.InterruptibleProcess):
             "-vsync", "vfr", "-f", "null", "/dev/null"
         ]
 
-        result = utils.start_process("ffmpeg", args)
+        result = process.start_process("ffmpeg", args)
 
         # Parse timestamps from the ffmpeg output
         timestamps = []
@@ -267,7 +267,7 @@ class Transcoder(utils.InterruptibleProcess):
                 raise ValueError()
 
 
-            utils.start_process("exiftool", ["-overwrite_original", "-TagsFromFile", input_file, "-all:all>all:all", temp_file])
+            process.start_process("exiftool", ["-overwrite_original", "-TagsFromFile", input_file, "-all:all>all:all", temp_file])
 
             if overwrite_input:
                 try:

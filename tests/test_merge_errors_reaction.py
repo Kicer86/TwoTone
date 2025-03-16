@@ -7,14 +7,14 @@ import twotone.tools.utils as utils
 from common import WorkingDirectoryForTest, add_test_media, hashes, run_twotone
 from unittest.mock import patch
 
-from twotone.tools.utils2 import files
+from twotone.tools.utils2 import files, process
 
 
 class SimpleSubtitlesMerge(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._start_process = utils.start_process
+        cls._start_process = process.start_process
         logging.getLogger().setLevel(logging.CRITICAL)
 
 
@@ -28,7 +28,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
             else:
                 return self._start_process.__func__(cmd, args)
 
-        with patch("twotone.tools.utils.start_process") as mock_start_process, WorkingDirectoryForTest() as td:
+        with patch("twotone.tools.utils2.process.start_process") as mock_start_process, WorkingDirectoryForTest() as td:
             mock_start_process.side_effect = start_process
             add_test_media("Blue_Sky_and_Clouds_Timelapse.*(?:mov|srt)", td.path)
 
@@ -55,7 +55,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
             else:
                 return self._start_process.__func__(cmd, args)
 
-        with patch("twotone.tools.utils.start_process") as mock_start_process, WorkingDirectoryForTest() as td:
+        with patch("twotone.tools.utils2.process.start_process") as mock_start_process, WorkingDirectoryForTest() as td:
             mock_start_process.side_effect = start_process
             add_test_media("Blue_Sky_and_Clouds_Timelapse.*(?:mov|srt)", td.path)
 
@@ -81,7 +81,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
             else:
                 return self._start_process.__func__(cmd, args)
 
-        with patch("twotone.tools.utils.start_process") as mock_start_process, WorkingDirectoryForTest() as td:
+        with patch("twotone.tools.utils2.process.start_process") as mock_start_process, WorkingDirectoryForTest() as td:
             mock_start_process.side_effect = start_process
             add_test_media("Blue_Sky_and_Clouds_Timelapse.*(?:mov|srt)", td.path)
 
