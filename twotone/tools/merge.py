@@ -1,7 +1,7 @@
 
 import argparse
 import glob
-import langid
+import py3langid as langid
 import logging
 import os
 import shutil
