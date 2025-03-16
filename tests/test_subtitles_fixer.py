@@ -26,7 +26,7 @@ def create_broken_video_with_scaled_subtitle_timings(output_video_path: str, inp
 
         # convert to srt format
         srt_subtitle_path = f"{subtitle_dir}/sub.srt"
-        status = utils.start_process("ffmpeg", ["-hide_banner", "-y", "-i", subtitle_path, srt_subtitle_path])
+        status = process.start_process("ffmpeg", ["-hide_banner", "-y", "-i", subtitle_path, srt_subtitle_path])
 
         utils.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [utils.SubtitleFile(srt_subtitle_path, "eng", "utf8")])
 

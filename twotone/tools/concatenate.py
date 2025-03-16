@@ -10,6 +10,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from . import utils
 from .tool import Tool
+from .utils2 import process
 
 
 class Concatenate(utils.InterruptibleProcess):
@@ -108,7 +109,7 @@ class Concatenate(utils.InterruptibleProcess):
 
                     logging.info(f"Concatenating files into {output} file")
                     if self.live_run:
-                        status = utils.start_process("ffmpeg", ffmpeg_args)
+                        status = process.start_process("ffmpeg", ffmpeg_args)
                         if status.returncode == 0:
                             for input_file in input_files:
                                 os.remove(input_file)

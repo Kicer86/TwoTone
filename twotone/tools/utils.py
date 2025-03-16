@@ -18,7 +18,7 @@ from typing import List
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from .utils2.process import start_process, raise_on_error
+from .utils2 import process
 from .utils2.generic import fps_str_to_float, get_tqdm_defaults, ms_to_time, time_to_ms
 
 
@@ -146,7 +146,7 @@ def fix_subtitles_fps(input_path: str, output_path: str, subtitles_fps: float):
 
 def get_video_duration(video_file):
     """Get the duration of a video in milliseconds."""
-    result = start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
+    result = process.start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
 
     try:
         return int(float(result.stdout.strip())*1000)
@@ -156,8 +156,8 @@ def get_video_duration(video_file):
 
 
 def get_video_frames_count(video_file: str):
-    result = start_process("ffprobe", ["-v", "error", "-select_streams", "v:0", "-count_packets",
-                           "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", video_file])
+    result = process.start_process("ffprobe", ["-v", "error", "-select_streams", "v:0", "-count_packets",
+                                               "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", video_file])
 
     try:
         return int(result.stdout.strip())
@@ -174,12 +174,12 @@ def get_video_full_info(path: str) -> str:
     args.append("-show_streams")
     args.append(path)
 
-    process = start_process("ffprobe", args)
+    result = process.start_process("ffprobe", args)
 
-    if process.returncode != 0:
-        raise RuntimeError(f"ffprobe exited with unexpected error:\n{process.stderr}")
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe exited with unexpected error:\n{result.stderr}")
 
-    output_lines = process.stdout
+    output_lines = result.stdout
     output_json = json.loads(output_lines)
 
     return output_json
@@ -259,7 +259,7 @@ def generate_mkv(output_path: str, input_video: str, subtitles: [SubtitleFile]):
 
     # perform
     cmd = "mkvmerge"
-    result = start_process(cmd, options)
+    result = process.start_process(cmd, options)
 
     if result.returncode != 0:
         if os.path.exists(output_path):
