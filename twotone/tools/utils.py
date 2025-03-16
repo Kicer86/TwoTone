@@ -166,25 +166,6 @@ def get_video_frames_count(video_file: str):
         return None
 
 
-def get_video_full_info(path: str) -> str:
-    args = []
-    args.extend(["-v", "quiet"])
-    args.extend(["-print_format", "json"])
-    args.append("-show_format")
-    args.append("-show_streams")
-    args.append(path)
-
-    result = process.start_process("ffprobe", args)
-
-    if result.returncode != 0:
-        raise RuntimeError(f"ffprobe exited with unexpected error:\n{result.stderr}")
-
-    output_lines = result.stdout
-    output_json = json.loads(output_lines)
-
-    return output_json
-
-
 def get_video_data(path: str) -> [VideoInfo]:
 
     def get_length(stream) -> int:
