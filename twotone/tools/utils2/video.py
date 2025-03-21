@@ -48,6 +48,17 @@ def detect_scene_changes(file_path, threshold=0.4):
     return sorted(set(scene_times))
 
 
+def get_video_duration(video_file):
+    """Get the duration of a video in milliseconds."""
+    result = process.start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
+
+    try:
+        return int(float(result.stdout.strip())*1000)
+    except ValueError:
+        logging.error(f"Failed to get duration for {video_file}")
+        return None
+
+
 def get_video_full_info(path: str) -> str:
     args = []
     args.extend(["-v", "quiet"])

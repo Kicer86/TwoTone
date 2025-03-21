@@ -144,17 +144,6 @@ def fix_subtitles_fps(input_path: str, output_path: str, subtitles_fps: float):
         outfile.write(content)
 
 
-def get_video_duration(video_file):
-    """Get the duration of a video in milliseconds."""
-    result = process.start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
-
-    try:
-        return int(float(result.stdout.strip())*1000)
-    except ValueError:
-        logging.error(f"Failed to get duration for {video_file}")
-        return None
-
-
 def get_video_frames_count(video_file: str):
     result = process.start_process("ffprobe", ["-v", "error", "-select_streams", "v:0", "-count_packets",
                                                "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", video_file])
