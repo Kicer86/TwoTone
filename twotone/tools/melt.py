@@ -4,11 +4,14 @@ import json
 import logging
 import re
 import requests
+import os
 
 from collections import defaultdict
+from overrides import override
 from typing import Dict, List, Tuple
 
 from . import utils
+from .tool import Tool
 
 
 class DuplicatesSource:
@@ -91,12 +94,12 @@ class JellyfinSource(DuplicatesSource):
                 if len(data) > 1:
                     names, paths = zip(*data)
 
+                    fixed_paths = [self._fix_path(path) for path in paths]
+
                     # all names should be the same
                     same = all(x == names[0] for x in names)
 
                     if same:
-                        fixed_paths = [self._fix_path(path) for path in paths]
-
                         name = names[0]
                         duplicates[name] = fixed_paths
                     else:
@@ -108,20 +111,39 @@ class JellyfinSource(DuplicatesSource):
 
 
 class Melter():
-    def __init__(self, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource):
+    def __init__(self, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool):
         self.interruption = interruption
         self.duplicates_source = duplicates_source
+        self.live_run = live_run
 
 
-    def _process_duplicates(self, duplicates: Dict[str, List[str]]):
-        pass
+    def _process_duplicates(self, files: List[str]):
+        video_details = [utils.get_video_data(video) for video in files]
+        video_lengths = {video.video_tracks[0].length for video in video_details}
+
+        if len(video_lengths) == 1:
+            # all files are of the same lenght
+            # remove all but first one
+            logging.info("Removing exact duplicates. Leaving one copy")
+            if self.live_run:
+                for file in files[1:]:
+                    os.remove(file)
+        else:
+            logging.warning("Videos have different lengths, skipping")
+
+
+    def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
+        for title, files in duplicates.items():
+            logging.info(f"Analyzing duplicates for {title}")
+
+            self._process_duplicates(files)
 
 
     def melt(self):
         logging.info("Finding duplicates")
         duplicates = self.duplicates_source.collect_duplicates()
-        self._process_duplicates(duplicates)
-        print(json.dumps(duplicates, indent=4))
+        self._process_duplicates_set(duplicates)
+        #print(json.dumps(duplicates, indent=4))
 
 
 class RequireJellyfinServer(argparse.Action):
@@ -132,39 +154,41 @@ class RequireJellyfinServer(argparse.Action):
         setattr(namespace, self.dest, values)
 
 
-def setup_parser(parser: argparse.ArgumentParser):
+class MeltTool(Tool):
+    @override
+    def setup_parser(self, parser: argparse.ArgumentParser):
+        jellyfin_group = parser.add_argument_group("Jellyfin source")
+        jellyfin_group.add_argument('--jellyfin-server',
+                                    help='URL to the Jellyfin server which will be used as a source of video files duplicates')
+        jellyfin_group.add_argument('--jellyfin-token',
+                                    action=RequireJellyfinServer,
+                                    help='Access token (http://server:8096/web/#/dashboard/keys)')
+        jellyfin_group.add_argument('--jellyfin-path-fix',
+                                    action=RequireJellyfinServer,
+                                    help='Specify a replacement pattern for file paths to ensure "melt" can access Jellyfin video files.\n\n'
+                                        '"Melt" requires direct access to video files. If Jellyfin is not running on the same machine as "melt,"\n'
+                                        'you must set up network access to Jellyfin’s video storage and specify how paths should be resolved.\n\n'
+                                        'For example, suppose Jellyfin runs on a Linux machine where the video library is stored at "/srv/videos" (a shared directory).\n'
+                                        'If "melt" is running on another Linux machine that accesses this directory remotely at "/mnt/shared_videos,"\n'
+                                        'you need to map "/srv/videos" (Jellyfin’s path) to "/mnt/shared_videos" (the path accessible on the machine running "melt").\n\n'
+                                        'In this case, use: --jellyfin-path-fix "/srv/videos","/mnt/shared_videos" to define the replacement pattern.')
 
-    jellyfin_group = parser.add_argument_group("Jellyfin source")
-    jellyfin_group.add_argument('--jellyfin-server',
-                                help='URL to the Jellyfin server which will be used as a source of video files duplicates')
-    jellyfin_group.add_argument('--jellyfin-token',
-                                action=RequireJellyfinServer,
-                                help='Access token (http://server:8096/web/#/dashboard/keys)')
-    jellyfin_group.add_argument('--jellyfin-path-fix',
-                                action=RequireJellyfinServer,
-                                help='Specify a replacement pattern for file paths to ensure "melt" can access Jellyfin video files.\n\n'
-                                     '"Melt" requires direct access to video files. If Jellyfin is not running on the same machine as "melt,"\n'
-                                     'you must set up network access to Jellyfin’s video storage and specify how paths should be resolved.\n\n'
-                                     'For example, suppose Jellyfin runs on a Linux machine where the video library is stored at "/srv/videos" (a shared directory).\n'
-                                     'If "melt" is running on another Linux machine that accesses this directory remotely at "/mnt/shared_videos,"\n'
-                                     'you need to map "/srv/videos" (Jellyfin’s path) to "/mnt/shared_videos" (the path accessible on the machine running "melt").\n\n'
-                                     'In this case, use: --jellyfin-path-fix "/srv/videos","/mnt/shared_videos" to define the replacement pattern.')
 
+    @override
+    def run(self, args, no_dry_run: bool):
+        interruption = utils.InterruptibleProcess()
 
-def run(args):
-    interruption = utils.InterruptibleProcess()
+        data_source = None
+        if args.jellyfin_server:
+            path_fix = _split_path_fix(args.jellyfin_path_fix) if args.jellyfin_path_fix else None
 
-    data_source = None
-    if args.jellyfin_server:
-        path_fix = _split_path_fix(args.jellyfin_path_fix) if args.jellyfin_path_fix else None
+            if path_fix and len(path_fix) != 2:
+                raise ValueError(f"Invalid content for --jellyfin-path-fix argument. Got: {path_fix}")
 
-        if path_fix and len(path_fix) != 2:
-            raise ValueError(f"Invalid content for --jellyfin-path-fix argument. Got: {path_fix}")
+            data_source = JellyfinSource(interruption=interruption,
+                                        url=args.jellyfin_server,
+                                        token=args.jellyfin_token,
+                                        path_fix=path_fix)
 
-        data_source = JellyfinSource(interruption=interruption,
-                                     url=args.jellyfin_server,
-                                     token=args.jellyfin_token,
-                                     path_fix=path_fix)
-
-    melter = Melter(interruption, data_source)
-    melter.melt()
+        melter = Melter(interruption, data_source, live_run = no_dry_run)
+        melter.melt()
