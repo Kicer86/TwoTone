@@ -14,7 +14,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from . import utils
 from .tool import Tool
-from twotone.tools.utils2 import files, process
+from twotone.tools.utils2 import files, process, video
 
 
 class Transcoder(utils.InterruptibleProcess):
@@ -157,7 +157,7 @@ class Transcoder(utils.InterruptibleProcess):
 
 
     def _select_segments(self, video_file, segment_duration=5):
-        duration = utils.get_video_duration(video_file) / 1000
+        duration = video.get_video_duration(video_file) / 1000
         num_segments = max(3, min(10, int(duration // 30)))
 
         if duration <= 0 or num_segments <= 0 or segment_duration <= 0:
@@ -301,7 +301,7 @@ class Transcoder(utils.InterruptibleProcess):
         """Find the optimal CRF using bisection."""
         original_size = os.path.getsize(input_file)
 
-        duration = utils.get_video_duration(input_file)
+        duration = video.get_video_duration(input_file)
         if not duration:
             return None
 
