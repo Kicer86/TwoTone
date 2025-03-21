@@ -63,7 +63,7 @@ def extract_scenes(video_path, output_dir, format: str, scale: float):
         if frame_number in frame_pts_map:
             timestamp = frame_pts_map[frame_number]
 
-            if timestamp >= scene_changes[scene_index]:
+            if round(timestamp * 1000) >= scene_changes[scene_index]:
                 scene_index += 1
 
             scene_dir = os.path.join(output_dir, f"scene_{scene_index}")

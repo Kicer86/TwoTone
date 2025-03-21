@@ -4,7 +4,7 @@ import logging
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 from . import process
 from .generic import time_to_ms
@@ -25,13 +25,19 @@ def get_video_frames_count(video_file: str):
         return None
 
 
-def detect_scene_changes(file_path, threshold=0.4):
+def detect_scene_changes(file_path, threshold = 0.4) -> List[int]:
     """
-    Run ffmpeg with a scene detection filter and extract scene change times.
+        Run ffmpeg with a scene detection filter and extract scene change times.
+        Function returns list of scene changes in milliseconds
     """
 
     args = [
         "-i", file_path,
+        "-an",                                              # Ignore all audio streams
+        "-sn",                                              # Ignore subtitle streams
+        "-dn",                                              # Ignore data streams
+        "-fps_mode", "auto",
+        "-frame_pts", "true",                               # Ensure correct frame timestamps
         "-filter_complex", f"select='gt(scene,{threshold})',showinfo",
         "-f", "null", "-"
     ]
@@ -43,7 +49,10 @@ def detect_scene_changes(file_path, threshold=0.4):
     for line in result.stderr.splitlines():
         match = pattern.search(line)
         if match:
-            scene_times.append(float(match.group(1)))
+            time_s = float(match.group(1))
+            time_ms = int(round(time_s * 1000))
+
+            scene_times.append(time_ms)
 
     return sorted(set(scene_times))
 
