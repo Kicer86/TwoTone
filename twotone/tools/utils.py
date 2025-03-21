@@ -18,7 +18,7 @@ from typing import List
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from .utils2 import process
+from .utils2 import process, video
 from .utils2.generic import fps_str_to_float, get_tqdm_defaults, ms_to_time, time_to_ms
 
 
@@ -176,7 +176,7 @@ def get_video_data(path: str) -> [VideoInfo]:
 
         return length
 
-    output_json = get_video_full_info(path)
+    output_json = video.get_video_full_info(path)
 
     subtitles = []
     video_tracks = []
@@ -198,7 +198,7 @@ def get_video_data(path: str) -> [VideoInfo]:
             fps = stream["r_frame_rate"]
             length = get_length(stream)
             if length is None:
-                length = get_video_duration(path)
+                length = video.get_video_duration(path)
 
             video_tracks.append(VideoTrack(fps=fps, length=length))
 
