@@ -1,17 +1,25 @@
 
 import argparse
+import cv2 as cv
+import imagehash
 import json
 import logging
+import numpy as np
+import os
 import re
 import requests
-import os
+import shutil
+import tempfile
 
 from collections import defaultdict
 from overrides import override
-from typing import Dict, List, Tuple
+from PIL import Image
+from scipy.stats import entropy
+from typing import Any, Callable, Dict, List, Tuple
 
 from . import utils
 from .tool import Tool
+from .utils2 import process, video
 
 
 class DuplicatesSource:
@@ -118,8 +126,171 @@ class Melter():
         self.live_run = live_run
 
 
+    @staticmethod
+    def _frame_entropy(path: str) -> float:
+        pil_image = Image.open(path)
+        image = np.array(pil_image.convert("L"))
+        histogram, _ = np.histogram(image, bins=256, range=(0, 256))
+        histogram = histogram / float(np.sum(histogram))
+        e = entropy(histogram)
+        return e
+
+
+    @staticmethod
+    def _filter_low_detailed(scenes: Dict[int, Dict]):
+        valuable_scenes = { timestamp: info for timestamp, info in scenes.items() if Melter._frame_entropy(info["path"]) > 4}
+        return valuable_scenes
+
+
+    @staticmethod
+    def _generate_phashes(scenes: Dict[int, Dict]) -> Dict[int, Dict]:
+        for timestamp, info in scenes.items():
+            path = info["path"]
+            img = Image.open(path).convert('L').resize((256, 256))
+            img_hash = imagehash.phash(img, hash_size=16)
+            info["hash"] = img_hash
+
+
+
+    @staticmethod
+    def _match_pairs(lhs: Dict[int, Dict], rhs: Dict[int, Dict]):
+        # calculate PHashes
+        Melter._generate_phashes(lhs)
+        Melter._generate_phashes(rhs)
+
+        # Generate initial set of candidates using generated phashes
+        pairs_candidates = defaultdict(list)
+
+        for lhs_timestamp, lhs_info in lhs.items():
+            lhs_hash = lhs_info["hash"]
+            for rhs_timestamp, rhs_info in rhs.items():
+                rhs_hash = rhs_info["hash"]
+                distance = abs(lhs_hash - rhs_hash)
+                pairs_candidates[lhs_timestamp].append((distance, rhs_timestamp))
+
+        # Pick best candidates
+        best_candidates = []
+        used_rhs_timestamps = set()
+        for lhs_timestamp, candidates in pairs_candidates.items():
+            candidates.sort()
+
+            # print(f"L: {lhs[lhs_timestamp]["path"]}  R: {rhs[candidates[0][1]]["path"]}  D: {candidates[0][0]}")
+
+            # look for first unused candidate
+            for candidate in candidates:
+                diff, best_rhs_candidate = candidate
+
+                if best_rhs_candidate not in used_rhs_timestamps:
+                    # mark as used
+                    used_rhs_timestamps.add(best_rhs_candidate)
+
+                    # append diff, lhs timestamp, rhs timestamp
+                    best_candidates.append((diff, lhs_timestamp, best_rhs_candidate))
+                    break
+
+        # sort best candidates by diff
+        best_candidates.sort()
+
+        #find median to know where to cut off
+        m = len(best_candidates) // 2
+        cutoff = best_candidates[m][0]
+        best_candidates = [c for c in best_candidates if c[0] <= cutoff]
+
+        # build pairs structure
+        pairs = [(candidate[1], candidate[2]) for candidate in best_candidates]
+
+        pairs.sort()
+        print([(lhs[pair[0]]["path"], rhs[pair[1]]["path"]) for pair in pairs])
+
+        return pairs
+
+
+    @staticmethod
+    def _match_scenes(lhs_scenes: Dict[int, Any], rhs_scenes: Dict[int, Any], comp: Callable[[Any, Any], bool]) -> List[Tuple[int, int]]:
+        # O^2 solution, but it should do
+        matches = []
+
+        for lhs_timestamp, lhs_info in lhs_scenes.items():
+            lhs_hash = lhs_info["hash"]
+            for rhs_timestamp, rhs_info in rhs_scenes.items():
+                rhs_hash = rhs_info["hash"]
+                if comp(lhs_hash, rhs_hash):
+                    matches.append((lhs_timestamp, rhs_timestamp))
+                    break
+
+        return matches
+
+
+    @staticmethod
+    def _get_frames_for_timestamps(timestamps: List[int], frames_info: Dict[int, Dict]) -> List[str]:
+        frame_files = {timestamp: info for timestamp, info in frames_info.items() if timestamp in timestamps}
+
+        return frame_files
+
+
+    def _create_segments_mapping(self, lhs: str, rhs: str) -> List[Tuple[int, int]]:
+        with tempfile.TemporaryDirectory() as wd:
+            lhs_scene_changes = video.detect_scene_changes(lhs, threshold=0.3)
+            rhs_scene_changes = video.detect_scene_changes(rhs, threshold=0.3)
+
+            if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
+                return
+
+            lhs_wd = os.path.join(wd, "lhs")
+            rhs_wd = os.path.join(wd, "rhs")
+
+            lhs_all_wd = os.path.join(lhs_wd, "all")
+            rhs_all_wd = os.path.join(rhs_wd, "all")
+            lhs_key_wd = os.path.join(lhs_wd, "key")
+            rhs_key_wd = os.path.join(rhs_wd, "key")
+
+            for d in [lhs_wd,
+                      rhs_wd,
+                      lhs_all_wd,
+                      rhs_all_wd,
+                      lhs_key_wd,
+                      rhs_key_wd]:
+                os.makedirs(d)
+
+            # extract all scenes
+            lhs_all_frames = video.extract_all_frames(lhs, lhs_all_wd, scale = 0.5) # (256,256))
+            rhs_all_frames = video.extract_all_frames(rhs, rhs_all_wd, scale = 0.5) # (256,256))
+
+            # extract key frames (as 'key' a scene change frame is meant)
+            lhs_key_frames = Melter._get_frames_for_timestamps(lhs_scene_changes, lhs_all_frames)
+            rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_all_frames)
+
+            # copy key frames
+            for src, dst in [ (lhs_key_frames, lhs_key_wd), (rhs_key_frames, rhs_key_wd) ]:
+                for src_info in src.values():
+                    shutil.copy2(src_info["path"], dst)
+
+            # pick frames with descent entropy (remove single color frames etc)
+            lhs_useful_key_frames = Melter._filter_low_detailed(lhs_key_frames)
+            rhs_useful_key_frames = Melter._filter_low_detailed(rhs_key_frames)
+
+            # find matching pairs
+            matching_pairs = Melter._match_pairs(lhs_key_frames, rhs_key_frames)
+
+            # calculate finerprint for each frame
+            lhs_hashes = Melter._generate_hashes(lhs_key_frames)
+            rhs_hashes = Melter._generate_hashes(rhs_key_frames)
+
+            # find similar scenes
+            hash_algo = cv.img_hash.BlockMeanHash().create()
+            matching_scenes = Melter._match_scenes(lhs_hashes, rhs_hashes, lambda l, r: hash_algo.compare(l, r) < 20)
+
+            matching_files = [(lhs_key_frames[lhs_timestamp]["path"], rhs_key_frames[rhs_timestamp]["path"])  for lhs_timestamp, rhs_timestamp in matching_scenes]
+
+            return matching_scenes
+
+
     def _process_duplicates(self, files: List[str]):
-        video_details = [utils.get_video_data(video) for video in files]
+        mapping = self._create_segments_mapping(files[0], files[1])
+        return
+
+
+        video_details = [video.get_video_data2(video_file) for video_file in files]
         video_lengths = {video.video_tracks[0].length for video in video_details}
 
         if len(video_lengths) == 1:
