@@ -143,13 +143,106 @@ class Melter():
 
 
     @staticmethod
-    def _generate_phashes(scenes: Dict[int, Dict]) -> Dict[int, Dict]:
+    def _generate_phashes(scenes: Dict[int, Dict], since = None, to = None) -> Dict[int, Dict]:
+        # this function's logic may not handle both statements in the way user expects
+        assert since == None or to == None
         for timestamp, info in scenes.items():
-            path = info["path"]
-            img = Image.open(path).convert('L').resize((256, 256))
-            img_hash = imagehash.phash(img, hash_size=16)
-            info["hash"] = img_hash
+            if (not since or timestamp >= since) and (not to or timestamp <= to):
+                path = info["path"]
+                img = Image.open(path).convert('L').resize((256, 256))
+                img_hash = imagehash.phash(img, hash_size=16)
+                info["hash"] = img_hash
 
+
+    @staticmethod
+    def _look_for_boundaries(lhs: Dict[int, Dict], rhs: Dict[int, Dict], first: Tuple[int, int], last: Tuple[int, int], cutoff: float):
+        def _collect(data_set, first, last):
+            front = []
+            back = []
+            for timestamp in data_set:
+                if timestamp < first:
+                    front.append(timestamp)
+                elif timestamp > last:
+                    back.append(timestamp)
+
+            return front, back
+
+        lhs_front_timestamps, lhs_back_timestamps = _collect(lhs, first[0], last[0])
+        rhs_front_timestamps, rhs_back_timestamps = _collect(rhs, first[1], last[1])
+
+        # update hashes
+        Melter._generate_phashes(lhs, to = lhs_front_timestamps[-1])
+        Melter._generate_phashes(rhs, to = rhs_front_timestamps[-1])
+        Melter._generate_phashes(lhs, since = lhs_back_timestamps[0])
+        Melter._generate_phashes(rhs, since = rhs_back_timestamps[0])
+
+        l = len(lhs_front_timestamps) - 1
+        r = len(rhs_front_timestamps) - 1
+
+
+        def get_hash(indices, dataset, idx):
+            if 0 <= idx < len(indices):
+                timestamp = indices[idx]
+                return dataset[timestamp]["hash"]
+            return ImageHash()
+
+        def find_common_frame(lhs_indices, rhs_indices, lhs_dataset, rhs_dataset, start_l, start_r, cutoff, direction=-1):
+            """
+            Finds a common frame between two video hash sequences.
+
+            Args:
+                lhs_indices, rhs_indices: Timestamp indices for the videos.
+                lhs_dataset, rhs_dataset: Hash datasets for the videos.
+                start_l, start_r: Starting indices (usually identified scene change).
+                cutoff: Threshold for frame hash difference.
+                direction: Direction of search (-1 for backward, +1 for forward).
+
+            Returns:
+                Tuple (l, r): indices of last common frame.
+            """
+            l, r = start_l, start_r
+            last_matching_timestamps = ()
+
+            while 0 <= l < len(lhs_indices) and 0 <= r < len(rhs_indices):
+                current_vs_current = abs(get_hash(lhs_indices, lhs_dataset, l) - get_hash(rhs_indices, rhs_dataset, r))
+                next_left_vs_current_right = abs(get_hash(lhs_indices, lhs_dataset, l + direction) - get_hash(rhs_indices, rhs_dataset, r))
+                current_left_vs_next_right = abs(get_hash(lhs_indices, lhs_dataset, l) - get_hash(rhs_indices, rhs_dataset, r + direction))
+
+                if current_vs_current <= min(next_left_vs_current_right, current_left_vs_next_right) and current_vs_current <= cutoff:
+                    l += direction
+                    r += direction
+                    last_matching_timestamps = (lhs_indices[l], rhs_indices[r])
+                elif current_left_vs_next_right < next_left_vs_current_right and current_left_vs_next_right <= cutoff:
+                    r += direction
+                    last_matching_timestamps = (lhs_indices[l], rhs_indices[r])
+                elif next_left_vs_current_right <= cutoff:
+                    l += direction
+                    last_matching_timestamps = (lhs_indices[l], rhs_indices[r])
+                else:
+                    break
+
+            return last_matching_timestamps
+
+        first_common_frame = find_common_frame(
+            lhs_front_timestamps, rhs_front_timestamps, lhs, rhs,
+            start_l = len(lhs_front_timestamps) - 1,
+            start_r = len(rhs_front_timestamps) - 1,
+            cutoff = cutoff,
+            direction = -1
+        )
+
+        last_common_frame = find_common_frame(
+            lhs_back_timestamps, rhs_back_timestamps, lhs, rhs,
+            start_l = 0,
+            start_r = 0,
+            cutoff = cutoff,
+            direction = +1
+        )
+
+        print(f"First: L: {lhs[first_common_frame[0]]["path"]} R: {rhs[first_common_frame[1]]["path"]}")
+        print(f"Last:  L: {lhs[last_common_frame[0]]["path"]} R: {rhs[last_common_frame[1]]["path"]}")
+
+        return first_common_frame, last_common_frame
 
 
     @staticmethod
@@ -173,8 +266,6 @@ class Melter():
         used_rhs_timestamps = set()
         for lhs_timestamp, candidates in pairs_candidates.items():
             candidates.sort()
-
-            # print(f"L: {lhs[lhs_timestamp]["path"]}  R: {rhs[candidates[0][1]]["path"]}  D: {candidates[0][0]}")
 
             # look for first unused candidate
             for candidate in candidates:
@@ -266,11 +357,14 @@ class Melter():
                     shutil.copy2(src_info["path"], dst)
 
             # pick frames with descent entropy (remove single color frames etc)
-            lhs_useful_key_frames = Melter._filter_low_detailed(lhs_key_frames)
-            rhs_useful_key_frames = Melter._filter_low_detailed(rhs_key_frames)
+            #lhs_useful_key_frames = Melter._filter_low_detailed(lhs_key_frames)
+            #rhs_useful_key_frames = Melter._filter_low_detailed(rhs_key_frames)
 
             # find matching pairs
             matching_pairs = Melter._match_pairs(lhs_key_frames, rhs_key_frames)
+
+            # try to locate first and last common frames
+            Melter._look_for_boundaries(lhs_all_frames, rhs_all_frames, matching_pairs[0], matching_pairs[-1], 80)
 
             # calculate finerprint for each frame
             lhs_hashes = Melter._generate_hashes(lhs_key_frames)
