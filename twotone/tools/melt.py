@@ -130,7 +130,7 @@ class Melter():
     def _frame_entropy(path: str) -> float:
         pil_image = Image.open(path)
         image = np.array(pil_image.convert("L"))
-        histogram, _ = np.histogram(image, bins=256, range=(0, 256))
+        histogram, _ = np.histogram(image, bins = 256, range=(0, 256))
         histogram = histogram / float(np.sum(histogram))
         e = entropy(histogram)
         return e
@@ -188,7 +188,7 @@ class Melter():
 
         def find_common_frame(lhs_indices, rhs_indices, lhs_dataset, rhs_dataset, start_l, start_r, cutoff, direction=-1):
             """
-            Finds a common frame between two video hash sequences.
+            Finds a common frame between two video hash sequences considering up to two frames in the given direction.
 
             Args:
                 lhs_indices, rhs_indices: Timestamp indices for the videos.
@@ -198,26 +198,35 @@ class Melter():
                 direction: Direction of search (-1 for backward, +1 for forward).
 
             Returns:
-                Tuple (l, r): indices of last common frame.
+                Tuple (lhs_timestamp, rhs_timestamp): timestamps of last common frame.
             """
             l, r = start_l, start_r
-            last_matching_timestamps = ()
+            last_matching_timestamps = (lhs_indices[l], rhs_indices[r])
+
+            offsets = [direction, 2 * direction]
 
             while 0 <= l < len(lhs_indices) and 0 <= r < len(rhs_indices):
-                current_vs_current = abs(get_hash(lhs_indices, lhs_dataset, l) - get_hash(rhs_indices, rhs_dataset, r))
-                next_left_vs_current_right = abs(get_hash(lhs_indices, lhs_dataset, l + direction) - get_hash(rhs_indices, rhs_dataset, r))
-                current_left_vs_next_right = abs(get_hash(lhs_indices, lhs_dataset, l) - get_hash(rhs_indices, rhs_dataset, r + direction))
+                min_diff = float('inf')
+                best_candidates = (0, 0)
 
-                if current_vs_current <= min(next_left_vs_current_right, current_left_vs_next_right) and current_vs_current <= cutoff:
-                    l += direction
-                    r += direction
-                    last_matching_timestamps = (lhs_indices[l], rhs_indices[r])
-                elif current_left_vs_next_right < next_left_vs_current_right and current_left_vs_next_right <= cutoff:
-                    r += direction
-                    last_matching_timestamps = (lhs_indices[l], rhs_indices[r])
-                elif next_left_vs_current_right <= cutoff:
-                    l += direction
-                    last_matching_timestamps = (lhs_indices[l], rhs_indices[r])
+                for dl in offsets:
+                    for dr in offsets:
+                        lhs_candidate = l + dl
+                        rhs_candidate = r + dr
+                        lh = get_hash(lhs_indices, lhs_dataset, lhs_candidate)
+                        rh = get_hash(rhs_indices, rhs_dataset, rhs_candidate)
+                        diff = abs(lh - rh)
+
+                        if diff < min_diff:
+                            min_diff = diff
+                            best_candidates = (lhs_candidate, rhs_candidate)
+
+                if min_diff <= cutoff:
+                    l = best_candidates[0]
+                    r = best_candidates[1]
+
+                    if 0 <= l < len(lhs_indices) and 0 <= r < len(rhs_indices):
+                        last_matching_timestamps = (lhs_indices[l], rhs_indices[r])
                 else:
                     break
 
@@ -364,7 +373,7 @@ class Melter():
             matching_pairs = Melter._match_pairs(lhs_key_frames, rhs_key_frames)
 
             # try to locate first and last common frames
-            Melter._look_for_boundaries(lhs_all_frames, rhs_all_frames, matching_pairs[0], matching_pairs[-1], 80)
+            Melter._look_for_boundaries(lhs_all_frames, rhs_all_frames, matching_pairs[0], matching_pairs[-1], 110)
 
             # calculate finerprint for each frame
             lhs_hashes = Melter._generate_hashes(lhs_key_frames)
