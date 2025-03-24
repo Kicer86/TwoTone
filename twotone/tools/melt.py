@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Tuple
 
 from . import utils
 from .tool import Tool
-from .utils2 import process, video
+from .utils2 import files, process, video
 
 
 class DuplicatesSource:
@@ -149,7 +149,7 @@ class Melter():
         for timestamp, info in scenes.items():
             if (not since or timestamp >= since) and (not to or timestamp <= to):
                 path = info["path"]
-                img = Image.open(path).convert('L').resize((256, 256))
+                img = Image.open(path)
                 img_hash = imagehash.phash(img, hash_size=16)
                 info["hash"] = img_hash
 
@@ -179,12 +179,11 @@ class Melter():
         l = len(lhs_front_timestamps) - 1
         r = len(rhs_front_timestamps) - 1
 
-
         def get_hash(indices, dataset, idx):
             if 0 <= idx < len(indices):
                 timestamp = indices[idx]
                 return dataset[timestamp]["hash"]
-            return ImageHash()
+            return imagehash.ImageHash()
 
         def find_common_frame(lhs_indices, rhs_indices, lhs_dataset, rhs_dataset, start_l, start_r, cutoff, direction=-1):
             """
@@ -211,6 +210,9 @@ class Melter():
 
                 for dl in offsets:
                     for dr in offsets:
+                        if dl == 0 and dr == 0:
+                            continue
+
                         lhs_candidate = l + dl
                         rhs_candidate = r + dr
                         lh = get_hash(lhs_indices, lhs_dataset, lhs_candidate)
@@ -255,7 +257,7 @@ class Melter():
 
 
     @staticmethod
-    def _match_pairs(lhs: Dict[int, Dict], rhs: Dict[int, Dict]):
+    def _generate_matching_frames(lhs: Dict[int, Dict], rhs: Dict[int, Dict]):
         # calculate PHashes
         Melter._generate_phashes(lhs)
         Melter._generate_phashes(rhs)
@@ -291,7 +293,7 @@ class Melter():
         # sort best candidates by diff
         best_candidates.sort()
 
-        #find median to know where to cut off
+        # find median to know where to cut off
         m = len(best_candidates) // 2
         cutoff = best_candidates[m][0]
         best_candidates = [c for c in best_candidates if c[0] <= cutoff]
@@ -299,11 +301,35 @@ class Melter():
         # build pairs structure
         pairs = [(candidate[1], candidate[2]) for candidate in best_candidates]
 
+        return pairs
+
+
+    @staticmethod
+    def _match_pairs(lhs: Dict[int, Dict], rhs: Dict[int, Dict]):
+        pairs = Melter._generate_matching_frames(lhs, rhs)
+
         pairs.sort()
         print([(lhs[pair[0]]["path"], rhs[pair[1]]["path"]) for pair in pairs])
 
+        # validate pace
+        prev_pair = None
+        pace = []
+        for pair in pairs:
+            if prev_pair:
+                diff = (pair[0] - prev_pair[0], pair[1] - prev_pair[1])
+                pace.append(diff[0]/diff[1])
+
+            prev_pair = pair
+
+        print(pace)
+
         return pairs
 
+    @staticmethod
+    def _find_most_matching_pair(lhs: Dict[int, Dict], rhs: Dict[int, Dict]):
+        pairs = Melter._generate_matching_frames(lhs, rhs)
+
+        return pairs[0]
 
     @staticmethod
     def _match_scenes(lhs_scenes: Dict[int, Any], rhs_scenes: Dict[int, Any], comp: Callable[[Any, Any], bool]) -> List[Tuple[int, int]]:
@@ -328,10 +354,196 @@ class Melter():
         return frame_files
 
 
+    @staticmethod
+    def _replace_path(frames_info: Dict[int, Dict], dir: str) -> Dict[int, Dict]:
+        result = {}
+        for timestamp, info in frames_info.items():
+            path = info["path"]
+            _, file, ext = files.split_path(path)
+            new_path = os.path.join(dir, file + "." + ext)
+
+            result[timestamp] = info
+            result[timestamp]["path"] = new_path
+
+        return result
+
+
+    @staticmethod
+    def _normalize_frames(frames_info: Dict[int, Dict], wd: str) -> Dict[int, str]:
+        result = {}
+        for timestamp, info in frames_info.items():
+            path = info["path"]
+            img = Image.open(path).convert('L').resize((256, 256))
+            _, file, ext = files.split_path(path)
+            new_path = os.path.join(wd, file + "." + ext)
+            img.save(new_path)
+
+        return Melter._replace_path(frames_info, wd)
+
+
+    @staticmethod
+    def _compute_overlap(im1, im2, h):
+        # Warp second image onto first
+        warped_im2 = cv.warpPerspective(im2, h, (im1.shape[1], im1.shape[0]))
+
+        # Find overlapping region mask
+        gray1 = cv.cvtColor(im1, cv.COLOR_BGR2GRAY)
+        gray2 = cv.cvtColor(warped_im2, cv.COLOR_BGR2GRAY)
+
+        mask1 = (gray1 > 0).astype(np.uint8)
+        mask2 = (gray2 > 0).astype(np.uint8)
+        overlap_mask = cv.bitwise_and(mask1, mask2)
+
+        # Find bounding rectangle of overlapping mask
+        x, y, w, h = cv.boundingRect(overlap_mask)
+        return (x, y, w, h)
+
+
+    @staticmethod
+    def _rect_center(rect):
+        x, y, w, h = rect
+        return np.array([x + w/2, y + h/2, w, h])
+
+
+    @staticmethod
+    def _filter_outlier_rects(rects, threshold=2.0):
+        centers = np.array([Melter._rect_center(r) for r in rects])
+        median_center = np.median(centers, axis=0)
+        deviations = np.linalg.norm(centers - median_center, axis=1)
+        median_dev = np.median(deviations)
+        if median_dev == 0:
+            median_dev = 1  # Avoid div by zero
+        filtered_rects = [rect for rect, dev in zip(rects, deviations) if dev / median_dev < threshold]
+        return filtered_rects
+
+
+    @staticmethod
+    def _intersection_rect(rects):
+        x1 = max(r[0] for r in rects)
+        y1 = max(r[1] for r in rects)
+        x2 = min(r[0]+r[2] for r in rects)
+        y2 = min(r[1]+r[3] for r in rects)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return (x1, y1, x2-x1, y2-y1)
+
+
+    @staticmethod
+    def _find_common_crop(pairs):
+        overlaps1 = []
+        overlaps2 = []
+
+        for path1, path2 in pairs:
+            im1 = cv.imread(path1)
+            im2 = cv.imread(path2)
+
+            orb = cv.ORB_create(500)
+            kp1, des1 = orb.detectAndCompute(im1, None)
+            kp2, des2 = orb.detectAndCompute(im2, None)
+
+            if des1 is None or des2 is None:
+                continue
+
+            matcher = cv.BFMatcher(cv.NORM_HAMMING, crossCheck=True)
+            matches = matcher.match(des1, des2)
+            if len(matches) < 4:
+                continue
+
+            matches = sorted(matches, key=lambda x: x.distance)
+            pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
+            pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
+
+            h_matrix, _ = cv.findHomography(pts2, pts1, cv.RANSAC)
+            if h_matrix is None:
+                continue
+
+            overlap1 = Melter._compute_overlap(im1, im2, h_matrix)
+            overlap2 = Melter._compute_overlap(im2, im1, np.linalg.inv(h_matrix))
+
+            overlaps1.append(overlap1)
+            overlaps2.append(overlap2)
+
+        # Remove outliers
+        overlaps1_filtered = Melter._filter_outlier_rects(overlaps1)
+        overlaps2_filtered = Melter._filter_outlier_rects(overlaps2)
+
+        common_crop1 = Melter._intersection_rect(overlaps1_filtered)
+        common_crop2 = Melter._intersection_rect(overlaps2_filtered)
+
+        return common_crop1, common_crop2
+
+
+    @staticmethod
+    def _apply_crop(src_dir, dst_dir, crop):
+        if crop is None:
+            raise ValueError("No common crop found.")
+        if not os.path.exists(dst_dir):
+            os.makedirs(dst_dir)
+        x, y, w, h = crop
+        for fname in os.listdir(src_dir):
+            path = os.path.join(src_dir, fname)
+            img = cv.imread(path)
+            cropped = img[y:y+h, x:x+w]
+            cv.imwrite(os.path.join(dst_dir, fname), cropped)
+
+
+    @staticmethod
+    def _resize_dirs_to_smallest(dir1, dir2):
+        # Get dimensions of the first image in each directory
+        def get_dimensions(directory):
+            first_img_path = next(os.path.join(directory, fname) for fname in os.listdir(directory))
+            img = cv.imread(first_img_path)
+            h, w = img.shape[:2]
+            return w, h
+
+        w1, h1 = get_dimensions(dir1)
+        w2, h2 = get_dimensions(dir2)
+
+        target_w = min(w1, w2)
+        target_h = min(h1, h2)
+
+        def resize_directory(directory):
+            for fname in os.listdir(directory):
+                path = os.path.join(directory, fname)
+                img = cv.imread(path)
+                resized = cv.resize(img, (target_w, target_h), interpolation=cv.INTER_AREA)
+                cv.imwrite(path, resized)
+
+        resize_directory(dir1)
+        resize_directory(dir2)
+
+    @staticmethod
+    def _apply_final_border_crop(directory, crop_percent=0.02):
+        for fname in os.listdir(directory):
+            path = os.path.join(directory, fname)
+            img = cv.imread(path)
+            h, w = img.shape[:2]
+            dx = int(w * crop_percent)
+            dy = int(h * crop_percent)
+            cropped = img[dy:h-dy, dx:w-dx]
+            cv.imwrite(path, cropped)
+
+
+    @staticmethod
+    def _crop_both_sets(pairs, dir1, dir2, output_dir1, output_dir2, final_crop_percent=0.02):
+        crop1, crop2 = Melter._find_common_crop(pairs)
+
+        # Initial robust crop
+        Melter._apply_crop(dir1, output_dir1, crop1)
+        Melter._apply_crop(dir2, output_dir2, crop2)
+
+        # Resize both directories to match smallest dimensions
+        Melter._resize_dirs_to_smallest(output_dir1, output_dir2)
+
+        # Final border crop
+        Melter._apply_final_border_crop(output_dir1, final_crop_percent)
+        Melter._apply_final_border_crop(output_dir2, final_crop_percent)
+
+
     def _create_segments_mapping(self, lhs: str, rhs: str) -> List[Tuple[int, int]]:
         with tempfile.TemporaryDirectory() as wd:
-            lhs_scene_changes = video.detect_scene_changes(lhs, threshold=0.3)
-            rhs_scene_changes = video.detect_scene_changes(rhs, threshold=0.3)
+            lhs_scene_changes = video.detect_scene_changes(lhs, threshold = 0.3)
+            rhs_scene_changes = video.detect_scene_changes(rhs, threshold = 0.3)
 
             if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
                 return
@@ -341,24 +553,40 @@ class Melter():
 
             lhs_all_wd = os.path.join(lhs_wd, "all")
             rhs_all_wd = os.path.join(rhs_wd, "all")
+            lhs_normalized_wd = os.path.join(lhs_wd, "norm")
+            rhs_normalized_wd = os.path.join(rhs_wd, "norm")
+            lhs_normalized_cropped_wd = os.path.join(lhs_wd, "norm_cropped")
+            rhs_normalized_cropped_wd = os.path.join(rhs_wd, "norm_cropped")
             lhs_key_wd = os.path.join(lhs_wd, "key")
             rhs_key_wd = os.path.join(rhs_wd, "key")
+            lhs_key_cropped_wd = os.path.join(lhs_wd, "key_cropped")
+            rhs_key_cropped_wd = os.path.join(rhs_wd, "key_cropped")
 
             for d in [lhs_wd,
                       rhs_wd,
                       lhs_all_wd,
                       rhs_all_wd,
+                      lhs_normalized_wd,
+                      rhs_normalized_wd,
+                      lhs_normalized_cropped_wd,
+                      rhs_normalized_cropped_wd,
                       lhs_key_wd,
-                      rhs_key_wd]:
+                      rhs_key_wd,
+                      lhs_key_cropped_wd,
+                      rhs_key_cropped_wd]:
                 os.makedirs(d)
 
             # extract all scenes
-            lhs_all_frames = video.extract_all_frames(lhs, lhs_all_wd, scale = 0.5) # (256,256))
-            rhs_all_frames = video.extract_all_frames(rhs, rhs_all_wd, scale = 0.5) # (256,256))
+            lhs_all_frames = video.extract_all_frames(lhs, lhs_all_wd, scale = 0.5)
+            rhs_all_frames = video.extract_all_frames(rhs, rhs_all_wd, scale = 0.5)
+
+            # normalize frames. This could be done in previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
+            lhs_normalized_frames = Melter._normalize_frames(lhs_all_frames, lhs_normalized_wd)
+            rhs_normalized_frames = Melter._normalize_frames(rhs_all_frames, rhs_normalized_wd)
 
             # extract key frames (as 'key' a scene change frame is meant)
-            lhs_key_frames = Melter._get_frames_for_timestamps(lhs_scene_changes, lhs_all_frames)
-            rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_all_frames)
+            lhs_key_frames = Melter._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_frames)
+            rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
 
             # copy key frames
             for src, dst in [ (lhs_key_frames, lhs_key_wd), (rhs_key_frames, rhs_key_wd) ]:
@@ -369,23 +597,48 @@ class Melter():
             #lhs_useful_key_frames = Melter._filter_low_detailed(lhs_key_frames)
             #rhs_useful_key_frames = Melter._filter_low_detailed(rhs_key_frames)
 
-            # find matching pairs
-            matching_pairs = Melter._match_pairs(lhs_key_frames, rhs_key_frames)
+            # find best pair
+            matching_pair = Melter._find_most_matching_pair(lhs_key_frames, rhs_key_frames)
+            matching_pairs_paths = [(lhs_normalized_frames[pair[0]]["path"], rhs_normalized_frames[pair[1]]["path"]) for pair in [matching_pair]]
+
+            # crop frames basing on best match
+            Melter._crop_both_sets(
+                pairs = matching_pairs_paths,
+                dir1 = lhs_normalized_wd,
+                dir2 = rhs_normalized_wd,
+                output_dir1 = lhs_normalized_cropped_wd,
+                output_dir2 = rhs_normalized_cropped_wd
+            )
+
+            lhs_normalized_cropped_frames = Melter._replace_path(lhs_normalized_frames, lhs_normalized_cropped_wd)
+            rhs_normalized_cropped_frames = Melter._replace_path(rhs_normalized_frames, rhs_normalized_cropped_wd)
+
+            # extract key frames from cropped images (as 'key' a scene change frame is meant)
+            lhs_key_cropped_frames = Melter._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_cropped_frames)
+            rhs_key_cropped_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_cropped_frames)
+
+            # copy key frames from cropped
+            for src, dst in [ (lhs_key_cropped_frames, lhs_key_cropped_wd), (rhs_key_cropped_frames, rhs_key_cropped_wd) ]:
+                for src_info in src.values():
+                    shutil.copy2(src_info["path"], dst)
+
+            # look for all pairs now
+            matching_pairs = Melter._match_pairs(lhs_key_cropped_frames, rhs_key_cropped_frames)
 
             # try to locate first and last common frames
-            Melter._look_for_boundaries(lhs_all_frames, rhs_all_frames, matching_pairs[0], matching_pairs[-1], 110)
+            Melter._look_for_boundaries(lhs_normalized_frames, rhs_normalized_frames, matching_pairs[0], matching_pairs[-1], 90)
 
             # calculate finerprint for each frame
-            lhs_hashes = Melter._generate_hashes(lhs_key_frames)
-            rhs_hashes = Melter._generate_hashes(rhs_key_frames)
+            #lhs_hashes = Melter._generate_hashes(lhs_key_frames)
+            #rhs_hashes = Melter._generate_hashes(rhs_key_frames)
 
             # find similar scenes
-            hash_algo = cv.img_hash.BlockMeanHash().create()
-            matching_scenes = Melter._match_scenes(lhs_hashes, rhs_hashes, lambda l, r: hash_algo.compare(l, r) < 20)
+            #hash_algo = cv.img_hash.BlockMeanHash().create()
+            #matching_scenes = Melter._match_scenes(lhs_hashes, rhs_hashes, lambda l, r: hash_algo.compare(l, r) < 20)
 
-            matching_files = [(lhs_key_frames[lhs_timestamp]["path"], rhs_key_frames[rhs_timestamp]["path"])  for lhs_timestamp, rhs_timestamp in matching_scenes]
+            #matching_files = [(lhs_key_frames[lhs_timestamp]["path"], rhs_key_frames[rhs_timestamp]["path"])  for lhs_timestamp, rhs_timestamp in matching_scenes]
 
-            return matching_scenes
+            return matching_pairs
 
 
     def _process_duplicates(self, files: List[str]):
