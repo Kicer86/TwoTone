@@ -370,10 +370,19 @@ class Melter():
 
     @staticmethod
     def _normalize_frames(frames_info: Dict[int, Dict], wd: str) -> Dict[int, str]:
+        def crop_5_percent(image: Image.Image) -> Image.Image:
+            width, height = image.size
+            dx = int(width * 0.05)
+            dy = int(height * 0.05)
+
+            return image.crop((dx, dy, width - dx, height - dy))
+
         result = {}
         for timestamp, info in frames_info.items():
             path = info["path"]
-            img = Image.open(path).convert('L').resize((256, 256))
+            img = Image.open(path).convert('L')
+            img = crop_5_percent(img)
+            img = img.resize((256, 256))
             _, file, ext = files.split_path(path)
             new_path = os.path.join(wd, file + "." + ext)
             img.save(new_path)
@@ -526,7 +535,7 @@ class Melter():
 
     @staticmethod
     def _crop_both_sets(pairs, dir1, dir2, output_dir1, output_dir2, final_crop_percent=0.02):
-        crop1, crop2 = Melter._find_common_crop(pairs)
+        crop1, crop2 = Melter._find_common_crop(pairs) # Melter.find_common_image_part_naive(*pairs[0]) # Melter._find_common_crop(pairs)
 
         # Initial robust crop
         Melter._apply_crop(dir1, output_dir1, crop1)
@@ -536,8 +545,8 @@ class Melter():
         Melter._resize_dirs_to_smallest(output_dir1, output_dir2)
 
         # Final border crop
-        Melter._apply_final_border_crop(output_dir1, final_crop_percent)
-        Melter._apply_final_border_crop(output_dir2, final_crop_percent)
+        #Melter._apply_final_border_crop(output_dir1, final_crop_percent)
+        #Melter._apply_final_border_crop(output_dir2, final_crop_percent)
 
 
     def _create_segments_mapping(self, lhs: str, rhs: str) -> List[Tuple[int, int]]:
