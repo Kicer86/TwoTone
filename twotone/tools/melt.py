@@ -437,7 +437,7 @@ class Melter():
             im1 = cv.imread(path1)
             im2 = cv.imread(path2)
 
-            orb = cv.ORB_create(500)
+            orb = cv.ORB_create(1000)  # Increased points for better precision
             kp1, des1 = orb.detectAndCompute(im1, None)
             kp2, des2 = orb.detectAndCompute(im2, None)
 
@@ -446,24 +446,24 @@ class Melter():
 
             matcher = cv.BFMatcher(cv.NORM_HAMMING, crossCheck=True)
             matches = matcher.match(des1, des2)
-            if len(matches) < 4:
+            if len(matches) < 3:  # Affine requires at least 3 points
                 continue
 
             matches = sorted(matches, key=lambda x: x.distance)
             pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
             pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
 
-            h_matrix, _ = cv.findHomography(pts2, pts1, cv.RANSAC)
+            # Use affine transformation (no perspective distortion)
+            h_matrix, inliers = cv.estimateAffinePartial2D(pts2, pts1, cv.RANSAC)
             if h_matrix is None:
                 continue
 
-            overlap1 = Melter._compute_overlap(im1, im2, h_matrix)
-            overlap2 = Melter._compute_overlap(im2, im1, np.linalg.inv(h_matrix))
+            overlap1 = Melter._compute_overlap(im1, im2, np.vstack([h_matrix, [0,0,1]]))
+            overlap2 = Melter._compute_overlap(im2, im1, np.vstack([cv.invertAffineTransform(h_matrix), [0,0,1]]))
 
             overlaps1.append(overlap1)
             overlaps2.append(overlap2)
 
-        # Remove outliers
         overlaps1_filtered = Melter._filter_outlier_rects(overlaps1)
         overlaps2_filtered = Melter._filter_outlier_rects(overlaps2)
 
