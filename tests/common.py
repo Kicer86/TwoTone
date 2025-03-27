@@ -10,7 +10,7 @@ import tempfile
 
 from pathlib import Path
 from platformdirs import user_cache_dir
-from typing import Dict, List
+from typing import Dict, List, Union
 
 import twotone.twotone as twotone
 
@@ -108,16 +108,23 @@ def add_test_media(filter: str, test_case_path: str, suffixes: [str] = [None], c
                         dst_file_name = file_path.stem + suffix + file_path.suffix
 
                         src = os.path.join(current_path, media, file_path)
-                        dst = os.path.join(test_case_path, dst_file_name)
-
-                        if copy:
-                            shutil.copy2(src, dst)
-                        else:
-                            os.symlink(src, dst)
+                        dst = add_to_test_dir(test_case_path, src, copy, dst_file_name)
 
                         output_files.append(dst)
 
     return output_files
+
+
+def add_to_test_dir(test_case_path: str, file_path: str, copy: bool = False, dst_file_name: Union[str, None] = None) -> str:
+    basename = os.path.basename(file_path) if dst_file_name is None else dst_file_name
+    dst = os.path.join(test_case_path, basename)
+
+    if copy:
+        shutil.copy2(file_path, dst)
+    else:
+        os.symlink(file_path, dst)
+
+    return dst
 
 
 def get_video(name: str) -> str:
