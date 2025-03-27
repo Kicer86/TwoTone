@@ -156,104 +156,69 @@ class Melter():
 
     @staticmethod
     def _look_for_boundaries(lhs: Dict[int, Dict], rhs: Dict[int, Dict], first: Tuple[int, int], last: Tuple[int, int], cutoff: float):
-        def _collect(data_set, first, last):
-            front = []
-            back = []
-            for timestamp in data_set:
-                if timestamp < first:
-                    front.append(timestamp)
-                elif timestamp > last:
-                    back.append(timestamp)
+        def estimate_fps(timestamps: List[int]) -> float:
+            if len(timestamps) < 2:
+                return 1.0
+            diffs = [t2 - t1 for t1, t2 in zip(timestamps[:-1], timestamps[1:]) if t2 > t1]
+            return 1.0 / (sum(diffs) / len(diffs)) if diffs else 1.0
 
-            return front, back
+        def find_boundary(lhs_set, rhs_set, lhs_ts, rhs_ts, lhs_fps, rhs_fps, pace, direction):
+            lhs_keys = sorted(lhs_set.keys())
+            rhs_keys = sorted(rhs_set.keys())
 
-        lhs_front_timestamps, lhs_back_timestamps = _collect(lhs, first[0], last[0])
-        rhs_front_timestamps, rhs_back_timestamps = _collect(rhs, first[1], last[1])
+            def get_nearest(t, keys):
+                return min(keys, key=lambda k: abs(k - t)) if keys else t
 
-        # update hashes
-        Melter._generate_phashes(lhs, to = lhs_front_timestamps[-1])
-        Melter._generate_phashes(rhs, to = rhs_front_timestamps[-1])
-        Melter._generate_phashes(lhs, since = lhs_back_timestamps[0])
-        Melter._generate_phashes(rhs, since = rhs_back_timestamps[0])
+            current = (lhs_ts, rhs_ts)
+            allowed_misses = 1
 
-        l = len(lhs_front_timestamps) - 1
-        r = len(rhs_front_timestamps) - 1
+            while True:
+                next_lhs_ts = lhs_ts + direction * round(1 / lhs_fps)
+                next_rhs_est = rhs_ts + direction * round(pace * 1 / rhs_fps)
 
-        def get_hash(indices, dataset, idx):
-            if 0 <= idx < len(indices):
-                timestamp = indices[idx]
-                return dataset[timestamp]["hash"]
-            return imagehash.ImageHash()
+                if next_lhs_ts not in lhs_set:
+                    break
 
-        def find_common_frame(lhs_indices, rhs_indices, lhs_dataset, rhs_dataset, start_l, start_r, cutoff, direction=-1):
-            """
-            Finds a common frame between two video hash sequences considering up to two frames in the given direction.
+                next_rhs_ts = get_nearest(next_rhs_est, rhs_keys)
+                if abs(next_rhs_ts - next_rhs_est) > 10:
+                    break
 
-            Args:
-                lhs_indices, rhs_indices: Timestamp indices for the videos.
-                lhs_dataset, rhs_dataset: Hash datasets for the videos.
-                start_l, start_r: Starting indices (usually identified scene change).
-                cutoff: Threshold for frame hash difference.
-                direction: Direction of search (-1 for backward, +1 for forward).
+                lhs_img_path = lhs_set[next_lhs_ts]["path"]
+                rhs_img_path = rhs_set[next_rhs_ts]["path"]
 
-            Returns:
-                Tuple (lhs_timestamp, rhs_timestamp): timestamps of last common frame.
-            """
-            l, r = start_l, start_r
-            last_matching_timestamps = (lhs_indices[l], rhs_indices[r])
+                lhs_img = Image.open(lhs_img_path)
+                rhs_img = Image.open(rhs_img_path)
+                lhs_hash = imagehash.phash(lhs_img, hash_size=16)
+                rhs_hash = imagehash.phash(rhs_img, hash_size=16)
 
-            offsets = [direction, 2 * direction]
-
-            while 0 <= l < len(lhs_indices) and 0 <= r < len(rhs_indices):
-                min_diff = float('inf')
-                best_candidates = (0, 0)
-
-                for dl in offsets:
-                    for dr in offsets:
-                        if dl == 0 and dr == 0:
-                            continue
-
-                        lhs_candidate = l + dl
-                        rhs_candidate = r + dr
-                        lh = get_hash(lhs_indices, lhs_dataset, lhs_candidate)
-                        rh = get_hash(rhs_indices, rhs_dataset, rhs_candidate)
-                        diff = abs(lh - rh)
-
-                        if diff < min_diff:
-                            min_diff = diff
-                            best_candidates = (lhs_candidate, rhs_candidate)
-
-                if min_diff <= cutoff:
-                    l = best_candidates[0]
-                    r = best_candidates[1]
-
-                    if 0 <= l < len(lhs_indices) and 0 <= r < len(rhs_indices):
-                        last_matching_timestamps = (lhs_indices[l], rhs_indices[r])
+                diff = abs(lhs_hash - rhs_hash)
+                is_good = diff <= cutoff
+                if is_good or allowed_misses > 0:
+                    current = (next_lhs_ts, next_rhs_ts)
+                    lhs_ts, rhs_ts = next_lhs_ts, next_rhs_ts
+                    if is_good:
+                        allowed_misses = 1
+                    else:
+                        allowed_misses -= 1
                 else:
                     break
 
-            return last_matching_timestamps
+            return current
 
-        first_common_frame = find_common_frame(
-            lhs_front_timestamps, rhs_front_timestamps, lhs, rhs,
-            start_l = len(lhs_front_timestamps) - 1,
-            start_r = len(rhs_front_timestamps) - 1,
-            cutoff = cutoff,
-            direction = -1
-        )
+        lhs_times = sorted(lhs.keys())
+        rhs_times = sorted(rhs.keys())
 
-        last_common_frame = find_common_frame(
-            lhs_back_timestamps, rhs_back_timestamps, lhs, rhs,
-            start_l = 0,
-            start_r = 0,
-            cutoff = cutoff,
-            direction = +1
-        )
+        lhs_fps = estimate_fps(lhs_times)
+        rhs_fps = estimate_fps(rhs_times)
+        pace = (last[0] - first[0]) / (last[1] - first[1]) if (last[1] - first[1]) != 0 else 1.0
 
-        print(f"First: L: {lhs[first_common_frame[0]]["path"]} R: {rhs[first_common_frame[1]]["path"]}")
-        print(f"Last:  L: {lhs[last_common_frame[0]]["path"]} R: {rhs[last_common_frame[1]]["path"]}")
+        refined_first = find_boundary(lhs, rhs, first[0], first[1], lhs_fps, rhs_fps, pace, direction=-1)
+        refined_last = find_boundary(lhs, rhs, last[0], last[1], lhs_fps, rhs_fps, pace, direction=1)
 
-        return first_common_frame, last_common_frame
+        print(f"Refined First: L: {lhs[refined_first[0]]['path']} R: {rhs[refined_first[1]]['path']}")
+        print(f"Refined Last:  L: {lhs[refined_last[0]]['path']} R: {rhs[refined_last[1]]['path']}")
+
+        return refined_first, refined_last
 
 
     @staticmethod
