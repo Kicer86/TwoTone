@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 
 from pathlib import Path
+from platformdirs import user_cache_dir
 from typing import Dict, List
 
 import twotone.twotone as twotone
@@ -43,6 +44,41 @@ class WorkingDirectoryForTest:
 
     def __exit__(self, type, value, traceback):
         shutil.rmtree(self.directory)
+
+
+class FileCache:
+    def __init__(self, app_name: str):
+        self.base_dir = Path(user_cache_dir(app_name))
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+
+    def get_or_generate(self, name: str, version: str, extension: str, generator_fn) -> Path:
+        """
+        name: logical name (e.g. 'embedding-A')
+        version: version string (e.g. 'v1.0')
+        extension: file extension without dot (e.g. 'json', 'npy')
+        generator_fn(out_path: Path) -> None
+        """
+        filename = f"{name}_{version}.{extension}"
+        out_path = self.base_dir / filename
+
+        if out_path.exists():
+            return out_path
+
+        # Clean up older versions with the same name and extension
+        for file in self.base_dir.glob(f"{name}_*.{extension}"):
+            if file != out_path:
+                try:
+                    file.unlink()
+                except Exception as e:
+                    print(f"Warning: could not delete {file}: {e}")
+
+        # Run generator
+        generator_fn(out_path)
+
+        if not out_path.exists():
+            raise RuntimeError(f"Generator did not produce expected file: {out_path}")
+
+        return out_path
 
 
 def list_files(path: str) -> []:
