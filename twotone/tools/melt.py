@@ -170,18 +170,22 @@ class Melter():
                 return min(keys, key=lambda k: abs(k - t)) if keys else t
 
             current = (lhs_ts, rhs_ts)
-            allowed_misses = 1
+            allowed_misses = 3
+            miss = 0
 
+            i = 0
             while True:
-                next_lhs_ts = lhs_ts + direction * round(1 / lhs_fps)
-                next_rhs_est = rhs_ts + direction * round(pace * 1 / rhs_fps)
+                time_step = round(i / lhs_fps) * direction
+                next_lhs_ts = lhs_ts + time_step
+                next_rhs_est = rhs_ts + time_step / pace
+                i += 1
 
                 if next_lhs_ts not in lhs_set:
                     break
 
                 next_rhs_ts = get_nearest(next_rhs_est, rhs_keys)
                 if abs(next_rhs_ts - next_rhs_est) > 10:
-                    break
+                    continue
 
                 lhs_img_path = lhs_set[next_lhs_ts]["path"]
                 rhs_img_path = rhs_set[next_rhs_ts]["path"]
@@ -193,13 +197,12 @@ class Melter():
 
                 diff = abs(lhs_hash - rhs_hash)
                 is_good = diff <= cutoff
-                if is_good or allowed_misses > 0:
-                    current = (next_lhs_ts, next_rhs_ts)
-                    lhs_ts, rhs_ts = next_lhs_ts, next_rhs_ts
+                if is_good or miss < allowed_misses:
                     if is_good:
-                        allowed_misses = 1
+                        current = (next_lhs_ts, next_rhs_ts)
+                        miss = 0
                     else:
-                        allowed_misses -= 1
+                        miss += 1
                 else:
                     break
 
@@ -403,62 +406,84 @@ class Melter():
 
 
     @staticmethod
-    def _find_common_crop(pairs):
-        overlaps1 = []
-        overlaps2 = []
+    def _interpolate_crop_rects(timestamps, rects):
+        """
+        Given a list of timestamps and matching crop rects, return a function that interpolates
+        a crop for any timestamp between and extrapolates outside the range.
+        rect = (x, y, w, h)
+        """
 
-        for path1, path2 in pairs:
-            im1 = cv.imread(path1)
-            im2 = cv.imread(path2)
+        timestamps = np.array(timestamps)
+        rects = np.array(rects)
 
-            orb = cv.ORB_create(1000)  # Increased points for better precision
-            kp1, des1 = orb.detectAndCompute(im1, None)
-            kp2, des2 = orb.detectAndCompute(im2, None)
+        def interpolate(t):
+            if t <= timestamps[0]:
+                return tuple(rects[0])
+            elif t >= timestamps[-1]:
+                return tuple(rects[-1])
+            else:
+                x = np.interp(t, timestamps, rects[:, 0])
+                y = np.interp(t, timestamps, rects[:, 1])
+                w = np.interp(t, timestamps, rects[:, 2])
+                h = np.interp(t, timestamps, rects[:, 3])
+                return int(round(x)), int(round(y)), int(round(w)), int(round(h))
 
+        return interpolate
+
+
+    @staticmethod
+    def _find_interpolated_crop(pairs_with_timestamps, lhs_frames: Dict[int, Dict], rhs_frames: Dict[int, Dict]):
+        timestamps = []
+        crops1 = []
+        crops2 = []
+
+        for lhs_t, rhs_t in pairs_with_timestamps:
+            lhs_info = lhs_frames[lhs_t]
+            rhs_info = rhs_frames[rhs_t]
+            lhs_img = cv.imread(lhs_info["path"])
+            rhs_img = cv.imread(rhs_info["path"])
+
+            orb = cv.ORB_create(1000)
+            kp1, des1 = orb.detectAndCompute(lhs_img, None)
+            kp2, des2 = orb.detectAndCompute(rhs_img, None)
             if des1 is None or des2 is None:
                 continue
 
             matcher = cv.BFMatcher(cv.NORM_HAMMING, crossCheck=True)
             matches = matcher.match(des1, des2)
-            if len(matches) < 3:  # Affine requires at least 3 points
+            if len(matches) < 3:
                 continue
 
             matches = sorted(matches, key=lambda x: x.distance)
             pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
             pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
 
-            # Use affine transformation (no perspective distortion)
             h_matrix, inliers = cv.estimateAffinePartial2D(pts2, pts1, cv.RANSAC)
             if h_matrix is None:
                 continue
 
-            overlap1 = Melter._compute_overlap(im1, im2, np.vstack([h_matrix, [0,0,1]]))
-            overlap2 = Melter._compute_overlap(im2, im1, np.vstack([cv.invertAffineTransform(h_matrix), [0,0,1]]))
+            overlap1 = Melter._compute_overlap(lhs_img, rhs_img, np.vstack([h_matrix, [0, 0, 1]]))
+            overlap2 = Melter._compute_overlap(rhs_img, lhs_img, np.vstack([cv.invertAffineTransform(h_matrix), [0, 0, 1]]))
 
-            overlaps1.append(overlap1)
-            overlaps2.append(overlap2)
+            timestamps.append(lhs_t)
+            crops1.append(overlap1)
+            crops2.append(overlap2)
 
-        overlaps1_filtered = Melter._filter_outlier_rects(overlaps1)
-        overlaps2_filtered = Melter._filter_outlier_rects(overlaps2)
-
-        common_crop1 = Melter._intersection_rect(overlaps1_filtered)
-        common_crop2 = Melter._intersection_rect(overlaps2_filtered)
-
-        return common_crop1, common_crop2
+        # Return interpolators
+        return Melter._interpolate_crop_rects(timestamps, crops1), Melter._interpolate_crop_rects(timestamps, crops2)
 
 
     @staticmethod
-    def _apply_crop(src_dir, dst_dir, crop):
-        if crop is None:
-            raise ValueError("No common crop found.")
+    def _apply_crop_interpolated(frames: Dict[int, Dict], dst_dir: str, crop_fn: Callable[[int], Tuple[int, int, int, int]]):
         if not os.path.exists(dst_dir):
             os.makedirs(dst_dir)
-        x, y, w, h = crop
-        for fname in os.listdir(src_dir):
-            path = os.path.join(src_dir, fname)
+        for timestamp, info in frames.items():
+            path = info["path"]
             img = cv.imread(path)
+            x, y, w, h = crop_fn(timestamp)
             cropped = img[y:y+h, x:x+w]
-            cv.imwrite(os.path.join(dst_dir, fname), cropped)
+            dst_path = os.path.join(dst_dir, os.path.basename(path))
+            cv.imwrite(dst_path, cropped)
 
 
     @staticmethod
@@ -499,19 +524,27 @@ class Melter():
 
 
     @staticmethod
-    def _crop_both_sets(pairs, dir1, dir2, output_dir1, output_dir2, final_crop_percent=0.02):
-        crop1, crop2 = Melter._find_common_crop(pairs) # Melter.find_common_image_part_naive(*pairs[0]) # Melter._find_common_crop(pairs)
+    def _crop_both_sets(
+        pairs_with_timestamps: List[Tuple[int, int]],
+        frames1: Dict[int, Dict],
+        frames2: Dict[int, Dict],
+        out_dir1: str,
+        out_dir2: str,
+        final_crop_percent: float = 0.02
+    ):
+        # Step 1: Get interpolated crop functions for both sets
+        crop_fn1, crop_fn2 = Melter._find_interpolated_crop(pairs_with_timestamps, frames1, frames2)
 
-        # Initial robust crop
-        Melter._apply_crop(dir1, output_dir1, crop1)
-        Melter._apply_crop(dir2, output_dir2, crop2)
+        # Step 2: Apply interpolated cropping to each frame
+        Melter._apply_crop_interpolated(frames1, out_dir1, crop_fn1)
+        Melter._apply_crop_interpolated(frames2, out_dir2, crop_fn2)
 
-        # Resize both directories to match smallest dimensions
-        Melter._resize_dirs_to_smallest(output_dir1, output_dir2)
+        # Step 3: Resize both output sets to same resolution (downscale to smaller one)
+        #Melter._resize_dirs_to_smallest(out_dir1, out_dir2)
 
-        # Final border crop
-        #Melter._apply_final_border_crop(output_dir1, final_crop_percent)
-        #Melter._apply_final_border_crop(output_dir2, final_crop_percent)
+        # Step 4: Apply final 2% border crop
+        #Melter._apply_final_border_crop(out_dir1, final_crop_percent)
+        #Melter._apply_final_border_crop(out_dir2, final_crop_percent)
 
 
     def _create_segments_mapping(self, lhs: str, rhs: str) -> List[Tuple[int, int]]:
@@ -572,16 +605,16 @@ class Melter():
             #rhs_useful_key_frames = Melter._filter_low_detailed(rhs_key_frames)
 
             # find best pair
-            matching_pair = Melter._find_most_matching_pair(lhs_key_frames, rhs_key_frames)
-            matching_pairs_paths = [(lhs_normalized_frames[pair[0]]["path"], rhs_normalized_frames[pair[1]]["path"]) for pair in [matching_pair]]
+            matching_pairs = Melter._match_pairs(lhs_key_frames, rhs_key_frames)
+            #matching_pairs = [(lhs_normalized_frames[pair[0]]["path"], rhs_normalized_frames[pair[1]]["path"]) for pair in matching_pair]
 
             # crop frames basing on best match
             Melter._crop_both_sets(
-                pairs = matching_pairs_paths,
-                dir1 = lhs_normalized_wd,
-                dir2 = rhs_normalized_wd,
-                output_dir1 = lhs_normalized_cropped_wd,
-                output_dir2 = rhs_normalized_cropped_wd
+                pairs_with_timestamps = matching_pairs,
+                frames1 = lhs_normalized_frames,
+                frames2 = rhs_normalized_frames,
+                out_dir1 = lhs_normalized_cropped_wd,
+                out_dir2 = rhs_normalized_cropped_wd
             )
 
             lhs_normalized_cropped_frames = Melter._replace_path(lhs_normalized_frames, lhs_normalized_cropped_wd)
