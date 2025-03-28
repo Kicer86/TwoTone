@@ -22,6 +22,9 @@ from .tool import Tool
 from .utils2 import files, process, video
 
 
+type FramesInfo = Dict[int, Dict[str, str]]
+
+
 class DuplicatesSource:
     def __init__(self, interruption: utils.InterruptibleProcess):
         self.interruption = interruption
@@ -137,13 +140,13 @@ class Melter():
 
 
     @staticmethod
-    def _filter_low_detailed(scenes: Dict[int, Dict]):
+    def _filter_low_detailed(scenes: FramesInfo):
         valuable_scenes = { timestamp: info for timestamp, info in scenes.items() if Melter._frame_entropy(info["path"]) > 4}
         return valuable_scenes
 
 
     @staticmethod
-    def _generate_phashes(scenes: Dict[int, Dict], since = None, to = None) -> Dict[int, Dict]:
+    def _generate_phashes(scenes: FramesInfo, since = None, to = None) -> FramesInfo:
         # this function's logic may not handle both statements in the way user expects
         assert since == None or to == None
         for timestamp, info in scenes.items():
@@ -155,7 +158,7 @@ class Melter():
 
 
     @staticmethod
-    def _look_for_boundaries(lhs: Dict[int, Dict], rhs: Dict[int, Dict], first: Tuple[int, int], last: Tuple[int, int], cutoff: float):
+    def _look_for_boundaries(lhs: FramesInfo, rhs: FramesInfo, first: Tuple[int, int], last: Tuple[int, int], cutoff: float):
         def estimate_fps(timestamps: List[int]) -> float:
             if len(timestamps) < 2:
                 return 1.0
@@ -225,7 +228,7 @@ class Melter():
 
 
     @staticmethod
-    def _generate_matching_frames(lhs: Dict[int, Dict], rhs: Dict[int, Dict]):
+    def _generate_matching_frames(lhs: FramesInfo, rhs: FramesInfo):
         # calculate PHashes
         Melter._generate_phashes(lhs)
         Melter._generate_phashes(rhs)
@@ -273,7 +276,7 @@ class Melter():
 
 
     @staticmethod
-    def _match_pairs(lhs: Dict[int, Dict], rhs: Dict[int, Dict]):
+    def _match_pairs(lhs: FramesInfo, rhs: FramesInfo):
         pairs = Melter._generate_matching_frames(lhs, rhs)
 
         pairs.sort()
@@ -294,7 +297,7 @@ class Melter():
         return pairs
 
     @staticmethod
-    def _find_most_matching_pair(lhs: Dict[int, Dict], rhs: Dict[int, Dict]):
+    def _find_most_matching_pair(lhs: FramesInfo, rhs: FramesInfo):
         pairs = Melter._generate_matching_frames(lhs, rhs)
 
         return pairs[0]
@@ -316,28 +319,20 @@ class Melter():
 
 
     @staticmethod
-    def _get_frames_for_timestamps(timestamps: List[int], frames_info: Dict[int, Dict]) -> List[str]:
+    def _get_frames_for_timestamps(timestamps: List[int], frames_info: FramesInfo) -> List[str]:
         frame_files = {timestamp: info for timestamp, info in frames_info.items() if timestamp in timestamps}
 
         return frame_files
 
-
     @staticmethod
-    def _replace_path(frames_info: Dict[int, Dict], dir: str) -> Dict[int, Dict]:
-        result = {}
-        for timestamp, info in frames_info.items():
-            path = info["path"]
-            _, file, ext = files.split_path(path)
-            new_path = os.path.join(dir, file + "." + ext)
-
-            result[timestamp] = info
-            result[timestamp]["path"] = new_path
-
-        return result
+    def _get_new_info(info: Dict[str, str], path: str) -> Dict[str, str]:
+        new_info = info.copy()
+        new_info["path"] = path
+        return new_info
 
 
     @staticmethod
-    def _normalize_frames(frames_info: Dict[int, Dict], wd: str) -> Dict[int, str]:
+    def _normalize_frames(frames_info: FramesInfo, wd: str) -> Dict[int, str]:
         def crop_5_percent(image: Image.Image) -> Image.Image:
             width, height = image.size
             dx = int(width * 0.05)
@@ -355,7 +350,9 @@ class Melter():
             new_path = os.path.join(wd, file + "." + ext)
             img.save(new_path)
 
-        return Melter._replace_path(frames_info, wd)
+            result[timestamp] = Melter._get_new_info(info, new_path)
+
+        return result
 
 
     @staticmethod
@@ -432,7 +429,7 @@ class Melter():
 
 
     @staticmethod
-    def _find_interpolated_crop(pairs_with_timestamps, lhs_frames: Dict[int, Dict], rhs_frames: Dict[int, Dict]):
+    def _find_interpolated_crop(pairs_with_timestamps, lhs_frames: FramesInfo, rhs_frames: FramesInfo):
         timestamps = []
         crops1 = []
         crops2 = []
@@ -474,9 +471,8 @@ class Melter():
 
 
     @staticmethod
-    def _apply_crop_interpolated(frames: Dict[int, Dict], dst_dir: str, crop_fn: Callable[[int], Tuple[int, int, int, int]]):
-        if not os.path.exists(dst_dir):
-            os.makedirs(dst_dir)
+    def _apply_crop_interpolated(frames: FramesInfo, dst_dir: str, crop_fn: Callable[[int], Tuple[int, int, int, int]]) -> FramesInfo:
+        output_files = {}
         for timestamp, info in frames.items():
             path = info["path"]
             img = cv.imread(path)
@@ -484,6 +480,10 @@ class Melter():
             cropped = img[y:y+h, x:x+w]
             dst_path = os.path.join(dst_dir, os.path.basename(path))
             cv.imwrite(dst_path, cropped)
+
+            output_files[timestamp] = Melter._get_new_info(info, dst_path)
+
+        return output_files
 
 
     @staticmethod
@@ -526,25 +526,24 @@ class Melter():
     @staticmethod
     def _crop_both_sets(
         pairs_with_timestamps: List[Tuple[int, int]],
-        frames1: Dict[int, Dict],
-        frames2: Dict[int, Dict],
-        out_dir1: str,
-        out_dir2: str,
+        lhs_frames: FramesInfo,
+        rhs_frames: FramesInfo,
+        lhs_cropped_dir: str,
+        rhs_cropped_dir: str,
         final_crop_percent: float = 0.02
-    ):
+    ) -> Tuple[FramesInfo, FramesInfo]:
         # Step 1: Get interpolated crop functions for both sets
-        crop_fn1, crop_fn2 = Melter._find_interpolated_crop(pairs_with_timestamps, frames1, frames2)
+        lhs_crop_fn, rhs_crop_fn = Melter._find_interpolated_crop(pairs_with_timestamps, lhs_frames, rhs_frames)
 
         # Step 2: Apply interpolated cropping to each frame
-        Melter._apply_crop_interpolated(frames1, out_dir1, crop_fn1)
-        Melter._apply_crop_interpolated(frames2, out_dir2, crop_fn2)
+        lhs_cropped = Melter._apply_crop_interpolated(lhs_frames, lhs_cropped_dir, lhs_crop_fn)
+        rhs_cropped = Melter._apply_crop_interpolated(rhs_frames, rhs_cropped_dir, rhs_crop_fn)
 
         # Step 3: Resize both output sets to same resolution (downscale to smaller one)
         #Melter._resize_dirs_to_smallest(out_dir1, out_dir2)
 
-        # Step 4: Apply final 2% border crop
-        #Melter._apply_final_border_crop(out_dir1, final_crop_percent)
-        #Melter._apply_final_border_crop(out_dir2, final_crop_percent)
+        return lhs_cropped, rhs_cropped
+
 
     def _create_segments_mapping(self, lhs: str, rhs: str) -> List[Tuple[int, int]]:
         with tempfile.TemporaryDirectory() as wd:
@@ -592,16 +591,13 @@ class Melter():
             prev_first, prev_last = None, None
             while True:
                 # crop frames basing on matching ones
-                Melter._crop_both_sets(
+                lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = Melter._crop_both_sets(
                     pairs_with_timestamps = matching_pairs,
-                    frames1 = lhs_normalized_frames,
-                    frames2 = rhs_normalized_frames,
-                    out_dir1 = lhs_normalized_cropped_wd,
-                    out_dir2 = rhs_normalized_cropped_wd
+                    lhs_frames = lhs_normalized_frames,
+                    rhs_frames = rhs_normalized_frames,
+                    lhs_cropped_dir = lhs_normalized_cropped_wd,
+                    rhs_cropped_dir = rhs_normalized_cropped_wd
                 )
-
-                lhs_normalized_cropped_frames = Melter._replace_path(lhs_normalized_frames, lhs_normalized_cropped_wd)
-                rhs_normalized_cropped_frames = Melter._replace_path(rhs_normalized_frames, rhs_normalized_cropped_wd)
 
                 # try to locate first and last common frames
                 first, last = Melter._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], 40)
