@@ -546,7 +546,6 @@ class Melter():
         #Melter._apply_final_border_crop(out_dir1, final_crop_percent)
         #Melter._apply_final_border_crop(out_dir2, final_crop_percent)
 
-
     def _create_segments_mapping(self, lhs: str, rhs: str) -> List[Tuple[int, int]]:
         with tempfile.TemporaryDirectory() as wd:
             lhs_scene_changes = video.detect_scene_changes(lhs, threshold = 0.3)
@@ -564,10 +563,6 @@ class Melter():
             rhs_normalized_wd = os.path.join(rhs_wd, "norm")
             lhs_normalized_cropped_wd = os.path.join(lhs_wd, "norm_cropped")
             rhs_normalized_cropped_wd = os.path.join(rhs_wd, "norm_cropped")
-            lhs_key_wd = os.path.join(lhs_wd, "key")
-            rhs_key_wd = os.path.join(rhs_wd, "key")
-            lhs_key_cropped_wd = os.path.join(lhs_wd, "key_cropped")
-            rhs_key_cropped_wd = os.path.join(rhs_wd, "key_cropped")
 
             for d in [lhs_wd,
                       rhs_wd,
@@ -576,14 +571,10 @@ class Melter():
                       lhs_normalized_wd,
                       rhs_normalized_wd,
                       lhs_normalized_cropped_wd,
-                      rhs_normalized_cropped_wd,
-                      lhs_key_wd,
-                      rhs_key_wd,
-                      lhs_key_cropped_wd,
-                      rhs_key_cropped_wd]:
+                      rhs_normalized_cropped_wd]:
                 os.makedirs(d)
 
-            # extract all scenes
+             # extract all scenes
             lhs_all_frames = video.extract_all_frames(lhs, lhs_all_wd, scale = 0.5)
             rhs_all_frames = video.extract_all_frames(rhs, rhs_all_wd, scale = 0.5)
 
@@ -595,57 +586,37 @@ class Melter():
             lhs_key_frames = Melter._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_frames)
             rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
 
-            # copy key frames
-            for src, dst in [ (lhs_key_frames, lhs_key_wd), (rhs_key_frames, rhs_key_wd) ]:
-                for src_info in src.values():
-                    shutil.copy2(src_info["path"], dst)
-
-            # pick frames with descent entropy (remove single color frames etc)
-            #lhs_useful_key_frames = Melter._filter_low_detailed(lhs_key_frames)
-            #rhs_useful_key_frames = Melter._filter_low_detailed(rhs_key_frames)
-
-            # find best pair
+            # find matching keys
             matching_pairs = Melter._match_pairs(lhs_key_frames, rhs_key_frames)
-            #matching_pairs = [(lhs_normalized_frames[pair[0]]["path"], rhs_normalized_frames[pair[1]]["path"]) for pair in matching_pair]
 
-            # crop frames basing on best match
-            Melter._crop_both_sets(
-                pairs_with_timestamps = matching_pairs,
-                frames1 = lhs_normalized_frames,
-                frames2 = rhs_normalized_frames,
-                out_dir1 = lhs_normalized_cropped_wd,
-                out_dir2 = rhs_normalized_cropped_wd
-            )
+            prev_first, prev_last = None, None
+            while True:
+                # crop frames basing on matching ones
+                Melter._crop_both_sets(
+                    pairs_with_timestamps = matching_pairs,
+                    frames1 = lhs_normalized_frames,
+                    frames2 = rhs_normalized_frames,
+                    out_dir1 = lhs_normalized_cropped_wd,
+                    out_dir2 = rhs_normalized_cropped_wd
+                )
 
-            lhs_normalized_cropped_frames = Melter._replace_path(lhs_normalized_frames, lhs_normalized_cropped_wd)
-            rhs_normalized_cropped_frames = Melter._replace_path(rhs_normalized_frames, rhs_normalized_cropped_wd)
+                lhs_normalized_cropped_frames = Melter._replace_path(lhs_normalized_frames, lhs_normalized_cropped_wd)
+                rhs_normalized_cropped_frames = Melter._replace_path(rhs_normalized_frames, rhs_normalized_cropped_wd)
 
-            # extract key frames from cropped images (as 'key' a scene change frame is meant)
-            lhs_key_cropped_frames = Melter._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_cropped_frames)
-            rhs_key_cropped_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_cropped_frames)
+                # try to locate first and last common frames
+                first, last = Melter._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], 40)
 
-            # copy key frames from cropped
-            for src, dst in [ (lhs_key_cropped_frames, lhs_key_cropped_wd), (rhs_key_cropped_frames, rhs_key_cropped_wd) ]:
-                for src_info in src.values():
-                    shutil.copy2(src_info["path"], dst)
+                if first == prev_first and last == prev_last:
+                    break
+                else:
+                    if first != prev_first:
+                        matching_pairs = [first, *matching_pairs]
+                        prev_first = first
+                    if last != prev_last:
+                        matching_pairs = [*matching_pairs, last]
+                        prev_last = last
 
-            # look for all pairs now
-            matching_pairs = Melter._match_pairs(lhs_key_cropped_frames, rhs_key_cropped_frames)
-
-            # try to locate first and last common frames
-            Melter._look_for_boundaries(lhs_normalized_frames, rhs_normalized_frames, matching_pairs[0], matching_pairs[-1], 90)
-
-            # calculate finerprint for each frame
-            #lhs_hashes = Melter._generate_hashes(lhs_key_frames)
-            #rhs_hashes = Melter._generate_hashes(rhs_key_frames)
-
-            # find similar scenes
-            #hash_algo = cv.img_hash.BlockMeanHash().create()
-            #matching_scenes = Melter._match_scenes(lhs_hashes, rhs_hashes, lambda l, r: hash_algo.compare(l, r) < 20)
-
-            #matching_files = [(lhs_key_frames[lhs_timestamp]["path"], rhs_key_frames[rhs_timestamp]["path"])  for lhs_timestamp, rhs_timestamp in matching_scenes]
-
-            return matching_pairs
+        return matching_pairs
 
 
     def _process_duplicates(self, files: List[str]):
