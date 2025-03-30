@@ -122,6 +122,22 @@ class JellyfinSource(DuplicatesSource):
 
 
 class Melter():
+    class PhashCache:
+        def __init__(self, hash_size: int = 16):
+            self.hash_size = hash_size
+            self._memory_cache: dict[str, imagehash.ImageHash] = {}
+
+        def get(self, image_path: str) -> imagehash.ImageHash:
+            if image_path in self._memory_cache:
+                return self._memory_cache[image_path]
+
+            with Image.open(image_path) as img:
+                phash = imagehash.phash(img, hash_size=self.hash_size)
+
+            self._memory_cache[image_path] = phash
+            return phash
+
+
     def __init__(self, logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool):
         self.logger = logger
         self.interruption = interruption
@@ -146,18 +162,6 @@ class Melter():
 
 
     @staticmethod
-    def _generate_phashes(scenes: FramesInfo, since = None, to = None) -> FramesInfo:
-        # this function's logic may not handle both statements in the way user expects
-        assert since == None or to == None
-        for timestamp, info in scenes.items():
-            if (not since or timestamp >= since) and (not to or timestamp <= to):
-                path = info["path"]
-                img = Image.open(path)
-                img_hash = imagehash.phash(img, hash_size=16)
-                info["hash"] = img_hash
-
-
-    @staticmethod
     def _look_for_boundaries(lhs: FramesInfo, rhs: FramesInfo, first: Tuple[int, int], last: Tuple[int, int], cutoff: float):
         def estimate_fps(timestamps: List[int]) -> float:
             if len(timestamps) < 2:
@@ -176,6 +180,7 @@ class Melter():
             allowed_misses = 3
             miss = 0
 
+            phash = Melter.PhashCache()
             i = 0
             while True:
                 time_step = round(i / lhs_fps) * direction
@@ -192,11 +197,8 @@ class Melter():
 
                 lhs_img_path = lhs_set[next_lhs_ts]["path"]
                 rhs_img_path = rhs_set[next_rhs_ts]["path"]
-
-                lhs_img = Image.open(lhs_img_path)
-                rhs_img = Image.open(rhs_img_path)
-                lhs_hash = imagehash.phash(lhs_img, hash_size=16)
-                rhs_hash = imagehash.phash(rhs_img, hash_size=16)
+                lhs_hash = phash.get(lhs_img_path)
+                rhs_hash = phash.get(rhs_img_path)
 
                 diff = abs(lhs_hash - rhs_hash)
                 is_good = diff <= cutoff
@@ -229,17 +231,15 @@ class Melter():
 
     @staticmethod
     def _generate_matching_frames(lhs: FramesInfo, rhs: FramesInfo):
-        # calculate PHashes
-        Melter._generate_phashes(lhs)
-        Melter._generate_phashes(rhs)
+        phash = Melter.PhashCache()
 
         # Generate initial set of candidates using generated phashes
         pairs_candidates = defaultdict(list)
 
         for lhs_timestamp, lhs_info in lhs.items():
-            lhs_hash = lhs_info["hash"]
+            lhs_hash = phash.get(lhs_info["path"])
             for rhs_timestamp, rhs_info in rhs.items():
-                rhs_hash = rhs_info["hash"]
+                rhs_hash = phash.get(rhs_info["path"])
                 distance = abs(lhs_hash - rhs_hash)
                 pairs_candidates[lhs_timestamp].append((distance, rhs_timestamp))
 
@@ -300,22 +300,6 @@ class Melter():
         pairs = Melter._generate_matching_frames(lhs, rhs)
 
         return pairs[0]
-
-    @staticmethod
-    def _match_scenes(lhs_scenes: Dict[int, Any], rhs_scenes: Dict[int, Any], comp: Callable[[Any, Any], bool]) -> List[Tuple[int, int]]:
-        # O^2 solution, but it should do
-        matches = []
-
-        for lhs_timestamp, lhs_info in lhs_scenes.items():
-            lhs_hash = lhs_info["hash"]
-            for rhs_timestamp, rhs_info in rhs_scenes.items():
-                rhs_hash = rhs_info["hash"]
-                if comp(lhs_hash, rhs_hash):
-                    matches.append((lhs_timestamp, rhs_timestamp))
-                    break
-
-        return matches
-
 
     @staticmethod
     def _get_frames_for_timestamps(timestamps: List[int], frames_info: FramesInfo) -> List[str]:
