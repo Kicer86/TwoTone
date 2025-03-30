@@ -264,23 +264,22 @@ class Melter():
         # sort best candidates by diff
         best_candidates.sort()
 
-        # find median to know where to cut off
+        # find median (+10%) to know where to cut off
         m = len(best_candidates) // 2
-        cutoff = best_candidates[m][0]
+        cutoff = best_candidates[m][0] * 1.1
         best_candidates = [c for c in best_candidates if c[0] <= cutoff]
 
         # build pairs structure
         pairs = [(candidate[1], candidate[2]) for candidate in best_candidates]
 
-        return pairs
+        return pairs, cutoff
 
 
     @staticmethod
     def _match_pairs(lhs: FramesInfo, rhs: FramesInfo):
-        pairs = Melter._generate_matching_frames(lhs, rhs)
+        pairs, cutoff = Melter._generate_matching_frames(lhs, rhs)
 
         pairs.sort()
-        print([(lhs[pair[0]]["path"], rhs[pair[1]]["path"]) for pair in pairs])
 
         # validate pace
         prev_pair = None
@@ -294,7 +293,7 @@ class Melter():
 
         print(pace)
 
-        return pairs
+        return pairs, cutoff
 
     @staticmethod
     def _find_most_matching_pair(lhs: FramesInfo, rhs: FramesInfo):
@@ -586,7 +585,7 @@ class Melter():
             rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
 
             # find matching keys
-            matching_pairs = Melter._match_pairs(lhs_key_frames, rhs_key_frames)
+            matching_pairs, cutoff = Melter._match_pairs(lhs_key_frames, rhs_key_frames)
 
             prev_first, prev_last = None, None
             while True:
@@ -600,7 +599,7 @@ class Melter():
                 )
 
                 # try to locate first and last common frames
-                first, last = Melter._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], 40)
+                first, last = Melter._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff)
 
                 if first == prev_first and last == prev_last:
                     break
