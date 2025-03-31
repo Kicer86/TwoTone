@@ -230,7 +230,7 @@ class Melter():
 
 
     @staticmethod
-    def _generate_matching_frames(lhs: FramesInfo, rhs: FramesInfo):
+    def _generate_matching_frames(lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int]]:
         phash = Melter.PhashCache()
 
         # Generate initial set of candidates using generated phashes
@@ -272,12 +272,12 @@ class Melter():
         # build pairs structure
         pairs = [(candidate[1], candidate[2]) for candidate in best_candidates]
 
-        return pairs, cutoff
+        return pairs
 
 
     @staticmethod
-    def _match_pairs(lhs: FramesInfo, rhs: FramesInfo):
-        pairs, cutoff = Melter._generate_matching_frames(lhs, rhs)
+    def _match_pairs(lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int]]:
+        pairs = Melter._generate_matching_frames(lhs, rhs)
 
         pairs.sort()
 
@@ -293,13 +293,8 @@ class Melter():
 
         print(pace)
 
-        return pairs, cutoff
+        return pairs
 
-    @staticmethod
-    def _find_most_matching_pair(lhs: FramesInfo, rhs: FramesInfo):
-        pairs = Melter._generate_matching_frames(lhs, rhs)
-
-        return pairs[0]
 
     @staticmethod
     def _get_frames_for_timestamps(timestamps: List[int], frames_info: FramesInfo) -> List[str]:
@@ -461,6 +456,7 @@ class Melter():
             img = cv.imread(path)
             x, y, w, h = crop_fn(timestamp)
             cropped = img[y:y+h, x:x+w]
+            cropped = cv.resize(cropped, (128, 128))
             dst_path = os.path.join(dst_dir, os.path.basename(path))
             cv.imwrite(dst_path, cropped)
 
@@ -528,6 +524,28 @@ class Melter():
         return lhs_cropped, rhs_cropped
 
 
+    @staticmethod
+    def _calculate_cutoff(
+        pairs_with_timestamps: List[Tuple[int, int]],
+        lhs_frames: FramesInfo,
+        rhs_frames: FramesInfo
+    ) -> int:
+        phash = Melter.PhashCache()
+        max_phash = 0
+
+        for lhs, rhs in pairs_with_timestamps:
+            lhs_path = lhs_frames[lhs]["path"]
+            rhs_path = rhs_frames[rhs]["path"]
+            lhs_phash = phash.get(lhs_path)
+            rhs_phash = phash.get(rhs_path)
+
+            pdiff = abs(lhs_phash - rhs_phash)
+            print(f"{lhs_path} vs {rhs_path}: {pdiff}")
+            max_phash = max(max_phash, pdiff)
+
+        return max_phash
+
+
     def _create_segments_mapping(self, lhs: str, rhs: str) -> List[Tuple[int, int]]:
         with tempfile.TemporaryDirectory() as wd:
             lhs_scene_changes = video.detect_scene_changes(lhs, threshold = 0.3)
@@ -569,7 +587,7 @@ class Melter():
             rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
 
             # find matching keys
-            matching_pairs, cutoff = Melter._match_pairs(lhs_key_frames, rhs_key_frames)
+            matching_pairs = Melter._match_pairs(lhs_key_frames, rhs_key_frames)
 
             prev_first, prev_last = None, None
             while True:
@@ -582,8 +600,10 @@ class Melter():
                     rhs_cropped_dir = rhs_normalized_cropped_wd
                 )
 
+                cutoff = Melter._calculate_cutoff(matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
+
                 # try to locate first and last common frames
-                first, last = Melter._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff)
+                first, last = Melter._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff * 1.5)
 
                 if first == prev_first and last == prev_last:
                     break
