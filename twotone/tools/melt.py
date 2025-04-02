@@ -15,6 +15,7 @@ from collections import defaultdict
 from overrides import override
 from PIL import Image
 from scipy.stats import entropy
+from sklearn.linear_model import RANSACRegressor, LinearRegression
 from typing import Any, Callable, Dict, List, Tuple
 
 from . import utils
@@ -231,48 +232,77 @@ class Melter():
 
     @staticmethod
     def _generate_matching_frames(lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int]]:
-        phash = Melter.PhashCache()
 
-        # Generate initial set of candidates using generated phashes
-        pairs_candidates = defaultdict(list)
+        def compute_phash_candidates(lhs, rhs):
+            phash = Melter.PhashCache()
+            pairs_candidates = defaultdict(list)
+            for lhs_timestamp, lhs_info in lhs.items():
+                lhs_hash = phash.get(lhs_info["path"])
+                for rhs_timestamp, rhs_info in rhs.items():
+                    rhs_hash = phash.get(rhs_info["path"])
+                    distance = abs(lhs_hash - rhs_hash)
+                    pairs_candidates[lhs_timestamp].append((distance, rhs_timestamp))
+            return pairs_candidates
 
-        for lhs_timestamp, lhs_info in lhs.items():
-            lhs_hash = phash.get(lhs_info["path"])
-            for rhs_timestamp, rhs_info in rhs.items():
-                rhs_hash = phash.get(rhs_info["path"])
-                distance = abs(lhs_hash - rhs_hash)
-                pairs_candidates[lhs_timestamp].append((distance, rhs_timestamp))
+        def select_best_candidates(pairs_candidates):
+            best_candidates = []
+            used_rhs_timestamps = set()
+            for lhs_timestamp, candidates in pairs_candidates.items():
+                candidates.sort()
+                for diff, rhs_candidate in candidates:
+                    if rhs_candidate not in used_rhs_timestamps:
+                        used_rhs_timestamps.add(rhs_candidate)
+                        best_candidates.append((diff, lhs_timestamp, rhs_candidate))
+                        break
+            best_candidates.sort()
+            return sorted([(lhs, rhs) for _, lhs, rhs in best_candidates])
 
-        # Pick best candidates
-        best_candidates = []
-        used_rhs_timestamps = set()
-        for lhs_timestamp, candidates in pairs_candidates.items():
-            candidates.sort()
+        def filter_with_ransac(initial_pairs):
+            lhs_timestamps, rhs_timestamps = zip(*initial_pairs)
+            lhs_array = np.array(lhs_timestamps).reshape(-1, 1)
+            rhs_array = np.array(rhs_timestamps)
 
-            # look for first unused candidate
-            for candidate in candidates:
-                diff, best_rhs_candidate = candidate
+            ransac = RANSACRegressor(estimator=LinearRegression(), residual_threshold=5000)
+            ransac.fit(lhs_array, rhs_array)
 
-                if best_rhs_candidate not in used_rhs_timestamps:
-                    # mark as used
-                    used_rhs_timestamps.add(best_rhs_candidate)
+            inlier_mask = ransac.inlier_mask_
+            return [pair for pair, is_inlier in zip(initial_pairs, inlier_mask) if is_inlier]
 
-                    # append diff, lhs timestamp, rhs timestamp
-                    best_candidates.append((diff, lhs_timestamp, best_rhs_candidate))
-                    break
+        def segment_ratios(pairs):
+            ratios = []
+            for i in range(len(pairs) - 1):
+                lhs_diff = pairs[i + 1][0] - pairs[i][0]
+                rhs_diff = pairs[i + 1][1] - pairs[i][1]
+                if rhs_diff == 0:
+                    return None
+                ratios.append(lhs_diff / rhs_diff)
+            return ratios
 
-        # sort best candidates by diff
-        best_candidates.sort()
+        def validate_and_fix_ratios(pairs):
+            valid_pairs = pairs.copy()
+            ratios = segment_ratios(valid_pairs)
+            if ratios is None:
+                return valid_pairs
 
-        # find median (+10%) to know where to cut off
-        m = len(best_candidates) // 2
-        cutoff = best_candidates[m][0] * 1.1
-        best_candidates = [c for c in best_candidates if c[0] <= cutoff]
+            i = 0
+            while i < len(ratios):
+                if not 0.9 <= ratios[i] <= 1.1:
+                    if i + 1 < len(ratios):
+                        next_segment_ratio = (valid_pairs[i + 2][0] - valid_pairs[i][0]) / (valid_pairs[i + 2][1] - valid_pairs[i][1])
+                        if 0.9 <= next_segment_ratio <= 1.1:
+                            del valid_pairs[i + 1]
+                            ratios = segment_ratios(valid_pairs)
+                            i = max(i - 1, 0)
+                            continue
+                i += 1
+            return valid_pairs
 
-        # build pairs structure
-        pairs = [(candidate[1], candidate[2]) for candidate in best_candidates]
+        pairs_candidates = compute_phash_candidates(lhs, rhs)
+        initial_pairs = select_best_candidates(pairs_candidates)
+        filtered_pairs = filter_with_ransac(initial_pairs)
+        final_pairs = validate_and_fix_ratios(filtered_pairs)
 
-        return pairs
+        return final_pairs
 
 
     @staticmethod
