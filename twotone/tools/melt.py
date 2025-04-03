@@ -231,7 +231,7 @@ class Melter():
 
 
     @staticmethod
-    def _generate_matching_frames(lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int]]:
+    def _generate_matching_frames(lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> List[Tuple[int, int]]:
 
         def compute_phash_candidates(lhs, rhs):
             phash = Melter.PhashCache()
@@ -279,7 +279,7 @@ class Melter():
                     ratios.append(lhs_diff / rhs_diff)
             return ratios
 
-        def iterative_filter(pairs):
+        def robust_iterative_filter(pairs):
             pairs = pairs.copy()
             iteration = 0
             while True:
@@ -307,17 +307,69 @@ class Melter():
 
             return pairs
 
+        def refined_matching(pairs, lhs_all, rhs_all):
+            refined_pairs = []
+            lhs_all_timestamps = sorted(lhs_all.keys())
+            rhs_all_timestamps = sorted(rhs_all.keys())
+            phash = Melter.PhashCache()
+
+            for lhs_ts, rhs_ts in pairs:
+                best_pair = (lhs_ts, rhs_ts)
+                best_distance = abs(phash.get(lhs_all[lhs_ts]["path"]) - phash.get(rhs_all[rhs_ts]["path"]))
+                for lhs_adj in [lhs_ts - 1, lhs_ts, lhs_ts + 1]:
+                    for rhs_adj in [rhs_ts - 1, rhs_ts, rhs_ts + 1]:
+                        if lhs_adj in lhs_all_timestamps and rhs_adj in rhs_all_timestamps:
+                            current_distance = abs(phash.get(lhs_all[lhs_adj]["path"]) - phash.get(rhs_all[rhs_adj]["path"]))
+                            if current_distance < best_distance:
+                                best_distance = current_distance
+                                best_pair = (lhs_adj, rhs_adj)
+                refined_pairs.append(best_pair)
+
+            return refined_pairs
+
+        def match_remaining_candidates(pairs, lhs_candidates, rhs_candidates):
+            used_lhs = {lhs for lhs, _ in pairs}
+            used_rhs = {rhs for _, rhs in pairs}
+            remaining_lhs = {k: v for k, v in lhs_candidates.items() if k not in used_lhs}
+            remaining_rhs = {k: v for k, v in rhs_candidates.items() if k not in used_rhs}
+
+            candidate_pairs = compute_phash_candidates(remaining_lhs, remaining_rhs)
+            additional_pairs = select_best_candidates(candidate_pairs)
+
+            pairs_sorted = sorted(pairs)
+            filtered_additional_pairs = []
+
+            for candidate in additional_pairs:
+                lhs_c, rhs_c = candidate
+                idx = np.searchsorted([p[0] for p in pairs_sorted], lhs_c)
+                if 0 < idx < len(pairs_sorted):
+                    lhs_prev, rhs_prev = pairs_sorted[idx - 1]
+                    lhs_next, rhs_next = pairs_sorted[idx]
+
+                    expected_ratio_prev = (lhs_c - lhs_prev) / (rhs_c - rhs_prev) if rhs_c != rhs_prev else None
+                    expected_ratio_next = (lhs_next - lhs_c) / (rhs_next - rhs_c) if rhs_next != rhs_c else None
+
+                    median_ratio = np.median([r for r in calculate_ratios(pairs) if r])
+
+                    if (expected_ratio_prev and abs(expected_ratio_prev - median_ratio) < 0.1 * median_ratio and
+                        expected_ratio_next and abs(expected_ratio_next - median_ratio) < 0.1 * median_ratio):
+                        filtered_additional_pairs.append(candidate)
+
+            return sorted(pairs + filtered_additional_pairs)
+
         pairs_candidates = compute_phash_candidates(lhs, rhs)
         initial_pairs = select_best_candidates(pairs_candidates)
         filtered_pairs = filter_with_ransac(initial_pairs)
-        final_pairs = iterative_filter(filtered_pairs)
+        final_pairs = robust_iterative_filter(filtered_pairs)
+        final_pairs = match_remaining_candidates(final_pairs, lhs, rhs)
+        refined_pairs = refined_matching(final_pairs, lhs_all, rhs_all)
 
-        return final_pairs
+        return refined_pairs
 
 
     @staticmethod
-    def _match_pairs(lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int]]:
-        pairs = Melter._generate_matching_frames(lhs, rhs)
+    def _match_pairs(lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> List[Tuple[int, int]]:
+        pairs = Melter._generate_matching_frames(lhs, rhs, lhs_all, rhs_all)
 
         pairs.sort()
 
@@ -627,7 +679,7 @@ class Melter():
             rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
 
             # find matching keys
-            matching_pairs = Melter._match_pairs(lhs_key_frames, rhs_key_frames)
+            matching_pairs = Melter._match_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames)
 
             prev_first, prev_last = None, None
             while True:
