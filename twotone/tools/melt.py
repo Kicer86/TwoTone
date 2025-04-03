@@ -268,39 +268,49 @@ class Melter():
             inlier_mask = ransac.inlier_mask_
             return [pair for pair, is_inlier in zip(initial_pairs, inlier_mask) if is_inlier]
 
-        def segment_ratios(pairs):
+        def calculate_ratios(pairs):
             ratios = []
             for i in range(len(pairs) - 1):
                 lhs_diff = pairs[i + 1][0] - pairs[i][0]
                 rhs_diff = pairs[i + 1][1] - pairs[i][1]
-                if rhs_diff == 0:
-                    return None
-                ratios.append(lhs_diff / rhs_diff)
+                if rhs_diff <= 0:
+                    ratios.append(None)
+                else:
+                    ratios.append(lhs_diff / rhs_diff)
             return ratios
 
-        def validate_and_fix_ratios(pairs):
-            valid_pairs = pairs.copy()
-            ratios = segment_ratios(valid_pairs)
-            if ratios is None:
-                return valid_pairs
+        def iterative_filter(pairs):
+            pairs = pairs.copy()
+            iteration = 0
+            while True:
+                ratios = calculate_ratios(pairs)
+                valid_ratios = [r for r in ratios if r is not None and r > 0]
+                if not valid_ratios:
+                    break
+                median_ratio = np.median(valid_ratios)
+                mad = np.median(np.abs(valid_ratios - median_ratio))
+                threshold = 3 * mad
 
-            i = 0
-            while i < len(ratios):
-                if not 0.9 <= ratios[i] <= 1.1:
-                    if i + 1 < len(ratios):
-                        next_segment_ratio = (valid_pairs[i + 2][0] - valid_pairs[i][0]) / (valid_pairs[i + 2][1] - valid_pairs[i][1])
-                        if 0.9 <= next_segment_ratio <= 1.1:
-                            del valid_pairs[i + 1]
-                            ratios = segment_ratios(valid_pairs)
-                            i = max(i - 1, 0)
-                            continue
-                i += 1
-            return valid_pairs
+                to_remove = set()
+                for i, ratio in enumerate(ratios):
+                    if ratio is None or ratio <= 0 or abs(ratio - median_ratio) > threshold:
+                        to_remove.add(i + 1)
+
+                if not to_remove:
+                    break
+
+                pairs = [pair for idx, pair in enumerate(pairs) if idx not in to_remove]
+                iteration += 1
+
+                if iteration > len(pairs):
+                    break
+
+            return pairs
 
         pairs_candidates = compute_phash_candidates(lhs, rhs)
         initial_pairs = select_best_candidates(pairs_candidates)
         filtered_pairs = filter_with_ransac(initial_pairs)
-        final_pairs = validate_and_fix_ratios(filtered_pairs)
+        final_pairs = iterative_filter(filtered_pairs)
 
         return final_pairs
 
