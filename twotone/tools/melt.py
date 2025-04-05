@@ -441,7 +441,8 @@ class Melter():
 
     @staticmethod
     def _find_interpolated_crop(pairs_with_timestamps, lhs_frames: FramesInfo, rhs_frames: FramesInfo):
-        timestamps = []
+        timestamps_lhs = []
+        timestamps_rhs = []
         crops1 = []
         crops2 = []
 
@@ -473,12 +474,13 @@ class Melter():
             overlap1 = Melter._compute_overlap(lhs_img, rhs_img, np.vstack([h_matrix, [0, 0, 1]]))
             overlap2 = Melter._compute_overlap(rhs_img, lhs_img, np.vstack([cv.invertAffineTransform(h_matrix), [0, 0, 1]]))
 
-            timestamps.append(lhs_t)
+            timestamps_lhs.append(lhs_t)
+            timestamps_rhs.append(rhs_t)
             crops1.append(overlap1)
             crops2.append(overlap2)
 
         # Return interpolators
-        return Melter._interpolate_crop_rects(timestamps, crops1), Melter._interpolate_crop_rects(timestamps, crops2)
+        return Melter._interpolate_crop_rects(timestamps_lhs, crops1), Melter._interpolate_crop_rects(timestamps_rhs, crops2)
 
 
     @staticmethod
