@@ -231,10 +231,10 @@ class Melter():
 
 
     @staticmethod
-    def _generate_matching_frames(lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> List[Tuple[int, int]]:
+    def _match_pairs(lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> List[Tuple[int, int]]:
+        phash = Melter.PhashCache()
 
         def compute_phash_candidates(lhs, rhs):
-            phash = Melter.PhashCache()
             pairs_candidates = defaultdict(list)
             for lhs_timestamp, lhs_info in lhs.items():
                 lhs_hash = phash.get(lhs_info["path"])
@@ -311,7 +311,6 @@ class Melter():
             refined_pairs = []
             lhs_all_timestamps = sorted(lhs_all.keys())
             rhs_all_timestamps = sorted(rhs_all.keys())
-            phash = Melter.PhashCache()
 
             for lhs_ts, rhs_ts in pairs:
                 best_pair = (lhs_ts, rhs_ts)
@@ -357,35 +356,46 @@ class Melter():
 
             return sorted(pairs + filtered_additional_pairs)
 
+        def filter_phash_outliers(pairs, lhs_set, rhs_set):
+            distances = [abs(phash.get(lhs_set[lhs]["path"]) - phash.get(rhs_set[rhs]["path"])) for lhs, rhs in pairs]
+            median_dist = np.median(distances)
+            mad_dist = np.median(np.abs(distances - median_dist))
+            threshold = median_dist + 3 * mad_dist
+            return [pair for pair, dist in zip(pairs, distances) if dist <= threshold]
+
+        def print_ratios(pairs_source: List):
+            pairs = pairs_source.copy()
+            pairs.sort()
+
+            # validate pace
+            prev_pair = None
+            pace = []
+            for pair in pairs:
+                if prev_pair:
+                    diff = (pair[0] - prev_pair[0], pair[1] - prev_pair[1])
+                    pace.append(diff[0]/diff[1])
+
+                prev_pair = pair
+
+            print(f"{len(pace)}, {min(pace)}, {max(pace)}: {pace}")
+
         pairs_candidates = compute_phash_candidates(lhs, rhs)
         initial_pairs = select_best_candidates(pairs_candidates)
+        print_ratios(initial_pairs)
+        initial_pairs = filter_phash_outliers(initial_pairs, lhs, rhs)      # ?
+        print_ratios(initial_pairs)
         filtered_pairs = filter_with_ransac(initial_pairs)
+        print_ratios(filtered_pairs)
         final_pairs = robust_iterative_filter(filtered_pairs)
+        print_ratios(final_pairs)
         final_pairs = match_remaining_candidates(final_pairs, lhs, rhs)
-        refined_pairs = refined_matching(final_pairs, lhs_all, rhs_all)
+        print_ratios(final_pairs)
+        filtered_pairs = filter_phash_outliers(final_pairs, lhs, rhs)    # ?
+        print_ratios(filtered_pairs)
+        refined_pairs = refined_matching(filtered_pairs, lhs_all, rhs_all)
+        print_ratios(refined_pairs)
 
         return refined_pairs
-
-
-    @staticmethod
-    def _match_pairs(lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> List[Tuple[int, int]]:
-        pairs = Melter._generate_matching_frames(lhs, rhs, lhs_all, rhs_all)
-
-        pairs.sort()
-
-        # validate pace
-        prev_pair = None
-        pace = []
-        for pair in pairs:
-            if prev_pair:
-                diff = (pair[0] - prev_pair[0], pair[1] - prev_pair[1])
-                pace.append(diff[0]/diff[1])
-
-            prev_pair = pair
-
-        print(pace)
-
-        return pairs
 
 
     @staticmethod
@@ -680,6 +690,9 @@ class Melter():
 
             # find matching keys
             matching_pairs = Melter._match_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames)
+
+            for lhs_ts, rhs_ts in matching_pairs:
+                print(f"{lhs_normalized_frames[lhs_ts]["path"]} {rhs_normalized_frames[rhs_ts]["path"]}")
 
             prev_first, prev_last = None, None
             while True:
