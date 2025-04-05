@@ -257,6 +257,14 @@ class Melter():
             best_candidates.sort()
             return sorted([(lhs, rhs) for _, lhs, rhs in best_candidates])
 
+        def estimate_fps(timestamps: List[int]) -> float:
+            if len(timestamps) < 2:
+                return 25.0
+            timestamps = sorted(timestamps)
+            diffs = np.diff(timestamps)
+            median_frame_interval_ms = np.median(diffs)
+            return 1000.0 / median_frame_interval_ms if median_frame_interval_ms > 0 else 25.0
+
         def filter_with_ransac(initial_pairs):
             lhs_timestamps, rhs_timestamps = zip(*initial_pairs)
             lhs_array = np.array(lhs_timestamps).reshape(-1, 1)
@@ -278,6 +286,17 @@ class Melter():
                 else:
                     ratios.append(lhs_diff / rhs_diff)
             return ratios
+
+        def filter_short_segments(pairs, lhs_fps: float, rhs_fps: float, min_frame_count=5):
+            filtered = []
+            for i in range(len(pairs) - 1):
+                lhs_diff = pairs[i + 1][0] - pairs[i][0]
+                rhs_diff = pairs[i + 1][1] - pairs[i][1]
+                if lhs_diff >= min_frame_count * (1000 / lhs_fps) and rhs_diff >= min_frame_count * (1000 / rhs_fps):
+                    filtered.append(pairs[i])
+            if pairs:
+                filtered.append(pairs[-1])
+            return filtered
 
         def robust_iterative_filter(pairs):
             pairs = pairs.copy()
@@ -332,57 +351,76 @@ class Melter():
             remaining_lhs = {k: v for k, v in lhs_candidates.items() if k not in used_lhs}
             remaining_rhs = {k: v for k, v in rhs_candidates.items() if k not in used_rhs}
 
-            candidate_pairs = compute_phash_candidates(remaining_lhs, remaining_rhs)
-            additional_pairs = select_best_candidates(candidate_pairs)
-
+            result_pairs = pairs.copy()
             pairs_sorted = sorted(pairs)
-            filtered_additional_pairs = []
+            ratios = calculate_ratios(pairs_sorted)
+            median_ratio = np.median([r for r in ratios if r])
 
-            for candidate in additional_pairs:
-                lhs_c, rhs_c = candidate
-                idx = np.searchsorted([p[0] for p in pairs_sorted], lhs_c)
-                if 0 < idx < len(pairs_sorted):
-                    lhs_prev, rhs_prev = pairs_sorted[idx - 1]
-                    lhs_next, rhs_next = pairs_sorted[idx]
+            rhs_keys = sorted(remaining_rhs.keys())
 
-                    expected_ratio_prev = (lhs_c - lhs_prev) / (rhs_c - rhs_prev) if rhs_c != rhs_prev else None
-                    expected_ratio_next = (lhs_next - lhs_c) / (rhs_next - rhs_c) if rhs_next != rhs_c else None
+            for lhs_ts in sorted(remaining_lhs.keys()):
+                expected_rhs = int(round(pairs_sorted[0][1] + (lhs_ts - pairs_sorted[0][0]) / median_ratio))
+                idx = np.searchsorted(rhs_keys, expected_rhs)
+                candidates = []
+                for offset in [-1, 0, 1]:
+                    i = idx + offset
+                    if 0 <= i < len(rhs_keys):
+                        rhs_ts = rhs_keys[i]
+                        distance = abs(phash.get(remaining_lhs[lhs_ts]["path"]) - phash.get(remaining_rhs[rhs_ts]["path"]))
+                        candidates.append((distance, lhs_ts, rhs_ts))
+                if candidates:
+                    distance, lhs_final, rhs_final = min(candidates)
+                    result_pairs.append((lhs_final, rhs_final))
+                    used_lhs.add(lhs_final)
+                    used_rhs.add(rhs_final)
 
-                    median_ratio = np.median([r for r in calculate_ratios(pairs) if r])
-
-                    if (expected_ratio_prev and abs(expected_ratio_prev - median_ratio) < 0.1 * median_ratio and
-                        expected_ratio_next and abs(expected_ratio_next - median_ratio) < 0.1 * median_ratio):
-                        filtered_additional_pairs.append(candidate)
-
-            return sorted(pairs + filtered_additional_pairs)
+            return sorted(set(result_pairs))
 
         def filter_phash_outliers(pairs, lhs_set, rhs_set):
             distances = [abs(phash.get(lhs_set[lhs]["path"]) - phash.get(rhs_set[rhs]["path"])) for lhs, rhs in pairs]
             median_dist = np.median(distances)
             mad_dist = np.median(np.abs(distances - median_dist))
-            threshold = median_dist + 3 * mad_dist
+            threshold = median_dist + 1 * mad_dist
             return [pair for pair, dist in zip(pairs, distances) if dist <= threshold]
 
         def print_ratios(pairs_source: List):
             pairs = pairs_source.copy()
             pairs.sort()
 
-            # validate pace
-            prev_pair = None
-            pace = []
-            for pair in pairs:
-                if prev_pair:
-                    diff = (pair[0] - prev_pair[0], pair[1] - prev_pair[1])
-                    pace.append(diff[0]/diff[1])
+            segments = []
+            for i in range(len(pairs) - 1):
+                lhs1, rhs1 = pairs[i]
+                lhs2, rhs2 = pairs[i + 1]
+                lhs_diff = lhs2 - lhs1
+                rhs_diff = rhs2 - rhs1
+                if rhs_diff > 0:
+                    ratio = lhs_diff / rhs_diff
+                    segments.append((ratio, (lhs1, rhs1), (lhs2, rhs2)))
 
-                prev_pair = pair
+            ratios = [s[0] for s in segments]
+            if not ratios:
+                return
 
-            print(f"{len(pace)}, {min(pace)}, {max(pace)}: {pace}")
+            median_ratio = np.median(ratios)
+            print(f"Total segments: {len(ratios)} | Median ratio: {median_ratio:.4f}\n")
+            for ratio, (lhs1, rhs1), (lhs2, rhs2) in segments:
+                if abs(ratio - median_ratio) > 0.05 * median_ratio:
+                    lhs1_path = lhs_all[lhs1]['path']
+                    lhs2_path = lhs_all[lhs2]['path']
+                    rhs1_path = rhs_all[rhs1]['path']
+                    rhs2_path = rhs_all[rhs2]['path']
+                    pair1_diff = abs(phash.get(lhs1_path) - phash.get(rhs1_path))
+                    pair2_diff = abs(phash.get(lhs2_path) - phash.get(rhs2_path))
+                    print(f"RATIO {ratio:.4f}\n  {lhs1_path} <-> {rhs1_path} {pair1_diff}\n  {lhs2_path} <-> {rhs2_path} {pair2_diff}\n")
+
+        lhs_fps = estimate_fps(list(lhs_all.keys()))
+        rhs_fps = estimate_fps(list(rhs_all.keys()))
 
         pairs_candidates = compute_phash_candidates(lhs, rhs)
         initial_pairs = select_best_candidates(pairs_candidates)
+        initial_pairs = filter_short_segments(initial_pairs, lhs_fps, rhs_fps)
         print_ratios(initial_pairs)
-        initial_pairs = filter_phash_outliers(initial_pairs, lhs, rhs)      # ?
+        initial_pairs = filter_phash_outliers(initial_pairs, lhs, rhs)
         print_ratios(initial_pairs)
         filtered_pairs = filter_with_ransac(initial_pairs)
         print_ratios(filtered_pairs)
@@ -390,8 +428,11 @@ class Melter():
         print_ratios(final_pairs)
         final_pairs = match_remaining_candidates(final_pairs, lhs, rhs)
         print_ratios(final_pairs)
-        filtered_pairs = filter_phash_outliers(final_pairs, lhs, rhs)    # ?
+        filtered_pairs = filter_phash_outliers(final_pairs, lhs, rhs)
         print_ratios(filtered_pairs)
+        filtered_pairs = filter_short_segments(filtered_pairs, lhs_fps, rhs_fps)
+        print_ratios(filtered_pairs)
+
         refined_pairs = refined_matching(filtered_pairs, lhs_all, rhs_all)
         print_ratios(refined_pairs)
 
