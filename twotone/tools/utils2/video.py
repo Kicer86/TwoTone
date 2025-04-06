@@ -94,7 +94,7 @@ def extract_timestamp_frame_mapping(video_path: str) -> Dict[int, int]:
     return timestamp_frame_map
 
 
-def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", scale: Union[float, Tuple[int, int]] = 0.5):
+def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", scale: Union[float, Tuple[int, int]] = 0.5) -> Dict[int, Dict]:
     """
         Function extracts all frames into the given directory (should be empty).
         Returns a dict mapping timestamp (ms) -> {'path': frame_path, 'frame': frame_number}
@@ -164,7 +164,9 @@ def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", s
         if match:
             frame_number = int(match.group(1))
             timestamp_ms = int(round(float(match.group(2)) * 1000))
-            mapping[timestamp_ms] = {"path": os.path.join(target_dir, frame_files[f]), "frame": frame_number}
+            frame_file = frame_files[f]
+            frame_id = int(frame_file[6:- (len(format) + 1)])
+            mapping[timestamp_ms] = {"path": os.path.join(target_dir, frame_files[f]), "frame": frame_number, "frame_id": frame_id}
             f += 1
 
     print(f"Parsed frames: {f}, Frame files: {len(frame_files)}")
