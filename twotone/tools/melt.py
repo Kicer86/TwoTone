@@ -674,6 +674,9 @@ class Melter():
             lhs_all_frames = video.extract_all_frames(lhs, lhs_all_wd, scale = 0.5)
             rhs_all_frames = video.extract_all_frames(rhs, rhs_all_wd, scale = 0.5)
 
+            self.logger.debug(f"lhs key frames: {' '.join(str(lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes)}")
+            self.logger.debug(f"rhs key frames: {' '.join(str(rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes)}")
+
             # normalize frames. This could be done in previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
             lhs_normalized_frames = Melter._normalize_frames(lhs_all_frames, lhs_normalized_wd)
             rhs_normalized_frames = Melter._normalize_frames(rhs_all_frames, rhs_normalized_wd)
@@ -695,6 +698,14 @@ class Melter():
                     lhs_cropped_dir = lhs_normalized_cropped_wd,
                     rhs_cropped_dir = rhs_normalized_cropped_wd
                 )
+
+                first_lhs, first_rhs = matching_pairs[0]
+                last_lhs, last_rhs = matching_pairs[-1]
+                self.logger.debug(f"First pair: {lhs_normalized_cropped_frames[first_lhs]["path"]} {rhs_normalized_cropped_frames[first_rhs]["path"]}")
+                self.logger.debug(f"Last pair:  {lhs_normalized_cropped_frames[last_lhs]["path"]} {rhs_normalized_cropped_frames[last_rhs]["path"]}")
+
+                phash = Melter.PhashCache()
+                self.logger.debug(f"Cropped and aligned:       {Melter.summarize_pairs(phash, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)}")
 
                 cutoff = Melter._calculate_cutoff(phash, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
 
