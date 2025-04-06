@@ -155,7 +155,7 @@ class MeltingTest(unittest.TestCase):
             files_before = hashes(td.path)
             self.assertEqual(len(files_before), 2)
 
-            melter = Melter(interruption, duplicates, live_run = True)
+            melter = Melter(interruption, duplicates, live_run = True, logger = logging.getLogger("Melter"))
             melter.melt()
 
             # expect second file to be removed
