@@ -628,24 +628,18 @@ class Melter():
 
     @staticmethod
     def _calculate_cutoff(
-        pairs_with_timestamps: List[Tuple[int, int]],
-        lhs_frames: FramesInfo,
-        rhs_frames: FramesInfo
+        phash: PhashCache,
+        pairs: List[Tuple[int, int]],
+        lhs: FramesInfo,
+        rhs: FramesInfo
     ) -> int:
-        phash = Melter.PhashCache()
-        max_phash = 0
+        distances = [abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"])) for lhs_ts, rhs_ts in pairs]
 
-        for lhs, rhs in pairs_with_timestamps:
-            lhs_path = lhs_frames[lhs]["path"]
-            rhs_path = rhs_frames[rhs]["path"]
-            lhs_phash = phash.get(lhs_path)
-            rhs_phash = phash.get(rhs_path)
+        arr = np.array(distances)
+        median = np.median(arr)
+        std = np.std(arr)
 
-            pdiff = abs(lhs_phash - rhs_phash)
-            print(f"{lhs_path} vs {rhs_path}: {pdiff}")
-            max_phash = max(max_phash, pdiff)
-
-        return max_phash
+        return median + std
 
 
     def _create_segments_mapping(self, lhs: str, rhs: str) -> List[Tuple[int, int]]:
@@ -702,10 +696,10 @@ class Melter():
                     rhs_cropped_dir = rhs_normalized_cropped_wd
                 )
 
-                cutoff = Melter._calculate_cutoff(matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
+                cutoff = Melter._calculate_cutoff(phash, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
 
                 # try to locate first and last common frames
-                first, last = Melter._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff * 1.5)
+                first, last = Melter._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff)
 
                 if first == prev_first and last == prev_last:
                     break
