@@ -258,18 +258,22 @@ class Melter():
 
     @staticmethod
     def summarize_pairs(phash, pairs: List[Tuple[int, int]], lhs: FramesInfo, rhs: FramesInfo) -> str:
-        distances = [abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"]))
-                    for lhs_ts, rhs_ts in pairs]
+        distances = []
+        for lhs_ts, rhs_ts in pairs:
+            d = abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"]))
+            distances.append((d, lhs_ts, rhs_ts))
 
-        if not distances:
-            return "No pairs to summarize."
-
-        arr = np.array(distances)
+        arr = np.array([d[0] for d in distances])
         median = np.median(arr)
         mean = np.mean(arr)
         std = np.std(arr)
         max_val = np.max(arr)
         min_val = np.min(arr)
+
+        # Identify the max pair
+        max_entry = max(distances, key=lambda x: x[0])
+        max_lhs_path = lhs[max_entry[1]]["path"]
+        max_rhs_path = rhs[max_entry[2]]["path"]
 
         return (
             f"Pairs: {len(pairs)} | "
@@ -277,7 +281,8 @@ class Melter():
             f"Mean: {mean:.2f} | "
             f"Std Dev: {std:.2f} | "
             f"Min: {min_val} | "
-            f"Max: {max_val}"
+            f"Max: {max_val} | "
+            f"Max Pair: {max_lhs_path} <-> {max_rhs_path}"
         )
 
 
