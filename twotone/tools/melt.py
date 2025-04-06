@@ -381,7 +381,14 @@ class Melter():
         final = Melter.filter_phash_outliers(phash, refined, lhs_all, rhs_all)
         self.logger.debug(f"Phash outlier elimination: {Melter.summarize_pairs(phash, final, lhs_all, rhs_all)}")
 
-        return sorted(set(final))
+        final_verified = [
+            (lhs_ts, rhs_ts)
+            for lhs_ts, rhs_ts in final
+            if Melter.are_images_similar(lhs_all[lhs_ts]["path"], rhs_all[rhs_ts]["path"])
+        ]
+        self.logger.debug(f"After ORB elimination:     {Melter.summarize_pairs(phash, final_verified, lhs_all, rhs_all)}")
+
+        return sorted(set(final_verified))
 
 
     @staticmethod
