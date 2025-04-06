@@ -138,7 +138,6 @@ class Melter():
             self._memory_cache[image_path] = phash
             return phash
 
-
     def __init__(self, logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool):
         self.logger = logger
         self.interruption = interruption
@@ -160,6 +159,15 @@ class Melter():
     def _filter_low_detailed(scenes: FramesInfo):
         valuable_scenes = { timestamp: info for timestamp, info in scenes.items() if Melter._frame_entropy(info["path"]) > 4}
         return valuable_scenes
+
+
+    @staticmethod
+    def filter_phash_outliers(phash: PhashCache, pairs: List[Tuple[int, int]], lhs_set: FramesInfo, rhs_set: FramesInfo) -> List[Tuple[int, int]]:
+        dists = [abs(phash.get(lhs_set[l]["path"]) - phash.get(rhs_set[r]["path"])) for l, r in pairs]
+        med = np.median(dists)
+        mad = np.median(np.abs(dists - med))
+        threshold = med + 1.5 * mad
+        return [pair for pair, dist in zip(pairs, dists) if dist <= threshold]
 
 
     @staticmethod
@@ -231,7 +239,31 @@ class Melter():
 
 
     @staticmethod
-    def _match_pairs(lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> List[Tuple[int, int]]:
+    def summarize_pairs(phash, pairs: List[Tuple[int, int]], lhs: FramesInfo, rhs: FramesInfo) -> str:
+        distances = [abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"]))
+                    for lhs_ts, rhs_ts in pairs]
+
+        if not distances:
+            return "No pairs to summarize."
+
+        arr = np.array(distances)
+        median = np.median(arr)
+        mean = np.mean(arr)
+        std = np.std(arr)
+        max_val = np.max(arr)
+        min_val = np.min(arr)
+
+        return (
+            f"Pairs: {len(pairs)} | "
+            f"Median: {median:.2f} | "
+            f"Mean: {mean:.2f} | "
+            f"Std Dev: {std:.2f} | "
+            f"Min: {min_val} | "
+            f"Max: {max_val}"
+        )
+
+
+    def _match_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> List[Tuple[int, int]]:
         phash = Melter.PhashCache()
 
         def estimate_fps(timestamps: List[int]) -> float:
@@ -283,13 +315,6 @@ class Melter():
             inliers = model.inlier_mask_
             return [p for p, keep in zip(pairs, inliers) if keep]
 
-        def filter_phash_outliers(pairs: List[Tuple[int, int]], lhs_set: FramesInfo, rhs_set: FramesInfo) -> List[Tuple[int, int]]:
-            dists = [abs(phash.get(lhs_set[l]["path"]) - phash.get(rhs_set[r]["path"])) for l, r in pairs]
-            med = np.median(dists)
-            mad = np.median(np.abs(dists - med))
-            threshold = med + 3 * mad
-            return [pair for pair, dist in zip(pairs, dists) if dist <= threshold]
-
         def extrapolate_matches(known_pairs: List[Tuple[int, int]], lhs_pool: FramesInfo, rhs_pool: FramesInfo) -> List[Tuple[int, int]]:
             known_pairs.sort()
             lhs_used = {l for l, _ in known_pairs}
@@ -321,11 +346,23 @@ class Melter():
 
         # Pipeline
         initial = build_initial_candidates(lhs, rhs)
+        self.logger.debug(f"Initial candidates:        {Melter.summarize_pairs(phash, initial, lhs_all, rhs_all)}")
+
         stable = reject_outliers(initial)
-        stable = filter_phash_outliers(stable, lhs, rhs)
+        self.logger.debug(f"After linear matching:     {Melter.summarize_pairs(phash, stable, lhs_all, rhs_all)}")
+
+        stable = Melter.filter_phash_outliers(phash, stable, lhs, rhs)
+        self.logger.debug(f"Phash outlier elimination: {Melter.summarize_pairs(phash, stable, lhs_all, rhs_all)}")
+
         extrapolated = extrapolate_matches(stable, lhs, rhs)
+        self.logger.debug(f"Extrapolation:             {Melter.summarize_pairs(phash, extrapolated, lhs_all, rhs_all)}")
+
         refined = [best_phash_match(l, r, lhs_all, rhs_all) for l, r in extrapolated]
-        final = filter_phash_outliers(refined, lhs_all, rhs_all)
+        self.logger.debug(f"Frame adjustment:          {Melter.summarize_pairs(phash, refined, lhs_all, rhs_all)}")
+
+        final = Melter.filter_phash_outliers(phash, refined, lhs_all, rhs_all)
+        self.logger.debug(f"Phash outlier elimination: {Melter.summarize_pairs(phash, final, lhs_all, rhs_all)}")
+
         return sorted(set(final))
 
 
@@ -622,14 +659,7 @@ class Melter():
             rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
 
             # find matching keys
-            matching_pairs = Melter._match_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames)
-
-            phash = Melter.PhashCache()
-            for lhs_ts, rhs_ts in matching_pairs:
-                lhs_path = lhs_normalized_frames[lhs_ts]["path"]
-                rhs_path = rhs_normalized_frames[rhs_ts]["path"]
-                pdiff = abs(phash.get(lhs_path) - phash.get(rhs_path))
-                print(f"{lhs_path} {rhs_path} {pdiff}")
+            matching_pairs = self._match_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames)
 
             prev_first, prev_last = None, None
             while True:
