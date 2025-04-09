@@ -128,10 +128,12 @@ def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", s
         filters_arg = ",".join(filters)
 
         return [
+            "-copyts",
+            "-start_at_zero",
             "-i", video_path,
-            "-an",  # Ignore audio
-            "-sn",  # Ignore subtitles
-            "-dn",  # Ignore data streams
+            "-an",                      # Ignore audio
+            "-sn",                      # Ignore subtitles
+            "-dn",                      # Ignore data streams
             "-frame_pts", "true",
             *extra_args,
             "-q:v", "2",
@@ -140,8 +142,7 @@ def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", s
         ]
 
     fallback_options = [
-        ["-fps_mode", "passthrough"],
-        ["-fps_mode", "auto"],
+        ["-fps_mode", "vfr"],
     ]
 
     for opts in fallback_options:
