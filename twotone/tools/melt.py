@@ -338,7 +338,7 @@ class Melter():
             inliers = model.inlier_mask_
             return [p for p, keep in zip(pairs, inliers) if keep]
 
-        def extrapolate_matches(known_pairs: List[Tuple[int, int]], lhs_pool: FramesInfo, rhs_pool: FramesInfo) -> List[Tuple[int, int]]:
+        def extrapolate_matches(known_pairs: List[Tuple[int, int]], lhs_pool: FramesInfo, rhs_pool: FramesInfo, phash: Melter.PhashCache) -> List[Tuple[int, int]]:
             known_pairs.sort()
             lhs_used = {l for l, _ in known_pairs}
             rhs_used = {r for _, r in known_pairs}
@@ -351,19 +351,33 @@ class Melter():
             ratios = [(r[0] - l[0]) / (r[1] - l[1]) for l, r in zip(known_pairs[:-1], known_pairs[1:]) if (r[1] - l[1]) != 0]
             median_ratio = np.median(ratios)
             first_known_pair = known_pairs[0]
+            cutoff = Melter._calculate_cutoff(phash, known_pairs, lhs_pool, rhs_pool)
 
             new_pairs = []
             for l in lhs_free:
                 expected_rhs = first_known_pair[1] + (l - first_known_pair[0]) / median_ratio
                 nearest_rhs_candidates = nearest_three(rhs_keys, int(expected_rhs))
+                lhs_surrounding = nearest_three(lhs_pool, l)
 
                 for rhs_candidate in nearest_rhs_candidates:
                     ratio = (l - first_known_pair[0]) / (rhs_candidate - first_known_pair[1]) if (rhs_candidate - first_known_pair[1]) != 0 else None
                     if ratio and abs(ratio - median_ratio) < 0.05 * median_ratio:
                         if rhs_candidate not in rhs_used:
-                            new_pairs.append((l, rhs_candidate))
-                            rhs_used.add(rhs_candidate)
-                        break
+                            # make sure lhs and rhs_candidate are matching #and previous lhs and previous to rhs_candidate also match
+                            rhs_candidate_surrounding = nearest_three(rhs_pool, rhs_candidate)
+
+                            lhs_path = lhs_pool[l]["path"]
+                            rhs_path = rhs_pool[rhs_candidate]["path"]
+
+                            pdiff = abs(phash.get(lhs_path) - phash.get(rhs_path))
+                            phash_matching = pdiff < cutoff
+                            matching = Melter.are_images_similar(lhs_path, rhs_path)
+                            if phash_matching and matching:
+                                new_pairs.append((l, rhs_candidate))
+                                rhs_used.add(rhs_candidate)
+                                break
+                            else:
+                                pass
 
             return sorted(set(known_pairs + new_pairs))
 
@@ -377,7 +391,7 @@ class Melter():
         stable = Melter.filter_phash_outliers(phash, stable, lhs, rhs)
         self.logger.debug(f"Phash outlier elimination: {Melter.summarize_pairs(phash, stable, lhs_all, rhs_all)}")
 
-        extrapolated = extrapolate_matches(stable, lhs, rhs)
+        extrapolated = extrapolate_matches(stable, lhs, rhs, phash)
         self.logger.debug(f"Extrapolation:             {Melter.summarize_pairs(phash, extrapolated, lhs_all, rhs_all)}")
 
         refined = [best_phash_match(l, r, lhs_all, rhs_all) for l, r in extrapolated]
@@ -639,7 +653,7 @@ class Melter():
         median = np.median(arr)
         std = np.std(arr)
 
-        return median + std
+        return median + std * 2
 
 
     def _create_segments_mapping(self, lhs: str, rhs: str) -> List[Tuple[int, int]]:
