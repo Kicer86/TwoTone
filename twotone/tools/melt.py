@@ -188,69 +188,65 @@ class Melter():
         return [pair for pair, dist in zip(pairs, dists) if dist <= threshold]
 
 
-    @staticmethod
-    def _look_for_boundaries(lhs: FramesInfo, rhs: FramesInfo, first: Tuple[int, int], last: Tuple[int, int], cutoff: float):
+    def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: Tuple[int, int], last: Tuple[int, int], cutoff: float, lookahead_seconds: float = 1.0):
+        phash = Melter.PhashCache()
+
         def estimate_fps(timestamps: List[int]) -> float:
             if len(timestamps) < 2:
                 return 1.0
             diffs = [t2 - t1 for t1, t2 in zip(timestamps[:-1], timestamps[1:]) if t2 > t1]
-            return 1.0 / (sum(diffs) / len(diffs)) if diffs else 1.0
+            return 1000.0 / (sum(diffs) / len(diffs)) if diffs else 1.0
 
-        def find_boundary(lhs_set, rhs_set, lhs_ts, rhs_ts, lhs_fps, rhs_fps, pace, direction):
+        def find_boundary(lhs_set, rhs_set, lhs_ts, rhs_ts, direction):
             lhs_keys = sorted(lhs_set.keys())
             rhs_keys = sorted(rhs_set.keys())
 
-            def get_nearest(t, keys):
-                return min(keys, key=lambda k: abs(k - t)) if keys else t
+            lhs_idx = lhs_keys.index(lhs_ts)
+            rhs_idx = rhs_keys.index(rhs_ts)
 
-            current = (lhs_ts, rhs_ts)
-            allowed_misses = 3
-            miss = 0
+            current_pair = (lhs_ts, rhs_ts)
 
-            phash = Melter.PhashCache()
-            i = 0
+            lhs_fps = estimate_fps(lhs_keys)
+            rhs_fps = estimate_fps(rhs_keys)
+
+            step_lhs = int(lhs_fps * lookahead_seconds)
+            step_rhs = int(rhs_fps * lookahead_seconds)
+
             while True:
-                time_step = round(i / lhs_fps) * direction
-                next_lhs_ts = lhs_ts + time_step
-                next_rhs_est = rhs_ts + time_step / pace
-                i += 1
+                lhs_slice = slice(lhs_idx + direction, lhs_idx + direction * step_lhs, direction)
+                rhs_slice = slice(rhs_idx + direction, rhs_idx + direction * step_rhs, direction)
 
-                if next_lhs_ts not in lhs_set:
+                lhs_range = lhs_keys[lhs_slice]
+                rhs_range = rhs_keys[rhs_slice]
+
+                if not lhs_range or not rhs_range:
                     break
 
-                next_rhs_ts = get_nearest(next_rhs_est, rhs_keys)
-                if abs(next_rhs_ts - next_rhs_est) > 10:
-                    continue
+                lhs_candidates = {lhs_ts: lhs[lhs_ts] for lhs_ts in lhs_range}
+                rhs_candidates = {rhs_ts: rhs[rhs_ts] for rhs_ts in rhs_range}
 
-                lhs_img_path = lhs_set[next_lhs_ts]["path"]
-                rhs_img_path = rhs_set[next_rhs_ts]["path"]
-                lhs_hash = phash.get(lhs_img_path)
-                rhs_hash = phash.get(rhs_img_path)
+                matches = self._match_pairs(lhs_candidates, rhs_candidates, lhs, rhs, phash, extrapolate = False)
 
-                diff = abs(lhs_hash - rhs_hash)
-                is_good = diff <= cutoff
-                if is_good or miss < allowed_misses:
-                    if is_good:
-                        current = (next_lhs_ts, next_rhs_ts)
-                        miss = 0
+                if matches:
+                    matches.sort(reverse = direction < 0)
+
+                    new_current_pair = matches[-1]
+
+                    if new_current_pair == current_pair:
+                        break
                     else:
-                        miss += 1
+                        current_pair = new_current_pair
+                        lhs_idx = lhs_keys.index(current_pair[0])
+                        rhs_idx = rhs_keys.index(current_pair[1])
                 else:
                     break
 
-            return current
+            return current_pair
 
-        lhs_times = sorted(lhs.keys())
-        rhs_times = sorted(rhs.keys())
-
-        lhs_fps = estimate_fps(lhs_times)
-        rhs_fps = estimate_fps(rhs_times)
-        pace = (last[0] - first[0]) / (last[1] - first[1]) if (last[1] - first[1]) != 0 else 1.0
-
-        refined_first = find_boundary(lhs, rhs, first[0], first[1], lhs_fps, rhs_fps, pace, direction=-1)
-        refined_last = find_boundary(lhs, rhs, last[0], last[1], lhs_fps, rhs_fps, pace, direction=1)
-
+        refined_first = find_boundary(lhs, rhs, first[0], first[1], direction=-1)
         print(f"Refined First: L: {lhs[refined_first[0]]['path']} R: {rhs[refined_first[1]]['path']}")
+
+        refined_last = find_boundary(lhs, rhs, last[0], last[1], direction=1)
         print(f"Refined Last:  L: {lhs[refined_last[0]]['path']} R: {rhs[refined_last[1]]['path']}")
 
         return refined_first, refined_last
@@ -286,8 +282,9 @@ class Melter():
         )
 
 
-    def _match_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> List[Tuple[int, int]]:
-        phash = Melter.PhashCache()
+    def _match_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo, phash = None, extrapolate: bool = True) -> List[Tuple[int, int]]:
+        if phash is None:
+            phash = Melter.PhashCache()
 
         def estimate_fps(timestamps: List[int]) -> float:
             diffs = np.diff(sorted(timestamps))
@@ -724,7 +721,7 @@ class Melter():
                 cutoff = Melter._calculate_cutoff(phash, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
 
                 # try to locate first and last common frames
-                first, last = Melter._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff)
+                first, last = self._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff)
 
                 if first == prev_first and last == prev_last:
                     break
