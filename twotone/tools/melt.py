@@ -175,7 +175,7 @@ class Melter():
 
     @staticmethod
     def _filter_low_detailed(scenes: FramesInfo):
-        valuable_scenes = { timestamp: info for timestamp, info in scenes.items() if Melter._frame_entropy(info["path"]) > 4}
+        valuable_scenes = {timestamp: info for timestamp, info in scenes.items() if Melter._frame_entropy(info["path"]) > 3}
         return valuable_scenes
 
 
