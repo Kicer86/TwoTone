@@ -172,10 +172,13 @@ class Melter():
         e = entropy(histogram)
         return e
 
+    @staticmethod
+    def _is_rich(frame_path: str):
+        return Melter._frame_entropy(frame_path) > 3.5
 
     @staticmethod
     def _filter_low_detailed(scenes: FramesInfo):
-        valuable_scenes = {timestamp: info for timestamp, info in scenes.items() if Melter._frame_entropy(info["path"]) > 3}
+        valuable_scenes = {timestamp: info for timestamp, info in scenes.items() if Melter._is_rich(info["path"])}
         return valuable_scenes
 
 
