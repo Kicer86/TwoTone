@@ -200,7 +200,25 @@ class Melter():
             diffs = [t2 - t1 for t1, t2 in zip(timestamps[:-1], timestamps[1:]) if t2 > t1]
             return 1000.0 / (sum(diffs) / len(diffs)) if diffs else 1.0
 
-        def find_boundary(lhs_set, rhs_set, lhs_ts, rhs_ts, direction):
+        def find_best_pair(lhs: FramesInfo, rhs: FramesInfo) -> Tuple[Tuple[int, int], int]:
+            best_score = 1000
+            best_pair = ()
+
+            for lhs_ts, lhs_info in lhs.items():
+                lhs_hash = phash.get(lhs_info["path"])
+                options = [(abs(lhs_hash - phash.get(rhs_info["path"])), rhs_ts) for rhs_ts, rhs_info in rhs.items()]
+                if not options:
+                    continue
+
+                options.sort()
+                best_dist, best_rhs = options[0]
+                if best_dist < best_score:
+                    best_score = best_dist
+                    best_pair = (lhs_ts, best_rhs)
+
+            return best_pair, best_score
+
+        def find_boundary(lhs_set: FramesInfo, rhs_set: FramesInfo, lhs_ts, rhs_ts, direction):
             lhs_keys = sorted(lhs_set.keys())
             rhs_keys = sorted(rhs_set.keys())
 
@@ -225,22 +243,22 @@ class Melter():
                 if not lhs_range or not rhs_range:
                     break
 
-                lhs_candidates = {lhs_ts: lhs[lhs_ts] for lhs_ts in lhs_range}
-                rhs_candidates = {rhs_ts: rhs[rhs_ts] for rhs_ts in rhs_range}
+                lhs_candidates = {lhs_ts: lhs[lhs_ts] for lhs_ts in lhs_range if Melter._is_rich(lhs[lhs_ts]["path"])}
+                rhs_candidates = {rhs_ts: rhs[rhs_ts] for rhs_ts in rhs_range if Melter._is_rich(rhs[rhs_ts]["path"])}
 
-                matches = self._match_pairs(lhs_candidates, rhs_candidates, lhs, rhs, phash, extrapolate = False)
+                best_pair, best_score = find_best_pair(lhs_candidates, rhs_candidates)
 
-                if matches:
-                    matches.sort(reverse = direction < 0)
-
-                    new_current_pair = matches[-1]
-
-                    if new_current_pair == current_pair:
+                if best_pair and best_score < cutoff:
+                    if best_pair == current_pair:
                         break
                     else:
-                        current_pair = new_current_pair
-                        lhs_idx = lhs_keys.index(current_pair[0])
-                        rhs_idx = rhs_keys.index(current_pair[1])
+                        current_pair = best_pair
+                        lhs_ts = current_pair[0]
+                        rhs_ts = current_pair[1]
+                        lhs_idx = lhs_keys.index(lhs_ts)
+                        rhs_idx = rhs_keys.index(rhs_ts)
+
+                        print(f"Step best: {lhs_set[lhs_ts]["path"]} {rhs_set[rhs_ts]["path"]}")
                 else:
                     break
 
