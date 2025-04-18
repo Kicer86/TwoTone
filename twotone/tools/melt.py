@@ -303,7 +303,7 @@ class Melter():
         )
 
 
-    def _match_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo, phash = None, extrapolate: bool = True) -> List[Tuple[int, int]]:
+    def _match_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo, phash = None) -> List[Tuple[int, int]]:
         if phash is None:
             phash = Melter.PhashCache()
 
@@ -400,27 +400,32 @@ class Melter():
             return sorted(set(known_pairs + new_pairs))
 
         # Pipeline
+        lhs = Melter._filter_low_detailed(lhs)
+        rhs = Melter._filter_low_detailed(rhs)
+
+        if not lhs or not rhs:
+            return []
+
         initial = build_initial_candidates(lhs, rhs)
         self.logger.debug(f"Initial candidates:        {Melter.summarize_pairs(phash, initial, lhs_all, rhs_all)}")
 
         stable = reject_outliers(initial)
         self.logger.debug(f"After linear matching:     {Melter.summarize_pairs(phash, stable, lhs_all, rhs_all)}")
 
-        stable = Melter.filter_phash_outliers(phash, stable, lhs, rhs)
+        stable = Melter.filter_phash_outliers(phash, stable, lhs_all, rhs_all)
         self.logger.debug(f"Phash outlier elimination: {Melter.summarize_pairs(phash, stable, lhs_all, rhs_all)}")
 
         extrapolated = extrapolate_matches(stable, lhs, rhs, phash)
         self.logger.debug(f"Extrapolation:             {Melter.summarize_pairs(phash, extrapolated, lhs_all, rhs_all)}")
 
-        refined = [best_phash_match(l, r, lhs_all, rhs_all) for l, r in extrapolated]
-        self.logger.debug(f"Frame adjustment:          {Melter.summarize_pairs(phash, refined, lhs_all, rhs_all)}")
+        extrapolated_refined = [best_phash_match(l, r, lhs_all, rhs_all) for l, r in extrapolated]
+        self.logger.debug(f"Frame adjustment:          {Melter.summarize_pairs(phash, extrapolated_refined, lhs_all, rhs_all)}")
 
-        final = Melter.filter_phash_outliers(phash, refined, lhs_all, rhs_all)
+        final = Melter.filter_phash_outliers(phash, extrapolated_refined, lhs_all, rhs_all)
         self.logger.debug(f"Phash outlier elimination: {Melter.summarize_pairs(phash, final, lhs_all, rhs_all)}")
 
         final_verified = [
-            (lhs_ts, rhs_ts)
-            for lhs_ts, rhs_ts in final
+            (lhs_ts, rhs_ts) for lhs_ts, rhs_ts in final
             if Melter.are_images_similar(lhs_all[lhs_ts]["path"], rhs_all[rhs_ts]["path"])
         ]
         self.logger.debug(f"After ORB elimination:     {Melter.summarize_pairs(phash, final_verified, lhs_all, rhs_all)}")
