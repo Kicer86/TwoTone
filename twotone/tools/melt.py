@@ -679,85 +679,84 @@ class Melter():
         return median + std * 2
 
 
-    def _create_segments_mapping(self, lhs: str, rhs: str) -> List[Tuple[int, int]]:
-        with tempfile.TemporaryDirectory() as wd:
-            lhs_scene_changes = video.detect_scene_changes(lhs, threshold = 0.3)
-            rhs_scene_changes = video.detect_scene_changes(rhs, threshold = 0.3)
+    def _create_segments_mapping(self, wd: str, lhs: str, rhs: str) -> List[Tuple[int, int]]:
+        lhs_scene_changes = video.detect_scene_changes(lhs, threshold = 0.3)
+        rhs_scene_changes = video.detect_scene_changes(rhs, threshold = 0.3)
 
-            if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
-                return
+        if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
+            return
 
-            lhs_wd = os.path.join(wd, "lhs")
-            rhs_wd = os.path.join(wd, "rhs")
+        lhs_wd = os.path.join(wd, "lhs")
+        rhs_wd = os.path.join(wd, "rhs")
 
-            lhs_all_wd = os.path.join(lhs_wd, "all")
-            rhs_all_wd = os.path.join(rhs_wd, "all")
-            lhs_normalized_wd = os.path.join(lhs_wd, "norm")
-            rhs_normalized_wd = os.path.join(rhs_wd, "norm")
-            lhs_normalized_cropped_wd = os.path.join(lhs_wd, "norm_cropped")
-            rhs_normalized_cropped_wd = os.path.join(rhs_wd, "norm_cropped")
+        lhs_all_wd = os.path.join(lhs_wd, "all")
+        rhs_all_wd = os.path.join(rhs_wd, "all")
+        lhs_normalized_wd = os.path.join(lhs_wd, "norm")
+        rhs_normalized_wd = os.path.join(rhs_wd, "norm")
+        lhs_normalized_cropped_wd = os.path.join(lhs_wd, "norm_cropped")
+        rhs_normalized_cropped_wd = os.path.join(rhs_wd, "norm_cropped")
 
-            for d in [lhs_wd,
-                      rhs_wd,
-                      lhs_all_wd,
-                      rhs_all_wd,
-                      lhs_normalized_wd,
-                      rhs_normalized_wd,
-                      lhs_normalized_cropped_wd,
-                      rhs_normalized_cropped_wd]:
-                os.makedirs(d)
+        for d in [lhs_wd,
+                    rhs_wd,
+                    lhs_all_wd,
+                    rhs_all_wd,
+                    lhs_normalized_wd,
+                    rhs_normalized_wd,
+                    lhs_normalized_cropped_wd,
+                    rhs_normalized_cropped_wd]:
+            os.makedirs(d)
 
-             # extract all scenes
-            lhs_all_frames = video.extract_all_frames(lhs, lhs_all_wd, scale = 0.5)
-            rhs_all_frames = video.extract_all_frames(rhs, rhs_all_wd, scale = 0.5)
+            # extract all scenes
+        lhs_all_frames = video.extract_all_frames(lhs, lhs_all_wd, scale = 0.5, format = "tiff")
+        rhs_all_frames = video.extract_all_frames(rhs, rhs_all_wd, scale = 0.5, format = "tiff")
 
-            self.logger.debug(f"lhs key frames: {' '.join(str(lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes)}")
-            self.logger.debug(f"rhs key frames: {' '.join(str(rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes)}")
+        self.logger.debug(f"lhs key frames: {' '.join(str(lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes)}")
+        self.logger.debug(f"rhs key frames: {' '.join(str(rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes)}")
 
-            # normalize frames. This could be done in previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
-            lhs_normalized_frames = Melter._normalize_frames(lhs_all_frames, lhs_normalized_wd)
-            rhs_normalized_frames = Melter._normalize_frames(rhs_all_frames, rhs_normalized_wd)
+        # normalize frames. This could be done in previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
+        lhs_normalized_frames = Melter._normalize_frames(lhs_all_frames, lhs_normalized_wd)
+        rhs_normalized_frames = Melter._normalize_frames(rhs_all_frames, rhs_normalized_wd)
 
-            # extract key frames (as 'key' a scene change frame is meant)
-            lhs_key_frames = Melter._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_frames)
-            rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
+        # extract key frames (as 'key' a scene change frame is meant)
+        lhs_key_frames = Melter._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_frames)
+        rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
 
-            # find matching keys
-            matching_pairs = self._match_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames)
+        # find matching keys
+        matching_pairs = self._match_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames)
 
-            prev_first, prev_last = None, None
-            while True:
-                # crop frames basing on matching ones
-                lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = Melter._crop_both_sets(
-                    pairs_with_timestamps = matching_pairs,
-                    lhs_frames = lhs_normalized_frames,
-                    rhs_frames = rhs_normalized_frames,
-                    lhs_cropped_dir = lhs_normalized_cropped_wd,
-                    rhs_cropped_dir = rhs_normalized_cropped_wd
-                )
+        prev_first, prev_last = None, None
+        while True:
+            # crop frames basing on matching ones
+            lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = Melter._crop_both_sets(
+                pairs_with_timestamps = matching_pairs,
+                lhs_frames = lhs_normalized_frames,
+                rhs_frames = rhs_normalized_frames,
+                lhs_cropped_dir = lhs_normalized_cropped_wd,
+                rhs_cropped_dir = rhs_normalized_cropped_wd
+            )
 
-                first_lhs, first_rhs = matching_pairs[0]
-                last_lhs, last_rhs = matching_pairs[-1]
-                self.logger.debug(f"First pair: {lhs_normalized_cropped_frames[first_lhs]["path"]} {rhs_normalized_cropped_frames[first_rhs]["path"]}")
-                self.logger.debug(f"Last pair:  {lhs_normalized_cropped_frames[last_lhs]["path"]} {rhs_normalized_cropped_frames[last_rhs]["path"]}")
+            first_lhs, first_rhs = matching_pairs[0]
+            last_lhs, last_rhs = matching_pairs[-1]
+            self.logger.debug(f"First pair: {lhs_normalized_cropped_frames[first_lhs]["path"]} {rhs_normalized_cropped_frames[first_rhs]["path"]}")
+            self.logger.debug(f"Last pair:  {lhs_normalized_cropped_frames[last_lhs]["path"]} {rhs_normalized_cropped_frames[last_rhs]["path"]}")
 
-                phash = Melter.PhashCache()
-                self.logger.debug(f"Cropped and aligned:       {Melter.summarize_pairs(phash, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)}")
+            phash = Melter.PhashCache()
+            self.logger.debug(f"Cropped and aligned:       {Melter.summarize_pairs(phash, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)}")
 
-                cutoff = Melter._calculate_cutoff(phash, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
+            cutoff = Melter._calculate_cutoff(phash, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
 
-                # try to locate first and last common frames
-                first, last = self._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff)
+            # try to locate first and last common frames
+            first, last = self._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff)
 
-                if first == prev_first and last == prev_last:
-                    break
-                else:
-                    if first != prev_first:
-                        matching_pairs = [first, *matching_pairs]
-                        prev_first = first
-                    if last != prev_last:
-                        matching_pairs = [*matching_pairs, last]
-                        prev_last = last
+            if first == prev_first and last == prev_last:
+                break
+            else:
+                if first != prev_first:
+                    matching_pairs = [first, *matching_pairs]
+                    prev_first = first
+                if last != prev_last:
+                    matching_pairs = [*matching_pairs, last]
+                    prev_last = last
 
         return matching_pairs
 
