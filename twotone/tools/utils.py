@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os.path
+import py3langid as langid
 import re
 import signal
 import subprocess
@@ -13,9 +14,12 @@ import uuid
 from collections import namedtuple
 from itertools import islice
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
+
+from .utils2 import process, video
+from .utils2.generic import fps_str_to_float, get_tqdm_defaults, ms_to_time, time_to_ms
 
 
 SubtitleFile = namedtuple("Subtitle", "path language encoding")
@@ -30,55 +34,6 @@ microdvd_time_pattern = re.compile("\\{[0-9]+\\}\\{[0-9]+\\}.*")
 subrip_time_pattern = re.compile(r'(\d+:\d{2}:\d{2},\d{3}) --> (\d+:\d{2}:\d{2},\d{3})')
 
 ffmpeg_default_fps = 23.976                      # constant taken from https://trac.ffmpeg.org/ticket/3287
-
-def get_tqdm_defaults():
-    return {
-    'leave': False,
-    'smoothing': 0.1,
-    'mininterval':.2,
-    'disable': hide_progressbar()
-}
-
-
-def start_process(process: str, args: [str], show_progress = False) -> ProcessResult:
-    command = [process]
-    command.extend(args)
-
-    logging.debug(f"Starting {process} with options: {' '.join(args)}")
-    sub_process = subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, bufsize=1, preexec_fn=os.setsid)
-
-    if show_progress:
-        if process == "ffmpeg":
-            index_of_i = args.index("-i")
-            input_file = args[index_of_i + 1]
-
-            if is_video(input_file):
-                progress_pattern = re.compile(r"frame= *(\d+)")
-                frames = get_video_frames_count(input_file)
-                with logging_redirect_tqdm(), \
-                     tqdm(desc="Processing video", unit="frame", total=frames, **get_tqdm_defaults()) as pbar:
-                    last_frame = 0
-                    for line in sub_process.stderr:
-                        line = line.strip()
-                        if "frame=" in line:
-                            match = progress_pattern.search(line)
-                            if match:
-                                current_frame = int(match.group(1))
-                                delta = current_frame - last_frame
-                                pbar.update(delta)
-                                last_frame = current_frame
-
-    stdout, stderr = sub_process.communicate()
-
-    logging.debug(f"Process finished with {sub_process.returncode}")
-
-    return ProcessResult(sub_process.returncode, stdout, stderr)
-
-
-def raise_on_error(status: ProcessResult):
-    if status.returncode != 0:
-        raise RuntimeError(f"Process exited with unexpected error:\n{status.stdout}\n{status.stderr}")
 
 
 def file_encoding(file: str) -> str:
@@ -133,26 +88,27 @@ def is_subtitle_microdvd(subtitle: Subtitle) -> bool:
     return False
 
 
-def time_to_ms(time_str: str) -> int:
-    """ Convert time string 'HH:MM:SS,SSS' to milliseconds """
-    h, m, s, ms = re.split(r'[:.,]', time_str)
-    return (int(h) * 3600 + int(m) * 60 + int(s)) * 1000 + int(ms[:3])
+def guess_language(path: str, encoding: str) -> str:
+    result = ""
+
+    with open(path, "r", encoding=encoding) as sf:
+        content = sf.readlines()
+        content_joined = "".join(content)
+        result = langid.classify(content_joined)[0]
+
+    return result
 
 
-def time_to_s(time: str):
-    return time_to_ms(time) / 1000
+def build_subtitle_from_path(path: str, language: str | None = "") -> SubtitleFile:
+    """
+        if language == None - use autodetection.
+                       Empty string - no language
+                       2/3 letter language code - use that language
+    """
+    encoding = file_encoding(path)
+    language = guess_language(path, encoding) if language is None else language
 
-
-def ms_to_time(ms: int) -> str:
-    """ Convert milliseconds to time string 'HH:MM:SS,SSS' """
-    h, remainder = divmod(ms, 60*60*1000)
-    m, remainder = divmod(remainder, 60*1000)
-    s, ms = divmod(remainder, 1000)
-    return f"{int(h):02}:{int(m):02}:{int(s):02},{int(ms):03}"
-
-
-def fps_str_to_float(fps: str) -> float:
-    return eval(fps)
+    return SubtitleFile(path, language, encoding)
 
 
 def alter_subrip_subtitles_times(content: str, multiplier: float) -> str:
@@ -188,20 +144,9 @@ def fix_subtitles_fps(input_path: str, output_path: str, subtitles_fps: float):
         outfile.write(content)
 
 
-def get_video_duration(video_file):
-    """Get the duration of a video in seconds."""
-    result = start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
-
-    try:
-        return int(float(result.stdout.strip())*1000)
-    except ValueError:
-        logging.error(f"Failed to get duration for {video_file}")
-        return None
-
-
 def get_video_frames_count(video_file: str):
-    result = start_process("ffprobe", ["-v", "error", "-select_streams", "v:0", "-count_packets",
-                           "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", video_file])
+    result = process.start_process("ffprobe", ["-v", "error", "-select_streams", "v:0", "-count_packets",
+                                               "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", video_file])
 
     try:
         return int(result.stdout.strip())
@@ -210,29 +155,12 @@ def get_video_frames_count(video_file: str):
         return None
 
 
-def get_video_full_info(path: str) -> str:
-    args = []
-    args.extend(["-v", "quiet"])
-    args.extend(["-print_format", "json"])
-    args.append("-show_format")
-    args.append("-show_streams")
-    args.append(path)
-
-    process = start_process("ffprobe", args)
-
-    if process.returncode != 0:
-        raise RuntimeError(f"ffprobe exited with unexpected error:\n{process.stderr}")
-
-    output_lines = process.stdout
-    output_json = json.loads(output_lines)
-
-    return output_json
-
-
 def get_video_data(path: str) -> [VideoInfo]:
 
-    def get_length(stream):
-
+    def get_length(stream) -> int:
+        """
+            get lenght in milliseconds
+        """
         length = None
 
         if "tags" in stream:
@@ -244,11 +172,11 @@ def get_video_data(path: str) -> [VideoInfo]:
         if length is None:
             length = stream.get("duration", None)
             if length is not None:
-                length = float(length)
+                length = int(float(length) * 1000)
 
         return length
 
-    output_json = get_video_full_info(path)
+    output_json = video.get_video_full_info(path)
 
     subtitles = []
     video_tracks = []
@@ -270,32 +198,37 @@ def get_video_data(path: str) -> [VideoInfo]:
             fps = stream["r_frame_rate"]
             length = get_length(stream)
             if length is None:
-                length = get_video_duration(path)
+                length = video.get_video_duration(path)
 
             video_tracks.append(VideoTrack(fps=fps, length=length))
 
     return VideoInfo(video_tracks, subtitles, path)
 
 
-def split_path(path: str) -> (str, str, str):
-    info = Path(path)
-
-    return str(info.parent), info.stem, info.suffix[1:]
-
-
-def generate_mkv(input_video: str, output_path: str, subtitles: [SubtitleFile]):
+def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] = [], audios: List[Dict] = []):
     # output
     options = ["-o", output_path]
 
     # set input
     options.append(input_video)
 
+    # set audio tracks
+    for i, audio in enumerate(audios):
+        if "language" in audio and audio["language"]:
+            options.extend(["--language", f"0:{audio['language']}"])
+
+        if audio.get("default", False):
+            options.extend(["--default-track", "0:yes"])
+        else:
+            options.extend(["--default-track", "0:no"])
+
+        options.append(audio["path"])
+
     # set subtitles and languages
-    for i in range(len(subtitles)):
-        subtitle = subtitles[i]
+    for i, subtitle in enumerate(subtitles):
         lang = subtitle.language
 
-        if lang and lang != "":
+        if lang:
             options.extend(["--language", f"0:{lang}"])
 
         if i == 0:
@@ -307,7 +240,7 @@ def generate_mkv(input_video: str, output_path: str, subtitles: [SubtitleFile]):
 
     # perform
     cmd = "mkvmerge"
-    result = start_process(cmd, options)
+    result = process.start_process(cmd, options)
 
     if result.returncode != 0:
         if os.path.exists(output_path):

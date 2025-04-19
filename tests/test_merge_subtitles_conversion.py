@@ -4,6 +4,7 @@ import unittest
 
 import twotone.tools.utils as utils
 from common import WorkingDirectoryForTest, list_files, add_test_media, generate_microdvd_subtitles, run_twotone
+from twotone.tools.utils2 import process
 
 
 class SubtitlesConversion(unittest.TestCase):
@@ -22,7 +23,7 @@ class SubtitlesConversion(unittest.TestCase):
             video = files_after[0]
 
             subtitles_path = os.path.join(td.path, "subtitles.srt")
-            utils.start_process("ffmpeg", ["-i", video, "-map", "0:s:0", subtitles_path])
+            process.start_process("ffmpeg", ["-i", video, "-map", "0:s:0", subtitles_path])
 
             lines = 0
             with open(subtitles_path, mode='r') as subtitles_file:
@@ -56,7 +57,7 @@ class SubtitlesConversion(unittest.TestCase):
             video = files_after[0]
 
             subtitles_path = os.path.join(td.path, "subtitles.srt")
-            utils.start_process("ffmpeg", ["-i", video, "-map", "0:s:0", subtitles_path])
+            process.start_process("ffmpeg", ["-i", video, "-map", "0:s:0", subtitles_path])
 
             lines = 0
             with open(subtitles_path, mode='r') as subtitles_file:

@@ -6,10 +6,13 @@ import re
 import shutil
 import sys
 import tempfile
+from overrides import override
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from . import utils
+from .utils2 import generic, process
+from .tool import Tool
 
 
 class Fixer(utils.InterruptibleProcess):
@@ -37,11 +40,11 @@ class Fixer(utils.InterruptibleProcess):
         begin_pos = last_timestamp.start(1)
         end_pos = last_timestamp.end(2)
 
-        content = content[:begin_pos] + f"{utils.ms_to_time(time_from)} --> {utils.ms_to_time(new_time_to)}" + content[end_pos:]
+        content = content[:begin_pos] + f"{generic.ms_to_time(time_from)} --> {generic.ms_to_time(new_time_to)}" + content[end_pos:]
         return content
 
     def _fps_scale_resolver(self, video_track: utils.VideoTrack, content: str):
-        target_fps = utils.fps_str_to_float(video_track.fps)
+        target_fps = generic.fps_str_to_float(video_track.fps)
         multiplier = utils.ffmpeg_default_fps / target_fps
 
         return utils.alter_subrip_subtitles_times(content, multiplier)
@@ -92,7 +95,7 @@ class Fixer(utils.InterruptibleProcess):
             result.append(subtitleFile)
             options.append(f"{subtitle.tid}:{outputfile}")
 
-        utils.start_process("mkvextract", options)
+        process.start_process("mkvextract", options)
 
         return result
 
@@ -121,7 +124,7 @@ class Fixer(utils.InterruptibleProcess):
                             # remove all subtitles from video
                             logging.debug("Removing existing subtitles from file")
                             video_without_subtitles = video_file + ".nosubtitles.mkv"
-                            utils.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file])
+                            process.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file])
 
                             # add fixed subtitles to video
                             logging.debug("Adding fixed subtitles to file")
@@ -200,24 +203,23 @@ class Fixer(utils.InterruptibleProcess):
         self._repair_videos(broken_videos)
 
 
-def setup_parser(parser: argparse.ArgumentParser):
-    parser.add_argument('videos_path',
-                        nargs=1,
-                        help='Path with videos to analyze.')
+class FixerTool(Tool):
+    @override
+    def setup_parser(self, parser: argparse.ArgumentParser):
+        parser.add_argument('videos_path',
+                            nargs=1,
+                            help='Path with videos to analyze.')
 
+    @override
+    def run(self, args, no_dry_run: bool):
+        for tool in ["mkvmerge", "mkvextract", "ffprobe"]:
+            path = shutil.which(tool)
+            if path is None:
+                raise RuntimeError(f"{tool} not found in PATH")
+            else:
+                logging.debug(f"{tool} path: {path}")
 
-def run(args):
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
-    for tool in ["mkvmerge", "mkvextract", "ffprobe"]:
-        path = shutil.which(tool)
-        if path is None:
-            raise RuntimeError(f"{tool} not found in PATH")
-        else:
-            logging.debug(f"{tool} path: {path}")
-
-    logging.info("Searching for broken files")
-    fixer = Fixer(args.no_dry_run)
-    fixer.process_dir(args.videos_path[0])
-    logging.info("Done")
+        logging.info("Searching for broken files")
+        fixer = Fixer(no_dry_run)
+        fixer.process_dir(args.videos_path[0])
+        logging.info("Done")
