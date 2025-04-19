@@ -14,7 +14,7 @@ import uuid
 from collections import namedtuple
 from itertools import islice
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
@@ -228,19 +228,30 @@ def get_video_data(path: str) -> [VideoInfo]:
     return VideoInfo(video_tracks, subtitles, path)
 
 
-def generate_mkv(output_path: str, input_video: str, subtitles: [SubtitleFile]):
+def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] = [], audios: List[Dict] = []):
     # output
     options = ["-o", output_path]
 
     # set input
     options.append(input_video)
 
+    # set audio tracks
+    for i, audio in enumerate(audios):
+        if "language" in audio and audio["language"]:
+            options.extend(["--language", f"0:{audio['language']}"])
+
+        if audio.get("default", False):
+            options.extend(["--default-track", "0:yes"])
+        else:
+            options.extend(["--default-track", "0:no"])
+
+        options.append(audio["path"])
+
     # set subtitles and languages
-    for i in range(len(subtitles)):
-        subtitle = subtitles[i]
+    for i, subtitle in enumerate(subtitles):
         lang = subtitle.language
 
-        if lang and lang != "":
+        if lang:
             options.extend(["--language", f"0:{lang}"])
 
         if i == 0:
