@@ -13,6 +13,7 @@ import tempfile
 
 from collections import defaultdict
 from overrides import override
+from pathlib import Path
 from PIL import Image
 from scipy.stats import entropy
 from sklearn.linear_model import RANSACRegressor, LinearRegression
@@ -760,13 +761,103 @@ class Melter():
 
         return matching_pairs
 
+    @staticmethod
+    def _patch_audio_segment(
+        wd: str,
+        video1_path: str,
+        video2_path: str,
+        seg1: tuple[int, int],
+        seg2: tuple[int, int],
+        output_path: str
+    ):
+        """
+        Replaces a segment of audio in video1 with a segment from video2 (after adjusting its duration),
+        then adds this modified audio as an additional track into a copy of video1.
 
-    def _process_duplicates(self, files: List[str]):
-        mapping = self._create_segments_mapping(files[0], files[1])
+        :param video1_path: Path to the first video (base).
+        :param video2_path: Path to the second video (source of audio segment).
+        :param seg1: (start_ms, end_ms) in video1 where replacement should go.
+        :param seg2: (start_ms, end_ms) in video2 to extract from.
+        :param output_path: Path to final video output.
+        """
+
+        v1_audio = os.path.join(wd, "v1_audio.flac")
+        v2_audio = os.path.join(wd, "v2_audio.flac")
+        v2_cut = os.path.join(wd, "v2_cut.flac")
+        v2_resampled = os.path.join(wd, "v2_scaled.flac")
+        v1_head = os.path.join(wd, "v1_head.flac")
+        v1_tail = os.path.join(wd, "v1_tail.flac")
+        merged_flac = os.path.join(wd, "merged.flac")
+        final_audio = os.path.join(wd, "final_audio.m4a")
+
+        s1, e1 = seg1[0] / 1000, seg1[1] / 1000
+        s2, e2 = seg2[0] / 1000, seg2[1] / 1000
+
+        # 1. Extract main audio tracks losslessly to FLAC
+        process.start_process("ffmpeg", ["-y", "-i", video1_path, "-map", "0:a:0", "-c:a", "flac", v1_audio])
+        process.start_process("ffmpeg", ["-y", "-i", video2_path, "-map", "0:a:0", "-c:a", "flac", v2_audio])
+
+        # 2. Cut segment from video2 audio
+        process.start_process("ffmpeg", ["-y", "-ss", str(s2), "-to", str(e2), "-i", v2_audio, "-c:a", "flac", v2_cut])
+
+        # 3. Scale segment to fit destination duration
+        dur1 = e1 - s1
+        dur2 = e2 - s2
+        ratio = dur2 / dur1
+        if abs(ratio - 1.0) > 0.10:
+            raise ValueError("Segment length mismatch exceeds 10%")
+
+        process.start_process("ffmpeg", [
+            "-y", "-i", v2_cut,
+            "-filter:a", f"atempo={ratio:.3f}",
+            "-c:a", "flac", v2_resampled
+        ])
+
+        # 4. Split original audio around insertion point
+        process.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(s1), "-i", v1_audio, "-c:a", "flac", v1_head])
+        process.start_process("ffmpeg", ["-y", "-ss", str(e1), "-i", v1_audio, "-c:a", "flac", v1_tail])
+
+        # 5. Concatenate head + new segment + tail
+        concat_list = os.path.join(wd, "concat.txt")
+        with open(concat_list, "w") as f:
+            f.write(f"file '{v1_head}'\n")
+            f.write(f"file '{v2_resampled}'\n")
+            f.write(f"file '{v1_tail}'\n")
+
+        process.start_process("ffmpeg", [
+            "-y", "-f", "concat", "-safe", "0",
+            "-i", concat_list, "-c:a", "flac", merged_flac
+        ])
+
+        # 6. Encode to final lossy audio (AAC)
+        process.start_process("ffmpeg", [
+            "-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", final_audio
+        ])
+
+        # 7. Merge audio with original video
+        process.start_process("ffmpeg", [
+            "-y", "-i", video1_path, "-i", final_audio,
+            "-map", "0", "-map", "1:a:0",
+            "-c:v", "copy", "-c:a:0", "copy", "-c:a:1", "aac",
+            output_path
+        ])
+
+
+    def _process_duplicates(self, duplicates: List[str]):
+        with files.ScopedDirectory("/tmp/twotone/melter") as wd:
+            mapping = self._create_segments_mapping(wd, duplicates[0], duplicates[1])
+            first_pair = mapping[0]
+            last_pair = mapping[-1]
+            first_from = first_pair[0]
+            first_to = last_pair[0]
+            second_from = first_pair[1]
+            second_to = last_pair[1]
+            Melter._patch_audio_segment(wd, duplicates[0], duplicates[1], (first_from, first_to), (second_from, second_to), os.path.join(wd, "final.mkv"))
+
         return
 
 
-        video_details = [video.get_video_data2(video_file) for video_file in files]
+        video_details = [video.get_video_data2(video_file) for video_file in duplicates]
         video_lengths = {video.video_tracks[0].length for video in video_details}
 
         if len(video_lengths) == 1:
@@ -774,7 +865,7 @@ class Melter():
             # remove all but first one
             logging.info("Removing exact duplicates. Leaving one copy")
             if self.live_run:
-                for file in files[1:]:
+                for file in duplicates[1:]:
                     os.remove(file)
         else:
             logging.warning("Videos have different lengths, skipping")
