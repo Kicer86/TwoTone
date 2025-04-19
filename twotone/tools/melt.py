@@ -835,12 +835,12 @@ class Melter():
         ])
 
         # 7. Merge audio with original video
-        process.start_process("ffmpeg", [
-            "-y", "-i", video1_path, "-i", final_audio,
-            "-map", "0", "-map", "1:a:0",
-            "-c:v", "copy", "-c:a:0", "copy", "-c:a:1", "aac",
-            output_path
-        ])
+        utils.generate_mkv(
+            output_path=output_path,
+            input_video=video1_path,
+            subtitles=[],
+            audios=[{"path": final_audio, "language": "eng", "default": True}]
+        )
 
 
     def _process_duplicates(self, duplicates: List[str]):
