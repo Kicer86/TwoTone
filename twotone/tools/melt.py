@@ -192,7 +192,7 @@ class Melter():
         return [pair for pair, dist in zip(pairs, dists) if dist <= threshold]
 
 
-    def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: Tuple[int, int], last: Tuple[int, int], cutoff: float, lookahead_seconds: float = 1.0):
+    def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: Tuple[int, int], last: Tuple[int, int], cutoff: float, lookahead_seconds: float = 3.0):
         phash = Melter.PhashCache()
 
         def estimate_fps(timestamps: List[int]) -> float:
