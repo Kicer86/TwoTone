@@ -332,19 +332,30 @@ class Melter():
             return best
 
         def build_initial_candidates(lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int]]:
-            used_rhs = set()
-            candidates = []
-            for lhs_ts, lhs_info in lhs.items():
+            lhs_items = list(lhs.items())
+            rhs_items = list(rhs.items())
+
+            all_matches = []
+            for lhs_ts, lhs_info in lhs_items:
                 lhs_hash = phash.get(lhs_info["path"])
-                options = [(abs(lhs_hash - phash.get(rhs_info["path"])), rhs_ts)
-                        for rhs_ts, rhs_info in rhs.items() if rhs_ts not in used_rhs]
-                if not options:
-                    continue
-                options.sort()
-                best_dist, best_rhs = options[0]
-                used_rhs.add(best_rhs)
-                candidates.append((lhs_ts, best_rhs))
-            return sorted(candidates)
+                for rhs_ts, rhs_info in rhs_items:
+                    rhs_hash = phash.get(rhs_info["path"])
+                    distance = abs(lhs_hash - rhs_hash)
+                    all_matches.append((distance, lhs_ts, rhs_ts))
+
+            all_matches.sort()
+
+            used_lhs = set()
+            used_rhs = set()
+            pairs = []
+
+            for distance, lhs_ts, rhs_ts in all_matches:
+                if lhs_ts not in used_lhs and rhs_ts not in used_rhs:
+                    pairs.append((lhs_ts, rhs_ts))
+                    used_lhs.add(lhs_ts)
+                    used_rhs.add(rhs_ts)
+
+            return sorted(pairs)
 
         def reject_outliers(pairs: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
             if len(pairs) < 3:
