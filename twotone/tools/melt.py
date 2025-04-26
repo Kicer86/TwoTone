@@ -197,6 +197,7 @@ class Melter():
         self.logger.debug("Improving boundaries")
         self.logger.debug("Current first: {first} and last: {last} pairs")
         phash = Melter.PhashCache()
+        ratio = Melter.calculate_ratio([first, last])
 
         def estimate_fps(timestamps: List[int]) -> float:
             if len(timestamps) < 2:
@@ -216,9 +217,14 @@ class Melter():
 
                 options.sort()
                 best_dist, best_rhs = options[0]
-                if best_dist < best_score:
+                pair_candidate = (lhs_ts, best_rhs)
+
+                pair_ratio_to_first = Melter.calculate_ratio([pair_candidate, first])
+                pair_ratio_to_last = Melter.calculate_ratio([pair_candidate, last])
+
+                if best_dist < best_score and Melter.is_ratio_acceptable(pair_ratio_to_first, ratio) and Melter.is_ratio_acceptable(pair_ratio_to_last, ratio):
                     best_score = best_dist
-                    best_pair = (lhs_ts, best_rhs)
+                    best_pair = pair_candidate
 
             return best_pair, best_score
 
