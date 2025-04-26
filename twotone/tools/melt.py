@@ -305,6 +305,13 @@ class Melter():
         )
 
 
+    @staticmethod
+    def calculate_ratio(pairs: List[Tuple[int, int]]):
+        ratios = [(r[0] - l[0]) / (r[1] - l[1]) for l, r in zip(pairs[:-1], pairs[1:]) if (r[1] - l[1]) != 0]
+        median_ratio = np.median(ratios)
+        return median_ratio
+
+
     def _match_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo, phash = None) -> List[Tuple[int, int]]:
         if phash is None:
             phash = Melter.PhashCache()
