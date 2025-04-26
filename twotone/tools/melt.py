@@ -440,8 +440,7 @@ class Melter():
             if len(known_pairs) < 2:
                 return known_pairs
 
-            ratios = [(r[0] - l[0]) / (r[1] - l[1]) for l, r in zip(known_pairs[:-1], known_pairs[1:]) if (r[1] - l[1]) != 0]
-            median_ratio = np.median(ratios)
+            median_ratio = Melter.calculate_ratio(known_pairs)
             first_known_pair = known_pairs[0]
             cutoff = Melter._calculate_cutoff(phash, known_pairs, lhs_pool, rhs_pool)
 
@@ -453,7 +452,7 @@ class Melter():
 
                 for rhs_candidate in nearest_rhs_candidates:
                     ratio = (l - first_known_pair[0]) / (rhs_candidate - first_known_pair[1]) if (rhs_candidate - first_known_pair[1]) != 0 else None
-                    if ratio and abs(ratio - median_ratio) < 0.05 * median_ratio:
+                    if ratio and Melter.is_ratio_acceptable(ratio, median_ratio):
                         if rhs_candidate not in rhs_used:
                             # make sure lhs and rhs_candidate are matching #and previous lhs and previous to rhs_candidate also match
                             rhs_candidate_surrounding = nearest_three(rhs_pool, rhs_candidate)
