@@ -806,7 +806,7 @@ class Melter():
 
             for i, (ts, info) in enumerate(matches.items()):
                 path = info["path"]
-                shutil.copy2(path, os.path.join(target_dir, f"{i:06d}_lhs_{ts:08d}"))
+                os.symlink(path, os.path.join(target_dir, f"{i:06d}_lhs_{ts:08d}"))
 
         def dump_matches(matches, phase):
             target_dir = os.path.join(debug_wd, f"#{self.debug_it} {phase}")
@@ -817,8 +817,8 @@ class Melter():
             for i, (lhs_ts, rhs_ts) in enumerate(matches):
                 lhs_path = lhs_all_frames[lhs_ts]["path"]
                 rhs_path = rhs_all_frames[rhs_ts]["path"]
-                shutil.copy2(lhs_path, os.path.join(target_dir, f"{i:06d}_lhs_{lhs_ts:08d}"))
-                shutil.copy2(rhs_path, os.path.join(target_dir, f"{i:06d}_rhs_{rhs_ts:08d}"))
+                os.symlink(lhs_path, os.path.join(target_dir, f"{i:06d}_lhs_{lhs_ts:08d}"))
+                os.symlink(rhs_path, os.path.join(target_dir, f"{i:06d}_rhs_{rhs_ts:08d}"))
 
         self.logger.debug(f"lhs key frames: {' '.join(str(lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes)}")
         self.logger.debug(f"rhs key frames: {' '.join(str(rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes)}")
