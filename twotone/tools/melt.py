@@ -503,7 +503,13 @@ class Melter():
         ]
         self.logger.debug(f"After ORB elimination:     {Melter.summarize_pairs(phash, final_verified, lhs_all, rhs_all)}")
 
-        return sorted(set(final_verified))
+        unique_pairs = sorted(set(final_verified))
+
+        lhs_fps = estimate_fps(lhs_all)
+        rhs_fps = estimate_fps(rhs_all)
+        Melter.summarize_segments(unique_pairs, lhs_fps, rhs_fps)
+
+        return unique_pairs
 
 
     @staticmethod
