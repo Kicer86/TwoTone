@@ -306,6 +306,55 @@ class Melter():
             f"Max Pair: {max_lhs_path} <-> {max_rhs_path}"
         )
 
+    @staticmethod
+    def summarize_segments(pairs: List[Tuple[int, int]], lhs_fps: float = 25.0, rhs_fps: float = 25.0, verbose: bool = True) -> str:
+        if len(pairs) < 2:
+            return "Not enough pairs to build segments."
+
+        pairs_sorted = sorted(pairs)
+        segments = []
+
+        lhs_frame_step = 1000.0 / lhs_fps
+        rhs_frame_step = 1000.0 / rhs_fps
+        max_quant_error = max(lhs_frame_step, rhs_frame_step)
+
+        for (lhs1, rhs1), (lhs2, rhs2) in zip(pairs_sorted[:-1], pairs_sorted[1:]):
+            lhs_delta = lhs2 - lhs1
+            rhs_delta = rhs2 - rhs1
+            if rhs_delta <= 0:
+                continue
+            ratio = lhs_delta / rhs_delta
+
+            # Estimate ratio uncertainty
+            min_delta = min(lhs_delta, rhs_delta)
+            ratio_error = (2 * max_quant_error) / min_delta if min_delta > 0 else float("inf")
+            confidence = "LOW" if ratio_error > 0.1 else "OK"
+
+            segments.append((lhs1, lhs2, rhs1, rhs2, lhs_delta, rhs_delta, ratio, ratio_error, confidence))
+
+        if not segments:
+            return "No valid segments."
+
+        ratios = np.array([s[6] for s in segments])
+        out = [
+            f"Segments: {len(segments)} | "
+            f"Median ratio: {np.median(ratios):.4f} | "
+            f"Mean ratio: {np.mean(ratios):.4f} | "
+            f"Std Dev: {np.std(ratios):.4f} | "
+            f"Min: {np.min(ratios):.4f} | Max: {np.max(ratios):.4f}"
+        ]
+
+        if verbose:
+            out.append("\nDetailed segments:")
+            for lhs1, lhs2, rhs1, rhs2, ldelta, rdelta, ratio, err, conf in segments:
+                out.append(
+                    f"  LHS {lhs1}->{lhs2} ({ldelta:4} ms), "
+                    f"RHS {rhs1}->{rhs2} ({rdelta:4} ms), "
+                    f"Ratio: {ratio:.4f}, "
+                    f"Error~{err:.2%}, Confidence: {conf}"
+                )
+
+        print('\n'.join(out))
 
     @staticmethod
     def calculate_ratio(pairs: List[Tuple[int, int]]):
