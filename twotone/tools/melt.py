@@ -194,6 +194,8 @@ class Melter():
 
 
     def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: Tuple[int, int], last: Tuple[int, int], cutoff: float, lookahead_seconds: float = 3.0):
+        self.logger.debug("Improving boundaries")
+        self.logger.debug("Current first: {first} and last: {last} pairs")
         phash = Melter.PhashCache()
 
         def estimate_fps(timestamps: List[int]) -> float:
