@@ -362,6 +362,9 @@ class Melter():
         median_ratio = np.median(ratios)
         return median_ratio
 
+    @staticmethod
+    def is_ratio_acceptable(ratio: float, perfect_ratio: float):
+        return abs(ratio - perfect_ratio) < 0.05 * perfect_ratio
 
     def _match_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo, phash = None) -> List[Tuple[int, int]]:
         if phash is None:
