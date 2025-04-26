@@ -262,7 +262,7 @@ class Melter():
                         lhs_idx = lhs_keys.index(lhs_ts)
                         rhs_idx = rhs_keys.index(rhs_ts)
 
-                        print(f"Step best: {lhs_set[lhs_ts]["path"]} {rhs_set[rhs_ts]["path"]}")
+                        print(f"Step's best: {lhs_set[lhs_ts]["path"]} {rhs_set[rhs_ts]["path"]}")
                 else:
                     break
 
