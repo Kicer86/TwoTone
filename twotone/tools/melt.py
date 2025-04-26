@@ -831,8 +831,12 @@ class Melter():
         lhs_key_frames = Melter._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_frames)
         rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
 
+        dump_frames(lhs_key_frames, "lhs key frames")
+        dump_frames(rhs_key_frames, "rhs key frames")
+
         # find matching keys
         matching_pairs = self._match_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames)
+        dump_matches(matching_pairs, "initial matching")
 
         prev_first, prev_last = None, None
         while True:
@@ -868,9 +872,19 @@ class Melter():
                     matching_pairs = [*matching_pairs, last]
                     prev_last = last
 
-        return matching_pairs
+            dump_matches(matching_pairs, f"improving boundaries")
 
-    @staticmethod
+        def estimate_fps(timestamps: List[int]) -> float:
+            diffs = np.diff(sorted(timestamps))
+            return 1000.0 / np.median(diffs) if len(diffs) > 0 else 25.0
+
+        lhs_fps = estimate_fps(lhs_all_frames)
+        rhs_fps = estimate_fps(rhs_all_frames)
+        Melter.summarize_segments(matching_pairs, lhs_fps, rhs_fps)
+
+        return matching_pairs, lhs_all_frames, rhs_all_frames
+
+
     def _patch_audio_segment(
         self,
         wd: str,
