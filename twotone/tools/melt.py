@@ -800,78 +800,154 @@ class Melter():
 
     @staticmethod
     def _patch_audio_segment(
+        self,
         wd: str,
         video1_path: str,
         video2_path: str,
-        seg1: tuple[int, int],
-        seg2: tuple[int, int],
-        output_path: str
+        output_path: str,
+        segment_pairs: list[tuple[int, int]],
+        segment_count: int,
+        lhs_frames: FramesInfo,
+        rhs_frames: FramesInfo,
+        min_subsegment_duration: float = 30.0,
     ):
         """
         Replaces a segment of audio in video1 with a segment from video2 (after adjusting its duration),
-        then adds this modified audio as an additional track into a copy of video1.
+        split into smaller corresponding subsegments.
 
+        :param wd: Working directory for intermediate files.
         :param video1_path: Path to the first video (base).
         :param video2_path: Path to the second video (source of audio segment).
-        :param seg1: (start_ms, end_ms) in video1 where replacement should go.
-        :param seg2: (start_ms, end_ms) in video2 to extract from.
-        :param output_path: Path to final video output.
+        :param segment_pairs: list of (timestamp_v1_ms, timestamp_v2_ms) pairs
+        :param segment_count: how many subsegments to split the entire segment into
+        :param output_path: Path to final video output
+        :param min_subsegment_duration: minimum duration in seconds below which a subsegment is merged with neighbor
         """
+
+        wd = os.path.join(wd, "audio extraction")
+        debug_wd = os.path.join(wd, "debug")
+        os.makedirs(wd)
+        os.makedirs(debug_wd)
 
         v1_audio = os.path.join(wd, "v1_audio.flac")
         v2_audio = os.path.join(wd, "v2_audio.flac")
-        v2_cut = os.path.join(wd, "v2_cut.flac")
-        v2_resampled = os.path.join(wd, "v2_scaled.flac")
-        v1_head = os.path.join(wd, "v1_head.flac")
-        v1_tail = os.path.join(wd, "v1_tail.flac")
-        merged_flac = os.path.join(wd, "merged.flac")
+        head_path = os.path.join(wd, "head.flac")
+        tail_path = os.path.join(wd, "tail.flac")
+        final_audio = os.path.join(wd, "final_audio.m4a")
         final_audio = os.path.join(wd, "final_audio.m4a")
 
-        s1, e1 = seg1[0] / 1000, seg1[1] / 1000
-        s2, e2 = seg2[0] / 1000, seg2[1] / 1000
+        # Compute global segment range
+        s1_all = [p[0] for p in segment_pairs]
+        s2_all = [p[1] for p in segment_pairs]
+        seg1_start, seg1_end = min(s1_all), max(s1_all)
+        seg2_start, seg2_end = min(s2_all), max(s2_all)
 
-        # 1. Extract main audio tracks losslessly to FLAC
+        # 1. Extract main audio
         process.start_process("ffmpeg", ["-y", "-i", video1_path, "-map", "0:a:0", "-c:a", "flac", v1_audio])
         process.start_process("ffmpeg", ["-y", "-i", video2_path, "-map", "0:a:0", "-c:a", "flac", v2_audio])
 
-        # 2. Cut segment from video2 audio
-        process.start_process("ffmpeg", ["-y", "-ss", str(s2), "-to", str(e2), "-i", v2_audio, "-c:a", "flac", v2_cut])
+        # 2. Extract head and tail
+        process.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(seg1_start / 1000), "-i", v1_audio, "-c:a", "flac", head_path])
+        process.start_process("ffmpeg", ["-y", "-ss", str(seg1_end / 1000), "-i", v1_audio, "-c:a", "flac", tail_path])
 
-        # 3. Scale segment to fit destination duration
-        dur1 = e1 - s1
-        dur2 = e2 - s2
-        ratio = dur2 / dur1
-        if abs(ratio - 1.0) > 0.10:
-            raise ValueError("Segment length mismatch exceeds 10%")
+        # 3. Generate subsegment split points using pair list boundaries
+        total_left_duration = seg1_end - seg1_start
+        left_targets = [seg1_start + i * total_left_duration / segment_count for i in range(segment_count + 1)]
 
-        process.start_process("ffmpeg", [
-            "-y", "-i", v2_cut,
-            "-filter:a", f"atempo={ratio:.3f}",
-            "-c:a", "flac", v2_resampled
-        ])
+        def closest_pair(value, pairs):
+            return min(pairs, key=lambda p: abs(p[0] - value))
 
-        # 4. Split original audio around insertion point
-        process.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(s1), "-i", v1_audio, "-c:a", "flac", v1_head])
-        process.start_process("ffmpeg", ["-y", "-ss", str(e1), "-i", v1_audio, "-c:a", "flac", v1_tail])
+        selected_pairs = [closest_pair(t, segment_pairs) for t in left_targets]
 
-        # 5. Concatenate head + new segment + tail
+        # Merge short segments with the shorter neighbor
+        cleaned_pairs = []
+        i = 0
+        while i < len(selected_pairs) - 1:
+            l_start = selected_pairs[i][0]
+            l_end = selected_pairs[i + 1][0]
+            r_start = selected_pairs[i][1]
+            r_end = selected_pairs[i + 1][1]
+
+            l_dur = l_end - l_start
+            r_dur = r_end - r_start
+
+            if l_dur < min_subsegment_duration * 1000 or r_dur < min_subsegment_duration * 1000:
+                if i + 2 < len(selected_pairs):
+                    selected_pairs[i + 1] = selected_pairs[i + 2]
+                    del selected_pairs[i + 2]
+                    continue
+                elif i > 0:
+                    prev = cleaned_pairs[-1]
+                    cleaned_pairs[-1] = (prev[0], l_end, prev[2], r_end)
+                    i += 1
+                    continue
+
+            cleaned_pairs.append((l_start, l_end, r_start, r_end))
+            i += 1
+
+        def dump_pairs(matches):
+            target_dir = os.path.join(debug_wd, f"#{self.debug_it} subsegments")
+            self.debug_it += 1
+
+            os.makedirs(target_dir)
+
+            for i, (lhs_ts_b, lhs_ts_e, rhs_ts_b, rhs_ts_e) in enumerate(matches):
+                lhs_b_path = lhs_frames[lhs_ts_b]["path"]
+                lhs_e_path = lhs_frames[lhs_ts_e]["path"]
+                rhs_b_path = rhs_frames[rhs_ts_b]["path"]
+                rhs_e_path = rhs_frames[rhs_ts_e]["path"]
+                os.symlink(lhs_b_path, os.path.join(target_dir, f"{i:06d}_lhs_b_{lhs_ts_b:08d}"))
+                os.symlink(lhs_e_path, os.path.join(target_dir, f"{i:06d}_lhs_e_{lhs_ts_e:08d}"))
+                os.symlink(rhs_b_path, os.path.join(target_dir, f"{i:06d}_rhs_b_{rhs_ts_b:08d}"))
+                os.symlink(rhs_e_path, os.path.join(target_dir, f"{i:06d}_rhs_e_{rhs_ts_e:08d}"))
+
+        dump_pairs(cleaned_pairs)
+
+        temp_segments = []
+        for idx, (l_start, l_end, r_start, r_end) in enumerate(cleaned_pairs):
+            left_duration = l_end - l_start
+            right_duration = r_end - r_start
+            ratio = right_duration / left_duration
+
+            if abs(ratio - 1.0) > 0.10:
+                self.logger.error(f"Segment {idx} duration mismatch exceeds 10%")
+
+            raw_cut = os.path.join(wd, f"cut_{idx}.flac")
+            scaled_cut = os.path.join(wd, f"scaled_{idx}.flac")
+
+            process.start_process("ffmpeg", [
+                "-y", "-ss", str(r_start / 1000), "-to", str(r_end / 1000),
+                "-i", v2_audio, "-c:a", "flac", raw_cut
+            ])
+
+            process.start_process("ffmpeg", [
+                "-y", "-i", raw_cut,
+                "-filter:a", f"atempo={ratio:.3f}",
+                "-c:a", "flac", scaled_cut
+            ])
+
+            temp_segments.append(scaled_cut)
+
+        # 4. Combine all audio
         concat_list = os.path.join(wd, "concat.txt")
         with open(concat_list, "w") as f:
-            f.write(f"file '{v1_head}'\n")
-            f.write(f"file '{v2_resampled}'\n")
-            f.write(f"file '{v1_tail}'\n")
+            f.write(f"file '{head_path}'\n")
+            for seg in temp_segments:
+                f.write(f"file '{seg}'\n")
+            f.write(f"file '{tail_path}'\n")
 
+        merged_flac = os.path.join(wd, "merged.flac")
         process.start_process("ffmpeg", [
-            "-y", "-f", "concat", "-safe", "0",
-            "-i", concat_list, "-c:a", "flac", merged_flac
+            "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+            "-c:a", "flac", merged_flac
         ])
 
-        # 6. Encode to final lossy audio (AAC)
+        # 5. Re-encode to AAC
         process.start_process("ffmpeg", [
             "-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", final_audio
         ])
 
-        # 7. Merge audio with original video
+        # 6. Generate final MKV
         utils.generate_mkv(
             output_path=output_path,
             input_video=video1_path,
@@ -882,14 +958,8 @@ class Melter():
 
     def _process_duplicates(self, duplicates: List[str]):
         with files.ScopedDirectory("/tmp/twotone/melter") as wd:
-            mapping = self._create_segments_mapping(wd, duplicates[0], duplicates[1])
-            first_pair = mapping[0]
-            last_pair = mapping[-1]
-            first_from = first_pair[0]
-            first_to = last_pair[0]
-            second_from = first_pair[1]
-            second_to = last_pair[1]
-            Melter._patch_audio_segment(wd, duplicates[0], duplicates[1], (first_from, first_to), (second_from, second_to), os.path.join(wd, "final.mkv"))
+            mapping, lhs_all_frames, rhs_all_frames = self._create_segments_mapping(wd, duplicates[0], duplicates[1])
+            self._patch_audio_segment(wd, duplicates[0], duplicates[1], os.path.join(wd, "final.mkv"), mapping, 20, lhs_all_frames, rhs_all_frames)
 
         return
 
