@@ -191,6 +191,42 @@ class PairMatcher:
         self.lhs_fps = eval(video.get_video_data2(lhs_path)["video"][0]["fps"])
         self.rhs_fps = eval(video.get_video_data2(rhs_path)["video"][0]["fps"])
 
+        self.lhs_scene_changes = video.detect_scene_changes(self.lhs_path, threshold = 0.3)
+        self.rhs_scene_changes = video.detect_scene_changes(self.rhs_path, threshold = 0.3)
+
+        if len(self.lhs_scene_changes) == 0 or len(self.rhs_scene_changes) == 0:
+            raise RuntimeError("Not enought scene changes detected")
+
+        lhs_wd = os.path.join(self.wd, "lhs")
+        rhs_wd = os.path.join(self.wd, "rhs")
+
+        lhs_all_wd = os.path.join(lhs_wd, "all")
+        rhs_all_wd = os.path.join(rhs_wd, "all")
+        self.lhs_normalized_wd = os.path.join(lhs_wd, "norm")
+        self.rhs_normalized_wd = os.path.join(rhs_wd, "norm")
+        self.lhs_normalized_cropped_wd = os.path.join(lhs_wd, "norm_cropped")
+        self.rhs_normalized_cropped_wd = os.path.join(rhs_wd, "norm_cropped")
+        self.debug_wd = os.path.join(self.wd, "debug")
+
+        for d in [lhs_wd,
+                    rhs_wd,
+                    lhs_all_wd,
+                    rhs_all_wd,
+                    self.lhs_normalized_wd,
+                    self.rhs_normalized_wd,
+                    self.lhs_normalized_cropped_wd,
+                    self.rhs_normalized_cropped_wd,
+                    self.debug_wd,
+        ]:
+            os.makedirs(d)
+
+        # extract all scenes
+        self.lhs_all_frames = video.extract_all_frames(self.lhs_path, lhs_all_wd, scale = 0.5, format = "png")
+        self.rhs_all_frames = video.extract_all_frames(self.rhs_path, rhs_all_wd, scale = 0.5, format = "png")
+
+        self.logger.debug(f"lhs key frames: {' '.join(str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in self.lhs_scene_changes)}")
+        self.logger.debug(f"rhs key frames: {' '.join(str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in self.rhs_scene_changes)}")
+
     def _three_before(self, timestamps: List[int], target: int) -> List[int]:
         timestamps = sorted(timestamps)
         idx = np.searchsorted(timestamps, target)
@@ -292,7 +328,7 @@ class PairMatcher:
 
         median_ratio = Melter.calculate_ratio(known_pairs)
         first_known_pair = known_pairs[0]
-        cutoff = Melter._calculate_cutoff(phash, known_pairs, lhs_pool, rhs_pool)
+        cutoff = self._calculate_cutoff(phash, known_pairs, lhs_pool, rhs_pool)
 
         new_pairs = []
         for l in lhs_free:
@@ -390,7 +426,7 @@ class PairMatcher:
         ]
         self.logger.debug(f"After ORB elimination:     {Melter.summarize_pairs(self.phash, orb_filtered, lhs_all, rhs_all)}")
 
-        cutoff = Melter._calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
+        cutoff = self._calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
         final = [pair for pair in orb_filtered if self._check_history(pair, lhs_all, rhs_all, cutoff)]
         self.logger.debug(f"After hisotry analysis:    {Melter.summarize_pairs(self.phash, final, lhs_all, rhs_all)}")
 
@@ -483,51 +519,15 @@ class PairMatcher:
 
 
     def create_segments_mapping(self) -> List[Tuple[int, int]]:
-        lhs_scene_changes = video.detect_scene_changes(self.lhs_path, threshold = 0.3)
-        rhs_scene_changes = video.detect_scene_changes(self.rhs_path, threshold = 0.3)
-
-        if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
-            return
-
-        lhs_wd = os.path.join(self.wd, "lhs")
-        rhs_wd = os.path.join(self.wd, "rhs")
-
-        lhs_all_wd = os.path.join(lhs_wd, "all")
-        rhs_all_wd = os.path.join(rhs_wd, "all")
-        lhs_normalized_wd = os.path.join(lhs_wd, "norm")
-        rhs_normalized_wd = os.path.join(rhs_wd, "norm")
-        lhs_normalized_cropped_wd = os.path.join(lhs_wd, "norm_cropped")
-        rhs_normalized_cropped_wd = os.path.join(rhs_wd, "norm_cropped")
-        debug_wd = os.path.join(self.wd, "debug")
-
-        for d in [lhs_wd,
-                    rhs_wd,
-                    lhs_all_wd,
-                    rhs_all_wd,
-                    lhs_normalized_wd,
-                    rhs_normalized_wd,
-                    lhs_normalized_cropped_wd,
-                    rhs_normalized_cropped_wd,
-                    debug_wd,
-        ]:
-            os.makedirs(d)
-
-            # extract all scenes
-        lhs_all_frames = video.extract_all_frames(self.lhs_path, lhs_all_wd, scale = 0.5, format = "png")
-        rhs_all_frames = video.extract_all_frames(self.rhs_path, rhs_all_wd, scale = 0.5, format = "png")
-
-        self.logger.debug(f"lhs key frames: {' '.join(str(lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes)}")
-        self.logger.debug(f"rhs key frames: {' '.join(str(rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes)}")
-
         # normalize frames. This could be done in previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
-        lhs_normalized_frames = Melter._normalize_frames(lhs_all_frames, lhs_normalized_wd)
-        rhs_normalized_frames = Melter._normalize_frames(rhs_all_frames, rhs_normalized_wd)
+        lhs_normalized_frames = Melter._normalize_frames(self.lhs_all_frames, self.lhs_normalized_wd)
+        rhs_normalized_frames = Melter._normalize_frames(self.rhs_all_frames, self.rhs_normalized_wd)
 
         # extract key frames (as 'key' a scene change frame is meant)
-        lhs_key_frames = Melter._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_frames)
-        rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
+        lhs_key_frames = Melter._get_frames_for_timestamps(self.lhs_scene_changes, lhs_normalized_frames)
+        rhs_key_frames = Melter._get_frames_for_timestamps(self.rhs_scene_changes, rhs_normalized_frames)
 
-        debug = DebugRoutines(debug_wd, lhs_all_frames, rhs_all_frames)
+        debug = DebugRoutines(self.debug_wd, self.lhs_all_frames, self.rhs_all_frames)
 
         debug.dump_frames(lhs_key_frames, "lhs key frames")
         debug.dump_frames(rhs_key_frames, "rhs key frames")
@@ -536,17 +536,17 @@ class PairMatcher:
         matching_pairs = self._make_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames)
         debug.dump_matches(matching_pairs, "initial matching")
         self.logger.debug("Pairs summary after initial matching:")
-        self.logger.debug(Melter.summarize_pairs(self.phash, matching_pairs, lhs_all_frames, rhs_all_frames, verbose = True))
+        self.logger.debug(Melter.summarize_pairs(self.phash, matching_pairs, self.lhs_all_frames, self.rhs_all_frames, verbose = True))
 
         prev_first, prev_last = None, None
         while True:
             # crop frames basing on matching ones
-            lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = Melter._crop_both_sets(
+            lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self._crop_both_sets(
                 pairs_with_timestamps = matching_pairs,
                 lhs_frames = lhs_normalized_frames,
                 rhs_frames = rhs_normalized_frames,
-                lhs_cropped_dir = lhs_normalized_cropped_wd,
-                rhs_cropped_dir = rhs_normalized_cropped_wd
+                lhs_cropped_dir = self.lhs_normalized_cropped_wd,
+                rhs_cropped_dir = self.rhs_normalized_cropped_wd
             )
 
             first_lhs, first_rhs = matching_pairs[0]
@@ -558,7 +558,7 @@ class PairMatcher:
             phash4normalized = PhashCache()
             self.logger.debug(f"Cropped and aligned:       {Melter.summarize_pairs(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)}")
 
-            cutoff = Melter._calculate_cutoff(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
+            cutoff = self._calculate_cutoff(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
 
             # try to locate first and last common frames
             first, last = self._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff)
@@ -575,18 +575,11 @@ class PairMatcher:
 
             debug.dump_matches(matching_pairs, f"improving boundaries")
 
-        def estimate_fps(timestamps: List[int]) -> float:
-            diffs = np.diff(sorted(timestamps))
-            return 1000.0 / np.median(diffs) if len(diffs) > 0 else 25.0
-
-        lhs_fps = estimate_fps(lhs_all_frames)
-        rhs_fps = estimate_fps(rhs_all_frames)
-
         self.logger.debug("Status after boundaries lookup:\n")
-        self.logger.debug(Melter.summarize_segments(matching_pairs, lhs_fps, rhs_fps))
-        self.logger.debug(Melter.summarize_pairs(phash4normalized, matching_pairs, lhs_all_frames, rhs_all_frames, verbose = True))
+        self.logger.debug(Melter.summarize_segments(matching_pairs, self.lhs_fps, self.rhs_fps))
+        self.logger.debug(Melter.summarize_pairs(phash4normalized, matching_pairs, self.lhs_all_frames, self.rhs_all_frames, verbose = True))
 
-        return matching_pairs, lhs_all_frames, rhs_all_frames
+        return matching_pairs, self.lhs_all_frames, self.rhs_all_frames
 
 
 class Melter():
