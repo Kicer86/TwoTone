@@ -455,6 +455,29 @@ class Melter():
             inliers = model.inlier_mask_
             return [p for p, keep in zip(pairs, inliers) if keep]
 
+        def check_history(pair: Tuple[int, int], lhs_pool: FramesInfo, rhs_pool: FramesInfo, cutoff: float) -> bool:
+            lhs_three = three_before(lhs_pool, pair[0])
+            rhs_three = three_before(rhs_pool, pair[1])
+
+            if len(lhs_three) < 3 and len(rhs_three) < 3:
+                return True
+            elif len(lhs_three) < 3 or len(rhs_three) < 3:
+                # TODO: some logic needed here
+                pass
+
+            # at least one match before current pair is required
+            lhs_frames = {l: lhs_pool[l] for l in lhs_three}
+            rhs_frames = {r: rhs_pool[r] for r in rhs_three}
+            matches = build_matches(lhs_frames, rhs_frames)
+
+            if len(matches) > 0:
+                best_match = matches[0][0]
+
+                if best_match <= cutoff:
+                    return True
+
+            return False
+
         def extrapolate_matches(known_pairs: List[Tuple[int, int]], lhs_pool: FramesInfo, rhs_pool: FramesInfo, phash: Melter.PhashCache) -> List[Tuple[int, int]]:
             known_pairs.sort()
             lhs_used = {l for l, _ in known_pairs}
