@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, List, Tuple
 
 from . import utils
 from .tool import Tool
-from .utils2 import files, process, video
+from .utils2 import files, image, process, video
 
 
 type FramesInfo = Dict[int, Dict[str, str]]
@@ -315,7 +315,7 @@ class PairMatcher:
 
                         pdiff = abs(phash.get(lhs_path) - phash.get(rhs_path))
                         phash_matching = pdiff < cutoff
-                        matching = Melter.are_images_similar(lhs_path, rhs_path)
+                        matching = image.are_images_similar(lhs_path, rhs_path)
                         if phash_matching and matching:
                             new_pairs.append((l, rhs_candidate))
                             rhs_used.add(rhs_candidate)
@@ -353,7 +353,7 @@ class PairMatcher:
 
         orb_filtered = [
             (lhs_ts, rhs_ts) for lhs_ts, rhs_ts in outliers_eliminated
-            if Melter.are_images_similar(lhs_all[lhs_ts]["path"], rhs_all[rhs_ts]["path"])
+            if image.are_images_similar(lhs_all[lhs_ts]["path"], rhs_all[rhs_ts]["path"])
         ]
         self.logger.debug(f"After ORB elimination:     {Melter.summarize_pairs(self.phash, orb_filtered, lhs_all, rhs_all)}")
 
@@ -580,35 +580,8 @@ class Melter():
         self.debug_it: int = 0
 
     @staticmethod
-    def are_images_similar(lhs_path: str, rhs_path: str, threshold = 10) -> bool:
-        img1 = cv.imread(lhs_path, cv.IMREAD_GRAYSCALE)
-        img2 = cv.imread(rhs_path, cv.IMREAD_GRAYSCALE)
-
-        orb = cv.ORB_create()
-        kp1, des1 = orb.detectAndCompute(img1, None)
-        kp2, des2 = orb.detectAndCompute(img2, None)
-
-        if des1 is None or des2 is None:
-            return False
-
-        matcher = cv.BFMatcher(cv.NORM_HAMMING, crossCheck=True)
-        matches = matcher.match(des1, des2)
-
-        return len(matches) >= threshold
-
-
-    @staticmethod
-    def _frame_entropy(path: str) -> float:
-        pil_image = Image.open(path)
-        image = np.array(pil_image.convert("L"))
-        histogram, _ = np.histogram(image, bins = 256, range=(0, 256))
-        histogram = histogram / float(np.sum(histogram))
-        e = entropy(histogram)
-        return e
-
-    @staticmethod
     def _is_rich(frame_path: str):
-        return Melter._frame_entropy(frame_path) > 3.5
+        return image.image_entropy(frame_path) > 3.5
 
     @staticmethod
     def _filter_low_detailed(scenes: FramesInfo):
