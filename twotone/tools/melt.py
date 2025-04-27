@@ -268,17 +268,17 @@ class Melter():
                         lhs_idx = lhs_keys.index(lhs_ts)
                         rhs_idx = rhs_keys.index(rhs_ts)
 
-                        print(f"Step's best: {lhs_set[lhs_ts]["path"]} {rhs_set[rhs_ts]["path"]}")
+                        self.logger.debug(f"Step's best: {lhs_set[lhs_ts]["path"]} {rhs_set[rhs_ts]["path"]}")
                 else:
                     break
 
             return current_pair
 
         refined_first = find_boundary(lhs, rhs, first[0], first[1], direction=-1)
-        print(f"Refined First: L: {lhs[refined_first[0]]['path']} R: {rhs[refined_first[1]]['path']}")
+        self.logger.debug(f"Refined First: L: {lhs[refined_first[0]]['path']} R: {rhs[refined_first[1]]['path']}")
 
         refined_last = find_boundary(lhs, rhs, last[0], last[1], direction=1)
-        print(f"Refined Last:  L: {lhs[refined_last[0]]['path']} R: {rhs[refined_last[1]]['path']}")
+        self.logger.debug(f"Refined Last:  L: {lhs[refined_last[0]]['path']} R: {rhs[refined_last[1]]['path']}")
 
         return refined_first, refined_last
 
