@@ -284,7 +284,7 @@ class Melter():
 
 
     @staticmethod
-    def summarize_pairs(phash, pairs: List[Tuple[int, int]], lhs: FramesInfo, rhs: FramesInfo) -> str:
+    def summarize_pairs(phash, pairs: List[Tuple[int, int]], lhs: FramesInfo, rhs: FramesInfo, verbose: bool = False) -> str:
         distances = []
         for lhs_ts, rhs_ts in pairs:
             d = abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"]))
@@ -302,7 +302,7 @@ class Melter():
         max_lhs_path = lhs[max_entry[1]]["path"]
         max_rhs_path = rhs[max_entry[2]]["path"]
 
-        return (
+        summary = (
             f"Pairs: {len(pairs)} | "
             f"Median: {median:.2f} | "
             f"Mean: {mean:.2f} | "
@@ -311,6 +311,15 @@ class Melter():
             f"Max: {max_val} | "
             f"Max Pair: {max_lhs_path} <-> {max_rhs_path}"
         )
+
+        if verbose:
+            details = [
+                f"  {lhs[lhs_ts]['path']} <-> {rhs[rhs_ts]['path']} | Diff: {dist}"
+                for dist, lhs_ts, rhs_ts in distances
+            ]
+            summary += "\nDetailed pairs:" + "\n" + "\n".join(details)
+
+        return summary
 
     @staticmethod
     def summarize_segments(pairs: List[Tuple[int, int]], lhs_fps: float = 25.0, rhs_fps: float = 25.0, verbose: bool = True) -> str:
@@ -360,7 +369,7 @@ class Melter():
                     f"Error~{err:.2%}, Confidence: {conf}"
                 )
 
-        print('\n'.join(out))
+        return '\n'.join(out)
 
     @staticmethod
     def calculate_ratio(pairs: List[Tuple[int, int]]):
@@ -513,7 +522,7 @@ class Melter():
 
         lhs_fps = estimate_fps(lhs_all)
         rhs_fps = estimate_fps(rhs_all)
-        Melter.summarize_segments(unique_pairs, lhs_fps, rhs_fps)
+        self.logger.debug(Melter.summarize_segments(unique_pairs, lhs_fps, rhs_fps))
 
         return unique_pairs
 
@@ -880,7 +889,7 @@ class Melter():
 
         lhs_fps = estimate_fps(lhs_all_frames)
         rhs_fps = estimate_fps(rhs_all_frames)
-        Melter.summarize_segments(matching_pairs, lhs_fps, rhs_fps)
+        self.logger.debug(Melter.summarize_segments(matching_pairs, lhs_fps, rhs_fps))
 
         return matching_pairs, lhs_all_frames, rhs_all_frames
 
