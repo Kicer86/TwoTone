@@ -123,6 +123,439 @@ class JellyfinSource(DuplicatesSource):
         return duplicates
 
 
+class PhashCache:
+    def __init__(self, hash_size: int = 16):
+        self.hash_size = hash_size
+        self._memory_cache: dict[str, imagehash.ImageHash] = {}
+
+    def get(self, image_path: str) -> imagehash.ImageHash:
+        if image_path in self._memory_cache:
+            return self._memory_cache[image_path]
+
+        with Image.open(image_path) as img:
+            phash = imagehash.phash(img, hash_size=self.hash_size)
+
+        self._memory_cache[image_path] = phash
+        return phash
+
+
+class DebugRoutines:
+    def __init__(self, debug_dir: str, lhs_all_frames: FramesInfo, rhs_all_frames: FramesInfo):
+        self.it = 0
+        self.debug_dir = debug_dir
+        self.lhs_all_frames = lhs_all_frames
+        self.rhs_all_frames = rhs_all_frames
+
+    def dump_frames(self, matches, phase):
+        target_dir = os.path.join(self.debug_dir, f"#{self.it} {phase}")
+        self.it += 1
+
+        os.makedirs(target_dir)
+
+        for i, (ts, info) in enumerate(matches.items()):
+            path = info["path"]
+            os.symlink(path, os.path.join(target_dir, f"{i:06d}_lhs_{ts:08d}"))
+
+    def dump_matches(self, matches, phase):
+        target_dir = os.path.join(self.debug_dir, f"#{self.it} {phase}")
+        self.it += 1
+
+        os.makedirs(target_dir)
+
+        for i, (lhs_ts, rhs_ts) in enumerate(matches):
+            lhs_path = self.lhs_all_frames[lhs_ts]["path"]
+            rhs_path = self.rhs_all_frames[rhs_ts]["path"]
+            os.symlink(lhs_path, os.path.join(target_dir, f"{i:06d}_lhs_{lhs_ts:08d}"))
+            os.symlink(rhs_path, os.path.join(target_dir, f"{i:06d}_rhs_{rhs_ts:08d}"))
+
+    def dump_pairs(self, matches):
+        target_dir = os.path.join(self.debug_dir, f"#{self.it} subsegments")
+        self.it += 1
+
+        os.makedirs(target_dir)
+
+        for i, (lhs_ts_b, lhs_ts_e, rhs_ts_b, rhs_ts_e) in enumerate(matches):
+            lhs_b_path = self.lhs_all_frames[lhs_ts_b]["path"]
+            lhs_e_path = self.lhs_all_frames[lhs_ts_e]["path"]
+            rhs_b_path = self.rhs_all_frames[rhs_ts_b]["path"]
+            rhs_e_path = self.rhs_all_frames[rhs_ts_e]["path"]
+            os.symlink(lhs_b_path, os.path.join(target_dir, f"{i:06d}_lhs_b_{lhs_ts_b:08d}"))
+            os.symlink(lhs_e_path, os.path.join(target_dir, f"{i:06d}_lhs_e_{lhs_ts_e:08d}"))
+            os.symlink(rhs_b_path, os.path.join(target_dir, f"{i:06d}_rhs_b_{rhs_ts_b:08d}"))
+            os.symlink(rhs_e_path, os.path.join(target_dir, f"{i:06d}_rhs_e_{rhs_ts_e:08d}"))
+
+class PairMatcher:
+    def __init__(self, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger):
+        self.wd = wd
+        self.lhs_path = lhs_path
+        self.rhs_path = rhs_path
+        self.logger = logger
+        self.phash = PhashCache()
+        self.lhs_fps = eval(video.get_video_data2(lhs_path)["video"][0]["fps"])
+        self.rhs_fps = eval(video.get_video_data2(rhs_path)["video"][0]["fps"])
+
+    def _three_before(self, timestamps: List[int], target: int) -> List[int]:
+        timestamps = sorted(timestamps)
+        idx = np.searchsorted(timestamps, target)
+        return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-3):idx]))
+
+    def _nearest_three(self, timestamps: List[int], target: int) -> List[int]:
+        timestamps = sorted(timestamps)
+        idx = np.searchsorted(timestamps, target)
+        return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-1):idx+2]))
+
+    def _best_phash_match(self, lhs_ts: int, rhs_ts_guess: int, lhs_all_set: FramesInfo, rhs_all_set: FramesInfo) -> Tuple[int, int]:
+        lhs_near = self._nearest_three(list(lhs_all_set.keys()), lhs_ts)
+        rhs_near = self._nearest_three(list(rhs_all_set.keys()), rhs_ts_guess)
+        best = None
+        best_dist = float("inf")
+        for l in lhs_near:
+            for r in rhs_near:
+                if l in lhs_all_set and r in rhs_all_set:
+                    d = abs(self.phash.get(lhs_all_set[l]["path"]) - self.phash.get(rhs_all_set[r]["path"]))
+                    if d < best_dist:
+                        best = (l, r)
+                        best_dist = d
+        return best
+
+    def _build_matches(self, lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int, int]]:
+        lhs_items = list(lhs.items())
+        rhs_items = list(rhs.items())
+
+        all_matches = []
+        for lhs_ts, lhs_info in lhs_items:
+            lhs_hash = self.phash.get(lhs_info["path"])
+            for rhs_ts, rhs_info in rhs_items:
+                rhs_hash = self.phash.get(rhs_info["path"])
+                distance = abs(lhs_hash - rhs_hash)
+                all_matches.append((distance, lhs_ts, rhs_ts))
+
+        all_matches.sort()
+        return all_matches
+
+    def _build_initial_candidates(self, lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int]]:
+        all_matches = self._build_matches(lhs, rhs)
+
+        used_lhs = set()
+        used_rhs = set()
+        pairs = []
+
+        for distance, lhs_ts, rhs_ts in all_matches:
+            if lhs_ts not in used_lhs and rhs_ts not in used_rhs:
+                pairs.append((lhs_ts, rhs_ts))
+                used_lhs.add(lhs_ts)
+                used_rhs.add(rhs_ts)
+
+        return sorted(pairs)
+
+    def _reject_outliers(self, pairs: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+        if len(pairs) < 3:
+            return pairs
+
+        lhs_vals, rhs_vals = zip(*pairs)
+        lhs_array = np.array(lhs_vals).reshape(-1, 1)
+        rhs_array = np.array(rhs_vals)
+        model = RANSACRegressor(LinearRegression(), residual_threshold=5000)
+        model.fit(lhs_array, rhs_array)
+        inliers = model.inlier_mask_
+        return [p for p, keep in zip(pairs, inliers) if keep]
+
+    def _check_history(self, pair: Tuple[int, int], lhs_pool: FramesInfo, rhs_pool: FramesInfo, cutoff: float) -> bool:
+        lhs_three = self._three_before(lhs_pool, pair[0])
+        rhs_three = self._three_before(rhs_pool, pair[1])
+
+        if len(lhs_three) < 3 and len(rhs_three) < 3:
+            return True
+        elif len(lhs_three) < 3 or len(rhs_three) < 3:
+            # TODO: some logic needed here
+            pass
+
+        # at least one match before current pair is required
+        lhs_frames = {l: lhs_pool[l] for l in lhs_three}
+        rhs_frames = {r: rhs_pool[r] for r in rhs_three}
+        matches = self._build_matches(lhs_frames, rhs_frames)
+
+        if len(matches) > 0:
+            best_match = matches[0][0]
+
+            if best_match <= cutoff:
+                return True
+
+        return False
+
+    def _extrapolate_matches(self, known_pairs: List[Tuple[int, int]], lhs_pool: FramesInfo, rhs_pool: FramesInfo, phash: PhashCache) -> List[Tuple[int, int]]:
+        known_pairs.sort()
+        lhs_used = {l for l, _ in known_pairs}
+        rhs_used = {r for _, r in known_pairs}
+        lhs_free = sorted(set(lhs_pool.keys()) - lhs_used)
+        rhs_keys = sorted(rhs_pool.keys())
+
+        if len(known_pairs) < 2:
+            return known_pairs
+
+        median_ratio = Melter.calculate_ratio(known_pairs)
+        first_known_pair = known_pairs[0]
+        cutoff = Melter._calculate_cutoff(phash, known_pairs, lhs_pool, rhs_pool)
+
+        new_pairs = []
+        for l in lhs_free:
+            expected_rhs = first_known_pair[1] + (l - first_known_pair[0]) / median_ratio
+            nearest_rhs_candidates = self._nearest_three(rhs_keys, int(expected_rhs))
+            lhs_surrounding = self._nearest_three(lhs_pool, l)
+
+            for rhs_candidate in nearest_rhs_candidates:
+                ratio = (l - first_known_pair[0]) / (rhs_candidate - first_known_pair[1]) if (rhs_candidate - first_known_pair[1]) != 0 else None
+                if ratio and Melter.is_ratio_acceptable(ratio, median_ratio):
+                    if rhs_candidate not in rhs_used:
+                        # make sure lhs and rhs_candidate are matching #and previous lhs and previous to rhs_candidate also match
+                        rhs_candidate_surrounding = self._nearest_three(rhs_pool, rhs_candidate)
+
+                        lhs_path = lhs_pool[l]["path"]
+                        rhs_path = rhs_pool[rhs_candidate]["path"]
+
+                        pdiff = abs(phash.get(lhs_path) - phash.get(rhs_path))
+                        phash_matching = pdiff < cutoff
+                        matching = Melter.are_images_similar(lhs_path, rhs_path)
+                        if phash_matching and matching:
+                            new_pairs.append((l, rhs_candidate))
+                            rhs_used.add(rhs_candidate)
+                            break
+                        else:
+                            pass
+
+        return sorted(set(known_pairs + new_pairs))
+
+    def _make_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> List[Tuple[int, int]]:
+        # Pipeline
+        lhs = Melter._filter_low_detailed(lhs)
+        rhs = Melter._filter_low_detailed(rhs)
+
+        if not lhs or not rhs:
+            return []
+
+        initial = self._build_initial_candidates(lhs, rhs)
+        self.logger.debug(f"Initial candidates:        {Melter.summarize_pairs(self.phash, initial, lhs_all, rhs_all)}")
+
+        stable = self._reject_outliers(initial)
+        self.logger.debug(f"After linear matching:     {Melter.summarize_pairs(self.phash, stable, lhs_all, rhs_all)}")
+
+        stable = Melter.filter_phash_outliers(self.phash, stable, lhs_all, rhs_all)
+        self.logger.debug(f"Phash outlier elimination: {Melter.summarize_pairs(self.phash, stable, lhs_all, rhs_all)}")
+
+        extrapolated = self._extrapolate_matches(stable, lhs, rhs, self.phash)
+        self.logger.debug(f"Extrapolation:             {Melter.summarize_pairs(self.phash, extrapolated, lhs_all, rhs_all)}")
+
+        extrapolated_refined = [self._best_phash_match(l, r, lhs_all, rhs_all) for l, r in extrapolated]
+        self.logger.debug(f"Frame adjustment:          {Melter.summarize_pairs(self.phash, extrapolated_refined, lhs_all, rhs_all)}")
+
+        outliers_eliminated = Melter.filter_phash_outliers(self.phash, extrapolated_refined, lhs_all, rhs_all)
+        self.logger.debug(f"Phash outlier elimination: {Melter.summarize_pairs(self.phash, outliers_eliminated, lhs_all, rhs_all)}")
+
+        orb_filtered = [
+            (lhs_ts, rhs_ts) for lhs_ts, rhs_ts in outliers_eliminated
+            if Melter.are_images_similar(lhs_all[lhs_ts]["path"], rhs_all[rhs_ts]["path"])
+        ]
+        self.logger.debug(f"After ORB elimination:     {Melter.summarize_pairs(self.phash, orb_filtered, lhs_all, rhs_all)}")
+
+        cutoff = Melter._calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
+        final = [pair for pair in orb_filtered if self._check_history(pair, lhs_all, rhs_all, cutoff)]
+        self.logger.debug(f"After hisotry analysis:    {Melter.summarize_pairs(self.phash, final, lhs_all, rhs_all)}")
+
+        unique_pairs = sorted(set(final))
+
+        self.logger.debug(Melter.summarize_segments(unique_pairs, self.lhs_fps, self.rhs_fps))
+
+        return unique_pairs
+
+
+    def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: Tuple[int, int], last: Tuple[int, int], cutoff: float, lookahead_seconds: float = 3.0):
+        self.logger.debug("Improving boundaries")
+        self.logger.debug("Current first: {first} and last: {last} pairs")
+        phash = PhashCache()
+        ratio = Melter.calculate_ratio([first, last])
+
+        def find_best_pair(lhs: FramesInfo, rhs: FramesInfo) -> Tuple[Tuple[int, int], int]:
+            best_score = 1000
+            best_pair = ()
+
+            for lhs_ts, lhs_info in lhs.items():
+                lhs_hash = phash.get(lhs_info["path"])
+                options = [(abs(lhs_hash - phash.get(rhs_info["path"])), rhs_ts) for rhs_ts, rhs_info in rhs.items()]
+                if not options:
+                    continue
+
+                options.sort()
+                best_dist, best_rhs = options[0]
+                pair_candidate = (lhs_ts, best_rhs)
+
+                pair_ratio_to_first = Melter.calculate_ratio([pair_candidate, first])
+                pair_ratio_to_last = Melter.calculate_ratio([pair_candidate, last])
+
+                if best_dist < best_score and Melter.is_ratio_acceptable(pair_ratio_to_first, ratio) and Melter.is_ratio_acceptable(pair_ratio_to_last, ratio):
+                    best_score = best_dist
+                    best_pair = pair_candidate
+
+            return best_pair, best_score
+
+        def find_boundary(lhs_set: FramesInfo, rhs_set: FramesInfo, lhs_ts, rhs_ts, direction):
+            lhs_keys = sorted(lhs_set.keys())
+            rhs_keys = sorted(rhs_set.keys())
+
+            lhs_idx = lhs_keys.index(lhs_ts)
+            rhs_idx = rhs_keys.index(rhs_ts)
+
+            current_pair = (lhs_ts, rhs_ts)
+
+            step_lhs = int(self.lhs_fps * lookahead_seconds)
+            step_rhs = int(self.rhs_fps * lookahead_seconds)
+
+            while True:
+                lhs_slice = slice(lhs_idx + direction, lhs_idx + direction * step_lhs, direction)
+                rhs_slice = slice(rhs_idx + direction, rhs_idx + direction * step_rhs, direction)
+
+                lhs_range = lhs_keys[lhs_slice]
+                rhs_range = rhs_keys[rhs_slice]
+
+                if not lhs_range or not rhs_range:
+                    break
+
+                lhs_candidates = {lhs_ts: lhs[lhs_ts] for lhs_ts in lhs_range if Melter._is_rich(lhs[lhs_ts]["path"])}
+                rhs_candidates = {rhs_ts: rhs[rhs_ts] for rhs_ts in rhs_range if Melter._is_rich(rhs[rhs_ts]["path"])}
+
+                best_pair, best_score = find_best_pair(lhs_candidates, rhs_candidates)
+
+                if best_pair and best_score < cutoff:
+                    if best_pair == current_pair:
+                        break
+                    else:
+                        current_pair = best_pair
+                        lhs_ts = current_pair[0]
+                        rhs_ts = current_pair[1]
+                        lhs_idx = lhs_keys.index(lhs_ts)
+                        rhs_idx = rhs_keys.index(rhs_ts)
+
+                        self.logger.debug(f"Step's best: {lhs_set[lhs_ts]["path"]} {rhs_set[rhs_ts]["path"]}")
+                else:
+                    break
+
+            return current_pair
+
+        refined_first = find_boundary(lhs, rhs, first[0], first[1], direction=-1)
+        self.logger.debug(f"Refined First: L: {lhs[refined_first[0]]['path']} R: {rhs[refined_first[1]]['path']}")
+
+        refined_last = find_boundary(lhs, rhs, last[0], last[1], direction=1)
+        self.logger.debug(f"Refined Last:  L: {lhs[refined_last[0]]['path']} R: {rhs[refined_last[1]]['path']}")
+
+        return refined_first, refined_last
+
+
+    def create_segments_mapping(self) -> List[Tuple[int, int]]:
+        lhs_scene_changes = video.detect_scene_changes(self.lhs_path, threshold = 0.3)
+        rhs_scene_changes = video.detect_scene_changes(self.rhs_path, threshold = 0.3)
+
+        if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
+            return
+
+        lhs_wd = os.path.join(self.wd, "lhs")
+        rhs_wd = os.path.join(self.wd, "rhs")
+
+        lhs_all_wd = os.path.join(lhs_wd, "all")
+        rhs_all_wd = os.path.join(rhs_wd, "all")
+        lhs_normalized_wd = os.path.join(lhs_wd, "norm")
+        rhs_normalized_wd = os.path.join(rhs_wd, "norm")
+        lhs_normalized_cropped_wd = os.path.join(lhs_wd, "norm_cropped")
+        rhs_normalized_cropped_wd = os.path.join(rhs_wd, "norm_cropped")
+        debug_wd = os.path.join(self.wd, "debug")
+
+        for d in [lhs_wd,
+                    rhs_wd,
+                    lhs_all_wd,
+                    rhs_all_wd,
+                    lhs_normalized_wd,
+                    rhs_normalized_wd,
+                    lhs_normalized_cropped_wd,
+                    rhs_normalized_cropped_wd,
+                    debug_wd,
+        ]:
+            os.makedirs(d)
+
+            # extract all scenes
+        lhs_all_frames = video.extract_all_frames(self.lhs_path, lhs_all_wd, scale = 0.5, format = "png")
+        rhs_all_frames = video.extract_all_frames(self.rhs_path, rhs_all_wd, scale = 0.5, format = "png")
+
+        self.logger.debug(f"lhs key frames: {' '.join(str(lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes)}")
+        self.logger.debug(f"rhs key frames: {' '.join(str(rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes)}")
+
+        # normalize frames. This could be done in previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
+        lhs_normalized_frames = Melter._normalize_frames(lhs_all_frames, lhs_normalized_wd)
+        rhs_normalized_frames = Melter._normalize_frames(rhs_all_frames, rhs_normalized_wd)
+
+        # extract key frames (as 'key' a scene change frame is meant)
+        lhs_key_frames = Melter._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_frames)
+        rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
+
+        debug = DebugRoutines(debug_wd, lhs_all_frames, rhs_all_frames)
+
+        debug.dump_frames(lhs_key_frames, "lhs key frames")
+        debug.dump_frames(rhs_key_frames, "rhs key frames")
+
+        # find matching keys
+        matching_pairs = self._make_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames)
+        debug.dump_matches(matching_pairs, "initial matching")
+        self.logger.debug("Pairs summary after initial matching:")
+        self.logger.debug(Melter.summarize_pairs(self.phash, matching_pairs, lhs_all_frames, rhs_all_frames, verbose = True))
+
+        prev_first, prev_last = None, None
+        while True:
+            # crop frames basing on matching ones
+            lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = Melter._crop_both_sets(
+                pairs_with_timestamps = matching_pairs,
+                lhs_frames = lhs_normalized_frames,
+                rhs_frames = rhs_normalized_frames,
+                lhs_cropped_dir = lhs_normalized_cropped_wd,
+                rhs_cropped_dir = rhs_normalized_cropped_wd
+            )
+
+            first_lhs, first_rhs = matching_pairs[0]
+            last_lhs, last_rhs = matching_pairs[-1]
+            self.logger.debug(f"First pair: {lhs_normalized_cropped_frames[first_lhs]["path"]} {rhs_normalized_cropped_frames[first_rhs]["path"]}")
+            self.logger.debug(f"Last pair:  {lhs_normalized_cropped_frames[last_lhs]["path"]} {rhs_normalized_cropped_frames[last_rhs]["path"]}")
+
+            # use new PhashCache as normalized frames are being regenerated every time
+            phash4normalized = PhashCache()
+            self.logger.debug(f"Cropped and aligned:       {Melter.summarize_pairs(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)}")
+
+            cutoff = Melter._calculate_cutoff(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
+
+            # try to locate first and last common frames
+            first, last = self._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff)
+
+            if first == prev_first and last == prev_last:
+                break
+            else:
+                if first != prev_first:
+                    matching_pairs = [first, *matching_pairs]
+                    prev_first = first
+                if last != prev_last:
+                    matching_pairs = [*matching_pairs, last]
+                    prev_last = last
+
+            debug.dump_matches(matching_pairs, f"improving boundaries")
+
+        def estimate_fps(timestamps: List[int]) -> float:
+            diffs = np.diff(sorted(timestamps))
+            return 1000.0 / np.median(diffs) if len(diffs) > 0 else 25.0
+
+        lhs_fps = estimate_fps(lhs_all_frames)
+        rhs_fps = estimate_fps(rhs_all_frames)
+
+        self.logger.debug("Status after boundaries lookup:\n")
+        self.logger.debug(Melter.summarize_segments(matching_pairs, lhs_fps, rhs_fps))
+        self.logger.debug(Melter.summarize_pairs(phash4normalized, matching_pairs, lhs_all_frames, rhs_all_frames, verbose = True))
+
+        return matching_pairs, lhs_all_frames, rhs_all_frames
+
+
 class Melter():
     class PhashCache:
         def __init__(self, hash_size: int = 16):
@@ -145,7 +578,6 @@ class Melter():
         self.duplicates_source = duplicates_source
         self.live_run = live_run
         self.debug_it: int = 0
-
 
     @staticmethod
     def are_images_similar(lhs_path: str, rhs_path: str, threshold = 10) -> bool:
@@ -193,96 +625,6 @@ class Melter():
         return [pair for pair, dist in zip(pairs, dists) if dist <= threshold]
 
 
-    def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: Tuple[int, int], last: Tuple[int, int], cutoff: float, lookahead_seconds: float = 3.0):
-        self.logger.debug("Improving boundaries")
-        self.logger.debug("Current first: {first} and last: {last} pairs")
-        phash = Melter.PhashCache()
-        ratio = Melter.calculate_ratio([first, last])
-
-        def estimate_fps(timestamps: List[int]) -> float:
-            if len(timestamps) < 2:
-                return 1.0
-            diffs = [t2 - t1 for t1, t2 in zip(timestamps[:-1], timestamps[1:]) if t2 > t1]
-            return 1000.0 / (sum(diffs) / len(diffs)) if diffs else 1.0
-
-        def find_best_pair(lhs: FramesInfo, rhs: FramesInfo) -> Tuple[Tuple[int, int], int]:
-            best_score = 1000
-            best_pair = ()
-
-            for lhs_ts, lhs_info in lhs.items():
-                lhs_hash = phash.get(lhs_info["path"])
-                options = [(abs(lhs_hash - phash.get(rhs_info["path"])), rhs_ts) for rhs_ts, rhs_info in rhs.items()]
-                if not options:
-                    continue
-
-                options.sort()
-                best_dist, best_rhs = options[0]
-                pair_candidate = (lhs_ts, best_rhs)
-
-                pair_ratio_to_first = Melter.calculate_ratio([pair_candidate, first])
-                pair_ratio_to_last = Melter.calculate_ratio([pair_candidate, last])
-
-                if best_dist < best_score and Melter.is_ratio_acceptable(pair_ratio_to_first, ratio) and Melter.is_ratio_acceptable(pair_ratio_to_last, ratio):
-                    best_score = best_dist
-                    best_pair = pair_candidate
-
-            return best_pair, best_score
-
-        def find_boundary(lhs_set: FramesInfo, rhs_set: FramesInfo, lhs_ts, rhs_ts, direction):
-            lhs_keys = sorted(lhs_set.keys())
-            rhs_keys = sorted(rhs_set.keys())
-
-            lhs_idx = lhs_keys.index(lhs_ts)
-            rhs_idx = rhs_keys.index(rhs_ts)
-
-            current_pair = (lhs_ts, rhs_ts)
-
-            lhs_fps = estimate_fps(lhs_keys)
-            rhs_fps = estimate_fps(rhs_keys)
-
-            step_lhs = int(lhs_fps * lookahead_seconds)
-            step_rhs = int(rhs_fps * lookahead_seconds)
-
-            while True:
-                lhs_slice = slice(lhs_idx + direction, lhs_idx + direction * step_lhs, direction)
-                rhs_slice = slice(rhs_idx + direction, rhs_idx + direction * step_rhs, direction)
-
-                lhs_range = lhs_keys[lhs_slice]
-                rhs_range = rhs_keys[rhs_slice]
-
-                if not lhs_range or not rhs_range:
-                    break
-
-                lhs_candidates = {lhs_ts: lhs[lhs_ts] for lhs_ts in lhs_range if Melter._is_rich(lhs[lhs_ts]["path"])}
-                rhs_candidates = {rhs_ts: rhs[rhs_ts] for rhs_ts in rhs_range if Melter._is_rich(rhs[rhs_ts]["path"])}
-
-                best_pair, best_score = find_best_pair(lhs_candidates, rhs_candidates)
-
-                if best_pair and best_score < cutoff:
-                    if best_pair == current_pair:
-                        break
-                    else:
-                        current_pair = best_pair
-                        lhs_ts = current_pair[0]
-                        rhs_ts = current_pair[1]
-                        lhs_idx = lhs_keys.index(lhs_ts)
-                        rhs_idx = rhs_keys.index(rhs_ts)
-
-                        self.logger.debug(f"Step's best: {lhs_set[lhs_ts]["path"]} {rhs_set[rhs_ts]["path"]}")
-                else:
-                    break
-
-            return current_pair
-
-        refined_first = find_boundary(lhs, rhs, first[0], first[1], direction=-1)
-        self.logger.debug(f"Refined First: L: {lhs[refined_first[0]]['path']} R: {rhs[refined_first[1]]['path']}")
-
-        refined_last = find_boundary(lhs, rhs, last[0], last[1], direction=1)
-        self.logger.debug(f"Refined Last:  L: {lhs[refined_last[0]]['path']} R: {rhs[refined_last[1]]['path']}")
-
-        return refined_first, refined_last
-
-
     @staticmethod
     def summarize_pairs(phash, pairs: List[Tuple[int, int]], lhs: FramesInfo, rhs: FramesInfo, verbose: bool = False) -> str:
         distances = []
@@ -322,7 +664,7 @@ class Melter():
         return summary
 
     @staticmethod
-    def summarize_segments(pairs: List[Tuple[int, int]], lhs_fps: float = 25.0, rhs_fps: float = 25.0, verbose: bool = True) -> str:
+    def summarize_segments(pairs: List[Tuple[int, int]], lhs_fps: float, rhs_fps: float, verbose: bool = True) -> str:
         if len(pairs) < 2:
             return "Not enough pairs to build segments."
 
@@ -380,187 +722,6 @@ class Melter():
     @staticmethod
     def is_ratio_acceptable(ratio: float, perfect_ratio: float):
         return abs(ratio - perfect_ratio) < 0.05 * perfect_ratio
-
-    def _match_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo, phash: PhashCache) -> List[Tuple[int, int]]:
-
-        def estimate_fps(timestamps: List[int]) -> float:
-            diffs = np.diff(sorted(timestamps))
-            return 1000.0 / np.median(diffs) if len(diffs) > 0 else 25.0
-
-        def three_before(timestamps: List[int], target: int) -> List[int]:
-            timestamps = sorted(timestamps)
-            idx = np.searchsorted(timestamps, target)
-            return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-3):idx]))
-
-        def nearest_three(timestamps: List[int], target: int) -> List[int]:
-            timestamps = sorted(timestamps)
-            idx = np.searchsorted(timestamps, target)
-            return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-1):idx+2]))
-
-        def best_phash_match(lhs_ts: int, rhs_ts_guess: int, lhs_all_set: FramesInfo, rhs_all_set: FramesInfo) -> Tuple[int, int]:
-            lhs_near = nearest_three(list(lhs_all_set.keys()), lhs_ts)
-            rhs_near = nearest_three(list(rhs_all_set.keys()), rhs_ts_guess)
-            best = None
-            best_dist = float("inf")
-            for l in lhs_near:
-                for r in rhs_near:
-                    if l in lhs_all_set and r in rhs_all_set:
-                        d = abs(phash.get(lhs_all_set[l]["path"]) - phash.get(rhs_all_set[r]["path"]))
-                        if d < best_dist:
-                            best = (l, r)
-                            best_dist = d
-            return best
-
-        def build_matches(lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int, int]]:
-            lhs_items = list(lhs.items())
-            rhs_items = list(rhs.items())
-
-            all_matches = []
-            for lhs_ts, lhs_info in lhs_items:
-                lhs_hash = phash.get(lhs_info["path"])
-                for rhs_ts, rhs_info in rhs_items:
-                    rhs_hash = phash.get(rhs_info["path"])
-                    distance = abs(lhs_hash - rhs_hash)
-                    all_matches.append((distance, lhs_ts, rhs_ts))
-
-            all_matches.sort()
-            return all_matches
-
-        def build_initial_candidates(lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int]]:
-            all_matches = build_matches(lhs, rhs)
-
-            used_lhs = set()
-            used_rhs = set()
-            pairs = []
-
-            for distance, lhs_ts, rhs_ts in all_matches:
-                if lhs_ts not in used_lhs and rhs_ts not in used_rhs:
-                    pairs.append((lhs_ts, rhs_ts))
-                    used_lhs.add(lhs_ts)
-                    used_rhs.add(rhs_ts)
-
-            return sorted(pairs)
-
-        def reject_outliers(pairs: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
-            if len(pairs) < 3:
-                return pairs
-
-            lhs_vals, rhs_vals = zip(*pairs)
-            lhs_array = np.array(lhs_vals).reshape(-1, 1)
-            rhs_array = np.array(rhs_vals)
-            model = RANSACRegressor(LinearRegression(), residual_threshold=5000)
-            model.fit(lhs_array, rhs_array)
-            inliers = model.inlier_mask_
-            return [p for p, keep in zip(pairs, inliers) if keep]
-
-        def check_history(pair: Tuple[int, int], lhs_pool: FramesInfo, rhs_pool: FramesInfo, cutoff: float) -> bool:
-            lhs_three = three_before(lhs_pool, pair[0])
-            rhs_three = three_before(rhs_pool, pair[1])
-
-            if len(lhs_three) < 3 and len(rhs_three) < 3:
-                return True
-            elif len(lhs_three) < 3 or len(rhs_three) < 3:
-                # TODO: some logic needed here
-                pass
-
-            # at least one match before current pair is required
-            lhs_frames = {l: lhs_pool[l] for l in lhs_three}
-            rhs_frames = {r: rhs_pool[r] for r in rhs_three}
-            matches = build_matches(lhs_frames, rhs_frames)
-
-            if len(matches) > 0:
-                best_match = matches[0][0]
-
-                if best_match <= cutoff:
-                    return True
-
-            return False
-
-        def extrapolate_matches(known_pairs: List[Tuple[int, int]], lhs_pool: FramesInfo, rhs_pool: FramesInfo, phash: Melter.PhashCache) -> List[Tuple[int, int]]:
-            known_pairs.sort()
-            lhs_used = {l for l, _ in known_pairs}
-            rhs_used = {r for _, r in known_pairs}
-            lhs_free = sorted(set(lhs_pool.keys()) - lhs_used)
-            rhs_keys = sorted(rhs_pool.keys())
-
-            if len(known_pairs) < 2:
-                return known_pairs
-
-            median_ratio = Melter.calculate_ratio(known_pairs)
-            first_known_pair = known_pairs[0]
-            cutoff = Melter._calculate_cutoff(phash, known_pairs, lhs_pool, rhs_pool)
-
-            new_pairs = []
-            for l in lhs_free:
-                expected_rhs = first_known_pair[1] + (l - first_known_pair[0]) / median_ratio
-                nearest_rhs_candidates = nearest_three(rhs_keys, int(expected_rhs))
-                lhs_surrounding = nearest_three(lhs_pool, l)
-
-                for rhs_candidate in nearest_rhs_candidates:
-                    ratio = (l - first_known_pair[0]) / (rhs_candidate - first_known_pair[1]) if (rhs_candidate - first_known_pair[1]) != 0 else None
-                    if ratio and Melter.is_ratio_acceptable(ratio, median_ratio):
-                        if rhs_candidate not in rhs_used:
-                            # make sure lhs and rhs_candidate are matching #and previous lhs and previous to rhs_candidate also match
-                            rhs_candidate_surrounding = nearest_three(rhs_pool, rhs_candidate)
-
-                            lhs_path = lhs_pool[l]["path"]
-                            rhs_path = rhs_pool[rhs_candidate]["path"]
-
-                            pdiff = abs(phash.get(lhs_path) - phash.get(rhs_path))
-                            phash_matching = pdiff < cutoff
-                            matching = Melter.are_images_similar(lhs_path, rhs_path)
-                            if phash_matching and matching:
-                                new_pairs.append((l, rhs_candidate))
-                                rhs_used.add(rhs_candidate)
-                                break
-                            else:
-                                pass
-
-            return sorted(set(known_pairs + new_pairs))
-
-        # Pipeline
-        lhs = Melter._filter_low_detailed(lhs)
-        rhs = Melter._filter_low_detailed(rhs)
-
-        if not lhs or not rhs:
-            return []
-
-        initial = build_initial_candidates(lhs, rhs)
-        self.logger.debug(f"Initial candidates:        {Melter.summarize_pairs(phash, initial, lhs_all, rhs_all)}")
-
-        stable = reject_outliers(initial)
-        self.logger.debug(f"After linear matching:     {Melter.summarize_pairs(phash, stable, lhs_all, rhs_all)}")
-
-        stable = Melter.filter_phash_outliers(phash, stable, lhs_all, rhs_all)
-        self.logger.debug(f"Phash outlier elimination: {Melter.summarize_pairs(phash, stable, lhs_all, rhs_all)}")
-
-        extrapolated = extrapolate_matches(stable, lhs, rhs, phash)
-        self.logger.debug(f"Extrapolation:             {Melter.summarize_pairs(phash, extrapolated, lhs_all, rhs_all)}")
-
-        extrapolated_refined = [best_phash_match(l, r, lhs_all, rhs_all) for l, r in extrapolated]
-        self.logger.debug(f"Frame adjustment:          {Melter.summarize_pairs(phash, extrapolated_refined, lhs_all, rhs_all)}")
-
-        outliers_eliminated = Melter.filter_phash_outliers(phash, extrapolated_refined, lhs_all, rhs_all)
-        self.logger.debug(f"Phash outlier elimination: {Melter.summarize_pairs(phash, outliers_eliminated, lhs_all, rhs_all)}")
-
-        orb_filtered = [
-            (lhs_ts, rhs_ts) for lhs_ts, rhs_ts in outliers_eliminated
-            if Melter.are_images_similar(lhs_all[lhs_ts]["path"], rhs_all[rhs_ts]["path"])
-        ]
-        self.logger.debug(f"After ORB elimination:     {Melter.summarize_pairs(phash, orb_filtered, lhs_all, rhs_all)}")
-
-        cutoff = Melter._calculate_cutoff(phash, orb_filtered, lhs_all, rhs_all)
-        final = [pair for pair in orb_filtered if check_history(pair, lhs_all, rhs_all, cutoff)]
-        self.logger.debug(f"After hisotry analysis:    {Melter.summarize_pairs(phash, final, lhs_all, rhs_all)}")
-
-        unique_pairs = sorted(set(final))
-
-        lhs_fps = estimate_fps(lhs_all)
-        rhs_fps = estimate_fps(rhs_all)
-        self.logger.debug(Melter.summarize_segments(unique_pairs, lhs_fps, rhs_fps))
-
-        return unique_pairs
-
 
     @staticmethod
     def _get_frames_for_timestamps(timestamps: List[int], frames_info: FramesInfo) -> List[str]:
@@ -807,135 +968,6 @@ class Melter():
 
         return median + std
 
-
-    def _create_segments_mapping(self, wd: str, lhs: str, rhs: str) -> List[Tuple[int, int]]:
-        lhs_scene_changes = video.detect_scene_changes(lhs, threshold = 0.3)
-        rhs_scene_changes = video.detect_scene_changes(rhs, threshold = 0.3)
-
-        if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
-            return
-
-        lhs_wd = os.path.join(wd, "lhs")
-        rhs_wd = os.path.join(wd, "rhs")
-
-        lhs_all_wd = os.path.join(lhs_wd, "all")
-        rhs_all_wd = os.path.join(rhs_wd, "all")
-        lhs_normalized_wd = os.path.join(lhs_wd, "norm")
-        rhs_normalized_wd = os.path.join(rhs_wd, "norm")
-        lhs_normalized_cropped_wd = os.path.join(lhs_wd, "norm_cropped")
-        rhs_normalized_cropped_wd = os.path.join(rhs_wd, "norm_cropped")
-        debug_wd = os.path.join(wd, "debug")
-
-        for d in [lhs_wd,
-                    rhs_wd,
-                    lhs_all_wd,
-                    rhs_all_wd,
-                    lhs_normalized_wd,
-                    rhs_normalized_wd,
-                    lhs_normalized_cropped_wd,
-                    rhs_normalized_cropped_wd,
-                    debug_wd,
-        ]:
-            os.makedirs(d)
-
-            # extract all scenes
-        lhs_all_frames = video.extract_all_frames(lhs, lhs_all_wd, scale = 0.5, format = "tiff")
-        rhs_all_frames = video.extract_all_frames(rhs, rhs_all_wd, scale = 0.5, format = "tiff")
-
-        def dump_frames(matches, phase):
-            target_dir = os.path.join(debug_wd, f"#{self.debug_it} {phase}")
-            self.debug_it += 1
-
-            os.makedirs(target_dir)
-
-            for i, (ts, info) in enumerate(matches.items()):
-                path = info["path"]
-                os.symlink(path, os.path.join(target_dir, f"{i:06d}_lhs_{ts:08d}"))
-
-        def dump_matches(matches, phase):
-            target_dir = os.path.join(debug_wd, f"#{self.debug_it} {phase}")
-            self.debug_it += 1
-
-            os.makedirs(target_dir)
-
-            for i, (lhs_ts, rhs_ts) in enumerate(matches):
-                lhs_path = lhs_all_frames[lhs_ts]["path"]
-                rhs_path = rhs_all_frames[rhs_ts]["path"]
-                os.symlink(lhs_path, os.path.join(target_dir, f"{i:06d}_lhs_{lhs_ts:08d}"))
-                os.symlink(rhs_path, os.path.join(target_dir, f"{i:06d}_rhs_{rhs_ts:08d}"))
-
-        self.logger.debug(f"lhs key frames: {' '.join(str(lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes)}")
-        self.logger.debug(f"rhs key frames: {' '.join(str(rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes)}")
-
-        # normalize frames. This could be done in previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
-        lhs_normalized_frames = Melter._normalize_frames(lhs_all_frames, lhs_normalized_wd)
-        rhs_normalized_frames = Melter._normalize_frames(rhs_all_frames, rhs_normalized_wd)
-
-        # extract key frames (as 'key' a scene change frame is meant)
-        lhs_key_frames = Melter._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_frames)
-        rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
-
-        dump_frames(lhs_key_frames, "lhs key frames")
-        dump_frames(rhs_key_frames, "rhs key frames")
-
-        # find matching keys
-        phash = Melter.PhashCache()
-        matching_pairs = self._match_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames, phash)
-        dump_matches(matching_pairs, "initial matching")
-        self.logger.debug("Pairs summary after initial matching:")
-        self.logger.debug(Melter.summarize_pairs(phash, matching_pairs, lhs_all_frames, rhs_all_frames, verbose = True))
-
-        prev_first, prev_last = None, None
-        while True:
-            # crop frames basing on matching ones
-            lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = Melter._crop_both_sets(
-                pairs_with_timestamps = matching_pairs,
-                lhs_frames = lhs_normalized_frames,
-                rhs_frames = rhs_normalized_frames,
-                lhs_cropped_dir = lhs_normalized_cropped_wd,
-                rhs_cropped_dir = rhs_normalized_cropped_wd
-            )
-
-            first_lhs, first_rhs = matching_pairs[0]
-            last_lhs, last_rhs = matching_pairs[-1]
-            self.logger.debug(f"First pair: {lhs_normalized_cropped_frames[first_lhs]["path"]} {rhs_normalized_cropped_frames[first_rhs]["path"]}")
-            self.logger.debug(f"Last pair:  {lhs_normalized_cropped_frames[last_lhs]["path"]} {rhs_normalized_cropped_frames[last_rhs]["path"]}")
-
-            # use new PhashCache as normalized frames are being regenerated every time
-            phash4normalized = Melter.PhashCache()
-            self.logger.debug(f"Cropped and aligned:       {Melter.summarize_pairs(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)}")
-
-            cutoff = Melter._calculate_cutoff(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
-
-            # try to locate first and last common frames
-            first, last = self._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff)
-
-            if first == prev_first and last == prev_last:
-                break
-            else:
-                if first != prev_first:
-                    matching_pairs = [first, *matching_pairs]
-                    prev_first = first
-                if last != prev_last:
-                    matching_pairs = [*matching_pairs, last]
-                    prev_last = last
-
-            dump_matches(matching_pairs, f"improving boundaries")
-
-        def estimate_fps(timestamps: List[int]) -> float:
-            diffs = np.diff(sorted(timestamps))
-            return 1000.0 / np.median(diffs) if len(diffs) > 0 else 25.0
-
-        lhs_fps = estimate_fps(lhs_all_frames)
-        rhs_fps = estimate_fps(rhs_all_frames)
-
-        self.logger.debug("Status after boundaries lookup:\n")
-        self.logger.debug(Melter.summarize_segments(matching_pairs, lhs_fps, rhs_fps))
-        self.logger.debug(Melter.summarize_pairs(phash4normalized, matching_pairs, lhs_all_frames, rhs_all_frames, verbose = True))
-
-        return matching_pairs, lhs_all_frames, rhs_all_frames
-
-
     def _patch_audio_segment(
         self,
         wd: str,
@@ -972,6 +1004,8 @@ class Melter():
         tail_path = os.path.join(wd, "tail.flac")
         final_audio = os.path.join(wd, "final_audio.m4a")
         final_audio = os.path.join(wd, "final_audio.m4a")
+
+        debug = DebugRoutines(debug_wd, lhs_frames, rhs_frames)
 
         # Compute global segment range
         s1_all = [p[0] for p in segment_pairs]
@@ -1022,23 +1056,7 @@ class Melter():
             cleaned_pairs.append((l_start, l_end, r_start, r_end))
             i += 1
 
-        def dump_pairs(matches):
-            target_dir = os.path.join(debug_wd, f"#{self.debug_it} subsegments")
-            self.debug_it += 1
-
-            os.makedirs(target_dir)
-
-            for i, (lhs_ts_b, lhs_ts_e, rhs_ts_b, rhs_ts_e) in enumerate(matches):
-                lhs_b_path = lhs_frames[lhs_ts_b]["path"]
-                lhs_e_path = lhs_frames[lhs_ts_e]["path"]
-                rhs_b_path = rhs_frames[rhs_ts_b]["path"]
-                rhs_e_path = rhs_frames[rhs_ts_e]["path"]
-                os.symlink(lhs_b_path, os.path.join(target_dir, f"{i:06d}_lhs_b_{lhs_ts_b:08d}"))
-                os.symlink(lhs_e_path, os.path.join(target_dir, f"{i:06d}_lhs_e_{lhs_ts_e:08d}"))
-                os.symlink(rhs_b_path, os.path.join(target_dir, f"{i:06d}_rhs_b_{rhs_ts_b:08d}"))
-                os.symlink(rhs_e_path, os.path.join(target_dir, f"{i:06d}_rhs_e_{rhs_ts_e:08d}"))
-
-        dump_pairs(cleaned_pairs)
+        debug.dump_pairs(cleaned_pairs)
 
         temp_segments = []
         for idx, (l_start, l_end, r_start, r_end) in enumerate(cleaned_pairs):
@@ -1095,7 +1113,9 @@ class Melter():
 
     def _process_duplicates(self, duplicates: List[str]):
         with files.ScopedDirectory("/tmp/twotone/melter") as wd:
-            mapping, lhs_all_frames, rhs_all_frames = self._create_segments_mapping(wd, duplicates[0], duplicates[1])
+            pairMatcher = PairMatcher(wd, duplicates[0], duplicates[1], self.logger.getChild("PairMatcher"))
+
+            mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
             self._patch_audio_segment(wd, duplicates[0], duplicates[1], os.path.join(wd, "final.mkv"), mapping, 20, lhs_all_frames, rhs_all_frames)
 
         return
