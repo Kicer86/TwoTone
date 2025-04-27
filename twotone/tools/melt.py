@@ -8,16 +8,13 @@ import numpy as np
 import os
 import re
 import requests
-import shutil
-import tempfile
 
 from collections import defaultdict
 from overrides import override
-from pathlib import Path
 from PIL import Image
 from scipy.stats import entropy
 from sklearn.linear_model import RANSACRegressor, LinearRegression
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 from . import utils
 from .tool import Tool
