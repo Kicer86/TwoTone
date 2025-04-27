@@ -322,6 +322,42 @@ class PairMatcher:
 
         return sorted(set(known_pairs + new_pairs))
 
+    def _crop_both_sets(
+        self,
+        pairs_with_timestamps: List[Tuple[int, int]],
+        lhs_frames: FramesInfo,
+        rhs_frames: FramesInfo,
+        lhs_cropped_dir: str,
+        rhs_cropped_dir: str,
+        final_crop_percent: float = 0.02
+    ) -> Tuple[FramesInfo, FramesInfo]:
+        # Step 1: Get interpolated crop functions for both sets
+        lhs_crop_fn, rhs_crop_fn = Melter._find_interpolated_crop(pairs_with_timestamps, lhs_frames, rhs_frames)
+
+        # Step 2: Apply interpolated cropping to each frame
+        lhs_cropped = Melter._apply_crop_interpolated(lhs_frames, lhs_cropped_dir, lhs_crop_fn)
+        rhs_cropped = Melter._apply_crop_interpolated(rhs_frames, rhs_cropped_dir, rhs_crop_fn)
+
+        # Step 3: Resize both output sets to same resolution (downscale to smaller one)
+        #Melter._resize_dirs_to_smallest(out_dir1, out_dir2)
+
+        return lhs_cropped, rhs_cropped
+
+    def _calculate_cutoff(
+        self,
+        phash: PhashCache,
+        pairs: List[Tuple[int, int]],
+        lhs: FramesInfo,
+        rhs: FramesInfo
+    ) -> int:
+        distances = [abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"])) for lhs_ts, rhs_ts in pairs]
+
+        arr = np.array(distances)
+        median = np.median(arr)
+        std = np.std(arr)
+
+        return median + std
+
     def _make_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> List[Tuple[int, int]]:
         # Pipeline
         lhs = Melter._filter_low_detailed(lhs)
@@ -899,44 +935,6 @@ class Melter():
             dy = int(h * crop_percent)
             cropped = img[dy:h-dy, dx:w-dx]
             cv.imwrite(path, cropped)
-
-
-    @staticmethod
-    def _crop_both_sets(
-        pairs_with_timestamps: List[Tuple[int, int]],
-        lhs_frames: FramesInfo,
-        rhs_frames: FramesInfo,
-        lhs_cropped_dir: str,
-        rhs_cropped_dir: str,
-        final_crop_percent: float = 0.02
-    ) -> Tuple[FramesInfo, FramesInfo]:
-        # Step 1: Get interpolated crop functions for both sets
-        lhs_crop_fn, rhs_crop_fn = Melter._find_interpolated_crop(pairs_with_timestamps, lhs_frames, rhs_frames)
-
-        # Step 2: Apply interpolated cropping to each frame
-        lhs_cropped = Melter._apply_crop_interpolated(lhs_frames, lhs_cropped_dir, lhs_crop_fn)
-        rhs_cropped = Melter._apply_crop_interpolated(rhs_frames, rhs_cropped_dir, rhs_crop_fn)
-
-        # Step 3: Resize both output sets to same resolution (downscale to smaller one)
-        #Melter._resize_dirs_to_smallest(out_dir1, out_dir2)
-
-        return lhs_cropped, rhs_cropped
-
-
-    @staticmethod
-    def _calculate_cutoff(
-        phash: PhashCache,
-        pairs: List[Tuple[int, int]],
-        lhs: FramesInfo,
-        rhs: FramesInfo
-    ) -> int:
-        distances = [abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"])) for lhs_ts, rhs_ts in pairs]
-
-        arr = np.array(distances)
-        median = np.median(arr)
-        std = np.std(arr)
-
-        return median + std
 
     def _patch_audio_segment(
         self,
