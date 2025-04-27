@@ -901,10 +901,11 @@ class Melter():
             self.logger.debug(f"First pair: {lhs_normalized_cropped_frames[first_lhs]["path"]} {rhs_normalized_cropped_frames[first_rhs]["path"]}")
             self.logger.debug(f"Last pair:  {lhs_normalized_cropped_frames[last_lhs]["path"]} {rhs_normalized_cropped_frames[last_rhs]["path"]}")
 
-            phash = Melter.PhashCache()
-            self.logger.debug(f"Cropped and aligned:       {Melter.summarize_pairs(phash, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)}")
+            # use new PhashCache as normalized frames are being regenerated every time
+            phash4normalized = Melter.PhashCache()
+            self.logger.debug(f"Cropped and aligned:       {Melter.summarize_pairs(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)}")
 
-            cutoff = Melter._calculate_cutoff(phash, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
+            cutoff = Melter._calculate_cutoff(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
 
             # try to locate first and last common frames
             first, last = self._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff)
