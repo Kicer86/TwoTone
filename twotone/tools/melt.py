@@ -540,16 +540,20 @@ class Melter():
         extrapolated_refined = [best_phash_match(l, r, lhs_all, rhs_all) for l, r in extrapolated]
         self.logger.debug(f"Frame adjustment:          {Melter.summarize_pairs(phash, extrapolated_refined, lhs_all, rhs_all)}")
 
-        final = Melter.filter_phash_outliers(phash, extrapolated_refined, lhs_all, rhs_all)
-        self.logger.debug(f"Phash outlier elimination: {Melter.summarize_pairs(phash, final, lhs_all, rhs_all)}")
+        outliers_eliminated = Melter.filter_phash_outliers(phash, extrapolated_refined, lhs_all, rhs_all)
+        self.logger.debug(f"Phash outlier elimination: {Melter.summarize_pairs(phash, outliers_eliminated, lhs_all, rhs_all)}")
 
-        final_verified = [
-            (lhs_ts, rhs_ts) for lhs_ts, rhs_ts in final
+        orb_filtered = [
+            (lhs_ts, rhs_ts) for lhs_ts, rhs_ts in outliers_eliminated
             if Melter.are_images_similar(lhs_all[lhs_ts]["path"], rhs_all[rhs_ts]["path"])
         ]
-        self.logger.debug(f"After ORB elimination:     {Melter.summarize_pairs(phash, final_verified, lhs_all, rhs_all)}")
+        self.logger.debug(f"After ORB elimination:     {Melter.summarize_pairs(phash, orb_filtered, lhs_all, rhs_all)}")
 
-        unique_pairs = sorted(set(final_verified))
+        cutoff = Melter._calculate_cutoff(phash, orb_filtered, lhs_all, rhs_all)
+        final = [pair for pair in orb_filtered if check_history(pair, lhs_all, rhs_all, cutoff)]
+        self.logger.debug(f"After hisotry analysis:    {Melter.summarize_pairs(phash, final, lhs_all, rhs_all)}")
+
+        unique_pairs = sorted(set(final))
 
         lhs_fps = estimate_fps(lhs_all)
         rhs_fps = estimate_fps(rhs_all)
