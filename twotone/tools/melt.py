@@ -805,7 +805,7 @@ class Melter():
         median = np.median(arr)
         std = np.std(arr)
 
-        return median + std * 2
+        return median + std
 
 
     def _create_segments_mapping(self, wd: str, lhs: str, rhs: str) -> List[Tuple[int, int]]:
