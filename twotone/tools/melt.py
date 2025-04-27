@@ -389,6 +389,11 @@ class Melter():
             diffs = np.diff(sorted(timestamps))
             return 1000.0 / np.median(diffs) if len(diffs) > 0 else 25.0
 
+        def three_before(timestamps: List[int], target: int) -> List[int]:
+            timestamps = sorted(timestamps)
+            idx = np.searchsorted(timestamps, target)
+            return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-3):idx]))
+
         def nearest_three(timestamps: List[int], target: int) -> List[int]:
             timestamps = sorted(timestamps)
             idx = np.searchsorted(timestamps, target)
@@ -408,7 +413,7 @@ class Melter():
                             best_dist = d
             return best
 
-        def build_initial_candidates(lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int]]:
+        def build_matches(lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int, int]]:
             lhs_items = list(lhs.items())
             rhs_items = list(rhs.items())
 
@@ -421,6 +426,10 @@ class Melter():
                     all_matches.append((distance, lhs_ts, rhs_ts))
 
             all_matches.sort()
+            return all_matches
+
+        def build_initial_candidates(lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int]]:
+            all_matches = build_matches(lhs, rhs)
 
             used_lhs = set()
             used_rhs = set()
@@ -437,6 +446,7 @@ class Melter():
         def reject_outliers(pairs: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
             if len(pairs) < 3:
                 return pairs
+
             lhs_vals, rhs_vals = zip(*pairs)
             lhs_array = np.array(lhs_vals).reshape(-1, 1)
             rhs_array = np.array(rhs_vals)
