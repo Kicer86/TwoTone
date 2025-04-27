@@ -844,8 +844,11 @@ class Melter():
         dump_frames(rhs_key_frames, "rhs key frames")
 
         # find matching keys
-        matching_pairs = self._match_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames)
+        phash = Melter.PhashCache()
+        matching_pairs = self._match_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames, phash)
         dump_matches(matching_pairs, "initial matching")
+        self.logger.debug("Pairs summary after initial matching:")
+        self.logger.debug(Melter.summarize_pairs(phash, matching_pairs, lhs_all_frames, rhs_all_frames, verbose = True))
 
         prev_first, prev_last = None, None
         while True:
@@ -889,7 +892,10 @@ class Melter():
 
         lhs_fps = estimate_fps(lhs_all_frames)
         rhs_fps = estimate_fps(rhs_all_frames)
+
+        self.logger.debug("Status after boundaries lookup:\n")
         self.logger.debug(Melter.summarize_segments(matching_pairs, lhs_fps, rhs_fps))
+        self.logger.debug(Melter.summarize_pairs(phash4normalized, matching_pairs, lhs_all_frames, rhs_all_frames, verbose = True))
 
         return matching_pairs, lhs_all_frames, rhs_all_frames
 
