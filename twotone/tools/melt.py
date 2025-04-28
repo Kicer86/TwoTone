@@ -392,7 +392,7 @@ class PairMatcher:
         median = np.median(arr)
         std = np.std(arr)
 
-        return median + std
+        return median + std * 2
 
     def _make_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> List[Tuple[int, int]]:
         # Pipeline
