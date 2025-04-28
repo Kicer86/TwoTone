@@ -191,17 +191,11 @@ class PairMatcher:
         self.lhs_fps = eval(video.get_video_data2(lhs_path)["video"][0]["fps"])
         self.rhs_fps = eval(video.get_video_data2(rhs_path)["video"][0]["fps"])
 
-        self.lhs_scene_changes = video.detect_scene_changes(self.lhs_path, threshold = 0.3)
-        self.rhs_scene_changes = video.detect_scene_changes(self.rhs_path, threshold = 0.3)
-
-        if len(self.lhs_scene_changes) == 0 or len(self.rhs_scene_changes) == 0:
-            raise RuntimeError("Not enought scene changes detected")
-
         lhs_wd = os.path.join(self.wd, "lhs")
         rhs_wd = os.path.join(self.wd, "rhs")
 
-        lhs_all_wd = os.path.join(lhs_wd, "all")
-        rhs_all_wd = os.path.join(rhs_wd, "all")
+        self.lhs_all_wd = os.path.join(lhs_wd, "all")
+        self.rhs_all_wd = os.path.join(rhs_wd, "all")
         self.lhs_normalized_wd = os.path.join(lhs_wd, "norm")
         self.rhs_normalized_wd = os.path.join(rhs_wd, "norm")
         self.lhs_normalized_cropped_wd = os.path.join(lhs_wd, "norm_cropped")
@@ -210,8 +204,8 @@ class PairMatcher:
 
         for d in [lhs_wd,
                     rhs_wd,
-                    lhs_all_wd,
-                    rhs_all_wd,
+                    self.lhs_all_wd,
+                    self.rhs_all_wd,
                     self.lhs_normalized_wd,
                     self.rhs_normalized_wd,
                     self.lhs_normalized_cropped_wd,
@@ -219,13 +213,6 @@ class PairMatcher:
                     self.debug_wd,
         ]:
             os.makedirs(d)
-
-        # extract all scenes
-        self.lhs_all_frames = video.extract_all_frames(self.lhs_path, lhs_all_wd, scale = 0.5, format = "png")
-        self.rhs_all_frames = video.extract_all_frames(self.rhs_path, rhs_all_wd, scale = 0.5, format = "png")
-
-        self.logger.debug(f"lhs key frames: {' '.join(str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in self.lhs_scene_changes)}")
-        self.logger.debug(f"rhs key frames: {' '.join(str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in self.rhs_scene_changes)}")
 
     def _three_before(self, timestamps: List[int], target: int) -> List[int]:
         timestamps = sorted(timestamps)
@@ -519,13 +506,26 @@ class PairMatcher:
 
 
     def create_segments_mapping(self) -> List[Tuple[int, int]]:
+        lhs_scene_changes = video.detect_scene_changes(self.lhs_path, threshold = 0.3)
+        rhs_scene_changes = video.detect_scene_changes(self.rhs_path, threshold = 0.3)
+
+        if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
+            raise RuntimeError("Not enought scene changes detected")
+
+        # extract all scenes
+        self.lhs_all_frames = video.extract_all_frames(self.lhs_path, self.lhs_all_wd, scale = 0.5, format = "png")
+        self.rhs_all_frames = video.extract_all_frames(self.rhs_path, self.rhs_all_wd, scale = 0.5, format = "png")
+
+        self.logger.debug(f"lhs key frames: {' '.join(str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes)}")
+        self.logger.debug(f"rhs key frames: {' '.join(str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes)}")
+
         # normalize frames. This could be done in previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
         lhs_normalized_frames = Melter._normalize_frames(self.lhs_all_frames, self.lhs_normalized_wd)
         rhs_normalized_frames = Melter._normalize_frames(self.rhs_all_frames, self.rhs_normalized_wd)
 
         # extract key frames (as 'key' a scene change frame is meant)
-        lhs_key_frames = Melter._get_frames_for_timestamps(self.lhs_scene_changes, lhs_normalized_frames)
-        rhs_key_frames = Melter._get_frames_for_timestamps(self.rhs_scene_changes, rhs_normalized_frames)
+        lhs_key_frames = Melter._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_frames)
+        rhs_key_frames = Melter._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
 
         debug = DebugRoutines(self.debug_wd, self.lhs_all_frames, self.rhs_all_frames)
 
