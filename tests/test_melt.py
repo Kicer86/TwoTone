@@ -35,7 +35,7 @@ class Duplicates(DuplicatesSource):
 class MeltingTest(unittest.TestCase):
 
     def setUp(self):
-        logging.getLogger().setLevel(logging.ERROR)
+        logging.getLogger("Melter").setLevel(logging.DEBUG)
 
     def test_simple_duplicate_detection(self):
         return
