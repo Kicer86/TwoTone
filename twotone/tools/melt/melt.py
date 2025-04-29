@@ -16,9 +16,9 @@ from scipy.stats import entropy
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from typing import Callable, Dict, List, Tuple
 
-from . import utils
-from .tool import Tool
-from .utils2 import files, image, process, video
+from .. import utils
+from ..tool import Tool
+from ..utils2 import files, image, process, video
 
 
 type FramesInfo = Dict[int, Dict[str, str]]
