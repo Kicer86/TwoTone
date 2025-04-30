@@ -502,7 +502,7 @@ class PairMatcher:
 
         cutoff = self._calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
         final = [pair for pair in orb_filtered if self._check_history(pair, lhs_all, rhs_all, cutoff)]
-        self.logger.debug(f"After hisotry analysis:    {PairMatcher.summarize_pairs(self.phash, final, lhs_all, rhs_all)}")
+        self.logger.debug(f"After history analysis:    {PairMatcher.summarize_pairs(self.phash, final, lhs_all, rhs_all)}")
 
         unique_pairs = sorted(set(final))
 
