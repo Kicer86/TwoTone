@@ -9,5 +9,5 @@ py3langid>=0.3.0
 Requests>=2.32.3
 scikit_learn>=1.6.1
 scipy>=1.15.2
-skimage>=0.0
+scikit-image
 tqdm>=4.67.1
