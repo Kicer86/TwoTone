@@ -23,7 +23,7 @@ from .pair_matcher import PairMatcher
 from .phash_cache import PhashCache
 
 
-type FramesInfo = Dict[int, Dict[str, str]]
+FramesInfo = Dict[int, Dict[str, str]]
 
 def _split_path_fix(value: str) -> List[str]:
     pattern = r'"((?:[^"\\]|\\.)*?)"'

@@ -12,7 +12,7 @@ from .debug_routines import DebugRoutines
 from .phash_cache import PhashCache
 from ..utils2 import files, image, video
 
-type FramesInfo = Dict[int, Dict[str, str]]
+FramesInfo = Dict[int, Dict[str, str]]
 
 
 class PairMatcher:

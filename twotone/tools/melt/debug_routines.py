@@ -1,7 +1,8 @@
 
 import os
+from typing import Dict
 
-type FramesInfo = Dict[int, Dict[str, str]]
+FramesInfo = Dict[int, Dict[str, str]]
 
 
 class DebugRoutines:
