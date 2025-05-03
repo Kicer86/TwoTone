@@ -263,6 +263,12 @@ class MeltTool(Tool):
                                         'you need to map "/srv/videos" (Jellyfin’s path) to "/mnt/shared_videos" (the path accessible on the machine running "melt").\n\n'
                                         'In this case, use: --jellyfin-path-fix "/srv/videos","/mnt/shared_videos" to define the replacement pattern.')
 
+        manual_group = parser.add_argument_group("Manual input source")
+        manual_group.add_argument('-i', '--input', dest='input_files', action='append', nargs=1, metavar='FILE',
+                                help='Add an input video file or directory with video files (can be specified multiple times)')
+        manual_group.add_argument('--audio-lang', dest='audio_langs', action='append', metavar='LANG',
+                                help='Audio language for the most recently specified input file')
+
 
     @override
     def run(self, args, no_dry_run: bool, logger: logging.Logger):
@@ -279,6 +285,22 @@ class MeltTool(Tool):
                                          url=args.jellyfin_server,
                                          token=args.jellyfin_token,
                                          path_fix=path_fix)
+        elif args.input_files:
+            inputs = []
+            audio_langs = args.audio_langs or []
+
+            for idx, input_list in enumerate(args.input_files):
+                entry = {
+                    "path": input_list[0],
+                    "audio_lang": audio_langs[idx] if idx < len(audio_langs) else None,
+                }
+                inputs.append(entry)
+
+            logging.info("Processing manual input files:")
+            for item in inputs:
+                logging.info(f"- {item['path']} (audio: {item['audio_lang']})")
+
+            raise NotImplementedError("Manual input mode not yet implemented in processing logic.")
 
         melter = Melter(logger, interruption, data_source, live_run = no_dry_run)
         melter.melt()
