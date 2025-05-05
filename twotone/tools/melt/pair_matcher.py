@@ -643,8 +643,12 @@ class PairMatcher:
 
             first_lhs, first_rhs = matching_pairs[0]
             last_lhs, last_rhs = matching_pairs[-1]
-            self.logger.debug(f"First pair: {lhs_normalized_cropped_frames[first_lhs]["path"]} {rhs_normalized_cropped_frames[first_rhs]["path"]}")
-            self.logger.debug(f"Last pair:  {lhs_normalized_cropped_frames[last_lhs]["path"]} {rhs_normalized_cropped_frames[last_rhs]["path"]}")
+            first_lhs_path = lhs_normalized_cropped_frames[first_lhs]["path"]
+            first_rhs_path = rhs_normalized_cropped_frames[first_rhs]["path"]
+            last_lhs_path = lhs_normalized_cropped_frames[last_lhs]["path"]
+            last_rhs_path = rhs_normalized_cropped_frames[last_rhs]["path"]
+            self.logger.debug(f"First pair: {first_lhs_path} {first_rhs_path}")
+            self.logger.debug(f"Last pair:  {last_lhs_path} {last_rhs_path}")
 
             # use new PhashCache as normalized frames are being regenerated every time
             phash4normalized = PhashCache()
