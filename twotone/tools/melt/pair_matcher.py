@@ -605,8 +605,11 @@ class PairMatcher:
         self.lhs_all_frames = video.extract_all_frames(self.lhs_path, self.lhs_all_wd, scale = 0.5, format = "png")
         self.rhs_all_frames = video.extract_all_frames(self.rhs_path, self.rhs_all_wd, scale = 0.5, format = "png")
 
-        self.logger.debug(f"lhs key frames: {' '.join(str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes)}")
-        self.logger.debug(f"rhs key frames: {' '.join(str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes)}")
+        lhs_key_frames_str = [str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes]
+        rhs_key_frames_str = [str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes]
+
+        self.logger.debug(f"lhs key frames: {' '.join(lhs_key_frames_str)}")
+        self.logger.debug(f"rhs key frames: {' '.join(rhs_key_frames_str)}")
 
         # normalize frames. This could be done in previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
         lhs_normalized_frames = PairMatcher._normalize_frames(self.lhs_all_frames, self.lhs_normalized_wd)
