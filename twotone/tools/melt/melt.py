@@ -265,9 +265,9 @@ class MeltTool(Tool):
 
         manual_group = parser.add_argument_group("Manual input source")
         manual_group.add_argument('-i', '--input', dest='input_files', action='append', nargs=1, metavar='FILE',
-                                help='Add an input video file or directory with video files (can be specified multiple times)')
+                                  help='Add an input video file or directory with video files (can be specified multiple times)')
         manual_group.add_argument('--audio-lang', dest='audio_langs', action='append', metavar='LANG',
-                                help='Audio language for the most recently specified input file')
+                                  help='Audio language for the most recently specified input file')
 
 
     @override
