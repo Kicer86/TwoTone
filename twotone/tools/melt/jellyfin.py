@@ -3,6 +3,7 @@ import logging
 import requests
 
 from collections import defaultdict
+from overrides import override
 from typing import Tuple
 
 from .. import utils
@@ -31,6 +32,7 @@ class JellyfinSource(DuplicatesSource):
         return fixed_path
 
 
+    @override
     def collect_duplicates(self) -> Dict[str, List[str]]:
         endpoint = f"{self.url}"
         headers = {
@@ -89,3 +91,6 @@ class JellyfinSource(DuplicatesSource):
 
         return duplicates
 
+    @override
+    def get_metadata_for(self, path: str) -> Dict[str, str]:
+        return {}
