@@ -4,10 +4,10 @@ import requests
 
 from collections import defaultdict
 from overrides import override
-from typing import Tuple
+from typing import Dict, List, Tuple
 
 from .. import utils
-from duplicates_source import DuplicatesSource
+from .duplicates_source import DuplicatesSource
 
 
 class JellyfinSource(DuplicatesSource):
