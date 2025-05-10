@@ -8,7 +8,6 @@ import numpy as np
 import os
 import re
 
-from collections import defaultdict
 from overrides import override
 from PIL import Image
 from scipy.stats import entropy
@@ -19,9 +18,10 @@ from ..tool import Tool
 from ..utils2 import files, image, process, video
 from .debug_routines import DebugRoutines
 from .duplicates_source import DuplicatesSource
+from .jellyfin import JellyfinSource
 from .pair_matcher import PairMatcher
 from .phash_cache import PhashCache
-
+from .static_source import StaticSource
 
 FramesInfo = Dict[int, Dict[str, str]]
 
@@ -247,6 +247,7 @@ class RequireJellyfinServer(argparse.Action):
 class MeltTool(Tool):
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
+
         jellyfin_group = parser.add_argument_group("Jellyfin source")
         jellyfin_group.add_argument('--jellyfin-server',
                                     help='URL to the Jellyfin server which will be used as a source of video files duplicates')
@@ -256,18 +257,22 @@ class MeltTool(Tool):
         jellyfin_group.add_argument('--jellyfin-path-fix',
                                     action=RequireJellyfinServer,
                                     help='Specify a replacement pattern for file paths to ensure "melt" can access Jellyfin video files.\n\n'
-                                        '"Melt" requires direct access to video files. If Jellyfin is not running on the same machine as "melt,"\n'
-                                        'you must set up network access to Jellyfin’s video storage and specify how paths should be resolved.\n\n'
-                                        'For example, suppose Jellyfin runs on a Linux machine where the video library is stored at "/srv/videos" (a shared directory).\n'
-                                        'If "melt" is running on another Linux machine that accesses this directory remotely at "/mnt/shared_videos,"\n'
-                                        'you need to map "/srv/videos" (Jellyfin’s path) to "/mnt/shared_videos" (the path accessible on the machine running "melt").\n\n'
-                                        'In this case, use: --jellyfin-path-fix "/srv/videos","/mnt/shared_videos" to define the replacement pattern.')
+                                         '"Melt" requires direct access to video files. If Jellyfin is not running on the same machine as "melt,"\n'
+                                         'you must set up network access to Jellyfin’s video storage and specify how paths should be resolved.\n\n'
+                                         'For example, suppose Jellyfin runs on a Linux machine where the video library is stored at "/srv/videos" (a shared directory).\n'
+                                         'If "melt" is running on another Linux machine that accesses this directory remotely at "/mnt/shared_videos,"\n'
+                                         'you need to map "/srv/videos" (Jellyfin’s path) to "/mnt/shared_videos" (the path accessible on the machine running "melt").\n\n'
+                                         'In this case, use: --jellyfin-path-fix "/srv/videos","/mnt/shared_videos" to define the replacement pattern.')
 
         manual_group = parser.add_argument_group("Manual input source")
-        manual_group.add_argument('-i', '--input', dest='input_files', action='append', nargs=1, metavar='FILE',
-                                  help='Add an input video file or directory with video files (can be specified multiple times)')
-        manual_group.add_argument('--audio-lang', dest='audio_langs', action='append', metavar='LANG',
-                                  help='Audio language for the most recently specified input file')
+        manual_group.add_argument('-t', '--title',
+                                  help='Video (movie or series when directory is provided as an input) title.')
+        manual_group.add_argument('-i', '--input', dest='input_files', action='append',
+                                  help='Add an input video file or directory with video files (can be specified multiple times).\n'
+                                       'path can be followed with a comma and some additional parameters:\n'
+                                       'audio_lang:XXX  - information about audio language (like eng, de or pl).\n\n'
+                                       'Example of usage:\n'
+                                       '--input some/path/file.mp4,audio_lang:jp')
 
 
     @override
@@ -286,21 +291,26 @@ class MeltTool(Tool):
                                          token=args.jellyfin_token,
                                          path_fix=path_fix)
         elif args.input_files:
-            inputs = []
-            audio_langs = args.audio_langs or []
+            title = args.title
+            input_entries = args.input_files
 
-            for idx, input_list in enumerate(args.input_files):
-                entry = {
-                    "path": input_list[0],
-                    "audio_lang": audio_langs[idx] if idx < len(audio_langs) else None,
-                }
-                inputs.append(entry)
+            data_source = StaticSource(interruption=interruption)
 
-            logging.info("Processing manual input files:")
-            for item in inputs:
-                logging.info(f"- {item['path']} (audio: {item['audio_lang']})")
+            for input in input_entries:
+                input_split = input.split(',')
+                path = input_split[0]
+                audio_lang = ""
 
-            raise NotImplementedError("Manual input mode not yet implemented in processing logic.")
+                if len(input_split) > 1:
+                    for extra_arg in input_split[1:]:
+                        if extra_arg[:11] == "audio_lang:":
+                            audio_lang = extra_arg[11:]
+
+                data_source.add_entry(title, path)
+
+                if audio_lang:
+                    data_source.add_metadata(path, "audio_lang", audio_lang)
+
 
         melter = Melter(logger, interruption, data_source, live_run = no_dry_run)
         melter.melt()
