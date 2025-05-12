@@ -1,26 +1,20 @@
 
 import argparse
-import cv2 as cv
-import imagehash
-import json
 import logging
-import numpy as np
 import os
 import re
 
 from overrides import override
-from PIL import Image
-from scipy.stats import entropy
-from typing import Dict, List, Tuple
+
+from typing import Any, Dict, List
 
 from .. import utils
 from ..tool import Tool
-from ..utils2 import files, image, process, video
+from ..utils2 import files, process, video
 from .debug_routines import DebugRoutines
 from .duplicates_source import DuplicatesSource
 from .jellyfin import JellyfinSource
 from .pair_matcher import PairMatcher
-from .phash_cache import PhashCache
 from .static_source import StaticSource
 
 FramesInfo = Dict[int, Dict[str, str]]
