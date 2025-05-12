@@ -27,21 +27,6 @@ def _split_path_fix(value: str) -> List[str]:
 
 
 class Melter():
-    class PhashCache:
-        def __init__(self, hash_size: int = 16):
-            self.hash_size = hash_size
-            self._memory_cache: dict[str, imagehash.ImageHash] = {}
-
-        def get(self, image_path: str) -> imagehash.ImageHash:
-            if image_path in self._memory_cache:
-                return self._memory_cache[image_path]
-
-            with Image.open(image_path) as img:
-                phash = imagehash.phash(img, hash_size=self.hash_size)
-
-            self._memory_cache[image_path] = phash
-            return phash
-
     def __init__(self, logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool):
         self.logger = logger
         self.interruption = interruption
@@ -191,9 +176,33 @@ class Melter():
             audios=[{"path": final_audio, "language": "eng", "default": True}]
         )
 
+    def _print_file_details(self, file: str, details: Dict[str, Any]):
+        def formatter(key: str, value: any) -> str:
+            if key == "fps":
+                return eval(value)
+            elif key == "length":
+                return utils.ms_to_time(value)
+            else:
+                return value if value else "-"
+
+        self.logger.debug(f"File {file} details:")
+        for stream_type, streams in details.items():
+            self.logger.debug(f"\t{stream_type}:")
+
+            for i, stream in enumerate(streams):
+                self.logger.debug(f"\t#{i + 1}:")
+                for key, value in stream.items():
+                    key_title = key + ":"
+                    self.logger.debug(f"\t\t{key_title:<16}{formatter(key, value)}")
 
     def _process_duplicates(self, duplicates: List[str]):
         with files.ScopedDirectory("/tmp/twotone/melter") as wd:
+            # analyze files in terms of quality and available content
+            details = [video.get_video_data2(file) for file in duplicates]
+
+            for file, details in zip(duplicates, details):
+                self._print_file_details(file, details)
+
             pairMatcher = PairMatcher(wd, duplicates[0], duplicates[1], self.logger.getChild("PairMatcher"))
 
             mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
@@ -291,8 +300,13 @@ class MeltTool(Tool):
             data_source = StaticSource(interruption=interruption)
 
             for input in input_entries:
-                input_split = input.split(',')
+                # split by ',' but respect ""
+                input_split = re.findall(r'(?:[^,"]|"(?:\\"|[^"])*")+', input)
                 path = input_split[0]
+
+                if not os.path.exists(path):
+                    raise ValueError(f"Path {path} does not exist")
+
                 audio_lang = ""
 
                 if len(input_split) > 1:
@@ -304,7 +318,6 @@ class MeltTool(Tool):
 
                 if audio_lang:
                     data_source.add_metadata(path, "audio_lang", audio_lang)
-
 
         melter = Melter(logger, interruption, data_source, live_run = no_dry_run)
         melter.melt()
