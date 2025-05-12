@@ -226,17 +226,22 @@ def get_video_data2(path: str) -> Dict:
 
         return length
 
+    def get_language(stream) -> Union[str | None]:
+        if "tags" in stream:
+            tags = stream["tags"]
+            language = tags.get("language", None)
+        else:
+            language = None
+
+        return language
+
     output_json = get_video_full_info(path)
 
     streams = defaultdict(list)
     for stream in output_json["streams"]:
         stream_type = stream["codec_type"]
         if stream_type == "subtitle":
-            if "tags" in stream:
-                tags = stream["tags"]
-                language = tags.get("language", None)
-            else:
-                language = None
+            language = get_language(stream)
             is_default = stream["disposition"]["default"]
             length = get_length(stream)
             tid = stream["index"]
@@ -254,6 +259,28 @@ def get_video_data2(path: str) -> Dict:
             if length is None:
                 length = get_video_duration(path)
 
-            streams["video"].append({"fps": fps, "length": length})
+            width = stream["width"]
+            height = stream["height"]
+            bitrate = stream["bitrate"] if "bitrate" in stream else None
+            codec = stream["codec_name"]
+
+            streams["video"].append({
+                "fps": fps,
+                "length": length,
+                "width": width,
+                "height": height,
+                "bitrate": bitrate,
+                "codec": codec,
+            })
+        elif stream_type == "audio":
+            language = get_language(stream)
+            channels = stream["channels"]
+            sample_rate = stream["sample_rate"]
+
+            streams["audio"].append({
+                "language": language,
+                "channels": channels,
+                "sample_rate": sample_rate,
+            })
 
     return dict(streams)
