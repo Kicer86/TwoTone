@@ -4,8 +4,8 @@ import logging
 import os
 import re
 
+from functools import cmp_to_key
 from overrides import override
-
 from typing import Any, Dict, List
 
 from .. import utils
@@ -185,23 +185,66 @@ class Melter():
             else:
                 return value if value else "-"
 
+        def show(key: str) -> bool:
+            if key == "tid":
+                return False
+            else:
+                return True
+
+        def is_stream_interesting(name: str) -> bool:
+            if name == "file":
+                return False
+            else:
+                return True
+
         self.logger.debug(f"File {file} details:")
         for stream_type, streams in details.items():
-            self.logger.debug(f"\t{stream_type}:")
+            if is_stream_interesting(stream_type):
+                self.logger.debug(f"\t{stream_type}:")
 
-            for i, stream in enumerate(streams):
-                self.logger.debug(f"\t#{i + 1}:")
-                for key, value in stream.items():
-                    key_title = key + ":"
-                    self.logger.debug(f"\t\t{key_title:<16}{formatter(key, value)}")
+                for i, stream in enumerate(streams):
+                    self.logger.debug(f"\t#{i + 1}:")
+                    for key, value in stream.items():
+                        if show(key):
+                            key_title = key + ":"
+                            self.logger.debug(
+                                f"\t\t{key_title:<16}{formatter(key, value)}")
+
+    def _sort_by_quality(self, files_details: List[Dict]) -> List[Dict]:
+        def compare(lhs: Dict[str, Any], rhs: Dict[str, Any]) -> int:
+            lhs_video_stream = lhs["video"][0]
+            rhs_video_stream = rhs["video"][0]
+
+            if lhs_video_stream["width"] > rhs_video_stream["width"] and lhs_video_stream["height"] > rhs_video_stream["height"]:
+                return -1
+            elif lhs_video_stream["width"] < rhs_video_stream["width"] and lhs_video_stream["height"] < rhs_video_stream["height"]:
+                return 1
+            else:
+                # equal or mixed width/height
+                return -1 if eval(lhs_video_stream["fps"]) < eval(rhs_video_stream["fps"]) else 1
+
+        return sorted(files_details, key=cmp_to_key(compare))
 
     def _process_duplicates(self, duplicates: List[str]):
         with files.ScopedDirectory("/tmp/twotone/melter") as wd:
             # analyze files in terms of quality and available content
-            details = [video.get_video_data2(file) for file in duplicates]
+            def video_details(path: str):
+                details = video.get_video_data2(path)
 
-            for file, details in zip(duplicates, details):
-                self._print_file_details(file, details)
+                # append file information
+                details["file"] = {
+                    "path": path
+                }
+
+                return details
+
+            details = [video_details(file) for file in duplicates]
+
+            for file, file_details in zip(duplicates, details):
+                self._print_file_details(file, file_details)
+
+            # sort by quality
+            sorted = self._sort_by_quality(details)
 
             pairMatcher = PairMatcher(wd, duplicates[0], duplicates[1], self.logger.getChild("PairMatcher"))
 
