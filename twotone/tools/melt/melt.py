@@ -210,20 +210,32 @@ class Melter():
                             self.logger.debug(
                                 f"\t\t{key_title:<16}{formatter(key, value)}")
 
-    def _sort_by_quality(self, files_details: List[Dict]) -> List[Dict]:
-        def compare(lhs: Dict[str, Any], rhs: Dict[str, Any]) -> int:
-            lhs_video_stream = lhs["video"][0]
-            rhs_video_stream = rhs["video"][0]
+    def _pick_best_video(self, files_details: Dict[str, Dict]) -> str:
+        best_file = None
+        best_stream = None
 
-            if lhs_video_stream["width"] > rhs_video_stream["width"] and lhs_video_stream["height"] > rhs_video_stream["height"]:
-                return -1
-            elif lhs_video_stream["width"] < rhs_video_stream["width"] and lhs_video_stream["height"] < rhs_video_stream["height"]:
-                return 1
+        for file, details in files_details.items():
+            if best_file is None:
+                best_file = file
+                best_stream = details
+                continue
+
+            lhs_video_stream = best_stream["video"][0]
+            rhs_video_stream = details["video"][0]
+
+            if lhs_video_stream["width"] < rhs_video_stream["width"] and lhs_video_stream["height"] < rhs_video_stream["height"]:
+                best_file = file
+                best_stream = details
+            elif lhs_video_stream["width"] > rhs_video_stream["width"] and lhs_video_stream["height"] > rhs_video_stream["height"]:
+                continue
             else:
                 # equal or mixed width/height
-                return -1 if eval(lhs_video_stream["fps"]) < eval(rhs_video_stream["fps"]) else 1
+                if eval(lhs_video_stream["fps"]) < eval(rhs_video_stream["fps"]):
+                    best_file = file
+                    best_stream = details
 
-        return sorted(files_details, key=cmp_to_key(compare))
+        # todo: handle many video streams
+        return best_file, 0
 
     def _process_duplicates(self, duplicates: List[str]):
         with files.ScopedDirectory("/tmp/twotone/melter") as wd:
@@ -238,13 +250,13 @@ class Melter():
 
                 return details
 
-            details = [video_details(file) for file in duplicates]
+            details = {file: video_details(file) for file in duplicates}
 
-            for file, file_details in zip(duplicates, details):
+            for file, file_details in details.items():
                 self._print_file_details(file, file_details)
 
-            # sort by quality
-            sorted = self._sort_by_quality(details)
+            # pick video source
+            best_video, video_stream = self._pick_best_video(details)
 
             pairMatcher = PairMatcher(wd, duplicates[0], duplicates[1], self.logger.getChild("PairMatcher"))
 
