@@ -214,14 +214,17 @@ class Melter():
         best_file = None
         best_stream = None
 
+        # todo: handle many video streams
+        default_video_stream = 0
+
         for file, details in files_details.items():
             if best_file is None:
                 best_file = file
                 best_stream = details
                 continue
 
-            lhs_video_stream = best_stream["video"][0]
-            rhs_video_stream = details["video"][0]
+            lhs_video_stream = best_stream["video"][default_video_stream]
+            rhs_video_stream = details["video"][default_video_stream]
 
             if lhs_video_stream["width"] < rhs_video_stream["width"] and lhs_video_stream["height"] < rhs_video_stream["height"]:
                 best_file = file
@@ -234,8 +237,7 @@ class Melter():
                     best_file = file
                     best_stream = details
 
-        # todo: handle many video streams
-        return best_file, 0
+        return best_file, default_video_stream
 
     def _process_duplicates(self, duplicates: List[str]):
         with files.ScopedDirectory("/tmp/twotone/melter") as wd:
