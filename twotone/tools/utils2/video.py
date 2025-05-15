@@ -276,11 +276,13 @@ def get_video_data2(path: str) -> Dict:
             language = get_language(stream)
             channels = stream["channels"]
             sample_rate = stream["sample_rate"]
+            tid = stream["index"]
 
             streams["audio"].append({
                 "language": language,
                 "channels": channels,
                 "sample_rate": sample_rate,
+                "tid": tid,
             })
 
     return dict(streams)
