@@ -4,9 +4,9 @@ import logging
 import os
 import re
 
-from functools import cmp_to_key
+from collections import defaultdict
 from overrides import override
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from .. import utils
 from ..tool import Tool
@@ -24,6 +24,23 @@ def _split_path_fix(value: str) -> List[str]:
 
     matches = re.findall(pattern, value)
     return [match.replace(r'\"', '"') for match in matches]
+
+
+def iter_starting_with(d: dict, start_key) -> Tuple:
+    """Yield (key, value) pairs starting from start_key, then the rest in order."""
+    if start_key not in d:
+        raise KeyError(f"{start_key} not found in dictionary")
+
+    yielded = set()
+
+    # Yield the starting key first
+    yield start_key, d[start_key]
+    yielded.add(start_key)
+
+    # Yield the rest in order
+    for k, v in d.items():
+        if k not in yielded:
+            yield k, v
 
 
 class Melter():
@@ -232,6 +249,48 @@ class Melter():
 
         return best_file, default_video_stream
 
+    def _pick_audio_streams(self, files_details: Dict[str, Dict], best_video: str) -> List[Tuple[str, int, str]]:
+        audio_tracks = defaultdict(list)
+
+        # iterate over all source files, but start with 'best_video' so it will take priority when filling 'audio_tracks'
+        for path, details in iter_starting_with(files_details, best_video):
+            for audio_stream in details["audio"]:
+
+                # check if given language was picked already
+                language = audio_stream["language"]
+                if language not in audio_tracks:
+                    audio_tracks[language].append(
+                        {'file': path, 'details': audio_stream})
+                    continue
+
+                # check if given number of channels was picked already
+                has_channels = any(audio_track["details"]["channels"] == audio_stream["channels"]
+                                   for audio_track in audio_tracks[language])
+                if not has_channels:
+                    audio_tracks[language].append(
+                        {'file': path, 'details': audio_stream})
+                    continue
+
+                # check if bitrate is better
+                new_audio_tracks = []
+                for audio_track in audio_tracks[language]:
+                    if audio_track["details"]["channels"] == audio_stream["channels"] and \
+                       audio_track["details"]["bitrate"] < audio_stream["bitrate"]:
+                        new_audio_tracks.append(
+                            {'file': path, 'details': audio_stream})
+                    else:
+                        new_audio_tracks.append(audio_track)
+
+                audio_tracks[language] = new_audio_tracks
+
+        # process results
+        result = []
+        for language, tracks in audio_tracks.items():
+            for audio_track in tracks:
+                result.append((audio_track["file"], audio_track["details"]["tid"], language))
+
+        return audio_tracks
+
     def _process_duplicates(self, duplicates: List[str]):
         with files.ScopedDirectory("/tmp/twotone/melter") as wd:
             # analyze files in terms of quality and available content
@@ -247,6 +306,9 @@ class Melter():
 
             # pick video source
             best_video, video_stream = self._pick_best_video(details)
+
+            # pick audio sources
+            audio_streams = self._pick_audio_streams(details, best_video)
 
             pairMatcher = PairMatcher(wd, duplicates[0], duplicates[1], self.logger.getChild("PairMatcher"))
 
