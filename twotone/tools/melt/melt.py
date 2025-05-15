@@ -356,13 +356,19 @@ class Melter():
             for file, file_details in details.items():
                 self._print_file_details(file, file_details)
 
-            # pick video source
+            # pick video stream
             best_video, video_stream = self._pick_best_video(details)
 
-            # pick audio sources
+            # pick audio streams
             forced_audio_language = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in details}
             forced_audio_language = {path: lang for path, lang in forced_audio_language.items() if lang}
             audio_streams = self._pick_unique_streams(details, best_video, "audio", ["language", "channels"], ["sample_rate"], override_languages=forced_audio_language)
+
+            # pick subtitle streams
+            forced_subtitle_language = {path: self.duplicates_source.get_metadata_for(path).get("subtitle_lang") for path in details}
+            forced_subtitle_language = {path: lang for path, lang in forced_subtitle_language.items() if lang}
+            subtitle_streams = self._pick_unique_streams(details, best_video, "subtitle", ["language"], [], override_languages=forced_subtitle_language)
+
 
             pairMatcher = PairMatcher(wd, duplicates[0], duplicates[1], self.logger.getChild("PairMatcher"))
 
