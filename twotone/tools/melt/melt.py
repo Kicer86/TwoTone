@@ -249,47 +249,65 @@ class Melter():
 
         return best_file, default_video_stream
 
-    def _pick_audio_streams(self, files_details: Dict[str, Dict], best_video: str) -> List[Tuple[str, int, str]]:
-        audio_tracks = defaultdict(list)
+    def _pick_unique_streams(
+        self,
+        files_details: Dict[str, Dict],
+        best_file: str,
+        stream_type: str,
+        unique_keys: List[str],
+        preference_keys: List[str],
+    ) -> List[Tuple[str, int, str]]:
+        """
+        Select unique streams of a given type across multiple files.
 
-        # iterate over all source files, but start with 'best_video' so it will take priority when filling 'audio_tracks'
-        for path, details in iter_starting_with(files_details, best_video):
-            for audio_stream in details["audio"]:
+        Args:
+            files_details: Mapping from file path to metadata.
+            best_file: File to prioritize when collecting streams.
+            stream_type: Stream type to extract (e.g., "audio", "subtitles").
+            unique_keys: Keys that define stream uniqueness (e.g., ["language", "channels"]).
+            preference_keys: Keys used to resolve ties (e.g., ["bitrate"]).
 
-                # check if given language was picked already
-                language = audio_stream["language"]
-                if language not in audio_tracks:
-                    audio_tracks[language].append(
-                        {'file': path, 'details': audio_stream})
+        Returns:
+            List of (file_path, stream_id, primary_unique_key) tuples.
+        """
+
+        stream_index = {}
+
+        for path, details in iter_starting_with(files_details, best_file):
+            for stream in details.get(stream_type, []):
+                # Uniqueness key
+                unique_key = tuple(stream.get(k) for k in unique_keys)
+                current = {"file": path, "details": stream}
+
+                if unique_key not in stream_index:
+                    stream_index[unique_key] = current
                     continue
 
-                # check if given number of channels was picked already
-                has_channels = any(audio_track["details"]["channels"] == audio_stream["channels"]
-                                   for audio_track in audio_tracks[language])
-                if not has_channels:
-                    audio_tracks[language].append(
-                        {'file': path, 'details': audio_stream})
-                    continue
+                existing = stream_index[unique_key]
 
-                # check if bitrate is better
-                new_audio_tracks = []
-                for audio_track in audio_tracks[language]:
-                    if audio_track["details"]["channels"] == audio_stream["channels"] and \
-                       audio_track["details"]["bitrate"] < audio_stream["bitrate"]:
-                        new_audio_tracks.append(
-                            {'file': path, 'details': audio_stream})
-                    else:
-                        new_audio_tracks.append(audio_track)
+                if preference_keys:
+                    better = False
+                    for key in preference_keys:
+                        old = existing["details"].get(key)
+                        new = stream.get(key)
+                        if old is None or new is None:
+                            continue
+                        if new > old:
+                            better = True
+                            break
+                        elif new < old:
+                            break
+                    if better:
+                        stream_index[unique_key] = current
 
-                audio_tracks[language] = new_audio_tracks
-
-        # process results
+        # Convert to final result
         result = []
-        for language, tracks in audio_tracks.items():
-            for audio_track in tracks:
-                result.append((audio_track["file"], audio_track["details"]["tid"], language))
+        for unique_key, entry in stream_index.items():
+            tid = entry["details"]["tid"]
+            label = unique_key[0] if unique_key else "default"
+            result.append((entry["file"], tid, label))
 
-        return audio_tracks
+        return result   
 
     def _process_duplicates(self, duplicates: List[str]):
         with files.ScopedDirectory("/tmp/twotone/melter") as wd:
@@ -308,7 +326,7 @@ class Melter():
             best_video, video_stream = self._pick_best_video(details)
 
             # pick audio sources
-            audio_streams = self._pick_audio_streams(details, best_video)
+            audio_streams = self._pick_unique_streams(details, best_video, "audio", ["language", "channels"], ["sample_rate"])
 
             pairMatcher = PairMatcher(wd, duplicates[0], duplicates[1], self.logger.getChild("PairMatcher"))
 
