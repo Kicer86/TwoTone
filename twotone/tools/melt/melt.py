@@ -191,24 +191,17 @@ class Melter():
             else:
                 return True
 
-        def is_stream_interesting(name: str) -> bool:
-            if name == "file":
-                return False
-            else:
-                return True
-
         self.logger.debug(f"File {file} details:")
         for stream_type, streams in details.items():
-            if is_stream_interesting(stream_type):
-                self.logger.debug(f"\t{stream_type}:")
+            self.logger.debug(f"\t{stream_type}:")
 
-                for i, stream in enumerate(streams):
-                    self.logger.debug(f"\t#{i + 1}:")
-                    for key, value in stream.items():
-                        if show(key):
-                            key_title = key + ":"
-                            self.logger.debug(
-                                f"\t\t{key_title:<16}{formatter(key, value)}")
+            for i, stream in enumerate(streams):
+                self.logger.debug(f"\t#{i + 1}:")
+                for key, value in stream.items():
+                    if show(key):
+                        key_title = key + ":"
+                        self.logger.debug(
+                            f"\t\t{key_title:<16}{formatter(key, value)}")
 
     def _pick_best_video(self, files_details: Dict[str, Dict]) -> str:
         best_file = None
@@ -244,11 +237,6 @@ class Melter():
             # analyze files in terms of quality and available content
             def video_details(path: str):
                 details = video.get_video_data2(path)
-
-                # append file information
-                details["file"] = {
-                    "path": path
-                }
 
                 return details
 
