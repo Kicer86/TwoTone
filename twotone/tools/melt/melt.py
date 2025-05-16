@@ -2,6 +2,7 @@
 import argparse
 import logging
 import os
+import platformdirs
 import re
 
 from overrides import override
@@ -43,12 +44,15 @@ def iter_starting_with(d: dict, start_key) -> Tuple:
 
 
 class Melter():
-    def __init__(self, logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool):
+    def __init__(self, logger: logging.Logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str):
         self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
         self.live_run = live_run
         self.debug_it: int = 0
+        self.wd = wd
+
+        os.makedirs(self.wd)
 
     def _patch_audio_segment(
         self,
@@ -418,6 +422,7 @@ class Melter():
 
 
     def melt(self):
+        self.logger.debug(f"Starting `melt` with live run: {self.live_run} and working dir: {self.wd}")
         self.logger.info("Finding duplicates")
         duplicates = self.duplicates_source.collect_duplicates()
         self._process_duplicates_set(duplicates)
@@ -462,6 +467,13 @@ class MeltTool(Tool):
                                        'Example of usage:\n'
                                        '--input some/path/file.mp4,audio_lang:jp')
 
+        # global options
+        parser.add_argument('-w', '--working-dir',
+                            help="Directory for temporary files. At some scenarios, `melt` can produce enormous number of temporary files"
+                                 "which can occupy up to 1GB per single video's minute.\n"
+                                 "Consider using the fastest storage possible, but mind size of files.",
+                            default=os.path.join(platformdirs.user_cache_dir(), "twotone", "melt"))
+
 
     @override
     def run(self, args, no_dry_run: bool, logger: logging.Logger):
@@ -504,5 +516,5 @@ class MeltTool(Tool):
                 if audio_lang:
                     data_source.add_metadata(path, "audio_lang", audio_lang)
 
-        melter = Melter(logger, interruption, data_source, live_run = no_dry_run)
+        melter = Melter(logger, interruption, data_source, live_run = no_dry_run, wd=args.working_dir)
         melter.melt()
