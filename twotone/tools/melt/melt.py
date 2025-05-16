@@ -279,7 +279,7 @@ class Melter():
         stream_index = {}
 
         for path, details in iter_starting_with(files_details, best_file):
-            for stream in details.get(stream_type, []):
+            for index, stream in enumerate(details.get(stream_type, [])):
                 # Determine language
                 lang = stream.get("language")
                 if override_languages and path in override_languages:
@@ -304,7 +304,7 @@ class Melter():
                 unique_key = tuple(stream_view.get(k) for k in unique_keys)
                 language = unique_key[0] if unique_key else "default"
 
-                current = {"file": path, "details": stream}
+                current = {"file": path, "index": index, "details": stream}
 
                 if unique_key not in stream_index:
                     stream_index[unique_key] = current
@@ -337,9 +337,10 @@ class Melter():
         # Flatten result
         result = []
         for unique_key, entry in stream_index.items():
-            tid = entry["details"]["tid"]
-            language = unique_key[0] if unique_key else "default"
-            result.append((entry["file"], tid, language))
+            index = entry["index"]
+            path = entry["file"]
+            language = unique_key[0]
+            result.append((path, index, language))
 
         return result
 
@@ -369,11 +370,28 @@ class Melter():
             forced_subtitle_language = {path: lang for path, lang in forced_subtitle_language.items() if lang}
             subtitle_streams = self._pick_unique_streams(details, best_video, "subtitle", ["language"], [], override_languages=forced_subtitle_language)
 
+            # validate video files
+            used_video_files = set()
+            used_video_files.add(best_video)
+            used_video_files.update({stream[0] for stream in audio_streams})
+            used_video_files.update({stream[0] for stream in subtitle_streams})
 
-            pairMatcher = PairMatcher(wd, duplicates[0], duplicates[1], self.logger.getChild("PairMatcher"))
+            if len(used_video_files) == 1:
+                self.logger.info(f"File {used_video_files[0]} contains best content. Other files are not needed.")
 
-            mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
-            self._patch_audio_segment(wd, duplicates[0], duplicates[1], os.path.join(wd, "final.mkv"), mapping, 20, lhs_all_frames, rhs_all_frames)
+                # todo: just copy to output dir
+            else:
+                # check if input files are of the same lenght
+                base_lenght = details[best_video]["video"][video_stream]["length"]
+
+                for path, index, _ in audio_streams:
+                    lenght = details[path]["video"][index]["length"]
+
+                    if abs(base_lenght - lenght) > 100:     # more than 100ms difference in lenght, perform content matching
+                        pairMatcher = PairMatcher(wd, best_video, path, self.logger.getChild("PairMatcher"))
+
+                        mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
+                        self._patch_audio_segment(wd, duplicates[0], duplicates[1], os.path.join(wd, "final.mkv"), mapping, 20, lhs_all_frames, rhs_all_frames)
 
         return
 
