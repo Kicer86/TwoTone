@@ -17,7 +17,7 @@ FramesInfo = Dict[int, Dict[str, str]]
 
 class PairMatcher:
     def __init__(self, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger):
-        self.wd = wd
+        self.wd = os.path.join(wd, "pair_matcher")
         self.lhs_path = lhs_path
         self.rhs_path = rhs_path
         self.logger = logger
@@ -37,14 +37,14 @@ class PairMatcher:
         self.debug_wd = os.path.join(self.wd, "debug")
 
         for d in [lhs_wd,
-                    rhs_wd,
-                    self.lhs_all_wd,
-                    self.rhs_all_wd,
-                    self.lhs_normalized_wd,
-                    self.rhs_normalized_wd,
-                    self.lhs_normalized_cropped_wd,
-                    self.rhs_normalized_cropped_wd,
-                    self.debug_wd,
+                  rhs_wd,
+                  self.lhs_all_wd,
+                  self.rhs_all_wd,
+                  self.lhs_normalized_wd,
+                  self.rhs_normalized_wd,
+                  self.lhs_normalized_cropped_wd,
+                  self.rhs_normalized_cropped_wd,
+                  self.debug_wd,
         ]:
             os.makedirs(d)
 
