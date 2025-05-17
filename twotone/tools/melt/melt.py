@@ -5,6 +5,7 @@ import os
 import platformdirs
 import re
 
+from collections import defaultdict
 from overrides import override
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -340,14 +341,10 @@ class Melter():
         return result
 
     def _process_duplicates(self, duplicates: List[str]):
-        with files.ScopedDirectory("/tmp/twotone/melter") as wd:
+        wd_path = os.path.join(self.wd, str(os.getpid()))
+        with files.ScopedDirectory(wd_path) as wd:
             # analyze files in terms of quality and available content
-            def video_details(path: str):
-                details = video.get_video_data2(path)
-
-                return details
-
-            details = {file: video_details(file) for file in duplicates}
+            details = {file: video.get_video_data2(file) for file in duplicates}
 
             for file, file_details in details.items():
                 self._print_file_details(file, file_details)
@@ -365,28 +362,40 @@ class Melter():
             forced_subtitle_language = {path: lang for path, lang in forced_subtitle_language.items() if lang}
             subtitle_streams = self._pick_unique_streams(details, best_video, "subtitle", ["language"], [], override_languages=forced_subtitle_language)
 
-            # validate video files
-            used_video_files = set()
-            used_video_files.add(best_video)
-            used_video_files.update({stream[0] for stream in audio_streams})
-            used_video_files.update({stream[0] for stream in subtitle_streams})
+            # build streams mapping
+            streams = defaultdict(list)
 
-            if len(used_video_files) == 1:
-                self.logger.info(f"File {used_video_files[0]} contains best content. Other files are not needed.")
+            #    process video streams
+            streams[best_video].append({
+                "index": video_stream,
+                "language": None,
+                "type": "video",
+            })
 
-                # todo: just copy to output dir
-            else:
-                # check if input files are of the same lenght
-                base_lenght = details[best_video]["video"][video_stream]["length"]
+            #    process audio streams
 
-                for path, index, _ in audio_streams:
-                    lenght = details[path]["video"][index]["length"]
+            #        check if input files are of the same lenght
+            base_lenght = details[best_video]["video"][video_stream]["length"]
+            file_name = 0
+            for path, index, language in audio_streams:
+                lenght = details[path]["video"][index]["length"]
 
-                    if abs(base_lenght - lenght) > 100:     # more than 100ms difference in lenght, perform content matching
-                        pairMatcher = PairMatcher(wd, best_video, path, self.logger.getChild("PairMatcher"))
+                if abs(base_lenght - lenght) > 100:     # more than 100ms difference in lenght, perform content matching
+                    with files.ScopedDirectory(os.path.join(wd, "matching")) as mwd:
+                        pairMatcher = PairMatcher(mwd, best_video, path, self.logger.getChild("PairMatcher"))
 
                         mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
-                        self._patch_audio_segment(wd, duplicates[0], duplicates[1], os.path.join(wd, "final.mkv"), mapping, 20, lhs_all_frames, rhs_all_frames)
+                        output_file = os.path.join(wd, f"tmp_{file_name}.m4a")
+                        self._patch_audio_segment(mwd, best_video, path, output_file, mapping, 20, lhs_all_frames, rhs_all_frames)
+
+                        file_name += 1
+                        path = output_file
+
+                streams[path].append({
+                    "index": index,
+                    "language": language,
+                    "type": "audio",
+                })
 
         return
 
