@@ -51,7 +51,7 @@ class Melter():
         self.logger = logger
         self.wd = wd
 
-        os.makedirs(self.wd)
+        os.makedirs(self.wd, exist_ok=True)
 
     def _patch_audio_segment(
         self,
