@@ -52,7 +52,7 @@ class Melter():
         self.debug_it: int = 0
         self.wd = wd
 
-        os.makedirs(self.wd)
+        os.makedirs(self.wd, exist_ok=True)
 
     def _patch_audio_segment(
         self,
