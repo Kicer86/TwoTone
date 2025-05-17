@@ -75,11 +75,11 @@ class Melter():
         :param video2_path: Path to the second video (source of audio segment).
         :param segment_pairs: list of (timestamp_v1_ms, timestamp_v2_ms) pairs
         :param segment_count: how many subsegments to split the entire segment into
-        :param output_path: Path to final video output
+        :param output_path: Path to final audio output
         :param min_subsegment_duration: minimum duration in seconds below which a subsegment is merged with neighbor
         """
 
-        wd = os.path.join(wd, "audio extraction")
+        wd = os.path.join(wd, "audio_extraction")
         debug_wd = os.path.join(wd, "debug")
         os.makedirs(wd)
         os.makedirs(debug_wd)
@@ -88,8 +88,6 @@ class Melter():
         v2_audio = os.path.join(wd, "v2_audio.flac")
         head_path = os.path.join(wd, "head.flac")
         tail_path = os.path.join(wd, "tail.flac")
-        final_audio = os.path.join(wd, "final_audio.m4a")
-        final_audio = os.path.join(wd, "final_audio.m4a")
 
         debug = DebugRoutines(debug_wd, lhs_frames, rhs_frames)
 
@@ -183,18 +181,11 @@ class Melter():
             "-c:a", "flac", merged_flac
         ])
 
-        # 5. Re-encode to AAC
+        # 5. Re-encode to output file
         process.start_process("ffmpeg", [
-            "-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", final_audio
+            "-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path
         ])
 
-        # 6. Generate final MKV
-        utils.generate_mkv(
-            output_path=output_path,
-            input_video=video1_path,
-            subtitles=[],
-            audios=[{"path": final_audio, "language": "eng", "default": True}]
-        )
 
     def _print_file_details(self, file: str, details: Dict[str, Any]):
         def formatter(key: str, value: any) -> str:
