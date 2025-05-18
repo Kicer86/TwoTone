@@ -52,7 +52,7 @@ class Melter():
         self.duplicates_source = duplicates_source
         self.live_run = live_run
         self.debug_it: int = 0
-        self.wd = wd
+        self.wd = os.path.join(wd, str(os.getpid()))
         self.output = output
 
         os.makedirs(self.wd, exist_ok=True)
@@ -381,11 +381,11 @@ class Melter():
             lenght = details[path]["video"][index]["length"]
 
             if abs(base_lenght - lenght) > 100:     # more than 100ms difference in lenght, perform content matching
-                with files.ScopedDirectory(os.path.join(wd, "matching")) as mwd:
+                with files.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd:
                     pairMatcher = PairMatcher(mwd, best_video, path, self.logger.getChild("PairMatcher"))
 
                     mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
-                    output_file = os.path.join(wd, f"tmp_{file_name}.m4a")
+                    output_file = os.path.join(self.wd, f"tmp_{file_name}.m4a")
                     self._patch_audio_segment(mwd, best_video, path, output_file, mapping, 20, lhs_all_frames, rhs_all_frames)
 
                     file_name += 1
@@ -430,8 +430,7 @@ class Melter():
 
 
     def melt(self):
-        wd_path = os.path.join(self.wd, str(os.getpid()))
-        with files.ScopedDirectory(wd_path) as wd:
+        with files.ScopedDirectory(self.wd) as wd:
             self.logger.debug(f"Starting `melt` with live run: {self.live_run} and working dir: {self.wd}")
             logging.info("Finding duplicates")
             duplicates = self.duplicates_source.collect_duplicates()
