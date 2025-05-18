@@ -405,6 +405,9 @@ class Melter():
             logging.info(f"Analyzing duplicates for {title}")
 
             streams = self._process_duplicates(files)
+            if not self.live_run:
+                continue
+
             output = os.path.join(self.output, title + ".mkv")
 
             if len(streams) == 1:
