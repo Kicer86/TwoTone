@@ -14,22 +14,10 @@ from skimage.metrics import structural_similarity as ssim
 from typing import Dict, List
 
 import twotone.tools.utils as utils
-from twotone.tools.melt import Melter, DuplicatesSource
-from twotone.tools.utils2 import process
-from common import WorkingDirectoryForTest, FileCache, add_test_media, add_to_test_dir, current_path, get_video, hashes, list_files
-
-
-class Duplicates(DuplicatesSource):
-    def __init__(self, interruption: utils.InterruptibleProcess):
-        super().__init__(interruption)
-        self.duplicates = {}
-
-    def setDuplicates(self, duplicates: Dict):
-        self.duplicates = duplicates
-
-    @override
-    def collect_duplicates(self) -> Dict[str, List[str]]:
-        return self.duplicates
+from twotone.tools.melt import Melter
+from twotone.tools.melt.melt import StaticSource
+from twotone.tools.utils2 import process, video
+from common import WorkingDirectoryForTest, FileCache, add_test_media, add_to_test_dir, current_path, get_audio, get_video, hashes, list_files
 
 
 class MeltingTest(unittest.TestCase):
@@ -38,50 +26,55 @@ class MeltingTest(unittest.TestCase):
         logging.getLogger("Melter").setLevel(logging.DEBUG)
 
     def test_simple_duplicate_detection(self):
-        return
         with WorkingDirectoryForTest() as td:
             file1 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v1"])
             file2 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v2"])
-            files = [*file1, *file2]
 
             interruption = utils.InterruptibleProcess()
-            duplicates = Duplicates(interruption)
-            duplicates.setDuplicates({"Grass": files})
+            duplicates = StaticSource(interruption)
+            duplicates.add_entry("Grass", *file1)
+            duplicates.add_entry("Grass", *file2)
 
-            files_before = hashes(td.path)
-            self.assertEqual(len(files_before), 2)
+            input_file_hashes = hashes(td.path)
+            self.assertEqual(len(input_file_hashes), 2)
 
-            melter = Melter(interruption, duplicates, live_run = True)
+            output_dir = os.path.join(td.path, "output")
+            os.makedirs(output_dir)
+
+            melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = td.path, output = output_dir)
             melter.melt()
 
-            # expect second file to be removed
-            files_after = hashes(td.path)
-            self.assertEqual(len(files_after), 1)
+            # expect output to be equal to the first of files
+            output_file_hash = hashes(output_dir)
+            self.assertEqual(len(output_file_hash), 1)
 
             # check if file was not altered
-            self.assertTrue(files_after.items() < files_before.items())
+            self.assertEqual(list(output_file_hash.values())[0], input_file_hashes[*file1])
 
 
     def test_dry_run_is_being_respected(self):
-        return
         with WorkingDirectoryForTest() as td:
             file1 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v1"])
             file2 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v2"])
             files = [*file1, *file2]
 
             interruption = utils.InterruptibleProcess()
-            duplicates = Duplicates(interruption)
-            duplicates.setDuplicates({"Grass": files})
+            duplicates = StaticSource(interruption)
+            duplicates.add_entry("Grass", *file1)
+            duplicates.add_entry("Grass", *file2)
 
-            files_before = hashes(td.path)
-            self.assertEqual(len(files_before), 2)
+            input_file_hashes = hashes(td.path)
+            self.assertEqual(len(input_file_hashes), 2)
 
-            melter = Melter(interruption, duplicates, live_run = False)
+            output_dir = os.path.join(td.path, "output")
+            os.makedirs(output_dir)
+
+            melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = False, wd = td.path, output = output_dir)
             melter.melt()
 
-            # expect no changes in files
-            files_after = hashes(td.path)
-            self.assertEqual(files_before, files_after)
+            # expect output to be empty
+            output_file_hash = hashes(output_dir)
+            self.assertEqual(len(output_file_hash), 0)
 
 
     def test_same_multiscene_video_duplicate_detection(self):
@@ -89,14 +82,24 @@ class MeltingTest(unittest.TestCase):
 
         with WorkingDirectoryForTest() as td:
             def gen_sample(out_path: Path):
-                files = ["Atoms - 8579.mp4", "Blue_Sky_and_Clouds_Timelapse_0892__Videvo.mov", "Frog - 113403.mp4", "sea-waves-crashing-on-beach-shore-4793288.mp4", "Woman - 58142.mp4"]
+                videos = ["Atoms - 8579.mp4",
+                          "Blue_Sky_and_Clouds_Timelapse_0892__Videvo.mov",
+                          "Frog - 113403.mp4", "sea-waves-crashing-on-beach-shore-4793288.mp4",
+                          "Woman - 58142.mp4"]
+                audios = ["806912__kevp888__250510_122217_fr_large_crowd_in_palais_garnier.wav",
+                          "807385__josefpres__piano-loops-066-efect-4-octave-long-loop-120-bpm.wav",
+                          "807184__logicmoon__mirrors.wav",
+                          "807419__kvgarlic__light-spring-rain-and-kids-and-birds-may-13-2025-vtwo.wav"]
 
-                #unify fps
+                #unify fps and add audio path
                 output_files = []
-                for file in files:
-                    input_path = get_video(file)
-                    output_path = os.path.join(td.path, file + ".mp4")
-                    process.start_process("ffmpeg", ["-i", input_path, "-r", "25", "-vf", "fps=25", "-c:v", "libx265", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", output_path])
+                for video, audio in zip(videos, audios):
+                    video_input_path = get_video(video)
+                    audio_input_path = get_audio(audio)
+                    output_path = os.path.join(td.path, video + ".mp4")
+                    process.start_process("ffmpeg", ["-i", video_input_path, "-i", audio_input_path, "-r", "25", "-vf", "fps=25", "-c:v", "libx265", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+                                                     "-shortest", "-map", "0:v:0", "-map", "1:a:0", "-c:a", "libvorbis", "-ar", "44100",
+                                                     output_path])
                     output_files.append(output_path)
 
                 # concatenate
@@ -113,17 +116,17 @@ class MeltingTest(unittest.TestCase):
                 """
                     Process input file and worse its quality
                 """
-                duration=88                                                                                 # duration of original video
+                duration = video.get_video_duration(input) / 1000                                           # duration of original video
 
                 vf = ",".join([
-                    #"fps=26.5",                                                                             # use non standard fps
-                    #"setpts=PTS/1.05",                                                                      # speed it up by 5%
+                    "fps=26.5",                                                                             # use non standard fps
+                    "setpts=PTS/1.05",                                                                      # speed it up by 5%
                     "boxblur=enable='between(t,5,10)':lr=2",                                                # add some blur
                     f"crop=w=iw*0.9:h=ih*0.9:x='(iw-iw*0.9)*t/{duration}':y='(ih-ih*0.9)*t/{duration}'",    # add a crop (90% H and W) which moves from top left corner to bottom right
                     f"scale={960}:{720}"                                                                    # scale to 4:3
                 ])
 
-                af = "" #"atempo=1.05"
+                af = "atempo=1.05"
 
                 args = [
                     "-i", input,
@@ -143,27 +146,23 @@ class MeltingTest(unittest.TestCase):
             file2 = file_cache.get_or_generate("melter_tests_vhs", "1", "mp4", partial(gen_vhs, input=file1))
             file2 = add_to_test_dir(td.path, str(file2))
 
-            files = ["/media/nfs/raspberry/storage/Wideo/Seriale/Brygada RR/season 1/01. Podwodni piraci.avi",
-                     "/media/nfs/raspberry/storage/seed/Chip n Dales Rescue Rangers Season 1 Complete 720p WEBRip x264 [i_c]/Chip 'n Dale Rescue Rangers S01E01 Piratsy Under the Seas.mkv"]
-
             files = [file1, file2]
 
             interruption = utils.InterruptibleProcess()
-            duplicates = Duplicates(interruption)
-            duplicates.setDuplicates({"video": files})
+            duplicates = StaticSource(interruption)
+            duplicates.add_entry("video", file1)
+            duplicates.add_entry("video", file2)
+            duplicates.add_metadata(file1, "audio_lang", "eng")
+            duplicates.add_metadata(file2, "audio_lang", "pol")
 
-            files_before = hashes(td.path)
-            self.assertEqual(len(files_before), 2)
+            input_file_hashes = hashes(td.path)
+            self.assertEqual(len(input_file_hashes), 2)
 
-            melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True)
+            output_dir = os.path.join(td.path, "output")
+            os.makedirs(output_dir)
+
+            melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = td.path, output = output_dir)
             melter.melt()
-
-            # expect second file to be removed
-            files_after = hashes(td.path)
-            self.assertEqual(len(files_after), 1)
-
-            # check if file was not altered
-            self.assertTrue(files_after.items() < files_before.items())
 
 
     def test_images_comparison(self):
@@ -278,7 +277,6 @@ class MeltingTest(unittest.TestCase):
 
 
         compare_all_images_in_dir(os.path.join(current_path, "images"))
-
 
 
 if __name__ == '__main__':
