@@ -4,6 +4,7 @@ import logging
 import os
 import platformdirs
 import re
+import shutil
 
 from collections import defaultdict
 from overrides import override
@@ -404,23 +405,28 @@ class Melter():
             logging.info(f"Analyzing duplicates for {title}")
 
             streams = self._process_duplicates(files)
-
             output = os.path.join(self.output, title + ".mkv")
-            generation_args = [input for path in streams for input in ("-i", path)]
 
-            for file_index, (_, infos) in enumerate(streams.items()):
-                for info in infos:
-                    stream_type = info["type"]
-                    stream_index = info["index"]
-                    generation_args.append("-map")
-                    generation_args.append(f"{file_index}:{stream_type[0]}:{stream_index}")
+            if len(streams) == 1:
+                # only one file is being used, just copy it to the output dir
+                first_file_path = list(streams)[0]
+                shutil.copy2(first_file_path, output)
+            else:
+                generation_args = [input for path in streams for input in ("-i", path)]
 
-            generation_args.append("-c")
-            generation_args.append("copy")
+                for file_index, (_, infos) in enumerate(streams.items()):
+                    for info in infos:
+                        stream_type = info["type"]
+                        stream_index = info["index"]
+                        generation_args.append("-map")
+                        generation_args.append(f"{file_index}:{stream_type[0]}:{stream_index}")
 
-            generation_args.append(output)
+                generation_args.append("-c")
+                generation_args.append("copy")
 
-            process.start_process("ffmpeg", generation_args)
+                generation_args.append(output)
+
+                process.start_process("ffmpeg", generation_args)
 
 
     def melt(self):
@@ -430,7 +436,6 @@ class Melter():
             logging.info("Finding duplicates")
             duplicates = self.duplicates_source.collect_duplicates()
             self._process_duplicates_set(duplicates)
-            #print(json.dumps(duplicates, indent=4))
 
 
 class RequireJellyfinServer(argparse.Action):
