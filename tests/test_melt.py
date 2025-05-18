@@ -27,13 +27,13 @@ class MeltingTest(unittest.TestCase):
 
     def test_simple_duplicate_detection(self):
         with WorkingDirectoryForTest() as td:
-            file1 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v1"])
-            file2 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v2"])
+            file1 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v1"])[0]
+            file2 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v2"])[0]
 
             interruption = utils.InterruptibleProcess()
             duplicates = StaticSource(interruption)
-            duplicates.add_entry("Grass", *file1)
-            duplicates.add_entry("Grass", *file2)
+            duplicates.add_entry("Grass", file1)
+            duplicates.add_entry("Grass", file2)
 
             input_file_hashes = hashes(td.path)
             self.assertEqual(len(input_file_hashes), 2)
@@ -49,19 +49,18 @@ class MeltingTest(unittest.TestCase):
             self.assertEqual(len(output_file_hash), 1)
 
             # check if file was not altered
-            self.assertEqual(list(output_file_hash.values())[0], input_file_hashes[*file1])
+            self.assertEqual(list(output_file_hash.values())[0], input_file_hashes[file1])
 
 
     def test_dry_run_is_being_respected(self):
         with WorkingDirectoryForTest() as td:
-            file1 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v1"])
-            file2 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v2"])
-            files = [*file1, *file2]
+            file1 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v1"])[0]
+            file2 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v2"])[0]
 
             interruption = utils.InterruptibleProcess()
             duplicates = StaticSource(interruption)
-            duplicates.add_entry("Grass", *file1)
-            duplicates.add_entry("Grass", *file2)
+            duplicates.add_entry("Grass", file1)
+            duplicates.add_entry("Grass", file2)
 
             input_file_hashes = hashes(td.path)
             self.assertEqual(len(input_file_hashes), 2)
