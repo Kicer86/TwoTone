@@ -127,6 +127,10 @@ def add_to_test_dir(test_case_path: str, file_path: str, copy: bool = False, dst
     return dst
 
 
+def get_audio(name: str) -> str:
+    return os.path.join(current_path, "audio", name)
+
+
 def get_video(name: str) -> str:
     return os.path.join(current_path, "videos", name)
 
