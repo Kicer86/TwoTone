@@ -45,13 +45,14 @@ def iter_starting_with(d: dict, start_key) -> Tuple:
 
 
 class Melter():
-    def __init__(self, logger: logging.Logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str):
+    def __init__(self, logger: logging.Logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str):
         self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
         self.live_run = live_run
         self.debug_it: int = 0
         self.wd = wd
+        self.output = output
 
         os.makedirs(self.wd, exist_ok=True)
 
@@ -341,92 +342,95 @@ class Melter():
         return result
 
     def _process_duplicates(self, duplicates: List[str]):
-        wd_path = os.path.join(self.wd, str(os.getpid()))
-        with files.ScopedDirectory(wd_path) as wd:
-            # analyze files in terms of quality and available content
-            details = {file: video.get_video_data2(file) for file in duplicates}
+        # analyze files in terms of quality and available content
+        details = {file: video.get_video_data2(file) for file in duplicates}
 
-            for file, file_details in details.items():
-                self._print_file_details(file, file_details)
+        for file, file_details in details.items():
+            self._print_file_details(file, file_details)
 
-            # pick video stream
-            best_video, video_stream = self._pick_best_video(details)
+        # pick video stream
+        best_video, video_stream = self._pick_best_video(details)
 
-            # pick audio streams
-            forced_audio_language = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in details}
-            forced_audio_language = {path: lang for path, lang in forced_audio_language.items() if lang}
-            audio_streams = self._pick_unique_streams(details, best_video, "audio", ["language", "channels"], ["sample_rate"], override_languages=forced_audio_language)
+        # pick audio streams
+        forced_audio_language = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in details}
+        forced_audio_language = {path: lang for path, lang in forced_audio_language.items() if lang}
+        audio_streams = self._pick_unique_streams(details, best_video, "audio", ["language", "channels"], ["sample_rate"], override_languages=forced_audio_language)
 
-            # pick subtitle streams
-            forced_subtitle_language = {path: self.duplicates_source.get_metadata_for(path).get("subtitle_lang") for path in details}
-            forced_subtitle_language = {path: lang for path, lang in forced_subtitle_language.items() if lang}
-            subtitle_streams = self._pick_unique_streams(details, best_video, "subtitle", ["language"], [], override_languages=forced_subtitle_language)
+        # pick subtitle streams
+        forced_subtitle_language = {path: self.duplicates_source.get_metadata_for(path).get("subtitle_lang") for path in details}
+        forced_subtitle_language = {path: lang for path, lang in forced_subtitle_language.items() if lang}
+        subtitle_streams = self._pick_unique_streams(details, best_video, "subtitle", ["language"], [], override_languages=forced_subtitle_language)
 
-            # build streams mapping
-            streams = defaultdict(list)
+        # build streams mapping
+        streams = defaultdict(list)
 
-            #    process video streams
-            streams[best_video].append({
-                "index": video_stream,
-                "language": None,
-                "type": "video",
+        #   process video streams
+        streams[best_video].append({
+            "index": video_stream,
+            "language": None,
+            "type": "video",
+        })
+
+        #   process audio streams
+
+        #       check if input files are of the same lenght
+        base_lenght = details[best_video]["video"][video_stream]["length"]
+        file_name = 0
+        for path, index, language in audio_streams:
+            lenght = details[path]["video"][index]["length"]
+
+            if abs(base_lenght - lenght) > 100:     # more than 100ms difference in lenght, perform content matching
+                with files.ScopedDirectory(os.path.join(wd, "matching")) as mwd:
+                    pairMatcher = PairMatcher(mwd, best_video, path, self.logger.getChild("PairMatcher"))
+
+                    mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
+                    output_file = os.path.join(wd, f"tmp_{file_name}.m4a")
+                    self._patch_audio_segment(mwd, best_video, path, output_file, mapping, 20, lhs_all_frames, rhs_all_frames)
+
+                    file_name += 1
+                    path = output_file
+
+            streams[path].append({
+                "index": index,
+                "language": language,
+                "type": "audio",
             })
 
-            #    process audio streams
-
-            #        check if input files are of the same lenght
-            base_lenght = details[best_video]["video"][video_stream]["length"]
-            file_name = 0
-            for path, index, language in audio_streams:
-                lenght = details[path]["video"][index]["length"]
-
-                if abs(base_lenght - lenght) > 100:     # more than 100ms difference in lenght, perform content matching
-                    with files.ScopedDirectory(os.path.join(wd, "matching")) as mwd:
-                        pairMatcher = PairMatcher(mwd, best_video, path, self.logger.getChild("PairMatcher"))
-
-                        mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
-                        output_file = os.path.join(wd, f"tmp_{file_name}.m4a")
-                        self._patch_audio_segment(mwd, best_video, path, output_file, mapping, 20, lhs_all_frames, rhs_all_frames)
-
-                        file_name += 1
-                        path = output_file
-
-                streams[path].append({
-                    "index": index,
-                    "language": language,
-                    "type": "audio",
-                })
-
-        return
-
-
-        video_details = [video.get_video_data2(video_file) for video_file in duplicates]
-        video_lengths = {video.video_tracks[0].length for video in video_details}
-
-        if len(video_lengths) == 1:
-            # all files are of the same lenght
-            # remove all but first one
-            logging.info("Removing exact duplicates. Leaving one copy")
-            if self.live_run:
-                for file in duplicates[1:]:
-                    os.remove(file)
-        else:
-            logging.warning("Videos have different lengths, skipping")
+        return streams
 
 
     def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
         for title, files in duplicates.items():
             logging.info(f"Analyzing duplicates for {title}")
 
-            self._process_duplicates(files)
+            streams = self._process_duplicates(files)
+
+            output = os.path.join(self.output, title + ".mkv")
+            generation_args = [input for path in streams for input in ("-i", path)]
+
+            for file_index, (_, infos) in enumerate(streams.items()):
+                for info in infos:
+                    stream_type = info["type"]
+                    stream_index = info["index"]
+                    generation_args.append("-map")
+                    generation_args.append(f"{file_index}:{stream_type[0]}:{stream_index}")
+
+            generation_args.append("-c")
+            generation_args.append("copy")
+
+            generation_args.append(output)
+
+            process.start_process("ffmpeg", generation_args)
 
 
     def melt(self):
-        self.logger.debug(f"Starting `melt` with live run: {self.live_run} and working dir: {self.wd}")
-        self.logger.info("Finding duplicates")
-        duplicates = self.duplicates_source.collect_duplicates()
-        self._process_duplicates_set(duplicates)
-        #print(json.dumps(duplicates, indent=4))
+        wd_path = os.path.join(self.wd, str(os.getpid()))
+        with files.ScopedDirectory(wd_path) as wd:
+            self.logger.debug(f"Starting `melt` with live run: {self.live_run} and working dir: {self.wd}")
+            logging.info("Finding duplicates")
+            duplicates = self.duplicates_source.collect_duplicates()
+            self._process_duplicates_set(duplicates)
+            #print(json.dumps(duplicates, indent=4))
 
 
 class RequireJellyfinServer(argparse.Action):
@@ -474,6 +478,9 @@ class MeltTool(Tool):
                                  "Consider using the fastest storage possible, but mind size of files.",
                             default=os.path.join(platformdirs.user_cache_dir(), "twotone", "melt"))
 
+        parser.add_argument('-o', '--output-dir',
+                            help="Directory for output files")
+
 
     @override
     def run(self, args, no_dry_run: bool, logger: logging.Logger):
@@ -516,5 +523,10 @@ class MeltTool(Tool):
                 if audio_lang:
                     data_source.add_metadata(path, "audio_lang", audio_lang)
 
-        melter = Melter(logger, interruption, data_source, live_run = no_dry_run, wd=args.working_dir)
+        melter = Melter(logger,
+                        interruption,
+                        data_source,
+                        live_run = no_dry_run,
+                        wd = args.working_dir,
+                        output = args.output_dir)
         melter.melt()
