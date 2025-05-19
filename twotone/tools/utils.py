@@ -111,6 +111,12 @@ def build_subtitle_from_path(path: str, language: str | None = "") -> SubtitleFi
     return SubtitleFile(path, language, encoding)
 
 
+def build_audio_from_path(path: str, language: str | None = "") -> Dict:
+    return {"path": path,
+            "language": language,
+    }
+
+
 def alter_subrip_subtitles_times(content: str, multiplier: float) -> str:
     def multiply_time(match):
         time_from, time_to = map(time_to_ms, match.groups())
