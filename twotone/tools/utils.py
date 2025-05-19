@@ -111,6 +111,12 @@ def build_subtitle_from_path(path: str, language: str | None = "") -> SubtitleFi
     return SubtitleFile(path, language, encoding)
 
 
+def build_audio_from_path(path: str, language: str | None = "") -> Dict:
+    return {"path": path,
+            "language": language,
+    }
+
+
 def guess_language(path: str, encoding: str) -> str:
     result = ""
 
