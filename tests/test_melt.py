@@ -163,120 +163,20 @@ class MeltingTest(unittest.TestCase):
             melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = td.path, output = output_dir)
             melter.melt()
 
+            # validate output
+            output_file_hash = hashes(output_dir)
+            self.assertEqual(len(output_file_hash), 1)
 
-    def test_images_comparison(self):
-        return
-        images_dir = os.path.join(current_path, "images")
-        images = sorted(os.listdir(images_dir))
+            output_file = list(output_file_hash)[0]
 
-        def phash(path):
-            img = Image.open(path).convert('L').resize((256, 256))
-            img_hash = imagehash.phash(img, hash_size=16)
-            return img_hash
+            output_file_data = video.get_video_data2(output_file)
+            self.assertEqual(len(output_file_data["video"]), 1)
+            self.assertEqual(output_file_data["video"][0]["height"], 1080)
+            self.assertEqual(output_file_data["video"][0]["width"], 1920)
 
-        def phashdiff(h1, h2):
-            return abs(h1 - h2)
-
-        def compare_ssim(img1_path, img2_path):
-            img1 = cv2.imread(img1_path, cv2.IMREAD_GRAYSCALE)
-            img2 = cv2.imread(img2_path, cv2.IMREAD_GRAYSCALE)
-            img1 = cv2.resize(img1, (256, 256))
-            img2 = cv2.resize(img2, (256, 256))
-            similarity, _ = ssim(img1, img2, full=True)
-            return similarity
-
-        def orb_similarity(img1_path, img2_path):
-            img1 = cv2.imread(img1_path, cv2.IMREAD_GRAYSCALE)
-            img2 = cv2.imread(img2_path, cv2.IMREAD_GRAYSCALE)
-
-            orb = cv2.ORB_create()
-            kp1, des1 = orb.detectAndCompute(img1, None)
-            kp2, des2 = orb.detectAndCompute(img2, None)
-
-            matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-            matches = matcher.match(des1, des2)
-
-            matches = sorted(matches, key=lambda x: x.distance)
-            good_matches = [m for m in matches if m.distance < 50]  # lower distance = better match
-
-            return len(good_matches) / max(len(kp1), len(kp2))
-
-
-        for image1 in images:
-            image1_path = os.path.join(images_dir, image1)
-            p1 = phash(image1_path)
-
-            for image2 in images:
-                image2_path = os.path.join(images_dir, image2)
-                p2 = phash(image2_path)
-
-                pdiff = phashdiff(p1, p2)
-                ssim_diff = compare_ssim(image1_path, image2_path)
-                orb_diff = orb_similarity(image1_path, image2_path)
-
-                print(f"P1: {image1} P2: {image2}, pdiff = {pdiff}, ssim = {ssim_diff}, orb = {orb_diff}")
-
-
-    def test_similarities2(self):
-        return
-        def align_images(im1, im2):
-            # Convert images to grayscale
-            gray1 = cv2.cvtColor(im1, cv2.COLOR_BGR2GRAY)
-            gray2 = cv2.cvtColor(im2, cv2.COLOR_BGR2GRAY)
-
-            # Use ORB detector
-            orb = cv2.ORB_create(500)
-            kp1, des1 = orb.detectAndCompute(gray1, None)
-            kp2, des2 = orb.detectAndCompute(gray2, None)
-
-            # Match features
-            matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-            matches = matcher.match(des1, des2)
-
-            if len(matches) < 4:
-                print("Not enough matches to align images.")
-                return None, None
-
-            matches = sorted(matches, key=lambda x: x.distance)
-            points1 = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
-            points2 = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
-
-            # Find homography
-            h, mask = cv2.findHomography(points2, points1, cv2.RANSAC, 5.0)
-
-            height, width = gray1.shape
-            aligned_im2 = cv2.warpPerspective(im2, h, (width, height))
-
-            return im1, aligned_im2
-
-        def compute_ssim(im1, im2):
-            gray1 = cv2.cvtColor(im1, cv2.COLOR_BGR2GRAY)
-            gray2 = cv2.cvtColor(im2, cv2.COLOR_BGR2GRAY)
-
-            score, _ = ssim(gray1, gray2, full=True)
-            return score
-
-        def compare_all_images_in_dir(directory):
-            image_files = [os.path.join(directory, f) for f in sorted(os.listdir(directory))]
-            images = {file: cv2.imread(file) for file in image_files}
-
-            print("Pairwise SSIM similarities after alignment:\n")
-            for file1, img1 in images.items():
-                for file2, img2 in images.items():
-                    if img1 is None or img2 is None:
-                        print(f"Could not read {file1} or {file2}. Skipping.")
-                        continue
-                    aligned_pair = align_images(img1, img2)
-                    if aligned_pair[0] is None:
-                        print(f"Alignment failed for {file1} and {file2}.")
-                        continue
-
-                    similarity = compute_ssim(aligned_pair[0], aligned_pair[1])
-                    print(f"{os.path.basename(file1)} vs {os.path.basename(file2)}: SSIM = {similarity:.4f}")
-
-
-        compare_all_images_in_dir(os.path.join(current_path, "images"))
-
+            self.assertEqual(len(output_file_data["audio"]), 2)
+            self.assertEqual(output_file_data["audio"][0]["language"], "eng")
+            self.assertEqual(output_file_data["video"][1]["language"], "pol")
 
 if __name__ == '__main__':
     unittest.main()
