@@ -176,7 +176,7 @@ class MeltingTest(unittest.TestCase):
 
             self.assertEqual(len(output_file_data["audio"]), 2)
             self.assertEqual(output_file_data["audio"][0]["language"], "eng")
-            self.assertEqual(output_file_data["video"][1]["language"], "pol")
+            self.assertEqual(output_file_data["audio"][1]["language"], "pol")
 
 if __name__ == '__main__':
     unittest.main()
