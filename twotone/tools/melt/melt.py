@@ -417,12 +417,24 @@ class Melter():
             else:
                 generation_args = [input for path in streams for input in ("-i", path)]
 
+                output_stream_indexes = defaultdict(int)
                 for file_index, (_, infos) in enumerate(streams.items()):
                     for info in infos:
                         stream_type = info["type"]
                         stream_index = info["index"]
-                        generation_args.append("-map")
-                        generation_args.append(f"{file_index}:{stream_type[0]}:{stream_index}")
+                        stream_t = stream_type[0]
+                        generation_args.extend(["-map", f"{file_index}:{stream_t}:{stream_index}"])
+
+                        output_stream_index = output_stream_indexes.get(stream_type, 0)
+
+                        language = info.get("language", None)
+                        if language:
+                            generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language={language}"])
+
+                        if output_stream_index == 0:
+                            generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "default"])
+
+                        output_stream_indexes[stream_type] = output_stream_index + 1
 
                 generation_args.append("-c")
                 generation_args.append("copy")
