@@ -579,7 +579,6 @@ class PairMatcher:
 
                         lhs_path = lhs_set[lhs_ts]["path"]
                         rhs_path = rhs_set[rhs_ts]["path"]
-                        self.logger.debug(f"Step's best: {lhs_path} {rhs_path}")
                 else:
                     break
 
