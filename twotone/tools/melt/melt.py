@@ -422,47 +422,69 @@ class Melter():
 
 
     def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
-        for title, files in duplicates.items():
+        def analyze_duplicate_files(entries: List[str]):
+            if all(os.path.isdir(p) for p in entries):
+                tmp = []
+                dirs = entries
+                for dir_path in dirs:
+                    files = [os.path.join(dir_path, f) for f in os.listdir(dir_path)
+                            if os.path.isfile(os.path.join(dir_path, f))]
+                    files.sort()
+                    tmp.append(files)
+
+                sorted_file_lists = [list(entry) for entry in zip(*tmp)]
+
+                return sorted_file_lists
+            else:
+                sorted_file_lists = [entries]
+
+            return sorted_file_lists
+
+        for title, entries in duplicates.items():
             logging.info(f"Analyzing duplicates for {title}")
 
-            streams = self._process_duplicates(files)
-            if not self.live_run:
-                continue
+            files_groups = analyze_duplicate_files(entries)
+            single_output = len(files_groups) == 1
 
-            output = os.path.join(self.output, title + ".mkv")
+            for i, files in enumerate(files_groups):
+                streams = self._process_duplicates(files)
+                if not self.live_run:
+                    continue
 
-            if len(streams) == 1:
-                # only one file is being used, just copy it to the output dir
-                first_file_path = list(streams)[0]
-                shutil.copy2(first_file_path, output)
-            else:
-                generation_args = [input for path in streams for input in ("-i", path)]
+                output = os.path.join(self.output, title + ".mkv") if single_output else os.path.join(self.output, title + f"{i:02d}" + ".mkv")
 
-                output_stream_indexes = defaultdict(int)
-                for file_index, (_, infos) in enumerate(streams.items()):
-                    for info in infos:
-                        stream_type = info["type"]
-                        stream_index = info["index"]
-                        stream_t = stream_type[0]
-                        generation_args.extend(["-map", f"{file_index}:{stream_t}:{stream_index}"])
+                if len(streams) == 1:
+                    # only one file is being used, just copy it to the output dir
+                    first_file_path = list(streams)[0]
+                    shutil.copy2(first_file_path, output)
+                else:
+                    generation_args = [input for path in streams for input in ("-i", path)]
 
-                        output_stream_index = output_stream_indexes.get(stream_type, 0)
+                    output_stream_indexes = defaultdict(int)
+                    for file_index, (_, infos) in enumerate(streams.items()):
+                        for info in infos:
+                            stream_type = info["type"]
+                            stream_index = info["index"]
+                            stream_t = stream_type[0]
+                            generation_args.extend(["-map", f"{file_index}:{stream_t}:{stream_index}"])
 
-                        language = info.get("language", None)
-                        if language:
-                            generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language={language}"])
+                            output_stream_index = output_stream_indexes.get(stream_type, 0)
 
-                        if output_stream_index == 0:
-                            generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "default"])
+                            language = info.get("language", None)
+                            if language:
+                                generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language={language}"])
 
-                        output_stream_indexes[stream_type] = output_stream_index + 1
+                            if output_stream_index == 0:
+                                generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "default"])
 
-                generation_args.append("-c")
-                generation_args.append("copy")
+                            output_stream_indexes[stream_type] = output_stream_index + 1
 
-                generation_args.append(output)
+                    generation_args.append("-c")
+                    generation_args.append("copy")
 
-                process.start_process("ffmpeg", generation_args)
+                    generation_args.append(output)
+
+                    process.start_process("ffmpeg", generation_args)
 
 
     def melt(self):

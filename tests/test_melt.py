@@ -182,5 +182,49 @@ class MeltingTest(unittest.TestCase):
             self.assertEqual(output_file_data["audio"][0]["language"], "eng")
             self.assertEqual(output_file_data["audio"][1]["language"], "pol")
 
+
+    def test_series_duplication(self):
+        with WorkingDirectoryForTest() as td:
+            series1_dir = os.path.join(td.path, "series1")
+            series2_dir = os.path.join(td.path, "series2")
+
+            os.makedirs(series1_dir)
+            os.makedirs(series2_dir)
+
+            for episode in range(5):
+                add_test_media("Grass - 66810.mp4", series1_dir, suffixes = [f"S1E{episode}"])[0]
+                add_test_media("Grass - 66810.mp4", series2_dir, suffixes = [f"S1E{episode}"])[0]
+
+            interruption = utils.InterruptibleProcess()
+            duplicates = StaticSource(interruption)
+            duplicates.add_entry("Grass", series1_dir)
+            duplicates.add_entry("Grass", series2_dir)
+            duplicates.add_metadata(series1_dir, "audio_lang", "nor")
+            duplicates.add_metadata(series2_dir, "audio_lang", "ger")
+
+            input_file_hashes = hashes(td.path)
+            self.assertEqual(len(input_file_hashes), 10)
+
+            output_dir = os.path.join(td.path, "output")
+            os.makedirs(output_dir)
+
+            melter = Melter(interruption, duplicates, live_run = True, logger = logging.getLogger("Melter"), wd = td.path, output = output_dir)
+            melter.melt()
+
+            # validate output
+            output_file_hash = hashes(output_dir)
+            output_files = list(output_file_hash)
+
+            for output_file in output_files:
+                output_file_data = video.get_video_data2(output_file)
+                self.assertEqual(len(output_file_data["video"]), 1)
+                self.assertEqual(output_file_data["video"][0]["height"], 2160)
+                self.assertEqual(output_file_data["video"][0]["width"], 3840)
+
+                self.assertEqual(len(output_file_data["audio"]), 2)
+                self.assertEqual(output_file_data["audio"][0]["language"], "nor")
+                self.assertEqual(output_file_data["audio"][1]["language"], "ger")
+
+
 if __name__ == '__main__':
     unittest.main()
