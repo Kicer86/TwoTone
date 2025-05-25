@@ -17,6 +17,7 @@ import twotone.tools.utils as utils
 from twotone.tools.melt import Melter
 from twotone.tools.melt.melt import StaticSource
 from twotone.tools.utils2 import process, video
+from twotone.tools.utils2.files import ScopedDirectory
 from common import WorkingDirectoryForTest, FileCache, add_test_media, add_to_test_dir, current_path, get_audio, get_video, hashes, list_files
 
 
@@ -91,25 +92,28 @@ class MeltingTest(unittest.TestCase):
                           "807419__kvgarlic__light-spring-rain-and-kids-and-birds-may-13-2025-vtwo.wav"]
 
                 #unify fps and add audio path
-                output_files = []
-                for video, audio in zip(videos, audios):
-                    video_input_path = get_video(video)
-                    audio_input_path = get_audio(audio)
-                    output_path = os.path.join(td.path, video + ".mp4")
-                    process.start_process("ffmpeg", ["-i", video_input_path, "-i", audio_input_path, "-r", "25", "-vf", "fps=25", "-c:v", "libx265", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
-                                                     "-shortest", "-map", "0:v:0", "-map", "1:a:0", "-c:a", "libvorbis", "-ar", "44100",
-                                                     output_path])
-                    output_files.append(output_path)
+                output_dir = os.path.join(td.path, "gen_sample")
 
-                # concatenate
-                files_list_path = os.path.join(td.path, "filelist.txt")
-                with open(files_list_path, "w", encoding="utf-8") as f:
-                    for path in output_files:
-                        # Escape single quotes if needed
-                        safe_path = path.replace("'", "'\\''")
-                        f.write(f"file '{safe_path}'\n")
+                with ScopedDirectory(output_dir) as sd:
+                    output_files = []
+                    for video, audio in zip(videos, audios):
+                        video_input_path = get_video(video)
+                        audio_input_path = get_audio(audio)
+                        output_path = os.path.join(output_dir, video + ".mp4")
+                        process.start_process("ffmpeg", ["-i", video_input_path, "-i", audio_input_path, "-r", "25", "-vf", "fps=25", "-c:v", "libx265", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+                                                        "-shortest", "-map", "0:v:0", "-map", "1:a:0", "-c:a", "libvorbis", "-ar", "44100",
+                                                        output_path])
+                        output_files.append(output_path)
 
-                process.start_process("ffmpeg", ["-f", "concat", "-safe", "0", "-i", files_list_path, "-c", "copy", str(out_path)])
+                    # concatenate
+                    files_list_path = os.path.join(output_dir, "filelist.txt")
+                    with open(files_list_path, "w", encoding="utf-8") as f:
+                        for path in output_files:
+                            # Escape single quotes if needed
+                            safe_path = path.replace("'", "'\\''")
+                            f.write(f"file '{safe_path}'\n")
+
+                    process.start_process("ffmpeg", ["-f", "concat", "-safe", "0", "-i", files_list_path, "-c", "copy", str(out_path)])
 
             def gen_vhs(out_path: Path, input: str):
                 """
