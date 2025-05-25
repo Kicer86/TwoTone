@@ -217,7 +217,16 @@ class Melter():
                         self.logger.debug(
                             f"\t\t{key_title:<16}{formatter(key, value)}")
 
-    def _pick_best_video(self, files_details: Dict[str, Dict]) -> str:
+    def _print_streams_details(self, all_streams: List):
+        for stype, type_stream in all_streams:
+            for stream in type_stream:
+                path = stream[0]
+                index = stream[1]
+                language = stream[2]
+                language = language if language else '---'
+                self.logger.debug(f"{stype} stream #{index} with language {language} from {path}")
+
+    def _pick_best_video(self, files_details: Dict[str, Dict]) -> List[Tuple[str, int, str]]:
         best_file = None
         best_stream = None
 
@@ -244,7 +253,7 @@ class Melter():
                     best_file = file
                     best_stream = details
 
-        return best_file, default_video_stream
+        return (best_file, default_video_stream, None)
 
     def _pick_unique_streams(
         self,
@@ -346,28 +355,35 @@ class Melter():
         # analyze files in terms of quality and available content
         details = {file: video.get_video_data2(file) for file in duplicates}
 
+        # print input file details
         for file, file_details in details.items():
             self._print_file_details(file, file_details)
 
         # pick video stream
-        best_video, video_stream = self._pick_best_video(details)
+        video_stream = self._pick_best_video(details)
+        video_stream_path = video_stream[0]
 
         # pick audio streams
         forced_audio_language = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in details}
         forced_audio_language = {path: lang for path, lang in forced_audio_language.items() if lang}
-        audio_streams = self._pick_unique_streams(details, best_video, "audio", ["language", "channels"], ["sample_rate"], override_languages=forced_audio_language)
+        audio_streams = self._pick_unique_streams(details, video_stream_path, "audio", ["language", "channels"], ["sample_rate"], override_languages=forced_audio_language)
 
         # pick subtitle streams
         forced_subtitle_language = {path: self.duplicates_source.get_metadata_for(path).get("subtitle_lang") for path in details}
         forced_subtitle_language = {path: lang for path, lang in forced_subtitle_language.items() if lang}
-        subtitle_streams = self._pick_unique_streams(details, best_video, "subtitle", ["language"], [], override_languages=forced_subtitle_language)
+        subtitle_streams = self._pick_unique_streams(details, video_stream_path, "subtitle", ["language"], [], override_languages=forced_subtitle_language)
+
+        # print proposed output file
+        self.logger.debug("Streams used to create output video file:")
+        self._print_streams_details([(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [[video_stream], audio_streams, subtitle_streams])])
 
         # build streams mapping
         streams = defaultdict(list)
 
-        #   process video streams
-        streams[best_video].append({
-            "index": video_stream,
+        #   process video stream
+        video_stream_index = video_stream[1]
+        streams[video_stream_path].append({
+            "index": video_stream_index,
             "language": None,
             "type": "video",
         })
@@ -375,18 +391,19 @@ class Melter():
         #   process audio streams
 
         #       check if input files are of the same lenght
-        base_lenght = details[best_video]["video"][video_stream]["length"]
+        base_lenght = details[video_stream_path]["video"][video_stream_index]["length"]
         file_name = 0
         for path, index, language in audio_streams:
             lenght = details[path]["video"][index]["length"]
 
-            if abs(base_lenght - lenght) > 100:     # more than 100ms difference in lenght, perform content matching
+            if abs(base_lenght - lenght) > 100:
+                # more than 100ms difference in lenght, perform content matching
                 with files.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd:
-                    pairMatcher = PairMatcher(mwd, best_video, path, self.logger.getChild("PairMatcher"))
+                    pairMatcher = PairMatcher(mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
 
                     mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
                     output_file = os.path.join(self.wd, f"tmp_{file_name}.m4a")
-                    self._patch_audio_segment(mwd, best_video, path, output_file, mapping, 20, lhs_all_frames, rhs_all_frames)
+                    self._patch_audio_segment(mwd, video_stream_path, path, output_file, mapping, 20, lhs_all_frames, rhs_all_frames)
 
                     file_name += 1
                     path = output_file
@@ -455,8 +472,7 @@ class Melter():
 class RequireJellyfinServer(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         if getattr(namespace, "jellyfin_server", None) is None:
-            parser.error(
-                f"{option_string} requires --jellyfin-server to be specified")
+            parser.error(f"{option_string} requires --jellyfin-server to be specified")
         setattr(namespace, self.dest, values)
 
 
