@@ -393,10 +393,13 @@ class Melter():
         #       check if input files are of the same lenght
         base_lenght = details[video_stream_path]["video"][video_stream_index]["length"]
         file_name = 0
+        self.logger.debug(f"Using video file {video_stream_path}:{video_stream_index} as a base")
+
         for path, index, language in audio_streams:
             lenght = details[path]["video"][index]["length"]
 
             if abs(base_lenght - lenght) > 100:
+                self.logger.warning(f"Audio stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}. Starting videos comparison.")
                 # more than 100ms difference in lenght, perform content matching
                 with files.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd:
                     pairMatcher = PairMatcher(mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
