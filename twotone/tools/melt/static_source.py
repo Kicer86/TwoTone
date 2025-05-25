@@ -1,6 +1,7 @@
 
 from collections import defaultdict
 from overrides import override
+from pathlib import Path
 from typing import Dict, List
 
 from .duplicates_source import DuplicatesSource
@@ -24,4 +25,13 @@ class StaticSource(DuplicatesSource):
 
     @override
     def get_metadata_for(self, path: str) -> Dict[str, str]:
-        return self._metadata.get(path, {})
+        path_obj = Path(path)
+
+        while path_obj != path_obj.parent:
+            path_str = str(path_obj)
+            if path_str in self._metadata:
+                return self._metadata[path_str]
+            else:
+                path_obj = path_obj.parent
+
+        return {}
