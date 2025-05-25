@@ -60,6 +60,7 @@ class UtilitiesScenesTests(unittest.TestCase):
             ]
 
             for file in expected_files:
+                print(f"file: {file}")
                 self.assertTrue(file in files)
 
 
