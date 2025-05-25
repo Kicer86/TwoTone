@@ -399,7 +399,8 @@ class Melter():
             lenght = details[path]["video"][index]["length"]
 
             if abs(base_lenght - lenght) > 100:
-                self.logger.warning(f"Audio stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}. Starting videos comparison.")
+                self.logger.warning(f"Audio stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}.")
+                self.logger.info("Starting videos comparison to solve mismatching lenghts.")
                 # more than 100ms difference in lenght, perform content matching
                 with files.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd:
                     pairMatcher = PairMatcher(mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
