@@ -5,7 +5,7 @@ import shutil
 import unittest
 from typing import List
 
-from twotone.tools.utils import split_path
+from twotone.tools.utils2.files import split_path
 from common import WorkingDirectoryForTest, add_test_media, list_files, run_twotone
 
 
