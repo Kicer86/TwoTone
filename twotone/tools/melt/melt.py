@@ -8,6 +8,7 @@ import shutil
 
 from collections import defaultdict
 from overrides import override
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import utils
@@ -422,7 +423,10 @@ class Melter():
 
 
     def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
-        def process_entries(entries: List[str]):
+        def process_entries(entries: List[str]) -> List[Tuple[List[str], str]]:
+            # function return list of: group of duplicates and name for final output file.
+            # when dirs are provided as entries, files from each dir are collected and sorted
+            # and a files on the same position are grouped
             if all(os.path.isdir(p) for p in entries):
                 files_per_dir = []
                 dirs = entries
@@ -433,10 +437,17 @@ class Melter():
                     files_per_dir.append(files)
 
                 sorted_file_lists = [list(entry) for entry in zip(*files_per_dir)]
+                first_file_fullnames = [os.path.relpath(path[0], dirs[0]) for path in sorted_file_lists]
+                first_file_names = [Path(name).stem for name in first_file_fullnames]
 
-                return sorted_file_lists
+                result = [ (files_group, output_name) for files_group, output_name in zip(sorted_file_lists, first_file_names) ]
+
+                return result
             else:
-                sorted_file_lists = [entries]
+                first_file_fullname = os.path.basename(entries[0])
+                first_file_name = Path(first_file_fullname).stem
+
+                sorted_file_lists = [(entries, first_file_name)]
 
             return sorted_file_lists
 
@@ -444,14 +455,15 @@ class Melter():
             logging.info(f"Analyzing duplicates for {title}")
 
             files_groups = process_entries(entries)
-            single_output = len(files_groups) == 1
 
-            for i, files in enumerate(files_groups):
+            for i, (files, output_name) in enumerate(files_groups):
                 streams = self._process_duplicates(files)
                 if not self.live_run:
                     continue
 
-                output = os.path.join(self.output, title + ".mkv") if single_output else os.path.join(self.output, title + f"{i:02d}" + ".mkv")
+                output = os.path.join(self.output, title, output_name + ".mkv")
+                output_dir = os.path.dirname(output)
+                os.makedirs(output_dir, exist_ok=True)
 
                 if len(streams) == 1:
                     # only one file is being used, just copy it to the output dir

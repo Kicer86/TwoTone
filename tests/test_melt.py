@@ -24,7 +24,7 @@ from common import WorkingDirectoryForTest, FileCache, add_test_media, add_to_te
 class MeltingTest(unittest.TestCase):
 
     def setUp(self):
-        logging.getLogger("Melter").setLevel(logging.DEBUG)
+        logging.getLogger("Melter").setLevel(logging.CRITICAL)
 
     def test_simple_duplicate_detection(self):
         with WorkingDirectoryForTest() as td:
@@ -192,7 +192,7 @@ class MeltingTest(unittest.TestCase):
             os.makedirs(series2_dir)
 
             for episode in range(5):
-                add_test_media("Grass - 66810.mp4", series1_dir, suffixes = [f"S1E{episode}"])[0]
+                add_test_media("Grass - 66810.mp4", series1_dir, suffixes = [f"suf-S1E{episode}"])[0]
                 add_test_media("Grass - 66810.mp4", series2_dir, suffixes = [f"S1E{episode}"])[0]
 
             interruption = utils.InterruptibleProcess()
@@ -213,9 +213,12 @@ class MeltingTest(unittest.TestCase):
 
             # validate output
             output_file_hash = hashes(output_dir)
-            output_files = list(output_file_hash)
+            output_files = sorted(list(output_file_hash))
 
-            for output_file in output_files:
+            for i, output_file in enumerate(output_files):
+                output_file_name = os.path.basename(output_file)
+                self.assertEqual(output_file_name, f"Grass - 66810-suf-S1E{i}.mkv")
+
                 output_file_data = video.get_video_data2(output_file)
                 self.assertEqual(len(output_file_data["video"]), 1)
                 self.assertEqual(output_file_data["video"][0]["height"], 2160)
