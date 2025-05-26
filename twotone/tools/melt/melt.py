@@ -424,15 +424,15 @@ class Melter():
     def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
         def process_entries(entries: List[str]):
             if all(os.path.isdir(p) for p in entries):
-                tmp = []
+                files_per_dir = []
                 dirs = entries
                 for dir_path in dirs:
                     files = [os.path.join(dir_path, f) for f in os.listdir(dir_path)
                             if os.path.isfile(os.path.join(dir_path, f))]
                     files.sort()
-                    tmp.append(files)
+                    files_per_dir.append(files)
 
-                sorted_file_lists = [list(entry) for entry in zip(*tmp)]
+                sorted_file_lists = [list(entry) for entry in zip(*files_per_dir)]
 
                 return sorted_file_lists
             else:
