@@ -422,7 +422,7 @@ class Melter():
 
 
     def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
-        def analyze_duplicate_files(entries: List[str]):
+        def process_entries(entries: List[str]):
             if all(os.path.isdir(p) for p in entries):
                 tmp = []
                 dirs = entries
@@ -443,7 +443,7 @@ class Melter():
         for title, entries in duplicates.items():
             logging.info(f"Analyzing duplicates for {title}")
 
-            files_groups = analyze_duplicate_files(entries)
+            files_groups = process_entries(entries)
             single_output = len(files_groups) == 1
 
             for i, files in enumerate(files_groups):
