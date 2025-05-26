@@ -431,8 +431,11 @@ class Melter():
                 files_per_dir = []
                 dirs = entries
                 for dir_path in dirs:
-                    files = [os.path.join(dir_path, f) for f in os.listdir(dir_path)
-                            if os.path.isfile(os.path.join(dir_path, f))]
+                    files = [
+                        os.path.join(root, f)
+                        for root, _, filenames in os.walk(dir_path)
+                        for f in filenames
+                    ]
                     files.sort()
                     files_per_dir.append(files)
 
