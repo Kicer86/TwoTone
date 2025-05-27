@@ -552,7 +552,7 @@ class MeltTool(Tool):
 
         # global options
         parser.add_argument('-w', '--working-dir',
-                            help="Directory for temporary files. At some scenarios, `melt` can produce enormous number of temporary files "
+                            help="Directory for temporary files. At some scenarios, `melt` can produce enormous number of temporary files\n"
                                  "which can occupy up to 1GB per single video's minute.\n"
                                  "Consider using the fastest storage possible, but mind size of files.",
                             default=os.path.join(platformdirs.user_cache_dir(), "twotone", "melt"))
@@ -561,8 +561,9 @@ class MeltTool(Tool):
                             help="Directory for output files")
 
         parser.add_argument('-p', '--languages-priority',
-                            help='Comma separated list of two/three letter language codes. Order on the list defines order of audio and subtitle streams. '
-                                 'For example, for --languages-priority pl,de,en,fr all used subtitles and audio tracks will be ordered so polish goes as first, then german, english and french. '
+                            help='Comma separated list of two/three letter language codes. Order on the list defines order of audio and subtitle streams.\n'
+                                 'For example, for --languages-priority pl,de,en,fr all used subtitles and audio tracks will be\n'
+                                 'ordered so polish goes as first, then german, english and french.\n'
                                  'If there are subtitles in any other language, they will be append at the end in undefined order')
 
 
