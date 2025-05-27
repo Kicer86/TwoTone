@@ -15,7 +15,7 @@ from .tools import          \
 
 TOOLS = {
     "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file"),
-    "melt": (melt.MeltTool(), "[Not ready yet] Find same video files and combine them into one containg best of all copies."),
+    "melt": (melt.MeltTool(), "[BETA] Find same video files and combine them into one containg best of all copies."),
     "merge": (merge.MergeTool(), "Merge video files with corresponding subtitles into one MKV file"),
     "subtitles_fix": (subtitles_fixer.FixerTool(), "Fixes some specific issues with subtitles. Do not use until you are sure it will help for your problems."),
     "transcode": (transcode.TranscodeTool(), "Transcode videos from provided directory preserving quality."),
