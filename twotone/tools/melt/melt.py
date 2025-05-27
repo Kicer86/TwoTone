@@ -404,7 +404,7 @@ class Melter():
                 self.logger.info("Starting videos comparison to solve mismatching lenghts.")
                 # more than 100ms difference in lenght, perform content matching
                 with files.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd:
-                    pairMatcher = PairMatcher(mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
+                    pairMatcher = PairMatcher(self.interruption, mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
 
                     mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
                     output_file = os.path.join(self.wd, f"tmp_{file_name}.m4a")
@@ -461,6 +461,8 @@ class Melter():
             files_groups = process_entries(entries)
 
             for i, (files, output_name) in enumerate(files_groups):
+                self.interruption._check_for_stop()
+
                 streams = self._process_duplicates(files)
                 if not self.live_run:
                     continue

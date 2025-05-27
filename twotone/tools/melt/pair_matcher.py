@@ -11,12 +11,14 @@ from typing import Callable, Dict, List, Tuple
 from .debug_routines import DebugRoutines
 from .phash_cache import PhashCache
 from ..utils2 import files, image, video
+from .. import utils
 
 FramesInfo = Dict[int, Dict[str, str]]
 
 
 class PairMatcher:
-    def __init__(self, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger):
+    def __init__(self, interruption: utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger):
+        self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
         self.lhs_path = lhs_path
         self.rhs_path = rhs_path
@@ -631,6 +633,7 @@ class PairMatcher:
 
         prev_first, prev_last = None, None
         while True:
+            self.interruption._check_for_stop()
             # crop frames basing on matching ones
             lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self._crop_both_sets(
                 pairs_with_timestamps = matching_pairs,
