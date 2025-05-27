@@ -560,6 +560,11 @@ class MeltTool(Tool):
         parser.add_argument('-o', '--output-dir',
                             help="Directory for output files")
 
+        parser.add_argument('-p', '--languages-priority',
+                            help='Comma separated list of two/three letter language codes. Order on the list defines order of audio and subtitle streams.'
+                            'For example, for --languages-priority pl,de,en,fr all used subtitles and audio tracks will be ordered so polish goes as first, then german, english and french.'
+                            'If there are subtitles in any other language, they will be append at the end in undefined order')
+
 
     @override
     def run(self, args, no_dry_run: bool, logger: logging.Logger):
