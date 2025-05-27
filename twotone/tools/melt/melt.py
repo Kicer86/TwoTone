@@ -432,9 +432,10 @@ class Melter():
                 dirs = entries
                 for dir_path in dirs:
                     files = [
-                        os.path.join(root, f)
+                        os.path.join(root, file)
                         for root, _, filenames in os.walk(dir_path)
-                        for f in filenames
+                        for file in filenames
+                        if video.is_video(file)
                     ]
                     files.sort()
                     files_per_dir.append(files)
