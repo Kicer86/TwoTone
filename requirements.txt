@@ -4,6 +4,7 @@ opencv_python>=4.11.0.86
 overrides>=7.7.0
 Pillow>=11.2.1
 py3langid>=0.3.0
+pycountry>=24.6.1
 Requests>=2.32.3
 scipy>=1.15.3
 tqdm>=4.67.1
