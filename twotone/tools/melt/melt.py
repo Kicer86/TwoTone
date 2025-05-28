@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .. import utils
 from ..tool import Tool
-from ..utils2 import files, process, video
+from ..utils2 import files, languages, process, video
 from .debug_routines import DebugRoutines
 from .duplicates_source import DuplicatesSource
 from .jellyfin import JellyfinSource
@@ -47,7 +47,7 @@ def iter_starting_with(d: dict, start_key) -> Tuple:
 
 
 class Melter():
-    def __init__(self, logger: logging.Logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str):
+    def __init__(self, logger: logging.Logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = []):
         self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
@@ -55,6 +55,7 @@ class Melter():
         self.debug_it: int = 0
         self.wd = os.path.join(wd, str(os.getpid()))
         self.output = output
+        self.languages_priority = [languages.unify_lang(language) for language in languages_priority]
 
         os.makedirs(self.wd, exist_ok=True)
 
@@ -352,7 +353,7 @@ class Melter():
 
         return result
 
-    def _process_duplicates(self, duplicates: List[str]):
+    def _process_duplicates(self, duplicates: List[str]) -> List[Dict]:
         # analyze files in terms of quality and available content
         details = {file: video.get_video_data2(file) for file in duplicates}
 
@@ -366,7 +367,7 @@ class Melter():
 
         # pick audio streams
         forced_audio_language = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in details}
-        forced_audio_language = {path: lang for path, lang in forced_audio_language.items() if lang}
+        forced_audio_language = {path: languages.unify_lang(lang) for path, lang in forced_audio_language.items() if lang}
         audio_streams = self._pick_unique_streams(details, video_stream_path, "audio", ["language", "channels"], ["sample_rate"], override_languages=forced_audio_language)
 
         # pick subtitle streams
@@ -478,24 +479,44 @@ class Melter():
                 else:
                     generation_args = [input for path in streams for input in ("-i", path)]
 
-                    output_stream_indexes = defaultdict(int)
+                    # convert streams to list for later sorting by language
+                    streams_list = []
                     for file_index, (_, infos) in enumerate(streams.items()):
                         for info in infos:
                             stream_type = info["type"]
                             stream_index = info["index"]
-                            stream_t = stream_type[0]
-                            generation_args.extend(["-map", f"{file_index}:{stream_t}:{stream_index}"])
-
-                            output_stream_index = output_stream_indexes.get(stream_type, 0)
-
                             language = info.get("language", None)
-                            if language:
-                                generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language={language}"])
 
-                            if output_stream_index == 0:
-                                generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "default"])
+                            streams_list.append((stream_type, stream_index, file_index, language))
 
-                            output_stream_indexes[stream_type] = output_stream_index + 1
+                    # sort by language
+                    def get_index_for(l: [], value):
+                        try:
+                            return l.index(value)
+                        except ValueError:
+                            return len(l)
+
+                    priorities = self.languages_priority.copy()
+                    priorities.append(None)
+                    streams_list_sorted = sorted(streams_list, key=lambda stream: get_index_for(priorities, stream[3]))
+
+                    # generate map options
+                    output_stream_indexes = defaultdict(int)
+                    for stream in streams_list_sorted:
+                        stream_type, stream_index, file_index, language = stream
+                        stream_t = stream_type[0]
+
+                        generation_args.extend(["-map", f"{file_index}:{stream_t}:{stream_index}"])
+
+                        output_stream_index = output_stream_indexes.get(stream_type, 0)
+
+                        if language:
+                            generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language={language}"])
+
+                        if output_stream_index == 0:
+                            generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "default"])
+
+                        output_stream_indexes[stream_type] = output_stream_index + 1
 
                     generation_args.append("-c")
                     generation_args.append("copy")
@@ -608,10 +629,12 @@ class MeltTool(Tool):
                 if audio_lang:
                     data_source.add_metadata(path, "audio_lang", audio_lang)
 
+        languages_priority = args.languages_priority.split(",") if args.languages_priority else []
         melter = Melter(logger,
                         interruption,
                         data_source,
                         live_run = no_dry_run,
                         wd = args.working_dir,
-                        output = args.output_dir)
+                        output = args.output_dir,
+                        languages_priority = languages_priority)
         melter.melt()

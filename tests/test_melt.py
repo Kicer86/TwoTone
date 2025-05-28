@@ -226,7 +226,38 @@ class MeltingTest(unittest.TestCase):
 
                 self.assertEqual(len(output_file_data["audio"]), 2)
                 self.assertEqual(output_file_data["audio"][0]["language"], "nor")
-                self.assertEqual(output_file_data["audio"][1]["language"], "ger")
+                self.assertEqual(output_file_data["audio"][1]["language"], "deu")
+
+
+    def test_languages_prioritization(self):
+        with WorkingDirectoryForTest() as td:
+            interruption = utils.InterruptibleProcess()
+            duplicates = StaticSource(interruption)
+            langs = ["pol", "en", "ger", "ja", "nor"]
+
+            for i in range(5):
+                file = add_test_media("Grass - 66810.mp4", td.path, suffixes = [f"v{i}"])[0]
+                duplicates.add_entry("Grass", file)
+                duplicates.add_metadata(file, "audio_lang", langs[i])
+
+            output_dir = os.path.join(td.path, "output")
+            os.makedirs(output_dir)
+
+            melter = Melter(interruption, duplicates, live_run = True, logger = logging.getLogger("Melter"), wd = td.path, output = output_dir, languages_priority = ["de", "jpn", "eng", "no", "pl"])
+            melter.melt()
+
+            # validate order
+            output_file_hash = hashes(output_dir)
+            self.assertEqual(len(output_file_hash), 1)
+
+            output_file = list(output_file_hash)[0]
+            output_file_data = video.get_video_data2(output_file)
+            self.assertEqual(output_file_data["audio"][0]["language"], "deu")
+            self.assertEqual(output_file_data["audio"][1]["language"], "jpn")
+            self.assertEqual(output_file_data["audio"][2]["language"], "eng")
+            self.assertEqual(output_file_data["audio"][3]["language"], "nor")
+            self.assertEqual(output_file_data["audio"][4]["language"], "pol")
+
 
 
 if __name__ == '__main__':
