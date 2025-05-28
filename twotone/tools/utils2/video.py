@@ -233,7 +233,7 @@ def get_video_data2(path: str) -> Dict:
         else:
             language = None
 
-        return languages.unify_lang(language)
+        return languages.unify_lang(language) if language else None
 
     output_json = get_video_full_info(path)
 
