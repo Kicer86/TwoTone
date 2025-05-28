@@ -208,7 +208,7 @@ class MeltingTest(unittest.TestCase):
             output_dir = os.path.join(td.path, "output")
             os.makedirs(output_dir)
 
-            melter = Melter(interruption, duplicates, live_run = True, logger = logging.getLogger("Melter"), wd = td.path, output = output_dir)
+            melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = td.path, output = output_dir)
             melter.melt()
 
             # validate output
@@ -243,7 +243,7 @@ class MeltingTest(unittest.TestCase):
             output_dir = os.path.join(td.path, "output")
             os.makedirs(output_dir)
 
-            melter = Melter(interruption, duplicates, live_run = True, logger = logging.getLogger("Melter"), wd = td.path, output = output_dir, languages_priority = ["de", "jpn", "eng", "no", "pl"])
+            melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = td.path, output = output_dir, languages_priority = ["de", "jpn", "eng", "no", "pl"])
             melter.melt()
 
             # validate order
