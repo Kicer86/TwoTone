@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Union, Tuple
 
-from . import process
+from . import languages, process
 from .generic import time_to_ms
 
 
@@ -233,7 +233,7 @@ def get_video_data2(path: str) -> Dict:
         else:
             language = None
 
-        return language
+        return languages.unify_lang(language)
 
     output_json = get_video_full_info(path)
 
