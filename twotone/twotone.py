@@ -40,6 +40,9 @@ def execute(argv):
     parser.add_argument("--verbose",
                         action="store_true",
                         help="Enable verbose output")
+    parser.add_argument("--quiet",
+                        action="store_true",
+                        help="Disable all output")
     parser.add_argument("--no-dry-run", "-r",
                         action='store_true',
                         default=False,
@@ -64,6 +67,9 @@ def execute(argv):
 
     if args.verbose:
         logger.setLevel(logging.DEBUG)
+
+    if args.quiet:
+        logger.setLevel(logging.CRITICAL)
 
     if args.tool in TOOLS:
         tool = TOOLS[args.tool][1]

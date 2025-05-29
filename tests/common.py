@@ -121,4 +121,5 @@ def generate_microdvd_subtitles(path: str, length: int, fps: float = 60):
 
 
 def run_twotone(tool: str, tool_options = [], global_options = []):
+    global_options.append("--quiet")
     twotone.execute([*global_options, tool, *tool_options])
