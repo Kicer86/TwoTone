@@ -1,3 +1,9 @@
 faust_cchardet>=2.1.19
+numpy>=2.2.6
+opencv_python>=4.11.0.86
+overrides>=7.7.0
+Pillow>=11.2.1
 py3langid>=0.3.0
+Requests>=2.32.3
+scipy>=1.15.3
 tqdm>=4.67.1
