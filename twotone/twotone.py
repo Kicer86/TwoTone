@@ -3,6 +3,8 @@ import argparse
 import logging
 import sys
 
+from overrides import override
+
 from .tools import          \
     concatenate,            \
     melt,                   \
@@ -19,7 +21,7 @@ TOOLS = {
 }
 
 
-class CustomFormatter(argparse.HelpFormatter):
+class CustomParserFormatter(argparse.HelpFormatter):
     def _split_lines(self, text, width):
         return text.splitlines()
 
@@ -32,12 +34,15 @@ def execute(argv):
                     'Please mind that ALL source files will be modified, so consider making a backup. '
                     'It is safe to stop any tool with ctrl+c - it will quit '
                     'gracefully in a while.',
-        formatter_class=CustomFormatter
+        formatter_class=CustomParserFormatter
     )
 
     parser.add_argument("--verbose",
                         action="store_true",
                         help="Enable verbose output")
+    parser.add_argument("--quiet",
+                        action="store_true",
+                        help="Disable all output")
     parser.add_argument("--no-dry-run", "-r",
                         action='store_true',
                         default=False,
@@ -48,7 +53,7 @@ def execute(argv):
         tool_parser = subparsers.add_parser(
             tool_name,
             help=desc,
-            formatter_class=CustomFormatter
+            formatter_class=CustomParserFormatter
         )
         setup_parser(tool_parser)
 
@@ -58,19 +63,52 @@ def execute(argv):
         parser.print_help()
         sys.exit(1)
 
+    logger = logging.getLogger("TwoTone")
+
     if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+        logger.setLevel(logging.DEBUG)
+
+    if args.quiet:
+        logger.setLevel(logging.CRITICAL)
 
     if args.tool in TOOLS:
         tool = TOOLS[args.tool][1]
-        tool(args)
+        tool(args, logger.getChild(args.tool))
 
     else:
         logging.error(f"Error: Unknown tool {args.tool}")
         sys.exit(1)
 
+
+class CustomLoggerFormatter(logging.Formatter):
+    grey = "\x1b[38;20m"
+    yellow = "\x1b[33;20m"
+    red = "\x1b[31;20m"
+    bold_red = "\x1b[31;1m"
+    reset = "\x1b[0m"
+    format = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
+
+    FORMATS = {
+        logging.DEBUG: grey + format + reset,
+        logging.INFO: grey + format + reset,
+        logging.WARNING: yellow + format + reset,
+        logging.ERROR: red + format + reset,
+        logging.CRITICAL: bold_red + format + reset
+    }
+
+    @override
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno)
+        formatter = logging.Formatter(log_fmt)
+        return formatter.format(record)
+
+
 def main():
-    logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(CustomLoggerFormatter())
+
+    logging.basicConfig(level=logging.INFO, handlers=[console_handler])
+
     try:
         execute(sys.argv[1:])
     except RuntimeError as e:
