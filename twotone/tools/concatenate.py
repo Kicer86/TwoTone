@@ -11,16 +11,17 @@ from . import utils
 
 
 class Concatenate(utils.InterruptibleProcess):
-    def __init__(self, live_run: bool):
+    def __init__(self, live_run: bool, logger: logging.Logger):
         super().__init__()
 
         self.live_run = live_run
+        self.logger = logger
 
     def run(self, path: str):
-        logging.info(f"Collecting video files from path {path}")
+        self.logger.info(f"Collecting video files from path {path}")
         video_files = utils.collect_video_files(path, self)
 
-        logging.info("Finding splitted videos")
+        self.logger.info("Finding splitted videos")
         parts_regex = re.compile("(.*[^0-9a-z]+)(cd\\d+)([^0-9a-z]+.*)", re.IGNORECASE)
 
         splitted = []
@@ -28,9 +29,9 @@ class Concatenate(utils.InterruptibleProcess):
             if parts_regex.match(video_file):
                 splitted.append(video_file)
             else:
-                logging.debug(f"File {video_file} does not match pattern")
+                self.logger.debug(f"File {video_file} does not match pattern")
 
-        logging.info("Matching videos")
+        self.logger.info("Matching videos")
         matched_videos = defaultdict(list)
         for video in splitted:
             match = parts_regex.search(video)
@@ -50,7 +51,7 @@ class Concatenate(utils.InterruptibleProcess):
             partNo = int(part[2:])                                                                              # drop 'CD'
             matched_videos[name_without_part_number].append((video, partNo))
 
-        logging.info("Processing groups")
+        self.logger.info("Processing groups")
         warnings = False
         sorted_videos = {}
         for common_name, details in matched_videos.items():
@@ -65,32 +66,32 @@ class Concatenate(utils.InterruptibleProcess):
                 parts.append(partNo)
 
             if len(parts) < 2:
-                logging.warning(f"There are less than two parts for video represented under a common name: {common_name}")
+                self.logger.warning(f"There are less than two parts for video represented under a common name: {common_name}")
                 warnings = True
 
             # expect parts to be numbered from 1 to N
             for i, value in enumerate(parts):
                 if i + 1 != value:
-                    logging.warning(f"There is a mismatch in CD numbers for a group of files represented under a common name: {common_name}")
+                    self.logger.warning(f"There is a mismatch in CD numbers for a group of files represented under a common name: {common_name}")
                     warnings = True
 
         if warnings:
-            logging.error("Fix above warnings and try again")
+            self.logger.error("Fix above warnings and try again")
             return
 
-        logging.info("Files to be concatenated (in given order):")
+        self.logger.info("Files to be concatenated (in given order):")
         for common_name, details in sorted_videos.items():
             paths = [path for path, _ in details]
             common_path = os.path.commonpath(paths)
-            logging.info(f"Files from {common_path}:")
+            self.logger.info(f"Files from {common_path}:")
 
             cl = len(common_path) + 1
             for path in paths:
-                logging.info(f"\t{path[cl:]}")
+                self.logger.info(f"\t{path[cl:]}")
 
-            logging.info(f"\t->{common_name}")
+            self.logger.info(f"\t->{common_name}")
 
-        logging.info("Starting concatenation")
+        self.logger.info("Starting concatenation")
         with logging_redirect_tqdm():
             for output, details in tqdm(sorted_videos.items(), desc="Concatenating", unit="movie", **utils.get_tqdm_defaults()):
                 self._check_for_stop()
@@ -104,20 +105,20 @@ class Concatenate(utils.InterruptibleProcess):
                 with utils.TempFileManager("\n".join(input_file_content), "txt") as input_file:
                     ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c", "copy", output]
 
-                    logging.info(f"Concatenating files into {output} file")
+                    self.logger.info(f"Concatenating files into {output} file")
                     if self.live_run:
                         status = utils.start_process("ffmpeg", ffmpeg_args)
                         if status.returncode == 0:
                             for input_file in input_files:
                                 os.remove(input_file)
                         else:
-                            logging.error(f"Problems with concatenation, skipping file {output}")
-                            logging.debug(status.stdout)
-                            logging.debug(status.stderr)
+                            self.logger.error(f"Problems with concatenation, skipping file {output}")
+                            self.logger.debug(status.stdout)
+                            self.logger.debug(status.stderr)
                             if os.path.exists(output):
                                 os.remove(output)
                     else:
-                        logging.info("Dry run, skipping concatenation")
+                        self.logger.info("Dry run, skipping concatenation")
 
 
 def setup_parser(parser: argparse.ArgumentParser):
@@ -134,6 +135,6 @@ def setup_parser(parser: argparse.ArgumentParser):
                         help='Path with videos to concatenate.')
 
 
-def run(args):
-    concatenate = Concatenate(args.no_dry_run)
+def run(args, logger: logging.Logger):
+    concatenate = Concatenate(args.no_dry_run, logger)
     concatenate.run(args.videos_path[0])

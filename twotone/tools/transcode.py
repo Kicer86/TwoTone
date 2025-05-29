@@ -14,8 +14,9 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 from . import utils
 
 class Transcoder(utils.InterruptibleProcess):
-    def __init__(self, live_run: bool = False, target_ssim: float = 0.98, codec: str = "libx265"):
+    def __init__(self, logger: logging.Logger, live_run: bool = False, target_ssim: float = 0.98, codec: str = "libx265"):
         super().__init__()
+        self.logger = logger
         self.live_run = live_run
         self.target_ssim = target_ssim
         self.codec = codec
@@ -52,7 +53,7 @@ class Transcoder(utils.InterruptibleProcess):
             try:
                 return float(ssim_value)
             except ValueError:
-                logging.error(f"Failed to parse SSIM value: {ssim_value}")
+                self.logger.error(f"Failed to parse SSIM value: {ssim_value}")
                 return None
 
         return None
@@ -233,7 +234,7 @@ class Transcoder(utils.InterruptibleProcess):
         """Perform the final transcoding with the best CRF using the determined extra_params."""
         _, basename, ext = utils.split_path(input_file)
 
-        logging.info(f"Starting final transcoding with CRF: {crf}")
+        self.logger.info(f"Starting final transcoding with CRF: {crf}")
         final_output_file = f"{basename}.temp.{ext}"
         self._transcode_video(input_file, final_output_file, crf, "veryslow", audio_codec=["-c:a", "copy"], output_params = ["-vsync", "passthrough"], show_progress=True)
 
@@ -246,14 +247,14 @@ class Transcoder(utils.InterruptibleProcess):
 
         try:
             if final_quality < self.target_ssim:
-                logging.warning(
+                self.logger.warning(
                     f"Final CRF: {crf}, SSIM: {final_quality}. "
                     f"Final transcode resulted in lower SSIM than requested: {final_quality} < {self.target_ssim}"
                 )
                 raise ValueError()
 
             if final_size > original_size:
-                logging.warning(
+                self.logger.warning(
                     f"Final CRF: {crf}, SSIM: {final_quality}. "
                     f"Encoded file is larger than the original. Keeping the original file."
                 )
@@ -267,7 +268,7 @@ class Transcoder(utils.InterruptibleProcess):
             except OSError:
                 shutil.move(final_output_file, input_file)
 
-            logging.info(
+            self.logger.info(
                 f"Final CRF: {crf}, SSIM: {final_quality}, "
                 f"encoded Size: {final_size} bytes, "
                 f"size reduced by: {original_size - final_size} bytes "
@@ -293,7 +294,7 @@ class Transcoder(utils.InterruptibleProcess):
         with tempfile.TemporaryDirectory() as wd_dir:
             segment_files = []
             if allow_segments and duration > 30:
-                logging.info(f"Picking segments from {input_file}")
+                self.logger.info(f"Picking segments from {input_file}")
                 segments = self._select_scenes(input_file)
                 if len(segments) < 2:
                     segments = self._select_segments(input_file)
@@ -301,11 +302,11 @@ class Transcoder(utils.InterruptibleProcess):
                 segment_files = self._extract_segments(
                     input_file, segments, wd_dir)
 
-                logging.info(f"Starting CRF bisection for {input_file} "
+                self.logger.info(f"Starting CRF bisection for {input_file} "
                              f"with veryfast preset using {len(segment_files)} segments")
             else:
                 segment_files = [input_file]
-                logging.info(f"Starting CRF bisection for {input_file} with veryfast preset using whole file")
+                self.logger.info(f"Starting CRF bisection for {input_file} with veryfast preset using whole file")
 
             def evaluate_crf(mid_crf):
                 self._check_for_stop()
@@ -319,7 +320,7 @@ class Transcoder(utils.InterruptibleProcess):
                 self._for_segments(segment_files, get_quality, "SSIM calculation", "scene")
 
                 avg_quality = sum(qualities) / len(qualities) if qualities else 0
-                logging.info(f"CRF: {mid_crf}, Average Quality (SSIM): {avg_quality}")
+                self.logger.info(f"CRF: {mid_crf}, Average Quality (SSIM): {avg_quality}")
 
                 return avg_quality
 
@@ -334,29 +335,29 @@ class Transcoder(utils.InterruptibleProcess):
             best_crf, best_quality = self._bisection_search(evaluate_crf, min_value = crf_min, max_value = crf_max, target_condition=lambda avg_quality: avg_quality >= self.target_ssim)
 
             if best_crf is not None and best_quality is not None:
-                logging.info(f"Finished CRF bisection. Optimal CRF: {best_crf} with quality: {best_quality}")
+                self.logger.info(f"Finished CRF bisection. Optimal CRF: {best_crf} with quality: {best_quality}")
             else:
-                logging.warning(f"Finished CRF bisection. Could not find CRF matching desired quality ({self.target_ssim}).")
+                self.logger.warning(f"Finished CRF bisection. Could not find CRF matching desired quality ({self.target_ssim}).")
             return best_crf
 
 
     def transcode(self, directory: str):
-        logging.info(f"Starting video transcoding with {self.codec}. Target SSIM: {self.target_ssim}")
+        self.logger.info(f"Starting video transcoding with {self.codec}. Target SSIM: {self.target_ssim}")
         video_files = self._find_video_files(directory)
 
         for file in video_files:
             self._check_for_stop()
-            logging.info(f"Processing {file}")
+            self.logger.info(f"Processing {file}")
             best_crf = self.find_optimal_crf(file)
             if best_crf is not None and self.live_run:
                 # increase crf by one as veryslow preset will be used, so result should be above requested quality anyway
                 self._final_transcode(file, best_crf + 1)
             elif not self.live_run:
-                logging.info(f"Dry run. Skipping final transcoding step.")
+                self.logger.info(f"Dry run. Skipping final transcoding step.")
 
-            logging.info(f"Finished processing {file}")
+            self.logger.info(f"Finished processing {file}")
 
-        logging.info("Video processing completed")
+        self.logger.info("Video processing completed")
 
 
 def setup_parser(parser: argparse.ArgumentParser):
@@ -379,9 +380,9 @@ def setup_parser(parser: argparse.ArgumentParser):
                         help='Path with videos to transcode.')
 
 
-def run(args):
+def run(args, logger):
     if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+        logger.getLogger().setLevel(logger.DEBUG)
 
-    transcoder = Transcoder(live_run = args.no_dry_run, target_ssim = args.ssim)
+    transcoder = Transcoder(logger, live_run = args.no_dry_run, target_ssim = args.ssim)
     transcoder.transcode(args.videos_path[0])

@@ -20,8 +20,9 @@ work = True
 
 class Merge(utils.InterruptibleProcess):
 
-    def __init__(self, dry_run: bool, language: str, lang_priority: str):
+    def __init__(self, logger: logging.Logger, dry_run: bool, language: str, lang_priority: str):
         super().__init__()
+        self.logger = logger
         self.dry_run = dry_run
         self.language = language
         self.lang_priority = [] if not lang_priority or lang_priority == "" else lang_priority.split(",")
@@ -74,7 +75,7 @@ class Merge(utils.InterruptibleProcess):
 
         if len(subtitles) > 0:
             subtitles_str = '\n'.join(subtitles)
-            logging.warning(f"When matching videos with subtitles in {path}, given subtitles were not matched to any video: {subtitles_str}")
+            self.logger.warning(f"When matching videos with subtitles in {path}, given subtitles were not matched to any video: {subtitles_str}")
 
         return matches
 
@@ -179,7 +180,7 @@ class Merge(utils.InterruptibleProcess):
         return result
 
     def _merge(self, input_video: str, subtitles: [utils.SubtitleFile]):
-        logging.info(f"Merging video file: {input_video} with subtitles:")
+        self.logger.info(f"Merging video file: {input_video} with subtitles:")
 
         video_dir, video_name, video_extension = utils.split_path(input_video)
         output_video = video_dir + "/" + video_name + "." + "mkv"
@@ -200,7 +201,7 @@ class Merge(utils.InterruptibleProcess):
         with tempfile.TemporaryDirectory() as temporary_subtitles_dir:
             prepared_subtitles = []
             for subtitle in sorted_subtitles:
-                logging.info(f"\t[{subtitle.language}]: {subtitle.path}")
+                self.logger.info(f"\t[{subtitle.language}]: {subtitle.path}")
                 input_files.append(subtitle.path)
 
                 # Subtitles are buggy sometimes, use ffmpeg to fix them.
@@ -211,7 +212,7 @@ class Merge(utils.InterruptibleProcess):
                 prepared_subtitles.append(converted_subtitle)
 
             # perform
-            logging.debug("\tMerge in progress...")
+            self.logger.debug("\tMerge in progress...")
             if not self.dry_run:
                 utils.generate_mkv(input_video=input_video, output_path=temporary_output_video, subtitles=prepared_subtitles)
 
@@ -222,10 +223,10 @@ class Merge(utils.InterruptibleProcess):
                 # rename final file to a proper one
                 shutil.move(temporary_output_video, output_video)
 
-        logging.debug("\tDone")
+        self.logger.debug("\tDone")
 
     def _process_single_video(self, video_file: str) -> Tuple[str, List[utils.SubtitleFile]]:
-        logging.debug(f"Analyzing subtitles for a single video: {video_file}")
+        self.logger.debug(f"Analyzing subtitles for a single video: {video_file}")
         subtitles = self._aggressive_subtitle_search(video_file)
 
         if len(subtitles) == 0:
@@ -237,12 +238,12 @@ class Merge(utils.InterruptibleProcess):
         """
             Function launches matching for videos in subtitles in directory with many videos
         """
-        logging.debug(f"Analyzing subtitles for videos in: {dir_path}")
+        self.logger.debug(f"Analyzing subtitles for videos in: {dir_path}")
         return self._directory_subtitle_matcher(dir_path)
 
 
     def _process_dir(self, path: str) -> Dict[str, List[utils.SubtitleFile]]:
-        logging.debug(f"Finding videos in {path}")
+        self.logger.debug(f"Finding videos in {path}")
         videos_and_subtitles = {}
 
         for cd, _, files in os.walk(path, followlinks = True):
@@ -259,7 +260,7 @@ class Merge(utils.InterruptibleProcess):
             # this is a cumbersome situation so just don't allow it
             unique_names = set(Path(video).stem for video in video_files)
             if len(unique_names) != len(video_files):
-                logging.warning(f"Two video files with the same name found in {cd}. This is not supported, skipping whole directory.")
+                self.logger.warning(f"Two video files with the same name found in {cd}. This is not supported, skipping whole directory.")
                 continue
 
             videos = len(video_files)
@@ -278,14 +279,14 @@ class Merge(utils.InterruptibleProcess):
 
 
     def process_dir(self, path: str):
-        logging.info(f"Looking for video and subtitle files in {path}")
+        self.logger.info(f"Looking for video and subtitle files in {path}")
         vas = self._process_dir(path)
 
-        logging.info(f"Found {len(vas)} videos with subtitles to merge")
+        self.logger.info(f"Found {len(vas)} videos with subtitles to merge")
         for video in vas:
-            logging.debug(video)
+            self.logger.debug(video)
 
-        logging.info("Starting merge")
+        self.logger.info("Starting merge")
         with logging_redirect_tqdm():
             for video, subtitles in tqdm(vas.items(), desc="Merging", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=utils.hide_progressbar()):
                 self._check_for_stop()
@@ -307,16 +308,17 @@ def setup_parser(parser: argparse.ArgumentParser):
                              'the end in undefined order')
 
 
-def run(args):
+def run(args, logger: logging.Logger):
     for tool in ["mkvmerge", "ffmpeg", "ffprobe"]:
         path = shutil.which(tool)
         if path is None:
             raise RuntimeError(f"{tool} not found in PATH")
         else:
-            logging.debug(f"{tool} path: {path}")
+            logger.debug(f"{tool} path: {path}")
 
-    logging.info("Searching for movie and subtitle files to be merged")
-    two_tone = Merge(dry_run=not args.no_dry_run,
-                       language=args.language,
-                       lang_priority=args.languages_priority)
+    logger.info("Searching for movie and subtitle files to be merged")
+    two_tone = Merge(logger,
+                     dry_run=not args.no_dry_run,
+                     language=args.language,
+                     lang_priority=args.languages_priority)
     two_tone.process_dir(args.videos_path[0])

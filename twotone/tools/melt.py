@@ -108,7 +108,8 @@ class JellyfinSource(DuplicatesSource):
 
 
 class Melter():
-    def __init__(self, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource):
+    def __init__(self, logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource):
+        self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
 
@@ -118,7 +119,7 @@ class Melter():
 
 
     def melt(self):
-        logging.info("Finding duplicates")
+        self.logger.info("Finding duplicates")
         duplicates = self.duplicates_source.collect_duplicates()
         self._process_duplicates(duplicates)
         print(json.dumps(duplicates, indent=4))
@@ -151,7 +152,7 @@ def setup_parser(parser: argparse.ArgumentParser):
                                      'In this case, use: --jellyfin-path-fix "/srv/videos","/mnt/shared_videos" to define the replacement pattern.')
 
 
-def run(args):
+def run(args, logger: logging.Logger):
     interruption = utils.InterruptibleProcess()
 
     data_source = None
@@ -166,5 +167,5 @@ def run(args):
                                      token=args.jellyfin_token,
                                      path_fix=path_fix)
 
-    melter = Melter(interruption, data_source)
+    melter = Melter(logger, interruption, data_source)
     melter.melt()
