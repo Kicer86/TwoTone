@@ -67,7 +67,7 @@ def execute(argv):
 
     if args.tool in TOOLS:
         tool = TOOLS[args.tool][1]
-        tool(args, logger)
+        tool(args, logger.getChild(args.tool))
 
     else:
         logging.error(f"Error: Unknown tool {args.tool}")
