@@ -3,8 +3,8 @@ import argparse
 import logging
 
 class Tool:
-    def setup_parser(parser: argparse.ArgumentParser):
+    def setup_parser(self, parser: argparse.ArgumentParser):
         pass
 
-    def run(args, logger: logging.Logger):
+    def run(self, args, no_dry_run: bool, logger: logging.Logger):
         pass

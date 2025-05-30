@@ -13,11 +13,11 @@ from .tool import Tool
 
 
 class Concatenate(utils.InterruptibleProcess):
-    def __init__(self, live_run: bool, logger: logging.Logger):
+    def __init__(self, logger: logging.Logger, live_run: bool):
         super().__init__()
 
-        self.live_run = live_run
         self.logger = logger
+        self.live_run = live_run
 
     def run(self, path: str):
         self.logger.info(f"Collecting video files from path {path}")
@@ -139,6 +139,6 @@ class ConcatenateTool(Tool):
                             help='Path with videos to concatenate.')
 
     @override
-    def run(self, args, logger: logging.Logger):
-        concatenate = Concatenate(args.no_dry_run, logger)
+    def run(self, args, no_dry_run, logger: logging.Logger):
+        concatenate = Concatenate(logger, no_dry_run)
         concatenate.run(args.videos_path[0])

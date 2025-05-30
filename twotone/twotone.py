@@ -73,7 +73,7 @@ def execute(argv):
 
     if args.tool in TOOLS:
         tool, _ = TOOLS[args.tool]
-        tool.run(args, logger.getChild(args.tool))
+        tool.run(args, no_dry_run = args.no_dry_run, logger = logger.getChild(args.tool))
     else:
         logging.error(f"Error: Unknown tool {args.tool}")
         sys.exit(1)

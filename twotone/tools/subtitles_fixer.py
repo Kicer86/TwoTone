@@ -210,7 +210,7 @@ class FixerTool(Tool):
                             help='Path with videos to analyze.')
 
     @override
-    def run(self, args, logger: logging.Logger):
+    def run(self, args, no_dry_run: bool, logger: logging.Logger):
         for tool in ["mkvmerge", "mkvextract", "ffprobe"]:
             path = shutil.which(tool)
             if path is None:
@@ -219,6 +219,6 @@ class FixerTool(Tool):
                 logging.debug(f"{tool} path: {path}")
 
         logger.info("Searching for broken files")
-        fixer = Fixer(logger, args.no_dry_run)
+        fixer = Fixer(logger, no_dry_run)
         fixer.process_dir(args.videos_path[0])
         logger.info("Done")
