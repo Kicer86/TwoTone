@@ -6,10 +6,12 @@ import re
 import shutil
 import sys
 import tempfile
+from overrides import override
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from . import utils
+from .tool import Tool
 
 
 class Fixer(utils.InterruptibleProcess):
@@ -200,21 +202,23 @@ class Fixer(utils.InterruptibleProcess):
         self._repair_videos(broken_videos)
 
 
-def setup_parser(parser: argparse.ArgumentParser):
-    parser.add_argument('videos_path',
-                        nargs=1,
-                        help='Path with videos to analyze.')
+class FixerTool(Tool):
+    @override
+    def setup_parser(self, parser: argparse.ArgumentParser):
+        parser.add_argument('videos_path',
+                            nargs=1,
+                            help='Path with videos to analyze.')
 
+    @override
+    def run(self, args, no_dry_run: bool, logger: logging.Logger):
+        for tool in ["mkvmerge", "mkvextract", "ffprobe"]:
+            path = shutil.which(tool)
+            if path is None:
+                raise RuntimeError(f"{tool} not found in PATH")
+            else:
+                logging.debug(f"{tool} path: {path}")
 
-def run(args, logger: logging.Logger):
-    for tool in ["mkvmerge", "mkvextract", "ffprobe"]:
-        path = shutil.which(tool)
-        if path is None:
-            raise RuntimeError(f"{tool} not found in PATH")
-        else:
-            logger.debug(f"{tool} path: {path}")
-
-    logger.info("Searching for broken files")
-    fixer = Fixer(logger, args.no_dry_run)
-    fixer.process_dir(args.videos_path[0])
-    logger.info("Done")
+        logger.info("Searching for broken files")
+        fixer = Fixer(logger, no_dry_run)
+        fixer.process_dir(args.videos_path[0])
+        logger.info("Done")

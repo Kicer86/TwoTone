@@ -13,11 +13,11 @@ from .tools import          \
     transcode
 
 TOOLS = {
-    "concatenate": (concatenate.setup_parser, concatenate.run, "Concatenate multifile movies into one file"),
-    "melt": (melt.setup_parser, melt.run, "[Not ready yet] Find same video files and combine them into one containg best of all copies."),
-    "merge": (merge.setup_parser, merge.run, "Merge video files with corresponding subtitles into one MKV file"),
-    "subtitles_fix": (subtitles_fixer.setup_parser, subtitles_fixer.run, "Fixes some specific issues with subtitles. Do not use until you are sure it will help for your problems."),
-    "transcode": (transcode.setup_parser, transcode.run, "Transcode videos from provided directory preserving quality."),
+    "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file"),
+    "melt": (melt.MeltTool(), "[Not ready yet] Find same video files and combine them into one containg best of all copies."),
+    "merge": (merge.MergeTool(), "Merge video files with corresponding subtitles into one MKV file"),
+    "subtitles_fix": (subtitles_fixer.FixerTool(), "Fixes some specific issues with subtitles. Do not use until you are sure it will help for your problems."),
+    "transcode": (transcode.TranscodeTool(), "Transcode videos from provided directory preserving quality."),
 }
 
 
@@ -49,13 +49,13 @@ def execute(argv):
                         help='Perform actual operation.')
     subparsers = parser.add_subparsers(dest="tool", help="Available tools:")
 
-    for tool_name, (setup_parser, _, desc) in TOOLS.items():
+    for tool_name, (tool, desc) in TOOLS.items():
         tool_parser = subparsers.add_parser(
             tool_name,
             help=desc,
             formatter_class=CustomParserFormatter
         )
-        setup_parser(tool_parser)
+        tool.setup_parser(tool_parser)
 
     args = parser.parse_args(args = argv)
 
@@ -72,9 +72,8 @@ def execute(argv):
         logger.setLevel(logging.CRITICAL)
 
     if args.tool in TOOLS:
-        tool = TOOLS[args.tool][1]
-        tool(args, logger.getChild(args.tool))
-
+        tool, _ = TOOLS[args.tool]
+        tool.run(args, no_dry_run = args.no_dry_run, logger = logger.getChild(args.tool))
     else:
         logging.error(f"Error: Unknown tool {args.tool}")
         sys.exit(1)

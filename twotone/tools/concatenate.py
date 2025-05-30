@@ -4,18 +4,20 @@ import logging
 import os
 import re
 from collections import defaultdict
+from overrides import override
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from . import utils
+from .tool import Tool
 
 
 class Concatenate(utils.InterruptibleProcess):
-    def __init__(self, live_run: bool, logger: logging.Logger):
+    def __init__(self, logger: logging.Logger, live_run: bool):
         super().__init__()
 
-        self.live_run = live_run
         self.logger = logger
+        self.live_run = live_run
 
     def run(self, path: str):
         self.logger.info(f"Collecting video files from path {path}")
@@ -121,20 +123,22 @@ class Concatenate(utils.InterruptibleProcess):
                         self.logger.info("Dry run, skipping concatenation")
 
 
-def setup_parser(parser: argparse.ArgumentParser):
-    parser.description = (
-        "Concatenate is a tool for concatenating video files splitted into many files into one.\n"
-        "For example if you have movie consisting of two files: movie-cd1.avi and movie-cd2.avi\n"
-        "then 'concatenate' tool will glue them into one file 'movie.avi'.\n"
-        "If your files come with subtitle files, you may want to use 'merge' tool first\n"
-        "to merge video files with corresponding subtitle files.\n"
-        "Otherwise you will end up with one video file and two subtitle files for cd1 and cd2 which will be useless now"
-    )
-    parser.add_argument('videos_path',
-                        nargs=1,
-                        help='Path with videos to concatenate.')
+class ConcatenateTool(Tool):
+    @override
+    def setup_parser(self, parser: argparse.ArgumentParser):
+        parser.description = (
+            "Concatenate is a tool for concatenating video files splitted into many files into one.\n"
+            "For example if you have movie consisting of two files: movie-cd1.avi and movie-cd2.avi\n"
+            "then 'concatenate' tool will glue them into one file 'movie.avi'.\n"
+            "If your files come with subtitle files, you may want to use 'merge' tool first\n"
+            "to merge video files with corresponding subtitle files.\n"
+            "Otherwise you will end up with one video file and two subtitle files for cd1 and cd2 which will be useless now"
+        )
+        parser.add_argument('videos_path',
+                            nargs=1,
+                            help='Path with videos to concatenate.')
 
-
-def run(args, logger: logging.Logger):
-    concatenate = Concatenate(args.no_dry_run, logger)
-    concatenate.run(args.videos_path[0])
+    @override
+    def run(self, args, no_dry_run, logger: logging.Logger):
+        concatenate = Concatenate(logger, no_dry_run)
+        concatenate.run(args.videos_path[0])
