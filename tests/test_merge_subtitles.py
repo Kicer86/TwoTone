@@ -6,6 +6,7 @@ import subprocess
 import unittest
 
 import twotone.tools.utils as utils
+from twotone.tools.utils2 import files
 from common import WorkingDirectoryForTest, list_files, add_test_media, hashes, run_twotone
 
 default_video_set = [
@@ -31,7 +32,7 @@ def get_default_media_set_regex():
         video_escaped = re.escape(video)
         media.append(video_escaped)
 
-        subtitle = utils.split_path(video)[1] + ".srt"
+        subtitle = files.split_path(video)[1] + ".srt"
         subtitle_escaped = re.escape(subtitle)
         media.append(subtitle_escaped)
 

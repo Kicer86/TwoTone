@@ -1,7 +1,6 @@
 
 import argparse
 import glob
-import py3langid as langid
 import logging
 import os
 import shutil
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from . import utils
+from twotone.tools.utils2 import files
 
 
 work = True
@@ -28,10 +28,9 @@ class Merge(utils.InterruptibleProcess):
         self.lang_priority = [] if not lang_priority or lang_priority == "" else lang_priority.split(",")
 
     def _build_subtitle_from_path(self, path: str) -> utils.SubtitleFile:
-        encoding = utils.file_encoding(path)
-        language = self.language if self.language != "auto" else self._guess_language(path, encoding)
+        language = None if self.language == "auto" else self.language
 
-        return utils.SubtitleFile(path, language, encoding)
+        return utils.build_subtitle_from_path(path, language)
 
     def _directory_subtitle_matcher(self, dir_path: str) -> Dict[str, List[utils.SubtitleFile]]:
         """
@@ -56,12 +55,12 @@ class Merge(utils.InterruptibleProcess):
         subtitles = sorted(subtitles, reverse = True, key = lambda k: len(k))
 
         for video in videos:
-            video_parts = utils.split_path(video)
+            video_parts = files.split_path(video)
             video_file_name = video_parts[1]
 
             matching_subtitles = []
             for subtitle in subtitles:
-                subtitle_parts = utils.split_path(subtitle)
+                subtitle_parts = files.split_path(subtitle)
                 subtitle_file_name = subtitle_parts[1]
 
                 if subtitle_file_name.startswith(video_file_name):
@@ -168,21 +167,10 @@ class Merge(utils.InterruptibleProcess):
 
         return converted_subtitle
 
-    @staticmethod
-    def _guess_language(path: str, encoding: str) -> str:
-        result = ""
-
-        with open(path, "r", encoding=encoding) as sf:
-            content = sf.readlines()
-            content_joined = "".join(content)
-            result = langid.classify(content_joined)[0]
-
-        return result
-
     def _merge(self, input_video: str, subtitles: [utils.SubtitleFile]):
         self.logger.info(f"Merging video file: {input_video} with subtitles:")
 
-        video_dir, video_name, video_extension = utils.split_path(input_video)
+        video_dir, video_name, video_extension = files.split_path(input_video)
         output_video = video_dir + "/" + video_name + "." + "mkv"
         temporary_output_video = video_dir + "/_tt_merge_" + video_name + "." + "mkv"
 

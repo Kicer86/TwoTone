@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os.path
+import py3langid as langid
 import re
 import signal
 import subprocess
@@ -16,6 +17,9 @@ from pathlib import Path
 from typing import List
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
+
+from .utils2.process import start_process, raise_on_error
+from .utils2.generic import get_tqdm_defaults
 
 
 SubtitleFile = namedtuple("Subtitle", "path language encoding")
@@ -30,55 +34,6 @@ microdvd_time_pattern = re.compile("\\{[0-9]+\\}\\{[0-9]+\\}.*")
 subrip_time_pattern = re.compile(r'(\d+:\d{2}:\d{2},\d{3}) --> (\d+:\d{2}:\d{2},\d{3})')
 
 ffmpeg_default_fps = 23.976                      # constant taken from https://trac.ffmpeg.org/ticket/3287
-
-def get_tqdm_defaults():
-    return {
-    'leave': False,
-    'smoothing': 0.1,
-    'mininterval':.2,
-    'disable': hide_progressbar()
-}
-
-
-def start_process(process: str, args: [str], show_progress = False) -> ProcessResult:
-    command = [process]
-    command.extend(args)
-
-    logging.debug(f"Starting {process} with options: {' '.join(args)}")
-    sub_process = subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, bufsize=1, preexec_fn=os.setsid)
-
-    if show_progress:
-        if process == "ffmpeg":
-            index_of_i = args.index("-i")
-            input_file = args[index_of_i + 1]
-
-            if is_video(input_file):
-                progress_pattern = re.compile(r"frame= *(\d+)")
-                frames = get_video_frames_count(input_file)
-                with logging_redirect_tqdm(), \
-                     tqdm(desc="Processing video", unit="frame", total=frames, **get_tqdm_defaults()) as pbar:
-                    last_frame = 0
-                    for line in sub_process.stderr:
-                        line = line.strip()
-                        if "frame=" in line:
-                            match = progress_pattern.search(line)
-                            if match:
-                                current_frame = int(match.group(1))
-                                delta = current_frame - last_frame
-                                pbar.update(delta)
-                                last_frame = current_frame
-
-    stdout, stderr = sub_process.communicate()
-
-    logging.debug(f"Process finished with {sub_process.returncode}")
-
-    return ProcessResult(sub_process.returncode, stdout, stderr)
-
-
-def raise_on_error(status: ProcessResult):
-    if status.returncode != 0:
-        raise RuntimeError(f"Process exited with unexpected error:\n{status.stdout}\n{status.stderr}")
 
 
 def file_encoding(file: str) -> str:
@@ -155,6 +110,29 @@ def fps_str_to_float(fps: str) -> float:
     return eval(fps)
 
 
+def guess_language(path: str, encoding: str) -> str:
+    result = ""
+
+    with open(path, "r", encoding=encoding) as sf:
+        content = sf.readlines()
+        content_joined = "".join(content)
+        result = langid.classify(content_joined)[0]
+
+    return result
+
+
+def build_subtitle_from_path(path: str, language: str | None = "") -> SubtitleFile:
+    """
+        if language == None - use autodetection.
+                       Empty string - no language
+                       2/3 letter language code - use that language
+    """
+    encoding = file_encoding(path)
+    language = guess_language(path, encoding) if language is None else language
+
+    return SubtitleFile(path, language, encoding)
+
+
 def alter_subrip_subtitles_times(content: str, multiplier: float) -> str:
     def multiply_time(match):
         time_from, time_to = map(time_to_ms, match.groups())
@@ -189,7 +167,7 @@ def fix_subtitles_fps(input_path: str, output_path: str, subtitles_fps: float):
 
 
 def get_video_duration(video_file):
-    """Get the duration of a video in seconds."""
+    """Get the duration of a video in milliseconds."""
     result = start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
 
     try:
@@ -231,8 +209,10 @@ def get_video_full_info(path: str) -> str:
 
 def get_video_data(path: str) -> [VideoInfo]:
 
-    def get_length(stream):
-
+    def get_length(stream) -> int:
+        """
+            get lenght in milliseconds
+        """
         length = None
 
         if "tags" in stream:
@@ -244,7 +224,7 @@ def get_video_data(path: str) -> [VideoInfo]:
         if length is None:
             length = stream.get("duration", None)
             if length is not None:
-                length = float(length)
+                length = int(float(length) * 1000)
 
         return length
 
@@ -275,12 +255,6 @@ def get_video_data(path: str) -> [VideoInfo]:
             video_tracks.append(VideoTrack(fps=fps, length=length))
 
     return VideoInfo(video_tracks, subtitles, path)
-
-
-def split_path(path: str) -> (str, str, str):
-    info = Path(path)
-
-    return str(info.parent), info.stem, info.suffix[1:]
 
 
 def generate_mkv(input_video: str, output_path: str, subtitles: [SubtitleFile]):

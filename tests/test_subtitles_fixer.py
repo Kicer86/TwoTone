@@ -18,7 +18,7 @@ def create_broken_video_with_scaled_subtitle_timings(output_video_path: str, inp
         if abs(fps - utils.ffmpeg_default_fps) < 1:
             raise RuntimeError("source video is not suitable, has nearly default fps")
 
-        length = default_video_track.length
+        length = default_video_track.length / 1000
 
         subtitle_path = f"{subtitle_dir}/sub.sub"
         generate_microdvd_subtitles(subtitle_path, int(length), fps)
