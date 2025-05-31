@@ -19,7 +19,7 @@ from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .utils2.process import start_process, raise_on_error
-from .utils2.generic import get_tqdm_defaults
+from .utils2.generic import fps_str_to_float, get_tqdm_defaults, ms_to_time, time_to_ms
 
 
 SubtitleFile = namedtuple("Subtitle", "path language encoding")
@@ -86,28 +86,6 @@ def is_subtitle_microdvd(subtitle: Subtitle) -> bool:
             return True
 
     return False
-
-
-def time_to_ms(time_str: str) -> int:
-    """ Convert time string 'HH:MM:SS,SSS' to milliseconds """
-    h, m, s, ms = re.split(r'[:.,]', time_str)
-    return (int(h) * 3600 + int(m) * 60 + int(s)) * 1000 + int(ms[:3])
-
-
-def time_to_s(time: str):
-    return time_to_ms(time) / 1000
-
-
-def ms_to_time(ms: int) -> str:
-    """ Convert milliseconds to time string 'HH:MM:SS,SSS' """
-    h, remainder = divmod(ms, 60*60*1000)
-    m, remainder = divmod(remainder, 60*1000)
-    s, ms = divmod(remainder, 1000)
-    return f"{int(h):02}:{int(m):02}:{int(s):02},{int(ms):03}"
-
-
-def fps_str_to_float(fps: str) -> float:
-    return eval(fps)
 
 
 def guess_language(path: str, encoding: str) -> str:
@@ -257,7 +235,7 @@ def get_video_data(path: str) -> [VideoInfo]:
     return VideoInfo(video_tracks, subtitles, path)
 
 
-def generate_mkv(input_video: str, output_path: str, subtitles: [SubtitleFile]):
+def generate_mkv(output_path: str, input_video: str, subtitles: [SubtitleFile]):
     # output
     options = ["-o", output_path]
 

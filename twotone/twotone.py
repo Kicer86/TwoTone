@@ -22,16 +22,25 @@ TOOLS = {
 
 
 class CustomParserFormatter(argparse.HelpFormatter):
+    @override
     def _split_lines(self, text, width):
         return text.splitlines()
+
+    @override
+    def _get_help_string(self, action):
+        help_str = action.help
+        if '%(default)' not in help_str:
+            if action.default is not argparse.SUPPRESS and action.default is not None:
+                help_str += f' (default: {action.default})'
+        return help_str
 
 def execute(argv):
     parser = argparse.ArgumentParser(
         prog = 'twotone',
         description='Videos manipulation toolkit. '
-                    'By default all tools do nothing but showing what would be done. '
-                    'Use --no-dry-run option to perform actual operation. '
-                    'Please mind that ALL source files will be modified, so consider making a backup. '
+                    'By default all tools do nothing but showing what would be done.\n'
+                    'Use --no-dry-run option to perform actual operation.\n'
+                    'Please mind that ALL source files will be modified in place, so consider making a backup.\n'
                     'It is safe to stop any tool with ctrl+c - it will quit '
                     'gracefully in a while.',
         formatter_class=CustomParserFormatter
