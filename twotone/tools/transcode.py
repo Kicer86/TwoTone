@@ -14,7 +14,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from . import utils
 from .tool import Tool
-from twotone.tools.utils2 import files
+from twotone.tools.utils2 import files, process, video
 
 
 class Transcoder(utils.InterruptibleProcess):
@@ -43,7 +43,7 @@ class Transcoder(utils.InterruptibleProcess):
             "-lavfi", "ssim", "-f", "null", "-"
         ]
 
-        result = utils.start_process("ffmpeg", args)
+        result = process.start_process("ffmpeg", args)
         ssim_line = [line for line in result.stderr.splitlines() if "All:" in line]
 
         if ssim_line:
@@ -79,7 +79,7 @@ class Transcoder(utils.InterruptibleProcess):
             output_file
         ]
 
-        utils.raise_on_error(utils.start_process("ffmpeg", args, show_progress=show_progress))
+        process.raise_on_error(process.start_process("ffmpeg", args, show_progress=show_progress))
 
 
     def _extract_segment(self, video_file, start_time, end_time, output_file):
@@ -128,7 +128,7 @@ class Transcoder(utils.InterruptibleProcess):
             "-vsync", "vfr", "-f", "null", "/dev/null"
         ]
 
-        result = utils.start_process("ffmpeg", args)
+        result = process.start_process("ffmpeg", args)
 
         # Parse timestamps from the ffmpeg output
         timestamps = []
@@ -157,7 +157,7 @@ class Transcoder(utils.InterruptibleProcess):
 
 
     def _select_segments(self, video_file, segment_duration=5):
-        duration = utils.get_video_duration(video_file) / 1000
+        duration = video.get_video_duration(video_file) / 1000
         num_segments = max(3, min(10, int(duration // 30)))
 
         if duration <= 0 or num_segments <= 0 or segment_duration <= 0:
@@ -267,7 +267,7 @@ class Transcoder(utils.InterruptibleProcess):
                 raise ValueError()
 
 
-            utils.start_process("exiftool", ["-overwrite_original", "-TagsFromFile", input_file, "-all:all>all:all", temp_file])
+            process.start_process("exiftool", ["-overwrite_original", "-TagsFromFile", input_file, "-all:all>all:all", temp_file])
 
             if overwrite_input:
                 try:
@@ -301,7 +301,7 @@ class Transcoder(utils.InterruptibleProcess):
         """Find the optimal CRF using bisection."""
         original_size = os.path.getsize(input_file)
 
-        duration = utils.get_video_duration(input_file)
+        duration = video.get_video_duration(input_file)
         if not duration:
             return None
 

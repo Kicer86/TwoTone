@@ -18,7 +18,7 @@ from typing import List
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from .utils2.process import start_process, raise_on_error
+from .utils2 import process, video
 from .utils2.generic import fps_str_to_float, get_tqdm_defaults, ms_to_time, time_to_ms
 
 
@@ -144,45 +144,15 @@ def fix_subtitles_fps(input_path: str, output_path: str, subtitles_fps: float):
         outfile.write(content)
 
 
-def get_video_duration(video_file):
-    """Get the duration of a video in milliseconds."""
-    result = start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
-
-    try:
-        return int(float(result.stdout.strip())*1000)
-    except ValueError:
-        logging.error(f"Failed to get duration for {video_file}")
-        return None
-
-
 def get_video_frames_count(video_file: str):
-    result = start_process("ffprobe", ["-v", "error", "-select_streams", "v:0", "-count_packets",
-                           "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", video_file])
+    result = process.start_process("ffprobe", ["-v", "error", "-select_streams", "v:0", "-count_packets",
+                                               "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", video_file])
 
     try:
         return int(result.stdout.strip())
     except ValueError:
         logging.error(f"Failed to get frame count for {video_file}")
         return None
-
-
-def get_video_full_info(path: str) -> str:
-    args = []
-    args.extend(["-v", "quiet"])
-    args.extend(["-print_format", "json"])
-    args.append("-show_format")
-    args.append("-show_streams")
-    args.append(path)
-
-    process = start_process("ffprobe", args)
-
-    if process.returncode != 0:
-        raise RuntimeError(f"ffprobe exited with unexpected error:\n{process.stderr}")
-
-    output_lines = process.stdout
-    output_json = json.loads(output_lines)
-
-    return output_json
 
 
 def get_video_data(path: str) -> [VideoInfo]:
@@ -206,7 +176,7 @@ def get_video_data(path: str) -> [VideoInfo]:
 
         return length
 
-    output_json = get_video_full_info(path)
+    output_json = video.get_video_full_info(path)
 
     subtitles = []
     video_tracks = []
@@ -228,7 +198,7 @@ def get_video_data(path: str) -> [VideoInfo]:
             fps = stream["r_frame_rate"]
             length = get_length(stream)
             if length is None:
-                length = get_video_duration(path)
+                length = video.get_video_duration(path)
 
             video_tracks.append(VideoTrack(fps=fps, length=length))
 
@@ -259,7 +229,7 @@ def generate_mkv(output_path: str, input_video: str, subtitles: [SubtitleFile]):
 
     # perform
     cmd = "mkvmerge"
-    result = start_process(cmd, options)
+    result = process.start_process(cmd, options)
 
     if result.returncode != 0:
         if os.path.exists(output_path):

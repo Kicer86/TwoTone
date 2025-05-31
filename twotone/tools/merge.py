@@ -14,7 +14,7 @@ from typing import Dict, List, Tuple
 
 from . import utils
 from .tool import Tool
-from twotone.tools.utils2 import files
+from twotone.tools.utils2 import files, process
 
 
 work = True
@@ -145,8 +145,8 @@ class Merge(utils.InterruptibleProcess):
             output_file = utils.get_unique_file_name(temporary_dir, "srt")
             encoding = subtitle.encoding if subtitle.encoding != "UTF-8-SIG" else "utf-8"
 
-            status = utils.start_process("ffmpeg",
-                                         ["-hide_banner", "-y", "-sub_charenc", encoding, "-i", input_file, output_file])
+            status = process.start_process("ffmpeg",
+                                           ["-hide_banner", "-y", "-sub_charenc", encoding, "-i", input_file, output_file])
 
             if status.returncode == 0:
                 # there is no way (as of now) to tell ffmpeg to convert subtitles with proper frame rate in mind.

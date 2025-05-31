@@ -12,6 +12,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from . import utils
 from .tool import Tool
+from .utils2 import process
 
 
 class Fixer(utils.InterruptibleProcess):
@@ -94,7 +95,7 @@ class Fixer(utils.InterruptibleProcess):
             result.append(subtitleFile)
             options.append(f"{subtitle.tid}:{outputfile}")
 
-        utils.start_process("mkvextract", options)
+        process.start_process("mkvextract", options)
 
         return result
 
@@ -123,7 +124,7 @@ class Fixer(utils.InterruptibleProcess):
                             # remove all subtitles from video
                             self.logger.debug("Removing existing subtitles from file")
                             video_without_subtitles = video_file + ".nosubtitles.mkv"
-                            utils.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file])
+                            process.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file])
 
                             # add fixed subtitles to video
                             self.logger.debug("Adding fixed subtitles to file")
