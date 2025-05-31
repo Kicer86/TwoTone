@@ -2,6 +2,10 @@
 import unittest
 import logging
 import os
+import re
+
+from collections import defaultdict
+from typing import Dict, List, Tuple
 
 import twotone.twotone as twotone
 from twotone.tools.utilities import extract_scenes
@@ -21,6 +25,39 @@ def collect_files(directory: str):
     return file_list
 
 
+def extract_number_from_filename(filename: str) -> float:
+    match = re.search(r'frame_(\d+\.\d+)\.png$', filename)
+    if match:
+        return float(match.group(1))
+    raise ValueError(f"Filename {filename} does not match expected pattern")
+
+def extract_scene_number(path: str) -> int:
+    match = re.search(r'scene_(\d+)', path)
+    if match:
+        return int(match.group(1))
+    raise ValueError(f"Path {path} does not contain a scene number")
+
+def pick_first_last_sorted(files: List[str]) -> List[str]:
+    from collections import defaultdict
+
+    grouped = defaultdict(list)
+
+    # Group files by scene
+    for path in files:
+        scene = os.path.dirname(path)
+        grouped[scene].append(path)
+
+    result = []
+    # Sort by scene number
+    for scene in sorted(grouped.keys(), key=extract_scene_number):
+        scene_files = grouped[scene]
+        sorted_files = sorted(scene_files, key=extract_number_from_filename)
+        result.append(sorted_files[0])
+        result.append(sorted_files[-1])
+
+    return result
+
+
 class UtilitiesScenesTests(unittest.TestCase):
 
     def test_video_1_for_scenes_extraction(self):
@@ -28,7 +65,7 @@ class UtilitiesScenesTests(unittest.TestCase):
             test_video = get_video("big_buck_bunny_720p_10mb.mp4")
             best_enc = extract_scenes(video_path = test_video, output_dir = wd.path, format = "png", scale = 10)
 
-            files = collect_files(wd.path)
+            files = pick_first_last_sorted(collect_files(wd.path))
 
             expected_files = [
                 "scene_0/frame_0.000.png",
@@ -59,8 +96,7 @@ class UtilitiesScenesTests(unittest.TestCase):
                 "scene_12/frame_62.240.png",
             ]
 
-            for file in expected_files:
-                self.assertTrue(file in files)
+            self.assertEqual(files, expected_files)
 
 
 if __name__ == '__main__':
