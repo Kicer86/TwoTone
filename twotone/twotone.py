@@ -10,7 +10,8 @@ from .tools import          \
     melt,                   \
     merge,                  \
     subtitles_fixer,        \
-    transcode
+    transcode,              \
+    utilities
 
 TOOLS = {
     "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file"),
@@ -18,6 +19,7 @@ TOOLS = {
     "merge": (merge.MergeTool(), "Merge video files with corresponding subtitles into one MKV file"),
     "subtitles_fix": (subtitles_fixer.FixerTool(), "Fixes some specific issues with subtitles. Do not use until you are sure it will help for your problems."),
     "transcode": (transcode.TranscodeTool(), "Transcode videos from provided directory preserving quality."),
+    "utilities": (utilities.UtilitiesTool(), "Various smaller tools"),
 }
 
 

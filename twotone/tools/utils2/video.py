@@ -19,3 +19,26 @@ def get_video_frames_count(video_file: str):
     except ValueError:
         logging.error(f"Failed to get frame count for {video_file}")
         return None
+
+
+def detect_scene_changes(file_path, threshold=0.4):
+    """
+    Run ffmpeg with a scene detection filter and extract scene change times.
+    """
+
+    args = [
+        "-i", file_path,
+        "-filter_complex", f"select='gt(scene,{threshold})',showinfo",
+        "-f", "null", "-"
+    ]
+    result = process.start_process("ffmpeg", args = args)
+
+    # Look for lines with "pts_time:"; these indicate the timestamp of a scene change.
+    scene_times = []
+    pattern = re.compile(r"pts_time:(\d+\.\d+)")
+    for line in result.stderr.splitlines():
+        match = pattern.search(line)
+        if match:
+            scene_times.append(float(match.group(1)))
+
+    return sorted(set(scene_times))
