@@ -457,7 +457,7 @@ class Melter():
             return sorted_file_lists
 
         for title, entries in duplicates.items():
-            logging.info(f"Analyzing duplicates for {title}")
+            self.logger.info(f"Analyzing duplicates for {title}")
 
             files_groups = process_entries(entries)
 
@@ -529,7 +529,7 @@ class Melter():
     def melt(self):
         with files.ScopedDirectory(self.wd) as wd:
             self.logger.debug(f"Starting `melt` with live run: {self.live_run} and working dir: {self.wd}")
-            logging.info("Finding duplicates")
+            self.logger.info("Finding duplicates")
             duplicates = self.duplicates_source.collect_duplicates()
             self._process_duplicates_set(duplicates)
 
