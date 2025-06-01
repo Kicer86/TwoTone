@@ -207,7 +207,13 @@ class Melter():
             else:
                 return True
 
-        self.logger.debug(f"File {file} details:")
+        self.logger.info(f"File {file} details:")
+        for stream_type, streams in details.items():
+            info = f"{stream_type}: {len(streams)} track(s), languages: "
+            info += ", ".join([ data.get("language") or "unknown" for data in streams])
+
+            self.logger.info(info)
+
         for stream_type, streams in details.items():
             self.logger.debug(f"\t{stream_type}:")
 
@@ -226,7 +232,7 @@ class Melter():
                 index = stream[1]
                 language = stream[2]
                 language = language if language else '---'
-                self.logger.debug(f"{stype} stream #{index} with language {language} from {path}")
+                self.logger.info(f"{stype} stream #{index} with language {language} from {path}")
 
     def _pick_best_video(self, files_details: Dict[str, Dict]) -> List[Tuple[str, int, str]]:
         best_file = None
@@ -298,12 +304,12 @@ class Melter():
                     if original_lang:
                         self.logger.info(f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file {path}")
                     else:
-                        self.logger.info(f"Setting {stream_type} stream #{tid} missing language to {lang} for file {path}")
+                        self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file {path}")
                 elif (not lang) and fallback_languages and path in fallback_languages:
                     original_lang = lang
                     lang = fallback_languages[path]
                     tid = stream["tid"]
-                    self.logger.info(f"Setting {stream_type} stream #{tid} missing language to {lang} for file {path}")
+                    self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file {path}")
 
                 # Build a modified copy of the stream for comparison
                 stream_view = stream.copy()
@@ -376,7 +382,7 @@ class Melter():
         subtitle_streams = self._pick_unique_streams(details, video_stream_path, "subtitle", ["language"], [], override_languages=forced_subtitle_language)
 
         # print proposed output file
-        self.logger.debug("Streams used to create output video file:")
+        self.logger.info("Streams used to create output video file:")
         self._print_streams_details([(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [[video_stream], audio_streams, subtitle_streams])])
 
         # build streams mapping
@@ -402,17 +408,21 @@ class Melter():
 
             if abs(base_lenght - lenght) > 100:
                 self.logger.warning(f"Audio stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}.")
-                self.logger.info("Starting videos comparison to solve mismatching lenghts.")
-                # more than 100ms difference in lenght, perform content matching
-                with files.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd:
-                    pairMatcher = PairMatcher(self.interruption, mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
 
-                    mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
-                    output_file = os.path.join(self.wd, f"tmp_{file_name}.m4a")
-                    self._patch_audio_segment(mwd, video_stream_path, path, output_file, mapping, 20, lhs_all_frames, rhs_all_frames)
+                if self.live_run:
+                    self.logger.info("Starting videos comparison to solve mismatching lenghts.")
+                    # more than 100ms difference in lenght, perform content matching
+                    with files.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd:
+                        pairMatcher = PairMatcher(self.interruption, mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
 
-                    file_name += 1
-                    path = output_file
+                        mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
+                        output_file = os.path.join(self.wd, f"tmp_{file_name}.m4a")
+                        self._patch_audio_segment(mwd, video_stream_path, path, output_file, mapping, 20, lhs_all_frames, rhs_all_frames)
+
+                        file_name += 1
+                        path = output_file
+                else:
+                    self.logger.info("Skipping videos comparison to solve mismatching lenghts due to dry run.")
 
             streams[path].append({
                 "index": index,
@@ -466,6 +476,7 @@ class Melter():
 
                 streams = self._process_duplicates(files)
                 if not self.live_run:
+                    self.logger.info("Dry run. Skipping output generation")
                     continue
 
                 output = os.path.join(self.output, title, output_name + ".mkv")
