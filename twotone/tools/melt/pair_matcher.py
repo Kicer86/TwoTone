@@ -50,8 +50,7 @@ class PairMatcher:
         ]:
             os.makedirs(d)
 
-    @staticmethod
-    def _normalize_frames(frames_info: FramesInfo, wd: str) -> Dict[int, str]:
+    def _normalize_frames(self, frames_info: FramesInfo, wd: str) -> Dict[int, str]:
         def crop_5_percent(image: Image.Image) -> Image.Image:
             width, height = image.size
             dx = int(width * 0.05)
@@ -61,6 +60,7 @@ class PairMatcher:
 
         result = {}
         for timestamp, info in frames_info.items():
+            self.interruption._check_for_stop()
             path = info["path"]
             img = Image.open(path).convert('L')
             img = crop_5_percent(img)
@@ -286,10 +286,10 @@ class PairMatcher:
         # Return interpolators
         return PairMatcher._interpolate_crop_rects(timestamps_lhs, lhs_crops), PairMatcher._interpolate_crop_rects(timestamps_rhs, rhs_crops)
 
-    @staticmethod
-    def _apply_crop_interpolated(frames: FramesInfo, dst_dir: str, crop_fn: Callable[[int], Tuple[int, int, int, int]]) -> FramesInfo:
+    def _apply_crop_interpolated(self, frames: FramesInfo, dst_dir: str, crop_fn: Callable[[int], Tuple[int, int, int, int]]) -> FramesInfo:
         output_files = {}
         for timestamp, info in frames.items():
+            self.interruption._check_for_stop()
             path = info["path"]
             img = cv.imread(path)
             x, y, w, h = crop_fn(timestamp)
@@ -447,8 +447,8 @@ class PairMatcher:
         lhs_crop_fn, rhs_crop_fn = PairMatcher._find_interpolated_crop(pairs_with_timestamps, lhs_frames, rhs_frames)
 
         # Step 2: Apply interpolated cropping to each frame
-        lhs_cropped = PairMatcher._apply_crop_interpolated(lhs_frames, lhs_cropped_dir, lhs_crop_fn)
-        rhs_cropped = PairMatcher._apply_crop_interpolated(rhs_frames, rhs_cropped_dir, rhs_crop_fn)
+        lhs_cropped = self._apply_crop_interpolated(lhs_frames, lhs_cropped_dir, lhs_crop_fn)
+        rhs_cropped = self._apply_crop_interpolated(rhs_frames, rhs_cropped_dir, rhs_crop_fn)
 
         # Step 3: Resize both output sets to same resolution (downscale to smaller one)
         #Melter._resize_dirs_to_smallest(out_dir1, out_dir2)
@@ -613,8 +613,8 @@ class PairMatcher:
         self.logger.debug(f"rhs key frames: {' '.join(rhs_key_frames_str)}")
 
         # normalize frames. This could be done in previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
-        lhs_normalized_frames = PairMatcher._normalize_frames(self.lhs_all_frames, self.lhs_normalized_wd)
-        rhs_normalized_frames = PairMatcher._normalize_frames(self.rhs_all_frames, self.rhs_normalized_wd)
+        lhs_normalized_frames = self._normalize_frames(self.lhs_all_frames, self.lhs_normalized_wd)
+        rhs_normalized_frames = self._normalize_frames(self.rhs_all_frames, self.rhs_normalized_wd)
 
         # extract key frames (as 'key' a scene change frame is meant)
         lhs_key_frames = PairMatcher._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_frames)
