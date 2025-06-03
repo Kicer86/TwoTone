@@ -359,6 +359,25 @@ class Melter():
 
         return result
 
+
+    def pick_streams(self, files_details: Dict):
+        # pick video stream
+        video_stream = self._pick_best_video(files_details)
+        video_stream_path = video_stream[0]
+
+        # pick audio streams
+        forced_audio_language = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in files_details}
+        forced_audio_language = {path: languages.unify_lang(lang) for path, lang in forced_audio_language.items() if lang}
+        audio_streams = self._pick_unique_streams(files_details, video_stream_path, "audio", ["language", "channels"], ["sample_rate"], override_languages=forced_audio_language)
+
+        # pick subtitle streams
+        forced_subtitle_language = {path: self.duplicates_source.get_metadata_for(path).get("subtitle_lang") for path in files_details}
+        forced_subtitle_language = {path: lang for path, lang in forced_subtitle_language.items() if lang}
+        subtitle_streams = self._pick_unique_streams(files_details, video_stream_path, "subtitle", ["language"], [], override_languages=forced_subtitle_language)
+
+        return [video_stream], audio_streams, subtitle_streams
+
+
     def _process_duplicates(self, duplicates: List[str]) -> List[Dict]:
         # analyze files in terms of quality and available content
         details = {file: video.get_video_data2(file) for file in duplicates}
@@ -367,28 +386,18 @@ class Melter():
         for file, file_details in details.items():
             self._print_file_details(file, file_details)
 
-        # pick video stream
-        video_stream = self._pick_best_video(details)
-        video_stream_path = video_stream[0]
-
-        # pick audio streams
-        forced_audio_language = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in details}
-        forced_audio_language = {path: languages.unify_lang(lang) for path, lang in forced_audio_language.items() if lang}
-        audio_streams = self._pick_unique_streams(details, video_stream_path, "audio", ["language", "channels"], ["sample_rate"], override_languages=forced_audio_language)
-
-        # pick subtitle streams
-        forced_subtitle_language = {path: self.duplicates_source.get_metadata_for(path).get("subtitle_lang") for path in details}
-        forced_subtitle_language = {path: lang for path, lang in forced_subtitle_language.items() if lang}
-        subtitle_streams = self._pick_unique_streams(details, video_stream_path, "subtitle", ["language"], [], override_languages=forced_subtitle_language)
+        video_streams, audio_streams, subtitle_streams = self.pick_streams(details)
 
         # print proposed output file
         self.logger.info("Streams used to create output video file:")
-        self._print_streams_details([(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [[video_stream], audio_streams, subtitle_streams])])
+        self._print_streams_details([(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [video_streams, audio_streams, subtitle_streams])])
 
         # build streams mapping
         streams = defaultdict(list)
 
         #   process video stream
+        video_stream = video_streams[0]
+        video_stream_path = video_stream[0]
         video_stream_index = video_stream[1]
         streams[video_stream_path].append({
             "index": video_stream_index,
