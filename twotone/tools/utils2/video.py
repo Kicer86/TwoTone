@@ -170,7 +170,7 @@ def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", s
             mapping[timestamp_ms] = {"path": os.path.join(target_dir, frame_files[f]), "frame": frame_number, "frame_id": frame_id}
             f += 1
 
-    print(f"Parsed frames: {f}, Frame files: {len(frame_files)}")
+    #self.logger.debug(f"Parsed frames: {f}, Frame files: {len(frame_files)}")
 
     return mapping
 
