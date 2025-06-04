@@ -159,7 +159,7 @@ def get_video_data(path: str) -> [VideoInfo]:
 
     def get_length(stream) -> int:
         """
-            get lenght in milliseconds
+            get length in milliseconds
         """
         length = None
 

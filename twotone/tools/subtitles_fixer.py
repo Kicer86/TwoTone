@@ -34,8 +34,8 @@ class Fixer(utils.InterruptibleProcess):
         timestamps = list(utils.subrip_time_pattern.finditer(content))
         last_timestamp = timestamps[-1]
         time_from, time_to = map(utils.time_to_ms, last_timestamp.groups())
-        lenght = video_track.length
-        new_time_to = min(time_from + 5000, lenght)
+        length = video_track.length
+        new_time_to = min(time_from + 5000, length)
 
         begin_pos = last_timestamp.start(1)
         end_pos = last_timestamp.end(2)
@@ -151,7 +151,7 @@ class Fixer(utils.InterruptibleProcess):
         video_length = video_info.video_tracks[0].length
 
         if video_length is None:
-            self.logger.warning(f"File {video_file} has unknown lenght. Cannot proceed.")
+            self.logger.warning(f"File {video_file} has unknown length. Cannot proceed.")
             return None
 
         broken_subtitiles = []
@@ -163,8 +163,8 @@ class Fixer(utils.InterruptibleProcess):
                 self.logger.warning(f"Cannot analyse subtitle #{i} of {video_file}: unsupported format '{subtitle.format}'")
                 continue
 
-            lenght = subtitle.length
-            if lenght is not None and lenght > video_length * 1.001:                 # use 0.1% error margin as for some reason valid subtitles may appear longer than video
+            length = subtitle.length
+            if length is not None and length > video_length * 1.001:                 # use 0.1% error margin as for some reason valid subtitles may appear longer than video
                 broken_subtitiles.append(i)
 
         if len(broken_subtitiles) == 0:
