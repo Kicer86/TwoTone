@@ -52,7 +52,7 @@ class Merge(utils.InterruptibleProcess):
                     elif utils.is_subtitle(path):
                         subtitles.append(path)
 
-        # sort both lists by lenght
+        # sort both lists by length
         videos = sorted(videos, reverse = True, key = lambda k: len(k))
         subtitles = sorted(subtitles, reverse = True, key = lambda k: len(k))
 

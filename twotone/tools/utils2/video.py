@@ -91,7 +91,7 @@ def get_video_data2(path: str) -> Dict:
 
     def get_length(stream) -> int:
         """
-            get lenght in milliseconds
+            get length in milliseconds
         """
         length = None
 
