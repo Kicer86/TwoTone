@@ -259,6 +259,50 @@ class MeltingTest(unittest.TestCase):
             self.assertEqual(output_file_data["audio"][4]["language"], "pol")
 
 
+    def test_streams_pick_decision(self):
+        interruption = utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        streams_picker = StreamsPicker(logging.getLogger("Melter"), duplicates)
+
+        video_info = {
+            "fileA": {
+                "video": [{
+                    "height": "1024",
+                    "width": "1024",
+                    "fps": "24",
+                }],
+                "audio": [{
+                    "language": "jp",
+                    "channels": "2",
+                    "sample_rate": "32000",
+                }, {
+                    "language": "de",
+                    "channels": "2",
+                    "sample_rate": "32000",
+                }]
+            },
+            "fileB": {
+                "video": [{
+                    "height": "1024",
+                    "width": "1024",
+                    "fps": "30",
+                }],
+                "audio": [{
+                    "language": "br",
+                    "channels": "2",
+                    "sample_rate": "32000",
+                }, {
+                    "language": "nl",
+                    "channels": "2",
+                    "sample_rate": "32000",
+                }]
+            }
+        }
+
+        picked_streams = streams_picker.pick_streams(video_info)
+
+        print(picked_streams)
+
 
 if __name__ == '__main__':
     unittest.main()
