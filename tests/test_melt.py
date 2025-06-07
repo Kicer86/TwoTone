@@ -15,10 +15,21 @@ from typing import Dict, List
 
 import twotone.tools.utils as utils
 from twotone.tools.melt import Melter
-from twotone.tools.melt.melt import StaticSource
+from twotone.tools.melt.melt import StaticSource, StreamsPicker
 from twotone.tools.utils2 import process, video
 from twotone.tools.utils2.files import ScopedDirectory
 from common import WorkingDirectoryForTest, FileCache, add_test_media, add_to_test_dir, current_path, get_audio, get_video, hashes, list_files
+
+
+def normalize(obj):
+    if isinstance(obj, dict):
+        return {k: normalize(obj[k]) for k in sorted(obj)}
+    elif isinstance(obj, list):
+        return sorted((normalize(item) for item in obj), key=lambda x: repr(x))
+    elif isinstance(obj, tuple):
+        return tuple(normalize(item) for item in obj)
+    else:
+        return obj
 
 
 class MeltingTest(unittest.TestCase):
@@ -258,50 +269,42 @@ class MeltingTest(unittest.TestCase):
             self.assertEqual(output_file_data["audio"][3]["language"], "nor")
             self.assertEqual(output_file_data["audio"][4]["language"], "pol")
 
+    sample_streams = [
+        (
+            #case #1: input
+            {
+                "fileA": {
+                    "video": [{"height": "1024", "width": "1024", "fps": "24"}],
+                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000"},
+                              {"language": "de", "channels": "2", "sample_rate": "32000"}]
+                },
+                "fileB": {
+                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
+                    "audio": [{"language": "br", "channels": "2", "sample_rate": "32000"},
+                              {"language": "nl", "channels": "2", "sample_rate": "32000"}]
+                }
+            },
+            # case 1: expected output
+            (
+                [("fileB", 0, None)],
+                [("fileA", 0, "jp"), ("fileA", 1, "de"), ("fileB", 0, "br"), ("fileB", 1, "nl")],
+                []
+            )
+        )
+    ]
+
 
     def test_streams_pick_decision(self):
         interruption = utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
         streams_picker = StreamsPicker(logging.getLogger("Melter"), duplicates)
 
-        video_info = {
-            "fileA": {
-                "video": [{
-                    "height": "1024",
-                    "width": "1024",
-                    "fps": "24",
-                }],
-                "audio": [{
-                    "language": "jp",
-                    "channels": "2",
-                    "sample_rate": "32000",
-                }, {
-                    "language": "de",
-                    "channels": "2",
-                    "sample_rate": "32000",
-                }]
-            },
-            "fileB": {
-                "video": [{
-                    "height": "1024",
-                    "width": "1024",
-                    "fps": "30",
-                }],
-                "audio": [{
-                    "language": "br",
-                    "channels": "2",
-                    "sample_rate": "32000",
-                }, {
-                    "language": "nl",
-                    "channels": "2",
-                    "sample_rate": "32000",
-                }]
-            }
-        }
+        for video_info, expected_streams in MeltingTest.sample_streams:
+            picked_streams = streams_picker.pick_streams(video_info)
+            picked_streams_normalized = normalize(picked_streams)
+            expected_streams_normalized = normalize(expected_streams)
 
-        picked_streams = streams_picker.pick_streams(video_info)
-
-        print(picked_streams)
+            self.assertEqual(picked_streams_normalized, expected_streams_normalized)
 
 
 if __name__ == '__main__':
