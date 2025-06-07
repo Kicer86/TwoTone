@@ -2,7 +2,6 @@
 import logging
 import os
 import re
-import subprocess
 import unittest
 
 import twotone.tools.utils as utils

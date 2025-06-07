@@ -4,7 +4,6 @@ import logging
 import math
 import os
 import re
-import sys
 
 from overrides import override
 
