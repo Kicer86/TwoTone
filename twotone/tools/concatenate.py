@@ -10,7 +10,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from . import utils
 from .tool import Tool
-from .utils2 import process
+from .utils2 import generic, process
 
 
 class Concatenate(utils.InterruptibleProcess):
@@ -96,7 +96,7 @@ class Concatenate(utils.InterruptibleProcess):
 
         self.logger.info("Starting concatenation")
         with logging_redirect_tqdm():
-            for output, details in tqdm(sorted_videos.items(), desc="Concatenating", unit="movie", **utils.get_tqdm_defaults()):
+            for output, details in tqdm(sorted_videos.items(), desc="Concatenating", unit="movie", **generic.get_tqdm_defaults()):
                 self._check_for_stop()
 
                 input_files = [video for video, _ in details]

@@ -2,9 +2,7 @@
 import argparse
 import logging
 import os
-import re
 import shutil
-import sys
 import tempfile
 from overrides import override
 from tqdm import tqdm

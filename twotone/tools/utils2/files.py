@@ -1,9 +1,11 @@
 
 import shutil
+
 from pathlib import Path
+from typing import Tuple
 
 
-def split_path(path: str) -> (str, str, str):
+def split_path(path: str) -> Tuple[str, str, str]:
     info = Path(path)
 
     return str(info.parent), info.stem, info.suffix[1:]

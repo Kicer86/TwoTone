@@ -1,13 +1,11 @@
 
 import cchardet
-import json
 import logging
 import math
 import os.path
 import py3langid as langid
 import re
 import signal
-import subprocess
 import sys
 import tempfile
 import uuid
@@ -15,11 +13,9 @@ from collections import namedtuple
 from itertools import islice
 from pathlib import Path
 from typing import Dict, List
-from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .utils2 import process, video
-from .utils2.generic import fps_str_to_float, get_tqdm_defaults, ms_to_time, time_to_ms
+from .utils2.generic import fps_str_to_float, ms_to_time, time_to_ms
 
 
 SubtitleFile = namedtuple("Subtitle", "path language encoding")

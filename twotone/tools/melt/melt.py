@@ -9,7 +9,7 @@ import shutil
 from collections import defaultdict
 from overrides import override
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from .. import utils
 from ..tool import Tool

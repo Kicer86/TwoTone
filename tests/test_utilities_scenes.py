@@ -4,10 +4,8 @@ import logging
 import os
 import re
 
-from collections import defaultdict
-from typing import Dict, List, Tuple
+from typing import List
 
-import twotone.twotone as twotone
 from twotone.tools.utilities import extract_scenes
 from common import WorkingDirectoryForTest, get_video
 
