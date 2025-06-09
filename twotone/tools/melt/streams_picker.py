@@ -86,25 +86,30 @@ class StreamsPicker:
 
         assert unique_keys and unique_keys[0] == "language", "First unique_key must be 'language'"
 
+        def get_language(stream) -> str:
+            lang = stream.get("language")
+            if override_languages and path in override_languages:
+                original_lang = lang
+                lang = override_languages[path]
+                tid = stream["tid"]
+                if original_lang:
+                    self.logger.info(f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file {path}")
+                else:
+                    self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file {path}")
+            elif (not lang) and fallback_languages and path in fallback_languages:
+                original_lang = lang
+                lang = fallback_languages[path]
+                tid = stream["tid"]
+                self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file {path}")
+
+            return lang
+
         stream_index = {}
 
         for path, details in StreamsPicker._iter_starting_with(files_details, best_file):
             for index, stream in enumerate(details.get(stream_type, [])):
                 # Determine language
-                lang = stream.get("language")
-                if override_languages and path in override_languages:
-                    original_lang = lang
-                    lang = override_languages[path]
-                    tid = stream["tid"]
-                    if original_lang:
-                        self.logger.info(f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file {path}")
-                    else:
-                        self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file {path}")
-                elif (not lang) and fallback_languages and path in fallback_languages:
-                    original_lang = lang
-                    lang = fallback_languages[path]
-                    tid = stream["tid"]
-                    self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file {path}")
+                lang = get_language(stream)
 
                 # Build a modified copy of the stream for comparison
                 stream_view = stream.copy()
