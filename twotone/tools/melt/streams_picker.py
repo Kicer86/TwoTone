@@ -1,6 +1,8 @@
 
 import logging
 
+from collections import defaultdict
+from functools import cmp_to_key
 from typing import Dict, List, Optional, Tuple
 
 from ..utils2 import languages
@@ -104,54 +106,73 @@ class StreamsPicker:
 
             return lang
 
-        stream_index = {}
+        stream_index = defaultdict(lambda: defaultdict(list))
 
+        # organize all streams by unique_key and file
         for path, details in StreamsPicker._iter_starting_with(files_details, best_file):
             for index, stream in enumerate(details.get(stream_type, [])):
-                # Determine language
-                lang = get_language(stream)
-
                 # Build a modified copy of the stream for comparison
                 stream_view = stream.copy()
+
+                # Determine language
+                lang = get_language(stream)
                 stream_view["language"] = lang
 
                 # Build unique key based on stream view
                 unique_key = tuple(stream_view.get(k) for k in unique_keys)
                 language = unique_key[0] if unique_key else "default"
 
-                current = {"file": path, "index": index, "details": stream}
+                current = {"file": path, "index": index, "details": stream_view}
 
-                if unique_key not in stream_index:
-                    stream_index[unique_key] = current
-                    continue
+                stream_index[unique_key][path].append(current)
 
-                existing = stream_index[unique_key]
-                existing_view = existing["details"].copy()
-                existing_lang = existing_view.get("language")
-                if override_languages and existing["file"] in override_languages:
-                    existing_lang = override_languages[existing["file"]]
-                elif (not existing_lang) and fallback_languages and existing["file"] in fallback_languages:
-                    existing_lang = fallback_languages[existing["file"]]
-                existing_view["language"] = existing_lang
+        # process collected streams
+        picked_streams = []
+        for key, file_streams in stream_index.items():
 
-                if preference_keys:
-                    better = False
-                    for key in preference_keys:
-                        old = existing_view.get(key)
-                        new = stream_view.get(key)
-                        if old is None or new is None:
-                            continue
-                        if new > old:
-                            better = True
-                            break
-                        elif new < old:
-                            break
-                    if better:
-                        stream_index[unique_key] = current
+            # from all files providing streams with given 'key' use those with most entries
+            max_entries = max(len(details) for details in file_streams.values())
+            files_with_most_entries = {k: v for k, v in file_streams.items() if len(v) == max_entries}
+
+            if len(files_with_most_entries) == 1:
+                first_file_streams = list(files_with_most_entries.values())[0]
+
+                for stream in first_file_streams:
+                    picked_streams.append((key, stream))
+                continue
+
+            # two or more files provide streams of the same uniqness. choose better ones
+            def preference_sorting(lhs, rhs):
+                lhs_details = lhs["details"]
+                rhs_details = rhs["details"]
+
+                for key in preference_keys:
+                    lhs_value = lhs_details.get(key)
+                    rhs_value = rhs_details.get(key)
+                    if lhs_value is None or rhs is None:
+                        continue
+                    if lhs_value > rhs_value:
+                        return -1
+                    elif lhs_value < rhs_value:
+                        return 1
+
+                return 0
+
+            # sort lists of details for each file
+            file_streams = {k: sorted(v,  key=cmp_to_key(preference_sorting)) for k, v in file_streams.items()}
+
+            # pick best details
+            best_file_streams = max(
+                file_streams.items(),
+                key=cmp_to_key(lambda a, b: preference_sorting(a[1][0], b[1][0]))   # compare best ([0]) items for each value([1]) in dicts
+            )
+
+            for stream in best_file_streams[1]:
+                picked_streams.append((key, stream))
 
         # Flatten result
         result = []
-        for unique_key, entry in stream_index.items():
+        for unique_key, entry in picked_streams:
             index = entry["index"]
             path = entry["file"]
             language = unique_key[0]

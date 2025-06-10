@@ -4,7 +4,10 @@ import unittest
 import os
 
 from functools import partial
+from itertools import permutations
+from parameterized import parameterized
 from pathlib import Path
+from typing import Dict, Iterator
 
 import twotone.tools.utils as utils
 from twotone.tools.melt import Melter
@@ -23,6 +26,15 @@ def normalize(obj):
         return tuple(normalize(item) for item in obj)
     else:
         return obj
+
+
+def all_key_orders(d: Dict) -> Iterator[Dict]:
+    """
+    Yield dictionaries with all possible key orderings (same keys and values).
+    """
+    keys = list(d.keys())
+    for perm in permutations(keys):
+        yield {k: d[k] for k in perm}
 
 
 class MeltingTest(unittest.TestCase):
@@ -263,8 +275,10 @@ class MeltingTest(unittest.TestCase):
             self.assertEqual(output_file_data["audio"][4]["language"], "pol")
 
     sample_streams = [
+        # case: merge all audio tracks
         (
-            #case #1: input
+            "mix audios",
+            # input
             {
                 "fileA": {
                     "video": [{"height": "1024", "width": "1024", "fps": "24"}],
@@ -277,22 +291,81 @@ class MeltingTest(unittest.TestCase):
                               {"language": "nl", "channels": "2", "sample_rate": "32000"}]
                 }
             },
-            # case 1: expected output
+            # expected output
             (
                 [("fileB", 0, None)],
                 [("fileA", 0, "jp"), ("fileA", 1, "de"), ("fileB", 0, "br"), ("fileB", 1, "nl")],
                 []
             )
-        )
+        ),
+        # case: pick one file whenever possible
+
+#        (
+#            "prefer one file",
+#            # input (fileB is a superset of fileA, so prefer it)
+#            {
+#                "fileA": {
+#                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
+#                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000"}],
+#                    "subtitles": [{"language": "pl"}]
+#                },
+#                "fileB": {
+#                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
+#                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000"}],
+#                    "subtitles": [{"language": "pl"}, {"language": "br"}]
+#                }
+#            },
+#            # expected output
+#            (
+#                [("fileB", 0, None)],
+#                [("fileB", 0, "cz")],
+#                [("fileB", 0, "pl"), ("fileB", 1, "br")]
+#            )
+#        ),
+
+        (
+            "same but different",
+            # input
+            {
+                "fileA": {
+                    "video": [{"height": "1024", "width": "1024", "fps": "24"}],
+                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000"},
+                              {"language": "jp", "channels": "2", "sample_rate": "32000"}],
+                    "subtitle": [{"language": "de"}, {"language": "de"}]
+                },
+                "fileB": {
+                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
+                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000"},
+                              {"language": "jp", "channels": "6", "sample_rate": "32000"}],
+                    "subtitle": [{"language": "pl"}, {"language": "pl"}]
+                }
+            },
+            # expected output
+            # Explanation:
+            # There are two identical (basing on parameters) audio inputs in file A.
+            # Consider them different (why would there be two identical audio stracks?) and include both in output.
+            #
+            # Include 6 channel audio track from file B (as best one) but ignore 2 channel one (assume it's a duplicate of tracks from file A
+            #
+            # Same logic goes for subtitles. Include both (most likely different) subtitle tracks from file A and
+            # both subtitle tracks from file B
+            (
+                [("fileB", 0, None)],
+                [("fileA", 0, "jp"), ("fileA", 1, "jp"), ("fileB", 1, "jp")],
+                [("fileA", 0, "de"), ("fileA", 1, "de"), ("fileB", 0, "pl"), ("fileB", 1, "pl")]
+            )
+        ),
     ]
 
 
-    def test_streams_pick_decision(self):
+    @parameterized.expand(sample_streams)
+    def test_streams_pick_decision(self, name, input, expected_streams):
         interruption = utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
         streams_picker = StreamsPicker(logging.getLogger("Melter"), duplicates)
 
-        for video_info, expected_streams in MeltingTest.sample_streams:
+        # Test all possible combinations of order of input files. Output should be stable
+        for video_info in all_key_orders(input):
             picked_streams = streams_picker.pick_streams(video_info)
             picked_streams_normalized = normalize(picked_streams)
             expected_streams_normalized = normalize(expected_streams)
