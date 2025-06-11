@@ -3,6 +3,7 @@ ImageHash>=4.3.2
 numpy>=2.2.6
 opencv_python>=4.11.0.86
 overrides>=7.7.0
+parameterized>=0.9.0
 Pillow>=11.2.1
 platformdirs>=4.3.8
 py3langid>=0.3.0
