@@ -4,7 +4,8 @@ import logging
 import numpy as np
 import os
 
-from PIL import Image
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from typing import Callable, Dict, List, Tuple
 
@@ -50,26 +51,36 @@ class PairMatcher:
         ]:
             os.makedirs(d)
 
-    def _normalize_frames(self, frames_info: FramesInfo, wd: str) -> Dict[int, str]:
-        def crop_5_percent(image: Image.Image) -> Image.Image:
-            width, height = image.size
-            dx = int(width * 0.05)
-            dy = int(height * 0.05)
+    @staticmethod
+    def _normalize_image(item: Tuple[int, dict], wd: str) -> Tuple[int, str]:
+        timestamp, info = item
+        path = info["path"]
 
-            return image.crop((dx, dy, width - dx, height - dy))
+        img = cv.imread(path, cv.IMREAD_GRAYSCALE)
+        if img is None:
+            raise RuntimeError(f"Could not load image: {path}")
 
+        h, w = img.shape
+        dx = int(w * 0.05)
+        dy = int(h * 0.05)
+        img_cropped = img[dy:h - dy, dx:w - dx]
+        img_resized = cv.resize(img_cropped, (256, 256), interpolation=cv.INTER_AREA)
+
+        _, file, ext = files.split_path(path)
+        new_path = os.path.join(wd, file + "." + ext)
+        cv.imwrite(new_path, img_resized)
+
+        return timestamp, PairMatcher._get_new_info(info, new_path)
+
+    def _normalize_frames(self, frames_info: Dict[int, dict], wd: str) -> Dict[int, str]:
         result = {}
-        for timestamp, info in frames_info.items():
-            self.interruption._check_for_stop()
-            path = info["path"]
-            img = Image.open(path).convert('L')
-            img = crop_5_percent(img)
-            img = img.resize((256, 256))
-            _, file, ext = files.split_path(path)
-            new_path = os.path.join(wd, file + "." + ext)
-            img.save(new_path)
+        with ProcessPoolExecutor() as executor:
+            bound_fn = partial(PairMatcher._normalize_image, wd=wd)
+            results = list(executor.map(bound_fn, frames_info.items()))
 
-            result[timestamp] = PairMatcher._get_new_info(info, new_path)
+            for timestamp, info in results:
+                self.interruption._check_for_stop()
+                result[timestamp] = info
 
         return result
 
@@ -612,7 +623,7 @@ class PairMatcher:
         self.logger.debug(f"lhs key frames: {' '.join(lhs_key_frames_str)}")
         self.logger.debug(f"rhs key frames: {' '.join(rhs_key_frames_str)}")
 
-        # normalize frames. This could be done in previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
+        # normalize frames. This could have been done in the previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
         lhs_normalized_frames = self._normalize_frames(self.lhs_all_frames, self.lhs_normalized_wd)
         rhs_normalized_frames = self._normalize_frames(self.rhs_all_frames, self.rhs_normalized_wd)
 
