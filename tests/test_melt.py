@@ -300,28 +300,29 @@ class MeltingTest(unittest.TestCase):
         ),
         # case: pick one file whenever possible
 
-#        (
-#            "prefer one file",
-#            # input (fileB is a superset of fileA, so prefer it)
-#            {
-#                "fileA": {
-#                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
-#                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000"}],
-#                    "subtitles": [{"language": "pl"}]
-#                },
-#                "fileB": {
-#                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
-#                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000"}],
-#                    "subtitles": [{"language": "pl"}, {"language": "br"}]
-#                }
-#            },
-#            # expected output
-#            (
-#                [("fileB", 0, None)],
-#                [("fileB", 0, "cz")],
-#                [("fileB", 0, "pl"), ("fileB", 1, "br")]
-#            )
-#        ),
+        (
+            "prefer one file",
+            # input (fileB is a superset of fileA, so prefer it)
+            {
+                "fileA": {
+                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
+                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000"}],
+                    "subtitle": [{"language": "pl"}]
+                },
+                "fileB": {
+                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
+                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000"}],
+                    "subtitle": [{"language": "pl"}, {"language": "br"}]
+                }
+            },
+            # expected output
+            # Explanation: fileB is a superset of fileA, so no need to pick any streams from fileA
+            (
+                [("fileB", 0, None)],
+                [("fileB", 0, "cz")],
+                [("fileB", 0, "pl"), ("fileB", 1, "br")]
+            )
+        ),
 
         (
             "same but different",
@@ -345,7 +346,7 @@ class MeltingTest(unittest.TestCase):
             # There are two identical (basing on parameters) audio inputs in file A.
             # Consider them different (why would there be two identical audio stracks?) and include both in output.
             #
-            # Include 6 channel audio track from file B (as best one) but ignore 2 channel one (assume it's a duplicate of tracks from file A
+            # Include 6 channel audio track from file B (as best one) but ignore 2 channel one (assume it's a duplicate of tracks from file A).
             #
             # Same logic goes for subtitles. Include both (most likely different) subtitle tracks from file A and
             # both subtitle tracks from file B

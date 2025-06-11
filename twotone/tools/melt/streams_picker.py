@@ -31,6 +31,23 @@ class StreamsPicker:
             if k not in yielded:
                 yield k, v
 
+    @staticmethod
+    def _pick_best_file_candidate(files_details: Dict[str, Dict]):
+        """
+            Function returns file with most streams.
+        """
+
+        filtered_videos = files_details.copy()
+        for stream_type in ["video", "audio", "subtitle"]:
+            max_videos = max(len(streams.get(stream_type, [])) for _, streams in filtered_videos.items())
+            filtered_videos = {k: v for k, v in files_details.items() if len(v.get(stream_type, [])) == max_videos}
+
+            if len(filtered_videos) == 1:
+                return list(filtered_videos.keys())[0]
+
+        # no specific candidate, return first
+        return list(filtered_videos.keys())[0]
+
     def _pick_best_video(self, files_details: Dict[str, Dict]) -> List[Tuple[str, int, str]]:
         best_file = None
         best_stream = None
@@ -38,7 +55,11 @@ class StreamsPicker:
         # todo: handle many video streams
         default_video_stream = 0
 
-        for file, details in files_details.items():
+        # todo: this shouldn't be there.
+        # _pick_best_video should most likely be merged with _pick_unique_streams and most_promising_video should be provided from the caller
+        most_promising_video = StreamsPicker._pick_best_file_candidate(files_details)
+
+        for file, details in StreamsPicker._iter_starting_with(files_details, most_promising_video):
             if best_file is None:
                 best_file = file
                 best_stream = details
