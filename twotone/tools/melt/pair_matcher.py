@@ -4,7 +4,7 @@ import logging
 import numpy as np
 import os
 
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from functools import partial
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from typing import Callable, Dict, List, Tuple
@@ -302,8 +302,8 @@ class PairMatcher:
         return PairMatcher._interpolate_crop_rects(timestamps_lhs, lhs_crops), PairMatcher._interpolate_crop_rects(timestamps_rhs, rhs_crops)
 
     def _apply_crop_interpolated(self, frames: FramesInfo, dst_dir: str, crop_fn: Callable[[int], Tuple[int, int, int, int]]) -> FramesInfo:
-        output_files = {}
-        for timestamp, info in frames.items():
+        def _process_frame(item):
+            timestamp, info = item
             self.interruption._check_for_stop()
             path = info["path"]
             img = cv.imread(path, cv.IMREAD_GRAYSCALE)
@@ -312,11 +312,12 @@ class PairMatcher:
             cropped = cv.resize(cropped, (128, 128))
             dst_path = os.path.join(dst_dir, os.path.basename(path))
             cv.imwrite(dst_path, cropped)
+            return timestamp, PairMatcher._get_new_info(info, dst_path)
 
-            output_files[timestamp] = PairMatcher._get_new_info(info, dst_path)
+        with ThreadPoolExecutor() as executor:
+            results = executor.map(_process_frame, frames.items())
 
-        return output_files
-
+        return dict(results)
 
     def _three_before(self, timestamps: List[int], target: int) -> List[int]:
         timestamps = sorted(timestamps)
