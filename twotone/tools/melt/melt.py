@@ -280,6 +280,14 @@ class Melter():
                 "type": "audio",
             })
 
+        # process subtitle streams
+        for path, index, language in subtitle_streams:
+            streams[path].append({
+                "index": index,
+                "language": language,
+                "type": "audio",
+            })
+
         return streams
 
 
