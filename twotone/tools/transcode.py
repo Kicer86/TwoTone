@@ -2,10 +2,8 @@
 import argparse
 import logging
 import os
-import random
 import re
 import shutil
-import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from overrides import override
@@ -14,7 +12,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from . import utils
 from .tool import Tool
-from twotone.tools.utils2 import files, process, video
+from twotone.tools.utils2 import files, generic, process, video
 
 
 class Transcoder(utils.InterruptibleProcess):
@@ -218,7 +216,7 @@ class Transcoder(utils.InterruptibleProcess):
 
     def _for_segments(self, segments, op, title, unit):
         with logging_redirect_tqdm(), \
-             tqdm(desc=title, unit=unit, total=len(segments), **utils.get_tqdm_defaults()) as pbar, \
+             tqdm(desc=title, unit=unit, total=len(segments), **generic.get_tqdm_defaults()) as pbar, \
              tempfile.TemporaryDirectory() as wd_dir, \
              ThreadPoolExecutor() as executor:
             def worker(file_path):

@@ -1,6 +1,6 @@
 [submodule "tests/videos"]
  	path = tests/videos
  	url = https://gitlab.com/kicer86/video-files.git
-[submodule "VOF/VOF-media"]
-	path = VOF/VOF-media
-	url = https://gitlab.com/kicer86/video-files.git
+[submodule "tests/audio"]
+ 	path = tests/audio
+ 	url = https://gitlab.com/kicer86/audio-files.git

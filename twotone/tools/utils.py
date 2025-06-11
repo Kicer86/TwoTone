@@ -1,25 +1,21 @@
 
 import cchardet
-import json
 import logging
 import math
 import os.path
 import py3langid as langid
 import re
 import signal
-import subprocess
 import sys
 import tempfile
 import uuid
 from collections import namedtuple
 from itertools import islice
 from pathlib import Path
-from typing import List
-from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
+from typing import Dict, List
 
 from .utils2 import process, video
-from .utils2.generic import fps_str_to_float, get_tqdm_defaults, ms_to_time, time_to_ms
+from .utils2.generic import fps_str_to_float, ms_to_time, time_to_ms
 
 
 SubtitleFile = namedtuple("Subtitle", "path language encoding")
@@ -109,6 +105,12 @@ def build_subtitle_from_path(path: str, language: str | None = "") -> SubtitleFi
     language = guess_language(path, encoding) if language is None else language
 
     return SubtitleFile(path, language, encoding)
+
+
+def build_audio_from_path(path: str, language: str | None = "") -> Dict:
+    return {"path": path,
+            "language": language,
+    }
 
 
 def alter_subrip_subtitles_times(content: str, multiplier: float) -> str:
@@ -205,19 +207,30 @@ def get_video_data(path: str) -> [VideoInfo]:
     return VideoInfo(video_tracks, subtitles, path)
 
 
-def generate_mkv(output_path: str, input_video: str, subtitles: [SubtitleFile]):
+def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] = [], audios: List[Dict] = []):
     # output
     options = ["-o", output_path]
 
     # set input
     options.append(input_video)
 
+    # set audio tracks
+    for i, audio in enumerate(audios):
+        if "language" in audio and audio["language"]:
+            options.extend(["--language", f"0:{audio['language']}"])
+
+        if audio.get("default", False):
+            options.extend(["--default-track", "0:yes"])
+        else:
+            options.extend(["--default-track", "0:no"])
+
+        options.append(audio["path"])
+
     # set subtitles and languages
-    for i in range(len(subtitles)):
-        subtitle = subtitles[i]
+    for i, subtitle in enumerate(subtitles):
         lang = subtitle.language
 
-        if lang and lang != "":
+        if lang:
             options.extend(["--language", f"0:{lang}"])
 
         if i == 0:

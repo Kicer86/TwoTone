@@ -1,0 +1,509 @@
+
+import argparse
+import logging
+import os
+import platformdirs
+import re
+import shutil
+
+from collections import defaultdict
+from overrides import override
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+from .. import utils
+from ..tool import Tool
+from ..utils2 import files, languages, process, video
+from .debug_routines import DebugRoutines
+from .duplicates_source import DuplicatesSource
+from .jellyfin import JellyfinSource
+from .pair_matcher import PairMatcher
+from .static_source import StaticSource
+from .streams_picker import StreamsPicker
+
+FramesInfo = Dict[int, Dict[str, str]]
+
+def _split_path_fix(value: str) -> List[str]:
+    pattern = r'"((?:[^"\\]|\\.)*?)"'
+
+    matches = re.findall(pattern, value)
+    return [match.replace(r'\"', '"') for match in matches]
+
+
+class Melter():
+    def __init__(self, logger: logging.Logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = []):
+        self.logger = logger
+        self.interruption = interruption
+        self.duplicates_source = duplicates_source
+        self.live_run = live_run
+        self.debug_it: int = 0
+        self.wd = os.path.join(wd, str(os.getpid()))
+        self.output = output
+        self.languages_priority = [languages.unify_lang(language) for language in languages_priority]
+
+        os.makedirs(self.wd, exist_ok=True)
+
+    def _patch_audio_segment(
+        self,
+        wd: str,
+        video1_path: str,
+        video2_path: str,
+        output_path: str,
+        segment_pairs: list[tuple[int, int]],
+        segment_count: int,
+        lhs_frames: FramesInfo,
+        rhs_frames: FramesInfo,
+        min_subsegment_duration: float = 30.0,
+    ):
+        """
+        Replaces a segment of audio in video1 with a segment from video2 (after adjusting its duration),
+        split into smaller corresponding subsegments.
+
+        :param wd: Working directory for intermediate files.
+        :param video1_path: Path to the first video (base).
+        :param video2_path: Path to the second video (source of audio segment).
+        :param segment_pairs: list of (timestamp_v1_ms, timestamp_v2_ms) pairs
+        :param segment_count: how many subsegments to split the entire segment into
+        :param output_path: Path to final audio output
+        :param min_subsegment_duration: minimum duration in seconds below which a subsegment is merged with neighbor
+        """
+
+        wd = os.path.join(wd, "audio_extraction")
+        debug_wd = os.path.join(wd, "debug")
+        os.makedirs(wd)
+        os.makedirs(debug_wd)
+
+        v1_audio = os.path.join(wd, "v1_audio.flac")
+        v2_audio = os.path.join(wd, "v2_audio.flac")
+        head_path = os.path.join(wd, "head.flac")
+        tail_path = os.path.join(wd, "tail.flac")
+
+        debug = DebugRoutines(debug_wd, lhs_frames, rhs_frames)
+
+        # Compute global segment range
+        s1_all = [p[0] for p in segment_pairs]
+        s2_all = [p[1] for p in segment_pairs]
+        seg1_start, seg1_end = min(s1_all), max(s1_all)
+        seg2_start, seg2_end = min(s2_all), max(s2_all)
+
+        # 1. Extract main audio
+        process.start_process("ffmpeg", ["-y", "-i", video1_path, "-map", "0:a:0", "-c:a", "flac", v1_audio])
+        process.start_process("ffmpeg", ["-y", "-i", video2_path, "-map", "0:a:0", "-c:a", "flac", v2_audio])
+
+        # 2. Extract head and tail
+        process.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(seg1_start / 1000), "-i", v1_audio, "-c:a", "flac", head_path])
+        process.start_process("ffmpeg", ["-y", "-ss", str(seg1_end / 1000), "-i", v1_audio, "-c:a", "flac", tail_path])
+
+        # 3. Generate subsegment split points using pair list boundaries
+        total_left_duration = seg1_end - seg1_start
+        left_targets = [seg1_start + i * total_left_duration / segment_count for i in range(segment_count + 1)]
+
+        def closest_pair(value, pairs):
+            return min(pairs, key=lambda p: abs(p[0] - value))
+
+        selected_pairs = [closest_pair(t, segment_pairs) for t in left_targets]
+
+        # Merge short segments with the shorter neighbor
+        cleaned_pairs = []
+        i = 0
+        while i < len(selected_pairs) - 1:
+            l_start = selected_pairs[i][0]
+            l_end = selected_pairs[i + 1][0]
+            r_start = selected_pairs[i][1]
+            r_end = selected_pairs[i + 1][1]
+
+            l_dur = l_end - l_start
+            r_dur = r_end - r_start
+
+            if l_dur < min_subsegment_duration * 1000 or r_dur < min_subsegment_duration * 1000:
+                if i + 2 < len(selected_pairs):
+                    selected_pairs[i + 1] = selected_pairs[i + 2]
+                    del selected_pairs[i + 2]
+                    continue
+                elif i > 0:
+                    prev = cleaned_pairs[-1]
+                    cleaned_pairs[-1] = (prev[0], l_end, prev[2], r_end)
+                    i += 1
+                    continue
+
+            cleaned_pairs.append((l_start, l_end, r_start, r_end))
+            i += 1
+
+        debug.dump_pairs(cleaned_pairs)
+
+        temp_segments = []
+        for idx, (l_start, l_end, r_start, r_end) in enumerate(cleaned_pairs):
+            left_duration = l_end - l_start
+            right_duration = r_end - r_start
+            ratio = right_duration / left_duration
+
+            if abs(ratio - 1.0) > 0.10:
+                self.logger.error(f"Segment {idx} duration mismatch exceeds 10%")
+
+            raw_cut = os.path.join(wd, f"cut_{idx}.flac")
+            scaled_cut = os.path.join(wd, f"scaled_{idx}.flac")
+
+            process.start_process("ffmpeg", [
+                "-y", "-ss", str(r_start / 1000), "-to", str(r_end / 1000),
+                "-i", v2_audio, "-c:a", "flac", raw_cut
+            ])
+
+            process.start_process("ffmpeg", [
+                "-y", "-i", raw_cut,
+                "-filter:a", f"atempo={ratio:.3f}",
+                "-c:a", "flac", scaled_cut
+            ])
+
+            temp_segments.append(scaled_cut)
+
+        # 4. Combine all audio
+        concat_list = os.path.join(wd, "concat.txt")
+        with open(concat_list, "w") as f:
+            f.write(f"file '{head_path}'\n")
+            for seg in temp_segments:
+                f.write(f"file '{seg}'\n")
+            f.write(f"file '{tail_path}'\n")
+
+        merged_flac = os.path.join(wd, "merged.flac")
+        process.start_process("ffmpeg", [
+            "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+            "-c:a", "flac", merged_flac
+        ])
+
+        # 5. Re-encode to output file
+        process.start_process("ffmpeg", [
+            "-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path
+        ])
+
+
+    def _print_file_details(self, file: str, details: Dict[str, Any]):
+        def formatter(key: str, value: any) -> str:
+            if key == "fps":
+                return eval(value)
+            elif key == "length":
+                return utils.ms_to_time(value)
+            else:
+                return value if value else "-"
+
+        def show(key: str) -> bool:
+            if key == "tid":
+                return False
+            else:
+                return True
+
+        self.logger.info(f"File {file} details:")
+        for stream_type, streams in details.items():
+            info = f"{stream_type}: {len(streams)} track(s), languages: "
+            info += ", ".join([ data.get("language") or "unknown" for data in streams])
+
+            self.logger.info(info)
+
+        for stream_type, streams in details.items():
+            self.logger.debug(f"\t{stream_type}:")
+
+            for i, stream in enumerate(streams):
+                self.logger.debug(f"\t#{i + 1}:")
+                for key, value in stream.items():
+                    if show(key):
+                        key_title = key + ":"
+                        self.logger.debug(
+                            f"\t\t{key_title:<16}{formatter(key, value)}")
+
+    def _print_streams_details(self, all_streams: List):
+        for stype, type_stream in all_streams:
+            for stream in type_stream:
+                path = stream[0]
+                index = stream[1]
+                language = stream[2]
+                language = language if language else '---'
+                self.logger.info(f"{stype} stream #{index} with language {language} from {path}")
+
+    def _process_duplicates(self, duplicates: List[str]) -> List[Dict]:
+        # analyze files in terms of quality and available content
+        details = {file: video.get_video_data2(file) for file in duplicates}
+
+        # print input file details
+        for file, file_details in details.items():
+            self._print_file_details(file, file_details)
+
+        streams_picker = StreamsPicker(self.logger, self.duplicates_source)
+        video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(details)
+
+        # print proposed output file
+        self.logger.info("Streams used to create output video file:")
+        self._print_streams_details([(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [video_streams, audio_streams, subtitle_streams])])
+
+        # build streams mapping
+        streams = defaultdict(list)
+
+        #   process video stream
+        video_stream = video_streams[0]
+        video_stream_path = video_stream[0]
+        video_stream_index = video_stream[1]
+        streams[video_stream_path].append({
+            "index": video_stream_index,
+            "language": None,
+            "type": "video",
+        })
+
+        #   process audio streams
+
+        #       check if input files are of the same lenght
+        base_lenght = details[video_stream_path]["video"][video_stream_index]["length"]
+        file_name = 0
+        self.logger.debug(f"Using video file {video_stream_path}:{video_stream_index} as a base")
+
+        for path, index, language in audio_streams:
+            lenght = details[path]["video"][index]["length"]
+
+            if abs(base_lenght - lenght) > 100:
+                self.logger.warning(f"Audio stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}.")
+
+                if self.live_run:
+                    self.logger.info("Starting videos comparison to solve mismatching lenghts.")
+                    # more than 100ms difference in lenght, perform content matching
+                    with files.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd:
+                        pairMatcher = PairMatcher(self.interruption, mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
+
+                        mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
+                        output_file = os.path.join(self.wd, f"tmp_{file_name}.m4a")
+                        self._patch_audio_segment(mwd, video_stream_path, path, output_file, mapping, 20, lhs_all_frames, rhs_all_frames)
+
+                        file_name += 1
+                        path = output_file
+                else:
+                    self.logger.info("Skipping videos comparison to solve mismatching lenghts due to dry run.")
+
+            streams[path].append({
+                "index": index,
+                "language": language,
+                "type": "audio",
+            })
+
+        # process subtitle streams
+        for path, index, language in subtitle_streams:
+            streams[path].append({
+                "index": index,
+                "language": language,
+                "type": "audio",
+            })
+
+        return streams
+
+
+    def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
+        def process_entries(entries: List[str]) -> List[Tuple[List[str], str]]:
+            # function return list of: group of duplicates and name for final output file.
+            # when dirs are provided as entries, files from each dir are collected and sorted
+            # and a files on the same position are grouped
+            if all(os.path.isdir(p) for p in entries):
+                files_per_dir = []
+                dirs = entries
+                for dir_path in dirs:
+                    files = [
+                        os.path.join(root, file)
+                        for root, _, filenames in os.walk(dir_path)
+                        for file in filenames
+                        if video.is_video(file)
+                    ]
+                    files.sort()
+                    files_per_dir.append(files)
+
+                sorted_file_lists = [list(entry) for entry in zip(*files_per_dir)]
+                first_file_fullnames = [os.path.relpath(path[0], dirs[0]) for path in sorted_file_lists]
+                first_file_names = [Path(name).stem for name in first_file_fullnames]
+
+                result = [ (files_group, output_name) for files_group, output_name in zip(sorted_file_lists, first_file_names) ]
+
+                return result
+            else:
+                first_file_fullname = os.path.basename(entries[0])
+                first_file_name = Path(first_file_fullname).stem
+
+                sorted_file_lists = [(entries, first_file_name)]
+
+            return sorted_file_lists
+
+        for title, entries in duplicates.items():
+            self.logger.info(f"Analyzing duplicates for {title}")
+
+            files_groups = process_entries(entries)
+
+            for i, (files, output_name) in enumerate(files_groups):
+                self.interruption._check_for_stop()
+
+                streams = self._process_duplicates(files)
+                if not self.live_run:
+                    self.logger.info("Dry run. Skipping output generation")
+                    continue
+
+                output = os.path.join(self.output, title, output_name + ".mkv")
+                output_dir = os.path.dirname(output)
+                os.makedirs(output_dir, exist_ok=True)
+
+                if len(streams) == 1:
+                    # only one file is being used, just copy it to the output dir
+                    first_file_path = list(streams)[0]
+                    shutil.copy2(first_file_path, output)
+                else:
+                    generation_args = [input for path in streams for input in ("-i", path)]
+
+                    # convert streams to list for later sorting by language
+                    streams_list = []
+                    for file_index, (_, infos) in enumerate(streams.items()):
+                        for info in infos:
+                            stream_type = info["type"]
+                            stream_index = info["index"]
+                            language = info.get("language", None)
+
+                            streams_list.append((stream_type, stream_index, file_index, language))
+
+                    # sort by language
+                    def get_index_for(l: [], value):
+                        try:
+                            return l.index(value)
+                        except ValueError:
+                            return len(l)
+
+                    priorities = self.languages_priority.copy()
+                    priorities.append(None)
+                    streams_list_sorted = sorted(streams_list, key=lambda stream: get_index_for(priorities, stream[3]))
+
+                    # generate map options
+                    output_stream_indexes = defaultdict(int)
+                    for stream in streams_list_sorted:
+                        stream_type, stream_index, file_index, language = stream
+                        stream_t = stream_type[0]
+
+                        generation_args.extend(["-map", f"{file_index}:{stream_t}:{stream_index}"])
+
+                        output_stream_index = output_stream_indexes.get(stream_type, 0)
+
+                        if language:
+                            generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language={language}"])
+
+                        if output_stream_index == 0:
+                            generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "default"])
+
+                        output_stream_indexes[stream_type] = output_stream_index + 1
+
+                    generation_args.append("-c")
+                    generation_args.append("copy")
+
+                    generation_args.append(output)
+
+                    process.start_process("ffmpeg", generation_args)
+
+
+    def melt(self):
+        with files.ScopedDirectory(self.wd) as wd:
+            self.logger.debug(f"Starting `melt` with live run: {self.live_run} and working dir: {self.wd}")
+            self.logger.info("Finding duplicates")
+            duplicates = self.duplicates_source.collect_duplicates()
+            self._process_duplicates_set(duplicates)
+
+
+class RequireJellyfinServer(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, "jellyfin_server", None) is None:
+            parser.error(f"{option_string} requires --jellyfin-server to be specified")
+        setattr(namespace, self.dest, values)
+
+
+class MeltTool(Tool):
+    @override
+    def setup_parser(self, parser: argparse.ArgumentParser):
+
+        jellyfin_group = parser.add_argument_group("Jellyfin source")
+        jellyfin_group.add_argument('--jellyfin-server',
+                                    help='URL to the Jellyfin server which will be used as a source of video files duplicates')
+        jellyfin_group.add_argument('--jellyfin-token',
+                                    action=RequireJellyfinServer,
+                                    help='Access token (http://server:8096/web/#/dashboard/keys)')
+        jellyfin_group.add_argument('--jellyfin-path-fix',
+                                    action=RequireJellyfinServer,
+                                    help='Specify a replacement pattern for file paths to ensure "melt" can access Jellyfin video files.\n\n'
+                                         '"Melt" requires direct access to video files. If Jellyfin is not running on the same machine as "melt,"\n'
+                                         'you must set up network access to Jellyfin’s video storage and specify how paths should be resolved.\n\n'
+                                         'For example, suppose Jellyfin runs on a Linux machine where the video library is stored at "/srv/videos" (a shared directory).\n'
+                                         'If "melt" is running on another Linux machine that accesses this directory remotely at "/mnt/shared_videos,"\n'
+                                         'you need to map "/srv/videos" (Jellyfin’s path) to "/mnt/shared_videos" (the path accessible on the machine running "melt").\n\n'
+                                         'In this case, use: --jellyfin-path-fix "/srv/videos","/mnt/shared_videos" to define the replacement pattern.')
+
+        manual_group = parser.add_argument_group("Manual input source")
+        manual_group.add_argument('-t', '--title',
+                                  help='Video (movie or series when directory is provided as an input) title.')
+        manual_group.add_argument('-i', '--input', dest='input_files', action='append',
+                                  help='Add an input video file or directory with video files (can be specified multiple times).\n'
+                                       'path can be followed with a comma and some additional parameters:\n'
+                                       'audio_lang:XXX  - information about audio language (like eng, de or pl).\n\n'
+                                       'Example of usage:\n'
+                                       '--input some/path/file.mp4,audio_lang:jp')
+
+        # global options
+        parser.add_argument('-w', '--working-dir',
+                            help="Directory for temporary files. At some scenarios, `melt` can produce enormous number of temporary files\n"
+                                 "which can occupy up to 1GB per single video's minute.\n"
+                                 "Consider using the fastest storage possible, but mind size of files.",
+                            default=os.path.join(platformdirs.user_cache_dir(), "twotone", "melt"))
+
+        parser.add_argument('-o', '--output-dir',
+                            help="Directory for output files")
+
+        parser.add_argument('-p', '--languages-priority',
+                            help='Comma separated list of two/three letter language codes. Order on the list defines order of audio and subtitle streams.\n'
+                                 'For example, for --languages-priority pl,de,en,fr all used subtitles and audio tracks will be\n'
+                                 'ordered so polish goes as first, then german, english and french.\n'
+                                 'If there are subtitles in any other language, they will be append at the end in undefined order')
+
+
+    @override
+    def run(self, args, no_dry_run: bool, logger: logging.Logger):
+        interruption = utils.InterruptibleProcess()
+
+        data_source = None
+        if args.jellyfin_server:
+            path_fix = _split_path_fix(args.jellyfin_path_fix) if args.jellyfin_path_fix else None
+
+            if path_fix and len(path_fix) != 2:
+                raise ValueError(f"Invalid content for --jellyfin-path-fix argument. Got: {path_fix}")
+
+            data_source = JellyfinSource(interruption=interruption,
+                                         url=args.jellyfin_server,
+                                         token=args.jellyfin_token,
+                                         path_fix=path_fix)
+        elif args.input_files:
+            title = args.title
+            input_entries = args.input_files
+
+            data_source = StaticSource(interruption=interruption)
+
+            for input in input_entries:
+                # split by ',' but respect ""
+                input_split = re.findall(r'(?:[^,"]|"(?:\\"|[^"])*")+', input)
+                path = input_split[0]
+
+                if not os.path.exists(path):
+                    raise ValueError(f"Path {path} does not exist")
+
+                audio_lang = ""
+
+                if len(input_split) > 1:
+                    for extra_arg in input_split[1:]:
+                        if extra_arg[:11] == "audio_lang:":
+                            audio_lang = extra_arg[11:]
+
+                data_source.add_entry(title, path)
+
+                if audio_lang:
+                    data_source.add_metadata(path, "audio_lang", audio_lang)
+
+        languages_priority = args.languages_priority.split(",") if args.languages_priority else []
+        melter = Melter(logger,
+                        interruption,
+                        data_source,
+                        live_run = no_dry_run,
+                        wd = args.working_dir,
+                        output = args.output_dir,
+                        languages_priority = languages_priority)
+        melter.melt()

@@ -1,6 +1,5 @@
 
 import logging
-import os
 import unittest
 
 import twotone.tools.utils as utils
