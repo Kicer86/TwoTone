@@ -213,13 +213,17 @@ class PairMatcher:
         return '\n'.join(out)
 
     @staticmethod
-    def _compute_overlap(im1, im2, h):
+    def _compute_overlap(im1: cv.typing.MatLike, im2: cv.typing.MatLike, h):
+        # Expect images to be in the grayscale
+        assert len(im1.shape) == 2
+        assert len(im2.shape) == 2
+
         # Warp second image onto first
         warped_im2 = cv.warpPerspective(im2, h, (im1.shape[1], im1.shape[0]))
 
         # Find overlapping region mask
-        gray1 = cv.cvtColor(im1, cv.COLOR_BGR2GRAY)
-        gray2 = cv.cvtColor(warped_im2, cv.COLOR_BGR2GRAY)
+        gray1 = im1
+        gray2 = warped_im2
 
         mask1 = (gray1 > 0).astype(np.uint8)
         mask2 = (gray2 > 0).astype(np.uint8)
@@ -264,8 +268,8 @@ class PairMatcher:
         for lhs_t, rhs_t in pairs_with_timestamps:
             lhs_info = lhs_frames[lhs_t]
             rhs_info = rhs_frames[rhs_t]
-            lhs_img = cv.imread(lhs_info["path"])
-            rhs_img = cv.imread(rhs_info["path"])
+            lhs_img = cv.imread(lhs_info["path"], cv.IMREAD_GRAYSCALE)
+            rhs_img = cv.imread(rhs_info["path"], cv.IMREAD_GRAYSCALE)
 
             orb = cv.ORB_create(1000)
             kp1, des1 = orb.detectAndCompute(lhs_img, None)
@@ -302,7 +306,7 @@ class PairMatcher:
         for timestamp, info in frames.items():
             self.interruption._check_for_stop()
             path = info["path"]
-            img = cv.imread(path)
+            img = cv.imread(path, cv.IMREAD_GRAYSCALE)
             x, y, w, h = crop_fn(timestamp)
             cropped = img[y:y+h, x:x+w]
             cropped = cv.resize(cropped, (128, 128))
