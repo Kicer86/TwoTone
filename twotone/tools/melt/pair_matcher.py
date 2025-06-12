@@ -213,16 +213,16 @@ class PairMatcher:
         return '\n'.join(out)
 
     @staticmethod
-    def _compute_overlap(im1: cv.typing.MatLike, im2: cv.typing.MatLike, h):
+    def _compute_overlap(lhs_img: cv.typing.MatLike, rhs_img: cv.typing.MatLike, h):
         # Expect images to be in the grayscale
-        assert len(im1.shape) == 2
-        assert len(im2.shape) == 2
+        assert len(lhs_img.shape) == 2
+        assert len(rhs_img.shape) == 2
 
         # Warp second image onto first
-        warped_im2 = cv.warpPerspective(im2, h, (im1.shape[1], im1.shape[0]))
+        warped_im2 = cv.warpPerspective(rhs_img, h, (lhs_img.shape[1], lhs_img.shape[0]))
 
         # Find overlapping region mask
-        gray1 = im1
+        gray1 = lhs_img
         gray2 = warped_im2
 
         mask1 = (gray1 > 0).astype(np.uint8)
