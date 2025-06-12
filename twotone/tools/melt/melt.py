@@ -285,7 +285,7 @@ class Melter():
             streams[path].append({
                 "index": index,
                 "language": language,
-                "type": "audio",
+                "type": "subtitle",
             })
 
         return streams
@@ -392,7 +392,7 @@ class Melter():
 
                     generation_args.append(output)
 
-                    process.start_process("ffmpeg", generation_args)
+                    process.raise_on_error(process.start_process("ffmpeg", generation_args))
 
 
     def melt(self):
