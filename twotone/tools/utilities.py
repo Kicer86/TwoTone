@@ -112,6 +112,6 @@ class UtilitiesTool(Tool):
     @override
     def run(self, args, no_dry_run: bool, logger: logging.Logger):
         if args.subtool == "scenes":
-            extract_scenes(video_path = args.video_path[0], output_dir = args.output, format = args.format, scale = args.scale)
+            extract_scenes(video_path = args.video_path[0], output_dir = args.output, format = args.format, scale = float(args.scale))
         else:
             logging.error(f"Error: Unknown subtool {args.subtool}")
