@@ -1,0 +1,27 @@
+pull_request_rules:
+  - name: Squash and merge (one commit)
+    conditions:
+      - check-success=Tests
+      - "#commits=1"
+      - or:
+        - "#approved-reviews-by>0"
+        - author=Kicer86
+    actions:
+      merge:
+        method: squash
+      delete_head_branch:
+        force: false
+
+  - name: Merge pull request (more than one commit)
+    conditions:
+      - check-success=Tests
+      - "#commits>1"
+      - "#commits-behind=0"
+      - or:
+        - "#approved-reviews-by>0"
+        - author=Kicer86
+    actions:
+      merge:
+        method: merge
+      delete_head_branch:
+        force: false
