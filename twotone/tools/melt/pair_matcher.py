@@ -4,7 +4,7 @@ import logging
 import numpy as np
 import os
 
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from typing import Callable, Dict, List, Tuple
@@ -51,38 +51,33 @@ class PairMatcher:
         ]:
             os.makedirs(d)
 
-    @staticmethod
-    def _normalize_image(item: Tuple[int, dict], wd: str) -> Tuple[int, str]:
-        timestamp, info = item
-        path = info["path"]
+    def _normalize_frames(self, frames_info: FramesInfo, wd: str) -> Dict[int, str]:
+        def crop_5_percent(image: cv.Mat) -> cv.Mat:
+            height, width = image.shape
+            dx = int(width * 0.05)
+            dy = int(height * 0.05)
 
-        img = cv.imread(path, cv.IMREAD_GRAYSCALE)
-        if img is None:
-            raise RuntimeError(f"Could not load image: {path}")
+            image_cropped = image[dy:height - dy, dx:width - dx]
 
-        h, w = img.shape
-        dx = int(w * 0.05)
-        dy = int(h * 0.05)
-        img_cropped = img[dy:h - dy, dx:w - dx]
-        img_resized = cv.resize(img_cropped, (256, 256), interpolation=cv.INTER_AREA)
+            return image_cropped
 
-        _, file, ext = files.split_path(path)
-        new_path = os.path.join(wd, file + "." + ext)
-        cv.imwrite(new_path, img_resized)
+        def process_frame(item):
+            timestamp, info = item
+            self.interruption._check_for_stop()
+            path = info["path"]
+            img = cv.imread(path, cv.IMREAD_GRAYSCALE)
+            img = crop_5_percent(img)
+            img = cv.resize(img, (256, 256), interpolation=cv.INTER_AREA)
+            _, file, ext = files.split_path(path)
+            new_path = os.path.join(wd, file + "." + ext)
+            cv.imwrite(new_path, img)
 
-        return timestamp, PairMatcher._get_new_info(info, new_path)
+            return timestamp, PairMatcher._get_new_info(info, new_path)
 
-    def _normalize_frames(self, frames_info: Dict[int, dict], wd: str) -> Dict[int, str]:
-        result = {}
-        with ProcessPoolExecutor() as executor:
-            bound_fn = partial(PairMatcher._normalize_image, wd=wd)
-            results = list(executor.map(bound_fn, frames_info.items()))
+        with ThreadPoolExecutor() as executor:
+            results = executor.map(process_frame, frames_info.items())
 
-            for timestamp, info in results:
-                self.interruption._check_for_stop()
-                result[timestamp] = info
-
-        return result
+        return dict(results)
 
     @staticmethod
     def calculate_ratio(pairs: List[Tuple[int, int]]):
