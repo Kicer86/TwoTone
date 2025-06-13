@@ -4,7 +4,8 @@ import logging
 import numpy as np
 import os
 
-from PIL import Image
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from typing import Callable, Dict, List, Tuple
 
@@ -51,27 +52,32 @@ class PairMatcher:
             os.makedirs(d)
 
     def _normalize_frames(self, frames_info: FramesInfo, wd: str) -> Dict[int, str]:
-        def crop_5_percent(image: Image.Image) -> Image.Image:
-            width, height = image.size
+        def crop_5_percent(image: cv.Mat) -> cv.Mat:
+            height, width = image.shape
             dx = int(width * 0.05)
             dy = int(height * 0.05)
 
-            return image.crop((dx, dy, width - dx, height - dy))
+            image_cropped = image[dy:height - dy, dx:width - dx]
 
-        result = {}
-        for timestamp, info in frames_info.items():
+            return image_cropped
+
+        def process_frame(item):
+            timestamp, info = item
             self.interruption._check_for_stop()
             path = info["path"]
-            img = Image.open(path).convert('L')
+            img = cv.imread(path, cv.IMREAD_GRAYSCALE)
             img = crop_5_percent(img)
-            img = img.resize((256, 256))
+            img = cv.resize(img, (256, 256), interpolation=cv.INTER_AREA)
             _, file, ext = files.split_path(path)
             new_path = os.path.join(wd, file + "." + ext)
-            img.save(new_path)
+            cv.imwrite(new_path, img)
 
-            result[timestamp] = PairMatcher._get_new_info(info, new_path)
+            return timestamp, PairMatcher._get_new_info(info, new_path)
 
-        return result
+        with ThreadPoolExecutor() as executor:
+            results = executor.map(process_frame, frames_info.items())
+
+        return dict(results)
 
     @staticmethod
     def calculate_ratio(pairs: List[Tuple[int, int]]):
@@ -202,13 +208,17 @@ class PairMatcher:
         return '\n'.join(out)
 
     @staticmethod
-    def _compute_overlap(im1, im2, h):
+    def _compute_overlap(lhs_img: cv.typing.MatLike, rhs_img: cv.typing.MatLike, h):
+        # Expect images to be in the grayscale
+        assert len(lhs_img.shape) == 2
+        assert len(rhs_img.shape) == 2
+
         # Warp second image onto first
-        warped_im2 = cv.warpPerspective(im2, h, (im1.shape[1], im1.shape[0]))
+        warped_im2 = cv.warpPerspective(rhs_img, h, (lhs_img.shape[1], lhs_img.shape[0]))
 
         # Find overlapping region mask
-        gray1 = cv.cvtColor(im1, cv.COLOR_BGR2GRAY)
-        gray2 = cv.cvtColor(warped_im2, cv.COLOR_BGR2GRAY)
+        gray1 = lhs_img
+        gray2 = warped_im2
 
         mask1 = (gray1 > 0).astype(np.uint8)
         mask2 = (gray2 > 0).astype(np.uint8)
@@ -253,8 +263,8 @@ class PairMatcher:
         for lhs_t, rhs_t in pairs_with_timestamps:
             lhs_info = lhs_frames[lhs_t]
             rhs_info = rhs_frames[rhs_t]
-            lhs_img = cv.imread(lhs_info["path"])
-            rhs_img = cv.imread(rhs_info["path"])
+            lhs_img = cv.imread(lhs_info["path"], cv.IMREAD_GRAYSCALE)
+            rhs_img = cv.imread(rhs_info["path"], cv.IMREAD_GRAYSCALE)
 
             orb = cv.ORB_create(1000)
             kp1, des1 = orb.detectAndCompute(lhs_img, None)
@@ -287,21 +297,22 @@ class PairMatcher:
         return PairMatcher._interpolate_crop_rects(timestamps_lhs, lhs_crops), PairMatcher._interpolate_crop_rects(timestamps_rhs, rhs_crops)
 
     def _apply_crop_interpolated(self, frames: FramesInfo, dst_dir: str, crop_fn: Callable[[int], Tuple[int, int, int, int]]) -> FramesInfo:
-        output_files = {}
-        for timestamp, info in frames.items():
+        def _process_frame(item):
+            timestamp, info = item
             self.interruption._check_for_stop()
             path = info["path"]
-            img = cv.imread(path)
+            img = cv.imread(path, cv.IMREAD_GRAYSCALE)
             x, y, w, h = crop_fn(timestamp)
             cropped = img[y:y+h, x:x+w]
             cropped = cv.resize(cropped, (128, 128))
             dst_path = os.path.join(dst_dir, os.path.basename(path))
             cv.imwrite(dst_path, cropped)
+            return timestamp, PairMatcher._get_new_info(info, dst_path)
 
-            output_files[timestamp] = PairMatcher._get_new_info(info, dst_path)
+        with ThreadPoolExecutor() as executor:
+            results = executor.map(_process_frame, frames.items())
 
-        return output_files
-
+        return dict(results)
 
     def _three_before(self, timestamps: List[int], target: int) -> List[int]:
         timestamps = sorted(timestamps)
@@ -612,7 +623,7 @@ class PairMatcher:
         self.logger.debug(f"lhs key frames: {' '.join(lhs_key_frames_str)}")
         self.logger.debug(f"rhs key frames: {' '.join(rhs_key_frames_str)}")
 
-        # normalize frames. This could be done in previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
+        # normalize frames. This could have been done in the previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
         lhs_normalized_frames = self._normalize_frames(self.lhs_all_frames, self.lhs_normalized_wd)
         rhs_normalized_frames = self._normalize_frames(self.rhs_all_frames, self.rhs_normalized_wd)
 
