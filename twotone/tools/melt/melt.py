@@ -476,6 +476,9 @@ class MeltTool(Tool):
             title = args.title
             input_entries = args.input_files
 
+            if not title:
+                raise ValueError(f"Missing required option: --title")
+
             data_source = StaticSource(interruption=interruption)
 
             for input in input_entries:
