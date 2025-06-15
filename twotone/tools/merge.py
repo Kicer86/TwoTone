@@ -100,7 +100,7 @@ class Merge(utils.InterruptibleProcess):
 
         for subdir in found_subdirs:
             sub_subtitles = self._recursive_subtitle_search(subdir)
-            subtitles.extend(subtitles)
+            subtitles.extend(sub_subtitles)
 
         return subtitles
 
