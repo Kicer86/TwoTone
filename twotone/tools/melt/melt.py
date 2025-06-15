@@ -398,6 +398,8 @@ class Melter():
 
                         if language:
                             generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language={language}"])
+                        else:
+                            generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language=und"])          # mark as undefined
 
                         if stream_type == "audio" or stream_type == "subtitle":
                             if stream == preferred_audio or stream == preferred_subtitle:
