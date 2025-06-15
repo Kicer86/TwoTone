@@ -399,8 +399,11 @@ class Melter():
                         if language:
                             generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language={language}"])
 
-                        if stream == preferred_audio or stream == preferred_subtitle:
-                            generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "default"])
+                        if stream_type == "audio" or stream_type == "subtitle":
+                            if stream == preferred_audio or stream == preferred_subtitle:
+                                generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "default"])
+                            else:
+                                generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "0"])         # without this, output file will not respect 'default' set above... Who knows why
 
                         output_stream_indexes[stream_type] = output_stream_index + 1
 
