@@ -31,7 +31,7 @@ def _split_path_fix(value: str) -> List[str]:
 
 
 class Melter():
-    def __init__(self, logger: logging.Logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = []):
+    def __init__(self, logger: logging.Logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = [], preferred_languages: List[str] = []):
         self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
@@ -40,6 +40,7 @@ class Melter():
         self.wd = os.path.join(wd, str(os.getpid()))
         self.output = output
         self.languages_priority = [languages.unify_lang(language) for language in languages_priority]
+        self.preferred_languages = [languages.unify_lang(language) for language in preferred_languages]
 
         os.makedirs(self.wd, exist_ok=True)
 
@@ -175,7 +176,6 @@ class Melter():
             "-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path
         ])
 
-
     def _print_file_details(self, file: str, details: Dict[str, Any]):
         def formatter(key: str, value: any) -> str:
             if key == "fps":
@@ -254,7 +254,7 @@ class Melter():
         self.logger.debug(f"Using video file {video_stream_path}:{video_stream_index} as a base")
 
         for path, index, language in audio_streams:
-            lenght = details[path]["video"][index]["length"]
+            lenght = details[path]["video"][0]["length"]
 
             if abs(base_lenght - lenght) > 100:
                 self.logger.warning(f"Audio stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}.")
@@ -282,6 +282,13 @@ class Melter():
 
         # process subtitle streams
         for path, index, language in subtitle_streams:
+            lenght = details[path]["video"][0]["length"]
+
+            if abs(base_lenght - lenght) > 100:
+                error = f"Subtitles stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}. This is not supported yet"
+                self.logger.error(error)
+                raise RuntimeError(f"Unsupported case: {error}")
+
             streams[path].append({
                 "index": index,
                 "language": language,
@@ -289,7 +296,6 @@ class Melter():
             })
 
         return streams
-
 
     def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
         def process_entries(entries: List[str]) -> List[Tuple[List[str], str]]:
@@ -369,6 +375,17 @@ class Melter():
                     priorities.append(None)
                     streams_list_sorted = sorted(streams_list, key=lambda stream: get_index_for(priorities, stream[3]))
 
+                    # decide which track should be default
+                    def find_preferred(stype: str):
+                        for preferred in self.preferred_languages:
+                            for info in streams_list_sorted:
+                                if info[0] == "audio" and info[3] == preferred:
+                                    return info
+                        return None
+
+                    preferred_audio = find_preferred("audio")
+                    preferred_subtitle = None if preferred_audio else find_preferred("subtitle")
+
                     # generate map options
                     output_stream_indexes = defaultdict(int)
                     for stream in streams_list_sorted:
@@ -382,8 +399,11 @@ class Melter():
                         if language:
                             generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language={language}"])
 
-                        if output_stream_index == 0:
-                            generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "default"])
+                        if stream_type == "audio" or stream_type == "subtitle":
+                            if stream == preferred_audio or stream == preferred_subtitle:
+                                generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "default"])
+                            else:
+                                generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "0"])         # without this, output file will not respect 'default' set above... Who knows why
 
                         output_stream_indexes[stream_type] = output_stream_index + 1
 
@@ -393,7 +413,6 @@ class Melter():
                     generation_args.append(output)
 
                     process.raise_on_error(process.start_process("ffmpeg", generation_args))
-
 
     def melt(self):
         with files.ScopedDirectory(self.wd) as wd:
@@ -455,7 +474,12 @@ class MeltTool(Tool):
                             help='Comma separated list of two/three letter language codes. Order on the list defines order of audio and subtitle streams.\n'
                                  'For example, for --languages-priority pl,de,en,fr all used subtitles and audio tracks will be\n'
                                  'ordered so polish goes as first, then german, english and french.\n'
-                                 'If there are subtitles in any other language, they will be append at the end in undefined order')
+                                 'If there are subtitles in any other language, they will be append at the end in an undefined order')
+        parser.add_argument('-l', '--preferred-languages',
+                            help='Comma separated list of two/three letter language codes. `Melt` will force default tracks basing on the given order.\n'
+                                 'For example for value: jp,pl,de melt will set default audio track to japanese or polish or german in given order if audio track in given language exists.\n'
+                                 'If audio for given languages was not found, `melt` will look for subtitles in given languages and set the first one found to default.\n'
+                                 'If this parameter is not set, first audio track will be chosen, and none of the subtitles will be set as default.')
 
 
     @override
@@ -503,11 +527,13 @@ class MeltTool(Tool):
                     data_source.add_metadata(path, "audio_lang", audio_lang)
 
         languages_priority = args.languages_priority.split(",") if args.languages_priority else []
+        preferred_languages = args.preferred_languages.split(",") if args.preferred_languages else []
         melter = Melter(logger,
                         interruption,
                         data_source,
                         live_run = no_dry_run,
                         wd = args.working_dir,
                         output = args.output_dir,
-                        languages_priority = languages_priority)
+                        languages_priority = languages_priority,
+                        preferred_languages = preferred_languages)
         melter.melt()
