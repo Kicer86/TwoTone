@@ -123,6 +123,8 @@ def main():
         execute(sys.argv[1:])
     except RuntimeError as e:
         logging.error(f"Error occurred: {e}. Terminating")
+    except ValueError as e:
+        print(f"error: {e}")
 
 if __name__ == '__main__':
     main()
