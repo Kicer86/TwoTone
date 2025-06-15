@@ -175,7 +175,6 @@ class Melter():
             "-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path
         ])
 
-
     def _print_file_details(self, file: str, details: Dict[str, Any]):
         def formatter(key: str, value: any) -> str:
             if key == "fps":
@@ -297,7 +296,6 @@ class Melter():
 
         return streams
 
-
     def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
         def process_entries(entries: List[str]) -> List[Tuple[List[str], str]]:
             # function return list of: group of duplicates and name for final output file.
@@ -400,7 +398,6 @@ class Melter():
                     generation_args.append(output)
 
                     process.raise_on_error(process.start_process("ffmpeg", generation_args))
-
 
     def melt(self):
         with files.ScopedDirectory(self.wd) as wd:
