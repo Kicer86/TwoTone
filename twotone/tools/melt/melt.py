@@ -254,7 +254,7 @@ class Melter():
         self.logger.debug(f"Using video file {video_stream_path}:{video_stream_index} as a base")
 
         for path, index, language in audio_streams:
-            lenght = details[path]["video"][index]["length"]
+            lenght = details[path]["video"][0]["length"]
 
             if abs(base_lenght - lenght) > 100:
                 self.logger.warning(f"Audio stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}.")
@@ -282,7 +282,7 @@ class Melter():
 
         # process subtitle streams
         for path, index, language in subtitle_streams:
-            lenght = details[path]["video"][index]["length"]
+            lenght = details[path]["video"][0]["length"]
 
             if abs(base_lenght - lenght) > 100:
                 error = f"Subtitles stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}. This is not supported yet"
