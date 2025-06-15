@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Tuple
 
 from .. import utils
 from ..tool import Tool
-from ..utils2 import files, languages, process, video
+from ..utils2 import languages, process, video
+from ..utils2 import files as files_utils               # todo fix this
 from .debug_routines import DebugRoutines
 from .duplicates_source import DuplicatesSource
 from .jellyfin import JellyfinSource
@@ -262,7 +263,7 @@ class Melter():
                 if self.live_run:
                     self.logger.info("Starting videos comparison to solve mismatching lenghts.")
                     # more than 100ms difference in lenght, perform content matching
-                    with files.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd:
+                    with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd:
                         pairMatcher = PairMatcher(self.interruption, mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
 
                         mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
@@ -306,18 +307,22 @@ class Melter():
                 files_per_dir = []
                 dirs = entries
                 for dir_path in dirs:
-                    files = [
+                    media_files = [
                         os.path.join(root, file)
                         for root, _, filenames in os.walk(dir_path)
                         for file in filenames
                         if video.is_video(file)
                     ]
-                    files.sort()
-                    files_per_dir.append(files)
+                    media_files.sort()
+                    files_per_dir.append(media_files)
+
+                def file_without_ext(path: str) -> str:
+                    dir, name, _ = files_utils.split_path(path)
+                    return os.path.join(dir, name)
 
                 sorted_file_lists = [list(entry) for entry in zip(*files_per_dir)]
                 first_file_fullnames = [os.path.relpath(path[0], dirs[0]) for path in sorted_file_lists]
-                first_file_names = [Path(name).stem for name in first_file_fullnames]
+                first_file_names = [file_without_ext(path) for path in first_file_fullnames]
 
                 result = [ (files_group, output_name) for files_group, output_name in zip(sorted_file_lists, first_file_names) ]
 
@@ -417,7 +422,7 @@ class Melter():
                     process.raise_on_error(process.start_process("ffmpeg", generation_args))
 
     def melt(self):
-        with files.ScopedDirectory(self.wd) as wd:
+        with files_utils.ScopedDirectory(self.wd) as wd:
             self.logger.debug(f"Starting `melt` with live run: {self.live_run} and working dir: {self.wd}")
             self.logger.info("Finding duplicates")
             duplicates = self.duplicates_source.collect_duplicates()
