@@ -413,6 +413,7 @@ class RequireJellyfinServer(argparse.Action):
 class MeltTool(Tool):
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
+        self.parser = parser
 
         jellyfin_group = parser.add_argument_group("Jellyfin source")
         jellyfin_group.add_argument('--jellyfin-server',
@@ -466,7 +467,7 @@ class MeltTool(Tool):
             path_fix = _split_path_fix(args.jellyfin_path_fix) if args.jellyfin_path_fix else None
 
             if path_fix and len(path_fix) != 2:
-                raise ValueError(f"Invalid content for --jellyfin-path-fix argument. Got: {path_fix}")
+                self.parser.error(f"Invalid content for --jellyfin-path-fix argument. Got: {path_fix}")
 
             data_source = JellyfinSource(interruption=interruption,
                                          url=args.jellyfin_server,
@@ -477,7 +478,7 @@ class MeltTool(Tool):
             input_entries = args.input_files
 
             if not title:
-                raise ValueError(f"Missing required option: --title")
+                self.parser.error(f"Missing required option: --title")
 
             data_source = StaticSource(interruption=interruption)
 
