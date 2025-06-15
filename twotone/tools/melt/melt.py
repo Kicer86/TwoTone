@@ -31,7 +31,7 @@ def _split_path_fix(value: str) -> List[str]:
 
 
 class Melter():
-    def __init__(self, logger: logging.Logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = []):
+    def __init__(self, logger: logging.Logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = [], prefered_languages: List[str] = []):
         self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
@@ -40,6 +40,7 @@ class Melter():
         self.wd = os.path.join(wd, str(os.getpid()))
         self.output = output
         self.languages_priority = [languages.unify_lang(language) for language in languages_priority]
+        self.prefered_languages = [languages.unify_lang(language) for language in prefered_languages]
 
         os.makedirs(self.wd, exist_ok=True)
 
@@ -459,7 +460,12 @@ class MeltTool(Tool):
                             help='Comma separated list of two/three letter language codes. Order on the list defines order of audio and subtitle streams.\n'
                                  'For example, for --languages-priority pl,de,en,fr all used subtitles and audio tracks will be\n'
                                  'ordered so polish goes as first, then german, english and french.\n'
-                                 'If there are subtitles in any other language, they will be append at the end in undefined order')
+                                 'If there are subtitles in any other language, they will be append at the end in an undefined order')
+        parser.add_argument('-l', '--prefered-languages',
+                            help='Comma separated list of two/three letter language codes. `Melt` will force default tracks basing on the given order.\n'
+                                 'For example for value: jp,pl,de melt will set default audio track to japanese or polish or german in given order if audio track in given language exists.\n'
+                                 'If audio for given languages was not found, `melt` will look for subtitles in given languages and set the first one found to default.\n'
+                                 'If this parameter is not set, first audio track will be chosen, and none of the subtitles will be set as default.')
 
 
     @override
@@ -507,11 +513,13 @@ class MeltTool(Tool):
                     data_source.add_metadata(path, "audio_lang", audio_lang)
 
         languages_priority = args.languages_priority.split(",") if args.languages_priority else []
+        prefered_languages = args.prefered_languages.split(",") if args.prefered_languages else []
         melter = Melter(logger,
                         interruption,
                         data_source,
                         live_run = no_dry_run,
                         wd = args.working_dir,
                         output = args.output_dir,
-                        languages_priority = languages_priority)
+                        languages_priority = languages_priority,
+                        prefered_languages = prefered_languages)
         melter.melt()
