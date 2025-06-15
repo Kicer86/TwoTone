@@ -375,6 +375,17 @@ class Melter():
                     priorities.append(None)
                     streams_list_sorted = sorted(streams_list, key=lambda stream: get_index_for(priorities, stream[3]))
 
+                    # decide which track should be default
+                    def find_preferred(stype: str):
+                        for preferred in self.preferred_languages:
+                            for info in streams_list_sorted:
+                                if info[0] == "audio" and info[3] == preferred:
+                                    return info
+                        return None
+
+                    preferred_audio = find_preferred("audio")
+                    preferred_subtitle = None if preferred_audio else find_preferred("subtitle")
+
                     # generate map options
                     output_stream_indexes = defaultdict(int)
                     for stream in streams_list_sorted:
@@ -388,7 +399,7 @@ class Melter():
                         if language:
                             generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language={language}"])
 
-                        if output_stream_index == 0:
+                        if stream == preferred_audio or stream == preferred_subtitle:
                             generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "default"])
 
                         output_stream_indexes[stream_type] = output_stream_index + 1
