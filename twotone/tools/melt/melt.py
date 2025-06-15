@@ -282,6 +282,13 @@ class Melter():
 
         # process subtitle streams
         for path, index, language in subtitle_streams:
+            lenght = details[path]["video"][index]["length"]
+
+            if abs(base_lenght - lenght) > 100:
+                error = f"Subtitles stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}. This is not supported yet"
+                self.logger.error(error)
+                raise RuntimeError(f"Unsupported case: {error}")
+
             streams[path].append({
                 "index": index,
                 "language": language,
