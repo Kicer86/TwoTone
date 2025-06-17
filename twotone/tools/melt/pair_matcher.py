@@ -521,7 +521,7 @@ class PairMatcher:
 
     def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: Tuple[int, int], last: Tuple[int, int], cutoff: float, lookahead_seconds: float = 3.0):
         self.logger.debug("Improving boundaries")
-        self.logger.debug("Current first: {first} and last: {last} pairs")
+        self.logger.debug(f"Current first: {first} and last: {last} pairs")
         phash = PhashCache()
         ratio = PairMatcher.calculate_ratio([first, last])
 
@@ -677,7 +677,7 @@ class PairMatcher:
                     matching_pairs = [*matching_pairs, last]
                     prev_last = last
 
-            debug.dump_matches(matching_pairs, f"improving boundaries")
+            debug.dump_matches(matching_pairs, "improving boundaries")
 
         self.logger.debug("Status after boundaries lookup:\n")
         self.logger.debug(PairMatcher.summarize_segments(matching_pairs, self.lhs_fps, self.rhs_fps))
