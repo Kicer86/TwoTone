@@ -637,6 +637,20 @@ class PairMatcher:
         self.logger.debug("Pairs summary after initial matching:")
         self.logger.debug(PairMatcher.summarize_pairs(self.phash, matching_pairs, self.lhs_all_frames, self.rhs_all_frames, verbose = True))
 
+        # adjust images and rerun matching
+        lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self._crop_both_sets(
+            pairs_with_timestamps = matching_pairs,
+            lhs_frames = lhs_normalized_frames,
+            rhs_frames = rhs_normalized_frames,
+            lhs_cropped_dir = self.lhs_normalized_cropped_wd,
+            rhs_cropped_dir = self.rhs_normalized_cropped_wd
+        )
+
+        lhs_key_frames = PairMatcher._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_cropped_frames)
+        rhs_key_frames = PairMatcher._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_cropped_frames)
+        matching_pairs = self._make_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
+        debug.dump_matches(matching_pairs, "secondary matching")
+
         prev_first, prev_last = None, None
         while True:
             self.interruption._check_for_stop()
