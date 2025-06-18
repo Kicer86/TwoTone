@@ -654,15 +654,8 @@ class PairMatcher:
         prev_first, prev_last = None, None
         while True:
             self.interruption._check_for_stop()
-            # crop frames basing on matching ones
-            lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self._crop_both_sets(
-                pairs_with_timestamps = matching_pairs,
-                lhs_frames = lhs_normalized_frames,
-                rhs_frames = rhs_normalized_frames,
-                lhs_cropped_dir = self.lhs_normalized_cropped_wd,
-                rhs_cropped_dir = self.rhs_normalized_cropped_wd
-            )
 
+            # try to find better first and last pairs
             first_lhs, first_rhs = matching_pairs[0]
             last_lhs, last_rhs = matching_pairs[-1]
             first_lhs_path = lhs_normalized_cropped_frames[first_lhs]["path"]
@@ -690,6 +683,15 @@ class PairMatcher:
                 if last != prev_last:
                     matching_pairs = [*matching_pairs, last]
                     prev_last = last
+
+                # improve frames set basing on new data
+                lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self._crop_both_sets(
+                    pairs_with_timestamps = matching_pairs,
+                    lhs_frames = lhs_normalized_frames,
+                    rhs_frames = rhs_normalized_frames,
+                    lhs_cropped_dir = self.lhs_normalized_cropped_wd,
+                    rhs_cropped_dir = self.rhs_normalized_cropped_wd
+                )
 
             debug.dump_matches(matching_pairs, "improving boundaries")
 
