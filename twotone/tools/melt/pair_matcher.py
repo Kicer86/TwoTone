@@ -603,14 +603,18 @@ class PairMatcher:
 
     def create_segments_mapping(self) -> Tuple[List[Tuple[int, int]], FramesInfo, FramesInfo]:
         lhs_scene_changes = video_utils.detect_scene_changes(self.lhs_path, threshold = 0.3)
+        self.interruption._check_for_stop()
         rhs_scene_changes = video_utils.detect_scene_changes(self.rhs_path, threshold = 0.3)
+        self.interruption._check_for_stop()
 
         if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
             raise RuntimeError("Not enought scene changes detected")
 
         # extract all scenes
         self.lhs_all_frames = video_utils.extract_all_frames(self.lhs_path, self.lhs_all_wd, scale = 0.5, format = "png")
+        self.interruption._check_for_stop()
         self.rhs_all_frames = video_utils.extract_all_frames(self.rhs_path, self.rhs_all_wd, scale = 0.5, format = "png")
+        self.interruption._check_for_stop()
 
         lhs_key_frames_str = [str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes]
         rhs_key_frames_str = [str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes]
