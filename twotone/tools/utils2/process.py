@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import subprocess
-from collections import namedtuple
+from dataclasses import dataclass
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 from typing import List
@@ -11,7 +11,11 @@ from typing import List
 from . import generic
 from . import video
 
-ProcessResult = namedtuple("ProcessResult", "returncode stdout stderr")
+@dataclass
+class ProcessResult:
+    returncode: int
+    stdout: str | bytes
+    stderr: str | bytes
 
 
 def start_process(process: str, args: List[str], show_progress = False) -> ProcessResult:
