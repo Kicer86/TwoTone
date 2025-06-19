@@ -15,9 +15,6 @@ from .tool import Tool
 from twotone.tools.utils2 import files, process
 
 
-work = True
-
-
 class Merge(utils.InterruptibleProcess):
 
     def __init__(self, logger: logging.Logger, dry_run: bool, language: str, lang_priority: str):
