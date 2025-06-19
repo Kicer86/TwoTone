@@ -2,9 +2,11 @@
 import sys
 import re
 
+DISABLE_PROGRESSBARS = False
+
 
 def hide_progressbar() -> bool:
-    return not sys.stdout.isatty() or 'unittest' in sys.modules
+    return not sys.stdout.isatty() or DISABLE_PROGRESSBARS
 
 
 def get_tqdm_defaults():
