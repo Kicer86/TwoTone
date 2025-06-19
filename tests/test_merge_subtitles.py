@@ -271,6 +271,31 @@ class SubtitlesMerge(unittest.TestCase):
             files_after = list_files(td.path)
             self.assertEqual(files_after, files_before)
 
+    def test_collects_subtitles_from_subdirs(self):
+        with WorkingDirectoryForTest() as td:
+            add_test_media("Grass.*mp4", td.path)
+            add_test_media("Grass.*srt", td.path, ["EN"])
+
+            subdir = os.path.join(td.path, "sub")
+            os.mkdir(subdir)
+            add_test_media("Grass.*srt", subdir, ["DE"])
+
+            subsubdir = os.path.join(subdir, "sub")
+            os.mkdir(subsubdir)
+            add_test_media("Grass.*srt", subsubdir, ["NE"])
+
+            run_twotone("merge", [td.path], ["--no-dry-run"])
+
+            # verify results
+            files_after = list_files(td.path)
+            self.assertEqual(len(files_after), 1)
+
+            video = files_after[0]
+            self.assertEqual(video[-4:], ".mkv")
+            tracks = utils.get_video_data(video)
+            self.assertEqual(len(tracks.video_tracks), 1)
+            self.assertEqual(len(tracks.subtitles), 3)
+
 
 if __name__ == '__main__':
     unittest.main()
