@@ -11,9 +11,11 @@ from platformdirs import user_cache_dir
 from typing import Dict, List, Union
 
 import twotone.twotone as twotone
+import twotone.tools.utils2.generic as twotone_generic_utils
 
 
 current_path = os.path.dirname(os.path.abspath(__file__))
+twotone_generic_utils.DISABLE_PROGRESSBARS = True
 
 
 class WorkingDirectoryForTest:
