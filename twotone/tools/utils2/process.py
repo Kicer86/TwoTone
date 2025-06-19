@@ -57,4 +57,3 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
 def raise_on_error(status: ProcessResult):
     if status.returncode != 0:
         raise RuntimeError(f"Process exited with unexpected error:\n{status.stdout}\n{status.stderr}")
-

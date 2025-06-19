@@ -8,12 +8,11 @@ from overrides import override
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from . import utils
 from .tool import Tool
-from .utils2 import generic, process
+from twotone.tools.utils2 import generic, process, video as vid, files
 
 
-class Concatenate(utils.InterruptibleProcess):
+class Concatenate(generic.InterruptibleProcess):
     def __init__(self, logger: logging.Logger, live_run: bool):
         super().__init__()
 
@@ -22,7 +21,7 @@ class Concatenate(utils.InterruptibleProcess):
 
     def run(self, path: str):
         self.logger.info(f"Collecting video files from path {path}")
-        video_files = utils.collect_video_files(path, self)
+        video_files = vid.collect_video_files(path, self)
 
         self.logger.info("Finding splitted videos")
         parts_regex = re.compile("(.*[^0-9a-z]+)(cd\\d+)([^0-9a-z]+.*)", re.IGNORECASE)
@@ -105,7 +104,7 @@ class Concatenate(utils.InterruptibleProcess):
                     return path.replace("'", "'\\''")
 
                 input_file_content = [f"file '{escape_path(input_file)}'" for input_file in input_files]
-                with utils.TempFileManager("\n".join(input_file_content), "txt") as input_file:
+                with files.TempFileManager("\n".join(input_file_content), "txt") as input_file:
                     ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c", "copy", output]
 
                     self.logger.info(f"Concatenating files into {output} file")

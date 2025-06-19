@@ -2,9 +2,8 @@
 import os
 import unittest
 
-import twotone.tools.utils as utils
+from twotone.tools.utils2 import process, subtitles as subs, generic
 from common import WorkingDirectoryForTest, list_files, add_test_media, generate_microdvd_subtitles, run_twotone
-from twotone.tools.utils2 import process
 
 
 class SubtitlesConversion(unittest.TestCase):
@@ -29,12 +28,12 @@ class SubtitlesConversion(unittest.TestCase):
             with open(subtitles_path, mode='r') as subtitles_file:
                 ms_time = 0
                 for line in subtitles_file:
-                    match = utils.subrip_time_pattern.match(line.strip())
+                    match = subs.subrip_time_pattern.match(line.strip())
                     if match:
                         lines += 1
                         start_time, end_time = match.groups()
-                        start_ms = utils.time_to_ms(start_time)
-                        end_ms = utils.time_to_ms(end_time)
+                        start_ms = generic.time_to_ms(start_time)
+                        end_ms = generic.time_to_ms(end_time)
 
                         # one millisecond difference is acceptable (hence delta = 1)
                         self.assertAlmostEqual(start_ms, ms_time, delta = 1)
@@ -47,7 +46,7 @@ class SubtitlesConversion(unittest.TestCase):
     def test_microdvd_subtitles_with_default_fps(self):
         with WorkingDirectoryForTest() as td:
             add_test_media("moon_23.976.mp4", td.path)
-            generate_microdvd_subtitles(os.path.join(td.path, "moon_23.976.txt"), length = 1, fps = utils.ffmpeg_default_fps)
+            generate_microdvd_subtitles(os.path.join(td.path, "moon_23.976.txt"), length = 1, fps = subs.ffmpeg_default_fps)
 
             run_twotone("merge", [td.path, "-l", "auto"], ["--no-dry-run"])
 
@@ -63,12 +62,12 @@ class SubtitlesConversion(unittest.TestCase):
             with open(subtitles_path, mode='r') as subtitles_file:
                 ms_time = 0
                 for line in subtitles_file:
-                    match = utils.subrip_time_pattern.match(line.strip())
+                    match = subs.subrip_time_pattern.match(line.strip())
                     if match:
                         lines += 1
                         start_time, end_time = match.groups()
-                        start_ms = utils.time_to_ms(start_time)
-                        end_ms = utils.time_to_ms(end_time)
+                        start_ms = generic.time_to_ms(start_time)
+                        end_ms = generic.time_to_ms(end_time)
 
                         # one millisecond difference is acceptable (hence delta = 1)
                         self.assertAlmostEqual(start_ms, ms_time, delta = 1)

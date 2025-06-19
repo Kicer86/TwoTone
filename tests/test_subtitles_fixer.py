@@ -3,7 +3,7 @@ import logging
 import unittest
 import tempfile
 
-import twotone.tools.utils as utils
+from twotone.tools.utils2 import subtitles as subs, video
 
 from common import WorkingDirectoryForTest, add_test_media, hashes, current_path, generate_microdvd_subtitles, run_twotone
 from twotone.tools.utils2 import generic, process
@@ -11,11 +11,11 @@ from twotone.tools.utils2 import generic, process
 
 def create_broken_video_with_scaled_subtitle_timings(output_video_path: str, input_video: str):
     with tempfile.TemporaryDirectory() as subtitle_dir:
-        input_video_info = utils.get_video_data(input_video)
+        input_video_info = video.get_video_data(input_video)
         default_video_track = input_video_info.video_tracks[0]
         fps = generic.fps_str_to_float(default_video_track.fps)
 
-        if abs(fps - utils.ffmpeg_default_fps) < 1:
+        if abs(fps - subs.ffmpeg_default_fps) < 1:
             raise RuntimeError("source video is not suitable, has nearly default fps")
 
         length = default_video_track.length / 1000
@@ -27,12 +27,12 @@ def create_broken_video_with_scaled_subtitle_timings(output_video_path: str, inp
         srt_subtitle_path = f"{subtitle_dir}/sub.srt"
         status = process.start_process("ffmpeg", ["-hide_banner", "-y", "-i", subtitle_path, srt_subtitle_path])
 
-        utils.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [utils.SubtitleFile(srt_subtitle_path, "eng", "utf8")])
+        video.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [subs.SubtitleFile(srt_subtitle_path, "eng", "utf8")])
 
 
 def create_broken_video_with_too_long_last_subtitle(output_video_path: str, input_video: str):
     with tempfile.TemporaryDirectory() as subtitle_dir:
-        input_video_info = utils.get_video_data(input_video)
+        input_video_info = video.get_video_data(input_video)
         default_video_track = input_video_info.video_tracks[0]
         length = default_video_track.length
 
@@ -46,16 +46,16 @@ def create_broken_video_with_too_long_last_subtitle(output_video_path: str, inpu
             file.write(f"{generic.ms_to_time(1000)} --> {generic.ms_to_time((length + 10) * 1000)}\n")
             file.write(f"2\n")
 
-        utils.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [utils.SubtitleFile(subtitle_path, "eng", "utf8")])
+        video.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [subs.SubtitleFile(subtitle_path, "eng", "utf8")])
 
 
 def create_broken_video_with_incompatible_subtitles(output_video_path: str, input_video: str):
     with tempfile.TemporaryDirectory() as subtitle_dir:
-        input_video_info = utils.get_video_data(input_video)
+        input_video_info = video.get_video_data(input_video)
         default_video_track = input_video_info.video_tracks[0]
         fps = generic.fps_str_to_float(default_video_track.fps)
 
-        if abs(fps - utils.ffmpeg_default_fps) < 1:
+        if abs(fps - subs.ffmpeg_default_fps) < 1:
             raise RuntimeError("source video is not suitable, has nearly default fps")
 
         length = default_video_track.length
