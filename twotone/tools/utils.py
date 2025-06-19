@@ -9,7 +9,7 @@ import signal
 import sys
 import tempfile
 import uuid
-from collections import namedtuple
+from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 from typing import Dict, List
@@ -18,11 +18,40 @@ from .utils2 import process, video
 from .utils2.generic import fps_str_to_float, ms_to_time, time_to_ms
 
 
-SubtitleFile = namedtuple("Subtitle", "path language encoding")
-Subtitle = namedtuple("Subtitle", "language default length tid format")
-VideoTrack = namedtuple("VideoTrack", "fps length")
-VideoInfo = namedtuple("VideoInfo", "video_tracks subtitles path")
-ProcessResult = namedtuple("ProcessResult", "returncode stdout stderr")
+@dataclass
+class SubtitleFile:
+    path: str
+    language: str
+    encoding: str
+
+
+@dataclass
+class Subtitle:
+    language: str
+    default: int | bool
+    length: int | None
+    tid: int
+    format: str
+
+
+@dataclass
+class VideoTrack:
+    fps: str
+    length: int
+
+
+@dataclass
+class VideoInfo:
+    video_tracks: List[VideoTrack]
+    subtitles: List[Subtitle]
+    path: str
+
+
+@dataclass
+class ProcessResult:
+    returncode: int
+    stdout: bytes
+    stderr: bytes
 
 subtitle_format1 = re.compile("[0-9]{1,2}:[0-9]{2}:[0-9]{2}:.*")
 subtitle_format2 = re.compile("(?:0|1)\n[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}\n", flags = re.MULTILINE)
