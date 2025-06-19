@@ -314,10 +314,6 @@ def compare_videos(lhs: [VideoTrack], rhs: [VideoTrack]) -> bool:
     return True
 
 
-def hide_progressbar() -> bool:
-    return not sys.stdout.isatty() or 'unittest' in sys.modules
-
-
 class InterruptibleProcess:
     def __init__(self):
         self._work = True

@@ -97,7 +97,7 @@ class Transcoder(utils.InterruptibleProcess):
 
         i = 0
         with logging_redirect_tqdm():
-            for (start, end) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=utils.hide_progressbar()):
+            for (start, end) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=generic.hide_progressbar()):
                 self._check_for_stop()
                 output_file = os.path.join(output_dir, f"{filename}.frag{i}.mp4")
                 self._extract_segment(video_file, start, end, output_file)

@@ -10,7 +10,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from . import utils
 from .tool import Tool
-from .utils2 import process
+from .utils2 import generic, process
 
 
 class Fixer(utils.InterruptibleProcess):
@@ -102,7 +102,7 @@ class Fixer(utils.InterruptibleProcess):
         self.logger.info("Fixing videos")
 
         with logging_redirect_tqdm():
-            for broken_video in tqdm(broken_videos_info, desc="Fixing", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=utils.hide_progressbar()):
+            for broken_video in tqdm(broken_videos_info, desc="Fixing", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic.hide_progressbar()):
                 self._check_for_stop()
 
                 video_info = broken_video[0]
@@ -187,7 +187,7 @@ class Fixer(utils.InterruptibleProcess):
 
         self.logger.debug("Analysing videos")
         with logging_redirect_tqdm():
-            for video in tqdm(video_files, desc="Analysing videos", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=utils.hide_progressbar()):
+            for video in tqdm(video_files, desc="Analysing videos", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic.hide_progressbar()):
                 self._check_for_stop()
                 broken_video = self._check_if_broken(video)
                 if broken_video is not None:

@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple
 
 from . import utils
 from .tool import Tool
-from twotone.tools.utils2 import files, process
+from twotone.tools.utils2 import files, generic, process
 
 
 class Merge(utils.InterruptibleProcess):
@@ -273,7 +273,7 @@ class Merge(utils.InterruptibleProcess):
 
         self.logger.info("Starting merge")
         with logging_redirect_tqdm():
-            for video, subtitles in tqdm(vas.items(), desc="Merging", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=utils.hide_progressbar()):
+            for video, subtitles in tqdm(vas.items(), desc="Merging", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic.hide_progressbar()):
                 self._check_for_stop()
                 self._merge(video, subtitles)
 
