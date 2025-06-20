@@ -11,10 +11,10 @@ from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .tool import Tool
-from twotone.tools.utils2 import files, generic, process, video
+from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
 
 
-class Transcoder(generic.InterruptibleProcess):
+class Transcoder(generic_utils.InterruptibleProcess):
     def __init__(self, logger: logging.Logger, live_run: bool = False, target_ssim: float = 0.98, codec: str = "libx265"):
         super().__init__()
         self.logger = logger
@@ -28,19 +28,19 @@ class Transcoder(generic.InterruptibleProcess):
         video_files = []
         for root, _, files in os.walk(directory):
             for file in files:
-                if video.is_video(file):
+                if video_utils.is_video(file):
                     video_files.append(os.path.join(root, file))
         return video_files
 
 
     def _calculate_quality(self, original, transcoded):
-        """Calculate SSIM between original and transcoded video."""
+        """Calculate SSIM between original and transcoded video_utils."""
         args = [
             "-i", original, "-i", transcoded,
             "-lavfi", "ssim", "-f", "null", "-"
         ]
 
-        result = process.start_process("ffmpeg", args)
+        result = process_utils.start_process("ffmpeg", args)
         ssim_line = [line for line in result.stderr.splitlines() if "All:" in line]
 
         if ssim_line:
@@ -76,7 +76,7 @@ class Transcoder(generic.InterruptibleProcess):
             output_file
         ]
 
-        process.raise_on_error(process.start_process("ffmpeg", args, show_progress=show_progress))
+        process_utils.raise_on_error(process_utils.start_process("ffmpeg", args, show_progress=show_progress))
 
 
     def _extract_segment(self, video_file, start_time, end_time, output_file):
@@ -92,11 +92,11 @@ class Transcoder(generic.InterruptibleProcess):
 
     def _extract_segments(self, video_file: str, segments, output_dir: str):
         output_files = []
-        _, filename, ext = files.split_path(video_file)
+        _, filename, ext = files_utils.split_path(video_file)
 
         i = 0
         with logging_redirect_tqdm():
-            for (start, end) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=generic.hide_progressbar()):
+            for (start, end) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
                 self._check_for_stop()
                 output_file = os.path.join(output_dir, f"{filename}.frag{i}.mp4")
                 self._extract_segment(video_file, start, end, output_file)
@@ -125,7 +125,7 @@ class Transcoder(generic.InterruptibleProcess):
             "-vsync", "vfr", "-f", "null", "/dev/null"
         ]
 
-        result = process.start_process("ffmpeg", args)
+        result = process_utils.start_process("ffmpeg", args)
 
         # Parse timestamps from the ffmpeg output
         timestamps = []
@@ -154,7 +154,7 @@ class Transcoder(generic.InterruptibleProcess):
 
 
     def _select_segments(self, video_file, segment_duration=5):
-        duration = video.get_video_duration(video_file) / 1000
+        duration = video_utils.get_video_duration(video_file) / 1000
         num_segments = max(3, min(10, int(duration // 30)))
 
         if duration <= 0 or num_segments <= 0 or segment_duration <= 0:
@@ -204,7 +204,7 @@ class Transcoder(generic.InterruptibleProcess):
 
 
     def _transcode_segment_and_compare(self, wd_dir: str, segment_file: str, crf: int) -> float or None:
-        _, filename, ext = files.split_path(segment_file)
+        _, filename, ext = files_utils.split_path(segment_file)
 
         transcoded_segment_output = os.path.join(wd_dir, f"{filename}.transcoded.{ext}")
 
@@ -215,7 +215,7 @@ class Transcoder(generic.InterruptibleProcess):
 
     def _for_segments(self, segments, op, title, unit):
         with logging_redirect_tqdm(), \
-             tqdm(desc=title, unit=unit, total=len(segments), **generic.get_tqdm_defaults()) as pbar, \
+             tqdm(desc=title, unit=unit, total=len(segments), **generic_utils.get_tqdm_defaults()) as pbar, \
              tempfile.TemporaryDirectory() as wd_dir, \
              ThreadPoolExecutor() as executor:
             def worker(file_path):
@@ -227,7 +227,7 @@ class Transcoder(generic.InterruptibleProcess):
 
     def _final_transcode(self, input_file, crf):
         """Perform the final transcoding with the best CRF using the determined extra_params."""
-        dir, basename, ext = files.split_path(input_file)
+        dir, basename, ext = files_utils.split_path(input_file)
 
         # As of now ffmpeg does not support rmvb outputs and copying cook audio codec
         overwrite_input = True
@@ -264,7 +264,7 @@ class Transcoder(generic.InterruptibleProcess):
                 raise ValueError()
 
 
-            process.start_process("exiftool", ["-overwrite_original", "-TagsFromFile", input_file, "-all:all>all:all", temp_file])
+            process_utils.start_process("exiftool", ["-overwrite_original", "-TagsFromFile", input_file, "-all:all>all:all", temp_file])
 
             if overwrite_input:
                 try:
@@ -298,7 +298,7 @@ class Transcoder(generic.InterruptibleProcess):
         """Find the optimal CRF using bisection."""
         original_size = os.path.getsize(input_file)
 
-        duration = video.get_video_duration(input_file)
+        duration = video_utils.get_video_duration(input_file)
         if not duration:
             return None
 

@@ -2,7 +2,7 @@
 import os
 import unittest
 
-from twotone.tools.utils2 import video as vid
+from twotone.tools.utils import video_utils
 from common import WorkingDirectoryForTest, list_files, add_test_media, run_twotone
 
 
@@ -23,7 +23,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
 
             video = files_after[0]
             self.assertEqual(video[-4:], ".mkv")
-            tracks = vid.get_video_data(video)
+            tracks = video_utils.get_video_data(video)
             self.assertEqual(len(tracks.video_tracks), 1)
             self.assertEqual(len(tracks.subtitles), 1)
             self.assertEqual(tracks.subtitles[0].language, "eng")
@@ -43,7 +43,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
 
             video = files_after[0]
             self.assertEqual(video[-4:], ".mkv")
-            tracks = vid.get_video_data(video)
+            tracks = video_utils.get_video_data(video)
             self.assertEqual(len(tracks.video_tracks), 1)
             self.assertEqual(len(tracks.subtitles), 1)
             self.assertEqual(tracks.subtitles[0].language, "pol")
@@ -77,7 +77,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 1)
 
             video = files_after[0]
-            tracks = vid.get_video_data(video)
+            tracks = video_utils.get_video_data(video)
             self.assertEqual(len(tracks.subtitles), 5)
             self.assertEqual(tracks.subtitles[0].language, "ger")
             self.assertEqual(tracks.subtitles[1].language, "cze")

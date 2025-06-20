@@ -10,7 +10,7 @@ from typing import Dict
 
 import py3langid as langid
 
-from .generic import ms_to_time, time_to_ms
+from .generic_utils import ms_to_time, time_to_ms
 
 
 @dataclass

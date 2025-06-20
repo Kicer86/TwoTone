@@ -11,21 +11,21 @@ from typing import Callable, Dict, List, Tuple
 
 from .debug_routines import DebugRoutines
 from .phash_cache import PhashCache
-from ..utils2 import files, generic, image, video
+from ..utils import files_utils, generic_utils, image_utils, video_utils
 
 FramesInfo = Dict[int, Dict[str, str]]
 
 
 class PairMatcher:
-    def __init__(self, interruption: generic.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger):
+    def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger):
         self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
         self.lhs_path = lhs_path
         self.rhs_path = rhs_path
         self.logger = logger
         self.phash = PhashCache()
-        self.lhs_fps = eval(video.get_video_data2(lhs_path)["video"][0]["fps"])
-        self.rhs_fps = eval(video.get_video_data2(rhs_path)["video"][0]["fps"])
+        self.lhs_fps = eval(video_utils.get_video_data2(lhs_path)["video"][0]["fps"])
+        self.rhs_fps = eval(video_utils.get_video_data2(rhs_path)["video"][0]["fps"])
 
         lhs_wd = os.path.join(self.wd, "lhs")
         rhs_wd = os.path.join(self.wd, "rhs")
@@ -67,7 +67,7 @@ class PairMatcher:
             img = cv.imread(path, cv.IMREAD_GRAYSCALE)
             img = crop_5_percent(img)
             img = cv.resize(img, (256, 256), interpolation=cv.INTER_AREA)
-            _, file, ext = files.split_path(path)
+            _, file, ext = files_utils.split_path(path)
             new_path = os.path.join(wd, file + "." + ext)
             cv.imwrite(new_path, img)
 
@@ -90,7 +90,7 @@ class PairMatcher:
 
     @staticmethod
     def _is_rich(frame_path: str):
-        return image.image_entropy(frame_path) > 3.5
+        return image_utils.image_entropy(frame_path) > 3.5
 
 
     @staticmethod
@@ -434,7 +434,7 @@ class PairMatcher:
 
                         pdiff = abs(phash.get(lhs_path) - phash.get(rhs_path))
                         phash_matching = pdiff < cutoff
-                        matching = image.are_images_similar(lhs_path, rhs_path)
+                        matching = image_utils.are_images_similar(lhs_path, rhs_path)
                         if phash_matching and matching:
                             new_pairs.append((l, rhs_candidate))
                             rhs_used.add(rhs_candidate)
@@ -508,7 +508,7 @@ class PairMatcher:
 
         orb_filtered = [
             (lhs_ts, rhs_ts) for lhs_ts, rhs_ts in outliers_eliminated
-            if image.are_images_similar(lhs_all[lhs_ts]["path"], rhs_all[rhs_ts]["path"])
+            if image_utils.are_images_similar(lhs_all[lhs_ts]["path"], rhs_all[rhs_ts]["path"])
         ]
         self.logger.debug(f"After ORB elimination:     {PairMatcher.summarize_pairs(self.phash, orb_filtered, lhs_all, rhs_all)}")
 
@@ -606,15 +606,15 @@ class PairMatcher:
 
 
     def create_segments_mapping(self) -> List[Tuple[int, int]]:
-        lhs_scene_changes = video.detect_scene_changes(self.lhs_path, threshold = 0.3)
-        rhs_scene_changes = video.detect_scene_changes(self.rhs_path, threshold = 0.3)
+        lhs_scene_changes = video_utils.detect_scene_changes(self.lhs_path, threshold = 0.3)
+        rhs_scene_changes = video_utils.detect_scene_changes(self.rhs_path, threshold = 0.3)
 
         if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
             raise RuntimeError("Not enought scene changes detected")
 
         # extract all scenes
-        self.lhs_all_frames = video.extract_all_frames(self.lhs_path, self.lhs_all_wd, scale = 0.5, format = "png")
-        self.rhs_all_frames = video.extract_all_frames(self.rhs_path, self.rhs_all_wd, scale = 0.5, format = "png")
+        self.lhs_all_frames = video_utils.extract_all_frames(self.lhs_path, self.lhs_all_wd, scale = 0.5, format = "png")
+        self.rhs_all_frames = video_utils.extract_all_frames(self.rhs_path, self.rhs_all_wd, scale = 0.5, format = "png")
 
         lhs_key_frames_str = [str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes]
         rhs_key_frames_str = [str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes]

@@ -2,7 +2,7 @@
 import os
 import unittest
 
-from twotone.tools.utils2 import subtitles as subs
+from twotone.tools.utils import subtitles_utils
 from common import WorkingDirectoryForTest
 
 
@@ -16,9 +16,9 @@ class UtilsTests(unittest.TestCase):
                 subtitle_file.write(content)
 
             if valid:
-                self.assertTrue(subs.is_subtitle(subtitle_path))
+                self.assertTrue(subtitles_utils.is_subtitle(subtitle_path))
             else:
-                self.assertFalse(subs.is_subtitle(subtitle_path))
+                self.assertFalse(subtitles_utils.is_subtitle(subtitle_path))
 
 
     def test_subtitle_detection(self):

@@ -6,12 +6,12 @@ from collections import defaultdict
 from overrides import override
 from typing import Dict, List, Tuple
 
-from ..utils2 import generic
+from ..utils import generic_utils
 from .duplicates_source import DuplicatesSource
 
 
 class JellyfinSource(DuplicatesSource):
-    def __init__(self, interruption: generic.InterruptibleProcess, url: str, token: str, path_fix: Tuple[str, str]):
+    def __init__(self, interruption: generic_utils.InterruptibleProcess, url: str, token: str, path_fix: Tuple[str, str]):
         super().__init__(interruption)
 
         self.url = url

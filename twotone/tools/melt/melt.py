@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from ..tool import Tool
-from ..utils2 import languages, process, video, generic
-from ..utils2 import files as files_utils               # todo fix this
+from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
 from .debug_routines import DebugRoutines
 from .duplicates_source import DuplicatesSource
 from .jellyfin import JellyfinSource
@@ -31,7 +30,7 @@ def _split_path_fix(value: str) -> List[str]:
 
 
 class Melter():
-    def __init__(self, logger: logging.Logger, interruption: generic.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = [], preferred_languages: List[str] = []):
+    def __init__(self, logger: logging.Logger, interruption: generic_utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = [], preferred_languages: List[str] = []):
         self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
@@ -39,8 +38,8 @@ class Melter():
         self.debug_it: int = 0
         self.wd = os.path.join(wd, str(os.getpid()))
         self.output = output
-        self.languages_priority = [languages.unify_lang(language) for language in languages_priority]
-        self.preferred_languages = [languages.unify_lang(language) for language in preferred_languages]
+        self.languages_priority = [language_utils.unify_lang(language) for language in languages_priority]
+        self.preferred_languages = [language_utils.unify_lang(language) for language in preferred_languages]
 
         os.makedirs(self.wd, exist_ok=True)
 
@@ -88,12 +87,12 @@ class Melter():
         seg2_start, seg2_end = min(s2_all), max(s2_all)
 
         # 1. Extract main audio
-        process.start_process("ffmpeg", ["-y", "-i", video1_path, "-map", "0:a:0", "-c:a", "flac", v1_audio])
-        process.start_process("ffmpeg", ["-y", "-i", video2_path, "-map", "0:a:0", "-c:a", "flac", v2_audio])
+        process_utils.start_process("ffmpeg", ["-y", "-i", video1_path, "-map", "0:a:0", "-c:a", "flac", v1_audio])
+        process_utils.start_process("ffmpeg", ["-y", "-i", video2_path, "-map", "0:a:0", "-c:a", "flac", v2_audio])
 
         # 2. Extract head and tail
-        process.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(seg1_start / 1000), "-i", v1_audio, "-c:a", "flac", head_path])
-        process.start_process("ffmpeg", ["-y", "-ss", str(seg1_end / 1000), "-i", v1_audio, "-c:a", "flac", tail_path])
+        process_utils.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(seg1_start / 1000), "-i", v1_audio, "-c:a", "flac", head_path])
+        process_utils.start_process("ffmpeg", ["-y", "-ss", str(seg1_end / 1000), "-i", v1_audio, "-c:a", "flac", tail_path])
 
         # 3. Generate subsegment split points using pair list boundaries
         total_left_duration = seg1_end - seg1_start
@@ -144,12 +143,12 @@ class Melter():
             raw_cut = os.path.join(wd, f"cut_{idx}.flac")
             scaled_cut = os.path.join(wd, f"scaled_{idx}.flac")
 
-            process.start_process("ffmpeg", [
+            process_utils.start_process("ffmpeg", [
                 "-y", "-ss", str(r_start / 1000), "-to", str(r_end / 1000),
                 "-i", v2_audio, "-c:a", "flac", raw_cut
             ])
 
-            process.start_process("ffmpeg", [
+            process_utils.start_process("ffmpeg", [
                 "-y", "-i", raw_cut,
                 "-filter:a", f"atempo={ratio:.3f}",
                 "-c:a", "flac", scaled_cut
@@ -166,13 +165,13 @@ class Melter():
             f.write(f"file '{tail_path}'\n")
 
         merged_flac = os.path.join(wd, "merged.flac")
-        process.start_process("ffmpeg", [
+        process_utils.start_process("ffmpeg", [
             "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
             "-c:a", "flac", merged_flac
         ])
 
         # 5. Re-encode to output file
-        process.start_process("ffmpeg", [
+        process_utils.start_process("ffmpeg", [
             "-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path
         ])
 
@@ -181,7 +180,7 @@ class Melter():
             if key == "fps":
                 return eval(value)
             elif key == "length":
-                return generic.ms_to_time(value)
+                return generic_utils.ms_to_time(value)
             else:
                 return value if value else "-"
 
@@ -220,7 +219,7 @@ class Melter():
 
     def _process_duplicates(self, duplicates: List[str]) -> List[Dict]:
         # analyze files in terms of quality and available content
-        details = {file: video.get_video_data2(file) for file in duplicates}
+        details = {file: video_utils.get_video_data2(file) for file in duplicates}
 
         # print input file details
         for file, file_details in details.items():
@@ -310,7 +309,7 @@ class Melter():
                         os.path.join(root, file)
                         for root, _, filenames in os.walk(dir_path)
                         for file in filenames
-                        if video.is_video(file)
+                        if video_utils.is_video(file)
                     ]
                     media_files.sort()
                     files_per_dir.append(media_files)
@@ -418,7 +417,7 @@ class Melter():
 
                     generation_args.append(output)
 
-                    process.raise_on_error(process.start_process("ffmpeg", generation_args))
+                    process_utils.raise_on_error(process_utils.start_process("ffmpeg", generation_args))
 
     def melt(self):
         with files_utils.ScopedDirectory(self.wd) as wd:
@@ -490,7 +489,7 @@ class MeltTool(Tool):
 
     @override
     def run(self, args, no_dry_run: bool, logger: logging.Logger):
-        interruption = generic.InterruptibleProcess()
+        interruption = generic_utils.InterruptibleProcess()
 
         data_source = None
         if args.jellyfin_server:

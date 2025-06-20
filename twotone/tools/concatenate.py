@@ -9,10 +9,10 @@ from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .tool import Tool
-from twotone.tools.utils2 import generic, process, video as vid, files
+from twotone.tools.utils import generic_utils, process_utils, video_utils, files_utils
 
 
-class Concatenate(generic.InterruptibleProcess):
+class Concatenate(generic_utils.InterruptibleProcess):
     def __init__(self, logger: logging.Logger, live_run: bool):
         super().__init__()
 
@@ -21,7 +21,7 @@ class Concatenate(generic.InterruptibleProcess):
 
     def run(self, path: str):
         self.logger.info(f"Collecting video files from path {path}")
-        video_files = vid.collect_video_files(path, self)
+        video_files = video_utils.collect_video_files(path, self)
 
         self.logger.info("Finding splitted videos")
         parts_regex = re.compile("(.*[^0-9a-z]+)(cd\\d+)([^0-9a-z]+.*)", re.IGNORECASE)
@@ -95,7 +95,7 @@ class Concatenate(generic.InterruptibleProcess):
 
         self.logger.info("Starting concatenation")
         with logging_redirect_tqdm():
-            for output, details in tqdm(sorted_videos.items(), desc="Concatenating", unit="movie", **generic.get_tqdm_defaults()):
+            for output, details in tqdm(sorted_videos.items(), desc="Concatenating", unit="movie", **generic_utils.get_tqdm_defaults()):
                 self._check_for_stop()
 
                 input_files = [video for video, _ in details]
@@ -104,12 +104,12 @@ class Concatenate(generic.InterruptibleProcess):
                     return path.replace("'", "'\\''")
 
                 input_file_content = [f"file '{escape_path(input_file)}'" for input_file in input_files]
-                with files.TempFileManager("\n".join(input_file_content), "txt") as input_file:
+                with files_utils.TempFileManager("\n".join(input_file_content), "txt") as input_file:
                     ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c", "copy", output]
 
                     self.logger.info(f"Concatenating files into {output} file")
                     if self.live_run:
-                        status = process.start_process("ffmpeg", ffmpeg_args)
+                        status = process_utils.start_process("ffmpeg", ffmpeg_args)
                         if status.returncode == 0:
                             for input_file in input_files:
                                 os.remove(input_file)
