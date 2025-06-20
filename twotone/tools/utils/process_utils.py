@@ -8,8 +8,8 @@ from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 from typing import List
 
-from . import generic
-from . import video
+from . import generic_utils
+from . import video_utils
 
 @dataclass
 class ProcessResult:
@@ -31,11 +31,11 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
             index_of_i = args.index("-i")
             input_file = args[index_of_i + 1]
 
-            if video.is_video(input_file):
+            if video_utils.is_video(input_file):
                 progress_pattern = re.compile(r"frame= *(\d+)")
-                frames = video.get_video_frames_count(input_file)
+                frames = video_utils.get_video_frames_count(input_file)
                 with logging_redirect_tqdm(), \
-                     tqdm(desc="Processing video", unit="frame", total=frames, **generic.get_tqdm_defaults()) as pbar:
+                     tqdm(desc="Processing video", unit="frame", total=frames, **generic_utils.get_tqdm_defaults()) as pbar:
                     last_frame = 0
                     for line in sub_process.stderr:
                         line = line.strip()

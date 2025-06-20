@@ -8,7 +8,7 @@ import re
 from overrides import override
 
 from .tool import Tool
-from .utils2 import video, process, files
+from .utils import video_utils, process_utils, files_utils
 
 
 def extract_scenes(video_path, output_dir, format: str, scale: float):
@@ -22,7 +22,7 @@ def extract_scenes(video_path, output_dir, format: str, scale: float):
     os.makedirs(output_dir, exist_ok=True)
 
     # Get scene change timestamps
-    scene_changes = video.detect_scene_changes(video_path)
+    scene_changes = video_utils.detect_scene_changes(video_path)
     scene_changes.append(math.inf)
 
     # Extract all frames while capturing PTS times
@@ -40,7 +40,7 @@ def extract_scenes(video_path, output_dir, format: str, scale: float):
         output_pattern
     ]
 
-    result = process.start_process("ffmpeg", args = args)
+    result = process_utils.start_process("ffmpeg", args = args)
 
     # Parse PTS times from stderr
     frame_pts_map = {}  # Maps sequential frame numbers to PTS timestamps
@@ -71,7 +71,7 @@ def extract_scenes(video_path, output_dir, format: str, scale: float):
                 os.makedirs(scene_dir, exist_ok = False)
                 created_scenes.add(scene_index)
 
-            _, _, ext = files.split_path(frame_file)
+            _, _, ext = files_utils.split_path(frame_file)
 
             new_name = f"frame_{timestamp:.3f}.{ext}"
 

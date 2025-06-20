@@ -10,12 +10,12 @@ from pathlib import Path
 from platformdirs import user_cache_dir
 from typing import Dict, List, Union
 
-import twotone.twotone as twotone
-import twotone.tools.utils2.generic as twotone_generic_utils
+import twotone.twotone
+import twotone.tools.utils.generic_utils
 
 
 current_path = os.path.dirname(os.path.abspath(__file__))
-twotone_generic_utils.DISABLE_PROGRESSBARS = True
+twotone.tools.utils.generic_utils.DISABLE_PROGRESSBARS = True
 
 
 class WorkingDirectoryForTest:
@@ -169,4 +169,4 @@ def generate_microdvd_subtitles(path: str, length: int, fps: float = 60):
 
 def run_twotone(tool: str, tool_options = [], global_options = []):
     global_options.append("--quiet")
-    twotone.execute([*global_options, tool, *tool_options])
+    twotone.twotone.execute([*global_options, tool, *tool_options])

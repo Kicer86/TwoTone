@@ -9,10 +9,10 @@ from parameterized import parameterized
 from pathlib import Path
 from typing import Dict, Iterator
 
-from twotone.tools.utils2 import generic, process, video
+from twotone.tools.utils import generic_utils, process_utils, video_utils
 from twotone.tools.melt import Melter
 from twotone.tools.melt.melt import StaticSource, StreamsPicker
-from twotone.tools.utils2.files import ScopedDirectory
+from twotone.tools.utils.files_utils import ScopedDirectory
 from common import WorkingDirectoryForTest, FileCache, add_test_media, add_to_test_dir, current_path, get_audio, get_video, hashes, list_files
 
 
@@ -46,7 +46,7 @@ class MeltingTest(unittest.TestCase):
             file1 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v1"])[0]
             file2 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v2"])[0]
 
-            interruption = generic.InterruptibleProcess()
+            interruption = generic_utils.InterruptibleProcess()
             duplicates = StaticSource(interruption)
             duplicates.add_entry("Grass", file1)
             duplicates.add_entry("Grass", file2)
@@ -73,7 +73,7 @@ class MeltingTest(unittest.TestCase):
             file1 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v1"])[0]
             file2 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v2"])[0]
 
-            interruption = generic.InterruptibleProcess()
+            interruption = generic_utils.InterruptibleProcess()
             duplicates = StaticSource(interruption)
             duplicates.add_entry("Grass", file1)
             duplicates.add_entry("Grass", file2)
@@ -115,7 +115,7 @@ class MeltingTest(unittest.TestCase):
                         video_input_path = get_video(video)
                         audio_input_path = get_audio(audio)
                         output_path = os.path.join(output_dir, video + ".mp4")
-                        process.start_process("ffmpeg", ["-i", video_input_path, "-i", audio_input_path, "-r", "25", "-vf", "fps=25", "-c:v", "libx265", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+                        process_utils.start_process("ffmpeg", ["-i", video_input_path, "-i", audio_input_path, "-r", "25", "-vf", "fps=25", "-c:v", "libx265", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
                                                         "-shortest", "-map", "0:v:0", "-map", "1:a:0", "-c:a", "libvorbis", "-ar", "44100",
                                                         output_path])
                         output_files.append(output_path)
@@ -128,13 +128,13 @@ class MeltingTest(unittest.TestCase):
                             safe_path = path.replace("'", "'\\''")
                             f.write(f"file '{safe_path}'\n")
 
-                    process.start_process("ffmpeg", ["-f", "concat", "-safe", "0", "-i", files_list_path, "-c", "copy", str(out_path)])
+                    process_utils.start_process("ffmpeg", ["-f", "concat", "-safe", "0", "-i", files_list_path, "-c", "copy", str(out_path)])
 
             def gen_vhs(out_path: Path, input: str):
                 """
                     Process input file and worse its quality
                 """
-                duration = video.get_video_duration(input) / 1000                                           # duration of original video
+                duration = video_utils.get_video_duration(input) / 1000                                           # duration of original video
 
                 vf = ",".join([
                     "fps=26.5",                                                                             # use non standard fps
@@ -157,7 +157,7 @@ class MeltingTest(unittest.TestCase):
                     str(out_path)
                 ]
 
-                process.start_process("ffmpeg", args)
+                process_utils.start_process("ffmpeg", args)
 
             file1 = file_cache.get_or_generate("melter_tests_sample", "1", "mp4", gen_sample)
             file1 = add_to_test_dir(td.path, str(file1))
@@ -166,7 +166,7 @@ class MeltingTest(unittest.TestCase):
 
             files = [file1, file2]
 
-            interruption = generic.InterruptibleProcess()
+            interruption = generic_utils.InterruptibleProcess()
             duplicates = StaticSource(interruption)
             duplicates.add_entry("video", file1)
             duplicates.add_entry("video", file2)
@@ -188,7 +188,7 @@ class MeltingTest(unittest.TestCase):
 
             output_file = list(output_file_hash)[0]
 
-            output_file_data = video.get_video_data2(output_file)
+            output_file_data = video_utils.get_video_data2(output_file)
             self.assertEqual(len(output_file_data["video"]), 1)
             self.assertEqual(output_file_data["video"][0]["height"], 1080)
             self.assertEqual(output_file_data["video"][0]["width"], 1920)
@@ -210,7 +210,7 @@ class MeltingTest(unittest.TestCase):
                 add_test_media("Grass - 66810.mp4", series1_dir, suffixes = [f"suf-S1E{episode}"])[0]
                 add_test_media("Grass - 66810.mp4", series2_dir, suffixes = [f"S1E{episode}"])[0]
 
-            interruption = generic.InterruptibleProcess()
+            interruption = generic_utils.InterruptibleProcess()
             duplicates = StaticSource(interruption)
             duplicates.add_entry("Grass", series1_dir)
             duplicates.add_entry("Grass", series2_dir)
@@ -234,7 +234,7 @@ class MeltingTest(unittest.TestCase):
                 output_file_name = os.path.basename(output_file)
                 self.assertEqual(output_file_name, f"Grass - 66810-suf-S1E{i}.mkv")
 
-                output_file_data = video.get_video_data2(output_file)
+                output_file_data = video_utils.get_video_data2(output_file)
                 self.assertEqual(len(output_file_data["video"]), 1)
                 self.assertEqual(output_file_data["video"][0]["height"], 2160)
                 self.assertEqual(output_file_data["video"][0]["width"], 3840)
@@ -246,7 +246,7 @@ class MeltingTest(unittest.TestCase):
 
     def test_languages_prioritization(self):
         with WorkingDirectoryForTest() as td:
-            interruption = generic.InterruptibleProcess()
+            interruption = generic_utils.InterruptibleProcess()
             duplicates = StaticSource(interruption)
             langs = ["pol", "en", "ger", "ja", "nor"]
 
@@ -266,7 +266,7 @@ class MeltingTest(unittest.TestCase):
             self.assertEqual(len(output_file_hash), 1)
 
             output_file = list(output_file_hash)[0]
-            output_file_data = video.get_video_data2(output_file)
+            output_file_data = video_utils.get_video_data2(output_file)
             self.assertEqual(output_file_data["audio"][0]["language"], "deu")
             self.assertEqual(output_file_data["audio"][1]["language"], "jpn")
             self.assertEqual(output_file_data["audio"][2]["language"], "eng")
@@ -360,7 +360,7 @@ class MeltingTest(unittest.TestCase):
 
     @parameterized.expand(sample_streams)
     def test_streams_pick_decision(self, name, input, expected_streams):
-        interruption = generic.InterruptibleProcess()
+        interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
         streams_picker = StreamsPicker(logging.getLogger("Melter"), duplicates)
 

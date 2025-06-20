@@ -9,8 +9,8 @@ from typing import Dict, List, Union, Tuple
 
 from dataclasses import dataclass
 
-from . import languages, process
-from .generic import fps_str_to_float, time_to_ms
+from . import language_utils, process_utils
+from .generic_utils import fps_str_to_float, time_to_ms
 
 
 @dataclass
@@ -47,7 +47,7 @@ def is_video(file: str) -> bool:
 
 
 def get_video_frames_count(video_file: str):
-    result = process.start_process("ffprobe", ["-v", "error", "-select_streams", "v:0", "-count_packets",
+    result = process_utils.start_process("ffprobe", ["-v", "error", "-select_streams", "v:0", "-count_packets",
                                    "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", video_file])
 
     try:
@@ -73,7 +73,7 @@ def detect_scene_changes(file_path, threshold = 0.4) -> List[int]:
         "-filter_complex", f"select='gt(scene,{threshold})',showinfo",
         "-f", "null", "-"
     ]
-    result = process.start_process("ffmpeg", args = args)
+    result = process_utils.start_process("ffmpeg", args = args)
 
     # Look for lines with "pts_time:"; these indicate the timestamp of a scene change.
     scene_times = []
@@ -109,7 +109,7 @@ def extract_timestamp_frame_mapping(video_path: str) -> Dict[int, int]:
     ]
 
     # Run the command
-    result = process.start_process("ffprobe", args)
+    result = process_utils.start_process("ffprobe", args)
 
     # Parse output
     timestamp_frame_map = {}
@@ -131,7 +131,7 @@ def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", s
         Returns a dict mapping timestamp (ms) -> {'path': frame_path, 'frame': frame_number}
     """
     def run_ffmpeg(args):
-        return process.start_process("ffmpeg", args=args)
+        return process_utils.start_process("ffmpeg", args=args)
 
     # Clear target directory
     def clean_target_dir():
@@ -208,7 +208,7 @@ def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", s
 
 def get_video_duration(video_file):
     """Get the duration of a video in milliseconds."""
-    result = process.start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
+    result = process_utils.start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
 
     try:
         return int(float(result.stdout.strip())*1000)
@@ -225,7 +225,7 @@ def get_video_full_info(path: str) -> str:
     args.append("-show_streams")
     args.append(path)
 
-    result = process.start_process("ffprobe", args)
+    result = process_utils.start_process("ffprobe", args)
 
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe exited with unexpected error:\n{result.stderr}")
@@ -264,7 +264,7 @@ def get_video_data2(path: str) -> Dict:
         else:
             language = None
 
-        return languages.unify_lang(language) if language else None
+        return language_utils.unify_lang(language) if language else None
 
     output_json = get_video_full_info(path)
 
@@ -434,7 +434,7 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
         options.append(subtitle.path)
 
     cmd = "mkvmerge"
-    result = process.start_process(cmd, options)
+    result = process_utils.start_process(cmd, options)
 
     if result.returncode != 0:
         if os.path.exists(output_path):

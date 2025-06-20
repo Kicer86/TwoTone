@@ -5,7 +5,7 @@ from collections import defaultdict
 from functools import cmp_to_key
 from typing import Dict, List, Optional, Tuple
 
-from ..utils2 import languages
+from ..utils import language_utils
 from .duplicates_source import DuplicatesSource
 
 class StreamsPicker:
@@ -209,7 +209,7 @@ class StreamsPicker:
 
         # pick audio streams
         forced_audio_language = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in files_details}
-        forced_audio_language = {path: languages.unify_lang(lang) for path, lang in forced_audio_language.items() if lang}
+        forced_audio_language = {path: language_utils.unify_lang(lang) for path, lang in forced_audio_language.items() if lang}
         audio_streams = self._pick_unique_streams(files_details, video_stream_path, "audio", ["language", "channels"], ["sample_rate"], override_languages=forced_audio_language)
 
         # pick subtitle streams
