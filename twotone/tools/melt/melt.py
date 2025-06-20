@@ -10,6 +10,8 @@ from collections import defaultdict
 from overrides import override
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 from ..tool import Tool
 from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
@@ -333,12 +335,12 @@ class Melter():
 
             return sorted_file_lists
 
-        for title, entries in duplicates.items():
+        for title, entries in tqdm(duplicates.items(), desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
             self.logger.info(f"Analyzing duplicates for {title}")
 
             files_groups = process_entries(entries)
 
-            for i, (files, output_name) in enumerate(files_groups):
+            for files, output_name in tqdm(files_groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
                 self.interruption._check_for_stop()
 
                 streams = self._process_duplicates(files)
@@ -420,7 +422,7 @@ class Melter():
                     process_utils.raise_on_error(process_utils.start_process("ffmpeg", generation_args))
 
     def melt(self):
-        with files_utils.ScopedDirectory(self.wd) as wd:
+        with files_utils.ScopedDirectory(self.wd) as wd, logging_redirect_tqdm():
             self.logger.debug(f"Starting `melt` with live run: {self.live_run} and working dir: {self.wd}")
             self.logger.info("Finding duplicates")
             duplicates = self.duplicates_source.collect_duplicates()
