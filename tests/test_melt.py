@@ -9,10 +9,9 @@ from parameterized import parameterized
 from pathlib import Path
 from typing import Dict, Iterator
 
-import twotone.tools.utils as utils
+from twotone.tools.utils2 import generic, process, video
 from twotone.tools.melt import Melter
 from twotone.tools.melt.melt import StaticSource, StreamsPicker
-from twotone.tools.utils2 import process, video
 from twotone.tools.utils2.files import ScopedDirectory
 from common import WorkingDirectoryForTest, FileCache, add_test_media, add_to_test_dir, current_path, get_audio, get_video, hashes, list_files
 
@@ -47,7 +46,7 @@ class MeltingTest(unittest.TestCase):
             file1 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v1"])[0]
             file2 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v2"])[0]
 
-            interruption = utils.InterruptibleProcess()
+            interruption = generic.InterruptibleProcess()
             duplicates = StaticSource(interruption)
             duplicates.add_entry("Grass", file1)
             duplicates.add_entry("Grass", file2)
@@ -74,7 +73,7 @@ class MeltingTest(unittest.TestCase):
             file1 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v1"])[0]
             file2 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v2"])[0]
 
-            interruption = utils.InterruptibleProcess()
+            interruption = generic.InterruptibleProcess()
             duplicates = StaticSource(interruption)
             duplicates.add_entry("Grass", file1)
             duplicates.add_entry("Grass", file2)
@@ -167,7 +166,7 @@ class MeltingTest(unittest.TestCase):
 
             files = [file1, file2]
 
-            interruption = utils.InterruptibleProcess()
+            interruption = generic.InterruptibleProcess()
             duplicates = StaticSource(interruption)
             duplicates.add_entry("video", file1)
             duplicates.add_entry("video", file2)
@@ -211,7 +210,7 @@ class MeltingTest(unittest.TestCase):
                 add_test_media("Grass - 66810.mp4", series1_dir, suffixes = [f"suf-S1E{episode}"])[0]
                 add_test_media("Grass - 66810.mp4", series2_dir, suffixes = [f"S1E{episode}"])[0]
 
-            interruption = utils.InterruptibleProcess()
+            interruption = generic.InterruptibleProcess()
             duplicates = StaticSource(interruption)
             duplicates.add_entry("Grass", series1_dir)
             duplicates.add_entry("Grass", series2_dir)
@@ -247,7 +246,7 @@ class MeltingTest(unittest.TestCase):
 
     def test_languages_prioritization(self):
         with WorkingDirectoryForTest() as td:
-            interruption = utils.InterruptibleProcess()
+            interruption = generic.InterruptibleProcess()
             duplicates = StaticSource(interruption)
             langs = ["pol", "en", "ger", "ja", "nor"]
 
@@ -361,7 +360,7 @@ class MeltingTest(unittest.TestCase):
 
     @parameterized.expand(sample_streams)
     def test_streams_pick_decision(self, name, input, expected_streams):
-        interruption = utils.InterruptibleProcess()
+        interruption = generic.InterruptibleProcess()
         duplicates = StaticSource(interruption)
         streams_picker = StreamsPicker(logging.getLogger("Melter"), duplicates)
 

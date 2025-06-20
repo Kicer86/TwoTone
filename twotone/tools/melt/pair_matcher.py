@@ -11,14 +11,13 @@ from typing import Callable, Dict, List, Tuple
 
 from .debug_routines import DebugRoutines
 from .phash_cache import PhashCache
-from ..utils2 import files, image, video
-from .. import utils
+from ..utils2 import files, generic, image, video
 
 FramesInfo = Dict[int, Dict[str, str]]
 
 
 class PairMatcher:
-    def __init__(self, interruption: utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger):
+    def __init__(self, interruption: generic.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger):
         self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
         self.lhs_path = lhs_path

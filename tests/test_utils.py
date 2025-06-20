@@ -2,7 +2,7 @@
 import os
 import unittest
 
-import twotone.tools.utils as utils
+from twotone.tools.utils2 import subtitles as subs
 from common import WorkingDirectoryForTest
 
 
@@ -16,13 +16,10 @@ class UtilsTests(unittest.TestCase):
                 subtitle_file.write(content)
 
             if valid:
-                self.assertTrue(utils.is_subtitle(subtitle_path))
+                self.assertTrue(subs.is_subtitle(subtitle_path))
             else:
-                self.assertFalse(utils.is_subtitle(subtitle_path))
+                self.assertFalse(subs.is_subtitle(subtitle_path))
 
-    def _test_conversion(self, wd: str, file: str, needs_conversion: bool):
-        full_path = os.path.join(wd, file)
-        self.assertEqual(utils.is_subtitle_conversion_required(full_path), needs_conversion)
 
     def test_subtitle_detection(self):
         self._test_content("12:34:56:test", True)

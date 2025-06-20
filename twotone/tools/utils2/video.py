@@ -7,8 +7,39 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Union, Tuple
 
+from dataclasses import dataclass
+
 from . import languages, process
-from .generic import time_to_ms
+from .generic import fps_str_to_float, time_to_ms
+
+
+@dataclass
+class VideoTrack:
+    fps: str
+    length: int
+
+
+@dataclass
+class Subtitle:
+    language: str
+    default: int | bool
+    length: int | None
+    tid: int
+    format: str
+
+
+@dataclass
+class SubtitleFile:
+    path: str
+    language: str
+    encoding: str
+
+
+@dataclass
+class VideoInfo:
+    video_tracks: List[VideoTrack]
+    subtitles: List[Subtitle]
+    path: str
 
 
 def is_video(file: str) -> bool:
@@ -286,3 +317,138 @@ def get_video_data2(path: str) -> Dict:
             })
 
     return dict(streams)
+
+
+def get_video_data(path: str) -> VideoInfo:
+
+    def get_length(stream) -> int:
+        """get length in milliseconds"""
+        length = None
+
+        if "tags" in stream:
+            tags = stream["tags"]
+            duration = tags.get("DURATION", None)
+            if duration is not None:
+                length = time_to_ms(duration)
+
+        if length is None:
+            length = stream.get("duration", None)
+            if length is not None:
+                length = int(float(length) * 1000)
+
+        return length
+
+    output_json = get_video_full_info(path)
+
+    subtitles: List[Subtitle] = []
+    video_tracks: List[VideoTrack] = []
+    for stream in output_json["streams"]:
+        stream_type = stream["codec_type"]
+        if stream_type == "subtitle":
+            if "tags" in stream:
+                tags = stream["tags"]
+                language = tags.get("language", None)
+            else:
+                language = None
+            is_default = stream["disposition"]["default"]
+            length = get_length(stream)
+            tid = stream["index"]
+            format = stream["codec_name"]
+
+            subtitles.append(Subtitle(language, default=is_default, length=length, tid=tid, format=format))
+        elif stream_type == "video":
+            fps = stream["r_frame_rate"]
+            length = get_length(stream)
+            if length is None:
+                length = get_video_duration(path)
+
+            video_tracks.append(VideoTrack(fps=fps, length=length))
+
+    return VideoInfo(video_tracks, subtitles, path)
+
+
+def compare_videos(lhs: List[VideoTrack], rhs: List[VideoTrack]) -> bool:
+    if len(lhs) != len(rhs):
+        return False
+
+    for lhs_item, rhs_item in zip(lhs, rhs):
+        lhs_fps = fps_str_to_float(lhs_item.fps)
+        rhs_fps = fps_str_to_float(rhs_item.fps)
+
+        if lhs_fps == rhs_fps:
+            return True
+
+        diff = abs(lhs_fps - rhs_fps)
+
+        # For videos with fps 1000000/33333 (≈30fps) mkvmerge generates video with 30/1 fps.
+        # And videos with fps 29999/500 (≈60fps) it uses 60/1 fps.
+        # I'm not sure if this is acceptable but at this moment let it be
+        if diff > 0.0021:
+            return False
+
+    return True
+
+
+def collect_video_files(path: str, interruptible) -> List[str]:
+    video_files = []
+    for cd, _, files in os.walk(path, followlinks=True):
+        for file in files:
+            interruptible._check_for_stop()
+            file_path = os.path.join(cd, file)
+
+            if is_video(file_path):
+                video_files.append(file_path)
+
+    return video_files
+
+
+def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | None = None, audios: List[Dict] | None = None):
+    subtitles = subtitles or []
+    audios = audios or []
+
+    options = ["-o", output_path]
+    options.append(input_video)
+
+    for audio in audios:
+        if "language" in audio and audio["language"]:
+            options.extend(["--language", f"0:{audio['language']}"])
+
+        if audio.get("default", False):
+            options.extend(["--default-track", "0:yes"])
+        else:
+            options.extend(["--default-track", "0:no"])
+
+        options.append(audio["path"])
+
+    for i, subtitle in enumerate(subtitles):
+        lang = subtitle.language
+
+        if lang:
+            options.extend(["--language", f"0:{lang}"])
+
+        if i == 0:
+            options.extend(["--default-track", "0:yes"])
+        else:
+            options.extend(["--default-track", "0:no"])
+
+        options.append(subtitle.path)
+
+    cmd = "mkvmerge"
+    result = process.start_process(cmd, options)
+
+    if result.returncode != 0:
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        raise RuntimeError(f"{cmd} exited with unexpected error:\n{result.stderr}")
+
+    if not os.path.exists(output_path):
+        logging.error("Output file was not created")
+        raise RuntimeError(f"{cmd} did not create output file")
+
+    output_file_details = get_video_data(output_path)
+    input_file_details = get_video_data(input_video)
+
+    if not compare_videos(input_file_details.video_tracks, output_file_details.video_tracks) or \
+            len(input_file_details.subtitles) + len(subtitles) != len(output_file_details.subtitles):
+        logging.error("Output file seems to be corrupted")
+        raise RuntimeError("mkvmerge created a corrupted file")

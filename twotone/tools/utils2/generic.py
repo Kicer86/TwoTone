@@ -1,4 +1,6 @@
 
+import logging
+import signal
 import sys
 import re
 
@@ -38,3 +40,19 @@ def ms_to_time(ms: int) -> str:
 
 def fps_str_to_float(fps: str) -> float:
     return eval(fps)
+
+
+class InterruptibleProcess:
+    def __init__(self):
+        self._work = True
+        signal.signal(signal.SIGINT, self.exit_gracefully)
+        signal.signal(signal.SIGTERM, self.exit_gracefully)
+
+    def exit_gracefully(self, signum, frame):
+        logging.info(f"Got signal #{signum}. Exiting soon.")
+        self._work = False
+
+    def _check_for_stop(self):
+        if not self._work:
+            logging.warning("Exiting now due to received signal.")
+            sys.exit(1)

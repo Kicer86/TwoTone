@@ -11,9 +11,8 @@ from overrides import override
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from .. import utils
 from ..tool import Tool
-from ..utils2 import languages, process, video
+from ..utils2 import languages, process, video, generic
 from ..utils2 import files as files_utils               # todo fix this
 from .debug_routines import DebugRoutines
 from .duplicates_source import DuplicatesSource
@@ -32,7 +31,7 @@ def _split_path_fix(value: str) -> List[str]:
 
 
 class Melter():
-    def __init__(self, logger: logging.Logger, interruption: utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = [], preferred_languages: List[str] = []):
+    def __init__(self, logger: logging.Logger, interruption: generic.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = [], preferred_languages: List[str] = []):
         self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
@@ -182,7 +181,7 @@ class Melter():
             if key == "fps":
                 return eval(value)
             elif key == "length":
-                return utils.ms_to_time(value)
+                return generic.ms_to_time(value)
             else:
                 return value if value else "-"
 
@@ -491,7 +490,7 @@ class MeltTool(Tool):
 
     @override
     def run(self, args, no_dry_run: bool, logger: logging.Logger):
-        interruption = utils.InterruptibleProcess()
+        interruption = generic.InterruptibleProcess()
 
         data_source = None
         if args.jellyfin_server:

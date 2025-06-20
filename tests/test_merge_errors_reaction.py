@@ -2,7 +2,6 @@
 import logging
 import unittest
 
-import twotone.tools.utils as utils
 from common import WorkingDirectoryForTest, add_test_media, hashes, run_twotone
 from unittest.mock import patch
 
@@ -23,7 +22,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
             _, exec_name, _ = files.split_path(cmd)
 
             if exec_name == "mkvmerge":
-                return utils.ProcessResult(1, b"", b"")
+                return process.ProcessResult(1, b"", b"")
             else:
                 return self._start_process.__func__(cmd, args)
 
@@ -50,7 +49,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
             _, exec_name, _ = files.split_path(cmd)
 
             if exec_name == "ffprobe":
-                return utils.ProcessResult(1, b"", b"")
+                return process.ProcessResult(1, b"", b"")
             else:
                 return self._start_process.__func__(cmd, args)
 
@@ -76,7 +75,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
             _, exec_name, _ = files.split_path(cmd)
 
             if exec_name == "ffmpeg":
-                return utils.ProcessResult(1, b"", b"")
+                return process.ProcessResult(1, b"", b"")
             else:
                 return self._start_process.__func__(cmd, args)
 

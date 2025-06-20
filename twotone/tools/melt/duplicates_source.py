@@ -1,11 +1,11 @@
 
 from typing import Dict, List
 
-from .. import utils
+from ..utils2 import generic
 
 
 class DuplicatesSource:
-    def __init__(self, interruption: utils.InterruptibleProcess):
+    def __init__(self, interruption: generic.InterruptibleProcess):
         self.interruption = interruption
 
     def collect_duplicates(self) -> Dict[str, List[str]]:

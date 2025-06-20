@@ -10,12 +10,11 @@ from overrides import override
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from . import utils
 from .tool import Tool
 from twotone.tools.utils2 import files, generic, process, video
 
 
-class Transcoder(utils.InterruptibleProcess):
+class Transcoder(generic.InterruptibleProcess):
     def __init__(self, logger: logging.Logger, live_run: bool = False, target_ssim: float = 0.98, codec: str = "libx265"):
         super().__init__()
         self.logger = logger
@@ -29,7 +28,7 @@ class Transcoder(utils.InterruptibleProcess):
         video_files = []
         for root, _, files in os.walk(directory):
             for file in files:
-                if utils.is_video(file):
+                if video.is_video(file):
                     video_files.append(os.path.join(root, file))
         return video_files
 

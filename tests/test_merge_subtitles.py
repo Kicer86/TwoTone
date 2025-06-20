@@ -4,8 +4,7 @@ import os
 import re
 import unittest
 
-import twotone.tools.utils as utils
-from twotone.tools.utils2 import files
+from twotone.tools.utils2 import files, video as vid
 from common import WorkingDirectoryForTest, list_files, add_test_media, hashes, run_twotone
 
 default_video_set = [
@@ -82,7 +81,7 @@ class SubtitlesMerge(unittest.TestCase):
 
             for video in files_after:
                 self.assertEqual(video[-4:], ".mkv")
-                tracks = utils.get_video_data(video)
+                tracks = vid.get_video_data(video)
                 self.assertEqual(len(tracks.video_tracks), 1)
                 self.assertEqual(len(tracks.subtitles), 1)
 
@@ -100,7 +99,7 @@ class SubtitlesMerge(unittest.TestCase):
 
             video = files_after[0]
             self.assertEqual(video[-4:], ".mkv")
-            tracks = utils.get_video_data(video)
+            tracks = vid.get_video_data(video)
             self.assertEqual(len(tracks.video_tracks), 1)
             self.assertEqual(len(tracks.subtitles), 1)
             self.assertEqual(tracks.subtitles[0].language, "pol")
@@ -120,7 +119,7 @@ class SubtitlesMerge(unittest.TestCase):
 
             for video in files_after:
                 self.assertEqual(video[-4:], ".mkv")
-                tracks = utils.get_video_data(video)
+                tracks = vid.get_video_data(video)
                 self.assertEqual(len(tracks.video_tracks), 1)
                 self.assertEqual(len(tracks.subtitles), 1)
                 self.assertEqual(tracks.subtitles[0].language, "ger")
@@ -140,7 +139,7 @@ class SubtitlesMerge(unittest.TestCase):
 
             video = files_after[0]
             self.assertEqual(video[-4:], ".mkv")
-            tracks = utils.get_video_data(video)
+            tracks = vid.get_video_data(video)
             self.assertEqual(len(tracks.video_tracks), 1)
             self.assertEqual(len(tracks.subtitles), 3)
 
@@ -157,7 +156,7 @@ class SubtitlesMerge(unittest.TestCase):
 
             video = files_after[0]
             self.assertEqual(video[-4:], ".mkv")
-            tracks = utils.get_video_data(video)
+            tracks = vid.get_video_data(video)
             self.assertEqual(len(tracks.video_tracks), 1)
             self.assertEqual(len(tracks.subtitles), 1)
 
@@ -180,7 +179,7 @@ class SubtitlesMerge(unittest.TestCase):
 
             video = files_after[0]
             self.assertEqual(video[-4:], ".mkv")
-            tracks = utils.get_video_data(video)
+            tracks = vid.get_video_data(video)
             self.assertEqual(len(tracks.video_tracks), 1)
             self.assertEqual(len(tracks.subtitles), 2)
 
@@ -202,7 +201,7 @@ class SubtitlesMerge(unittest.TestCase):
 
             for video in files_after:
                 self.assertEqual(video[-4:], ".mkv")
-                tracks = utils.get_video_data(video)
+                tracks = vid.get_video_data(video)
                 self.assertEqual(len(tracks.video_tracks), 1)
                 self.assertEqual(len(tracks.subtitles), 2)
 
@@ -223,7 +222,7 @@ class SubtitlesMerge(unittest.TestCase):
 
             video = files_after[0]
             self.assertEqual(video[-4:], ".mkv")
-            tracks = utils.get_video_data(video)
+            tracks = vid.get_video_data(video)
             self.assertEqual(len(tracks.video_tracks), 1)
             self.assertEqual(len(tracks.subtitles), 4)
 
@@ -246,7 +245,7 @@ class SubtitlesMerge(unittest.TestCase):
 
             video = files_after[0]
             self.assertEqual(video[-4:], ".mkv")
-            tracks = utils.get_video_data(video)
+            tracks = vid.get_video_data(video)
             self.assertEqual(len(tracks.video_tracks), 1)
             self.assertEqual(len(tracks.subtitles), 2)
             self.assertEqual(tracks.subtitles[0].language, "ger")
@@ -292,7 +291,7 @@ class SubtitlesMerge(unittest.TestCase):
 
             video = files_after[0]
             self.assertEqual(video[-4:], ".mkv")
-            tracks = utils.get_video_data(video)
+            tracks = vid.get_video_data(video)
             self.assertEqual(len(tracks.video_tracks), 1)
             self.assertEqual(len(tracks.subtitles), 3)
 
