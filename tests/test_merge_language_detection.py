@@ -3,7 +3,7 @@ import os
 import unittest
 
 from twotone.tools.utils import video_utils
-from common import WorkingDirectoryForTest, list_files, add_test_media, run_twotone
+from common import WorkingDirectoryForTest, list_files, add_test_media, run_twotone, write_subtitle
 
 
 class SimpleSubtitlesMerge(unittest.TestCase):
@@ -12,9 +12,13 @@ class SimpleSubtitlesMerge(unittest.TestCase):
         with WorkingDirectoryForTest() as td:
             add_test_media("Frog.*mp4", td.path)
 
-            with open(os.path.join(td.path, "Frog.txt"), "w") as sf:
-                sf.write("00:00:00:Hello World\n")
-                sf.write("00:00:06:This is some sample subtitle in english\n")
+            write_subtitle(
+                os.path.join(td.path, "Frog.txt"),
+                [
+                    "00:00:00:Hello World",
+                    "00:00:06:This is some sample subtitle in english",
+                ],
+            )
 
             run_twotone("merge", [td.path, "-l", "auto"], ["--no-dry-run"])
 
@@ -32,9 +36,13 @@ class SimpleSubtitlesMerge(unittest.TestCase):
         with WorkingDirectoryForTest() as td:
             add_test_media("Frog.*mp4", td.path)
 
-            with open(os.path.join(td.path, "Frog.txt"), "w") as sf:
-                sf.write("00:00:00:Witaj Świecie\n")
-                sf.write("00:00:06:To jest przykładowy tekst po polsku\n")
+            write_subtitle(
+                os.path.join(td.path, "Frog.txt"),
+                [
+                    "00:00:00:Witaj Świecie",
+                    "00:00:06:To jest przykładowy tekst po polsku",
+                ],
+            )
 
             run_twotone("merge", [td.path, "-l", "auto"], ["--no-dry-run"])
 
@@ -51,25 +59,45 @@ class SimpleSubtitlesMerge(unittest.TestCase):
     def test_language_priority(self):
         with WorkingDirectoryForTest() as td:
             add_test_media("close-up-of-flowers.*mp4", td.path)
-            with open(os.path.join(td.path, "close-up-of-flowers_en.srt"), "w") as sf:
-                sf.write("00:00:00:Hello World\n")
-                sf.write("00:00:06:This is some sample subtitle in english\n")
+            write_subtitle(
+                os.path.join(td.path, "close-up-of-flowers_en.srt"),
+                [
+                    "00:00:00:Hello World",
+                    "00:00:06:This is some sample subtitle in english",
+                ],
+            )
 
-            with open(os.path.join(td.path, "close-up-of-flowers_pl.srt"), "w") as sf:
-                sf.write("00:00:00:Witaj Świecie\n")
-                sf.write("00:00:06:To jest przykładowy tekst po polsku\n")
+            write_subtitle(
+                os.path.join(td.path, "close-up-of-flowers_pl.srt"),
+                [
+                    "00:00:00:Witaj Świecie",
+                    "00:00:06:To jest przykładowy tekst po polsku",
+                ],
+            )
 
-            with open(os.path.join(td.path, "close-up-of-flowers_de.srt"), "w") as sf:
-                sf.write("00:00:00:Hallo Welt\n")
-                sf.write("00:00:06:Dies ist ein Beispiel für einen Untertitel auf Deutsch\n")
+            write_subtitle(
+                os.path.join(td.path, "close-up-of-flowers_de.srt"),
+                [
+                    "00:00:00:Hallo Welt",
+                    "00:00:06:Dies ist ein Beispiel für einen Untertitel auf Deutsch",
+                ],
+            )
 
-            with open(os.path.join(td.path, "close-up-of-flowers_cz.srt"), "w") as sf:
-                sf.write("00:00:00:Ahoj světe\n")
-                sf.write("00:00:06:Toto je ukázka titulků v češtině\n")
+            write_subtitle(
+                os.path.join(td.path, "close-up-of-flowers_cz.srt"),
+                [
+                    "00:00:00:Ahoj světe",
+                    "00:00:06:Toto je ukázka titulků v češtině",
+                ],
+            )
 
-            with open(os.path.join(td.path, "close-up-of-flowers_fr.srt"), "w") as sf:
-                sf.write("00:00:00:Bonjour le monde\n")
-                sf.write("00:00:06:Ceci est un exemple de sous-titre en français\n")
+            write_subtitle(
+                os.path.join(td.path, "close-up-of-flowers_fr.srt"),
+                [
+                    "00:00:00:Bonjour le monde",
+                    "00:00:06:Ceci est un exemple de sous-titre en français",
+                ],
+            )
 
             run_twotone("merge", [td.path, "-l", "auto", "-p" "de,cs"], ["--no-dry-run"])
 

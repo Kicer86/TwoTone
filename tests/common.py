@@ -167,6 +167,15 @@ def generate_microdvd_subtitles(path: str, length: int, fps: float = 60):
             sf.write(f"{{{e + 1}}}{{{e + 2}}}\n")
 
 
+def write_subtitle(path: str, lines: list[str], *, encoding: str = "utf-8") -> str:
+    with open(path, "w", encoding=encoding) as f:
+        for line in lines:
+            f.write(line)
+            if not line.endswith("\n"):
+                f.write("\n")
+    return path
+
+
 def run_twotone(tool: str, tool_options = [], global_options = []):
     global_options.append("--quiet")
     twotone.twotone.execute([*global_options, tool, *tool_options])

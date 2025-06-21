@@ -5,7 +5,15 @@ import tempfile
 
 from twotone.tools.utils import subtitles_utils, video_utils
 
-from common import WorkingDirectoryForTest, add_test_media, hashes, current_path, generate_microdvd_subtitles, run_twotone
+from common import (
+    WorkingDirectoryForTest,
+    add_test_media,
+    hashes,
+    current_path,
+    generate_microdvd_subtitles,
+    run_twotone,
+    write_subtitle,
+)
 from twotone.tools.utils import generic_utils, process_utils
 
 
@@ -37,14 +45,18 @@ def create_broken_video_with_too_long_last_subtitle(output_video_path: str, inpu
         length = default_video_track.length
 
         subtitle_path = f"{subtitle_dir}/sub.srt"
-        with open(subtitle_path, 'w', encoding='utf-8') as file:
-            file.write(f"1\n")
-            file.write(f"{generic_utils.ms_to_time(0)} --> {generic_utils.ms_to_time(1000)}\n")
-            file.write(f"1\n\n")
-
-            file.write(f"2\n")
-            file.write(f"{generic_utils.ms_to_time(1000)} --> {generic_utils.ms_to_time((length + 10) * 1000)}\n")
-            file.write(f"2\n")
+        write_subtitle(
+            subtitle_path,
+            [
+                "1",
+                f"{generic_utils.ms_to_time(0)} --> {generic_utils.ms_to_time(1000)}",
+                "1",
+                "",
+                "2",
+                f"{generic_utils.ms_to_time(1000)} --> {generic_utils.ms_to_time((length + 10) * 1000)}",
+                "2",
+            ],
+        )
 
         video_utils.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [subtitles_utils.SubtitleFile(subtitle_path, "eng", "utf8")])
 
