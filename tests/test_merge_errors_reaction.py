@@ -1,33 +1,17 @@
-
 import logging
 import unittest
 
-from common import WorkingDirectoryForTest, add_test_media, hashes, run_twotone
-from unittest.mock import patch
-
-from twotone.tools.utils import files_utils, process_utils
-
+from common import WorkingDirectoryForTest, add_test_media, hashes, run_twotone, simulate_process_failure
 
 class SimpleSubtitlesMerge(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._start_process = process_utils.start_process
         logging.getLogger().setLevel(logging.CRITICAL)
 
 
     def test_no_changes_when_mkvmerge_exits_with_error(self):
-
-        def start_process(cmd, args):
-            _, exec_name, _ = files_utils.split_path(cmd)
-
-            if exec_name == "mkvmerge":
-                return process_utils.ProcessResult(1, b"", b"")
-            else:
-                return self._start_process.__func__(cmd, args)
-
-        with patch("twotone.tools.utils.process_utils.start_process") as mock_start_process, WorkingDirectoryForTest() as td:
-            mock_start_process.side_effect = start_process
+        with simulate_process_failure("mkvmerge") as mock_start_process, WorkingDirectoryForTest() as td:
             add_test_media("Blue_Sky_and_Clouds_Timelapse.*(?:mov|srt)", td.path)
 
             hashes_before = hashes(td.path)
@@ -44,17 +28,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
 
 
     def test_no_changes_when_ffprobe_exits_with_error(self):
-
-        def start_process(cmd, args):
-            _, exec_name, _ = files_utils.split_path(cmd)
-
-            if exec_name == "ffprobe":
-                return process_utils.ProcessResult(1, b"", b"")
-            else:
-                return self._start_process.__func__(cmd, args)
-
-        with patch("twotone.tools.utils.process_utils.start_process") as mock_start_process, WorkingDirectoryForTest() as td:
-            mock_start_process.side_effect = start_process
+        with simulate_process_failure("ffprobe") as mock_start_process, WorkingDirectoryForTest() as td:
             add_test_media("Blue_Sky_and_Clouds_Timelapse.*(?:mov|srt)", td.path)
 
             hashes_before = hashes(td.path)
@@ -70,17 +44,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
             self.assertEqual(mock_start_process.call_count, 1)
 
     def test_no_changes_when_ffmpeg_exits_with_error(self):
-
-        def start_process(cmd, args):
-            _, exec_name, _ = files_utils.split_path(cmd)
-
-            if exec_name == "ffmpeg":
-                return process_utils.ProcessResult(1, b"", b"")
-            else:
-                return self._start_process.__func__(cmd, args)
-
-        with patch("twotone.tools.utils.process_utils.start_process") as mock_start_process, WorkingDirectoryForTest() as td:
-            mock_start_process.side_effect = start_process
+        with simulate_process_failure("ffmpeg") as mock_start_process, WorkingDirectoryForTest() as td:
             add_test_media("Blue_Sky_and_Clouds_Timelapse.*(?:mov|srt)", td.path)
 
             hashes_before = hashes(td.path)

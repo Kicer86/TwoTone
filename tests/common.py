@@ -12,6 +12,9 @@ from typing import Dict, List, Union
 
 import twotone.twotone
 import twotone.tools.utils.generic_utils
+from contextlib import contextmanager
+from unittest.mock import patch
+from twotone.tools.utils import files_utils, process_utils
 
 
 current_path = os.path.dirname(os.path.abspath(__file__))
@@ -179,3 +182,17 @@ def write_subtitle(path: str, lines: list[str], *, encoding: str = "utf-8") -> s
 def run_twotone(tool: str, tool_options = [], global_options = []):
     global_options.append("--quiet")
     twotone.twotone.execute([*global_options, tool, *tool_options])
+
+
+@contextmanager
+def simulate_process_failure(target_exec: str):
+    original = process_utils.start_process
+
+    def wrapper(cmd, args):
+        _, exec_name, _ = files_utils.split_path(cmd)
+        if exec_name == target_exec:
+            return process_utils.ProcessResult(1, b"", b"")
+        return original(cmd, args)
+
+    with patch("twotone.tools.utils.process_utils.start_process", side_effect=wrapper) as p:
+        yield p
