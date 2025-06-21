@@ -5,7 +5,8 @@ import re
 import unittest
 
 from twotone.tools.utils import files_utils, video_utils
-from common import WorkingDirectoryForTest, list_files, add_test_media, hashes, run_twotone, write_subtitle
+from common import WorkingDirectoryForTest, assert_video_info, list_files, add_test_media, hashes, run_twotone, write_subtitle
+
 
 default_video_set = [
     "Atoms - 8579.mp4",
@@ -80,10 +81,7 @@ class SubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 1 * 13)          # 13 mkv videos expected
 
             for video in files_after:
-                self.assertEqual(video[-4:], ".mkv")
-                tracks = video_utils.get_video_data(video)
-                self.assertEqual(len(tracks.video_tracks), 1)
-                self.assertEqual(len(tracks.subtitles), 1)
+                assert_video_info(self, video, expected_subtitles=1)
 
     def test_subtitles_language(self):
         with WorkingDirectoryForTest() as td:
@@ -98,10 +96,7 @@ class SubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 1)
 
             video = files_after[0]
-            self.assertEqual(video[-4:], ".mkv")
-            tracks = video_utils.get_video_data(video)
-            self.assertEqual(len(tracks.video_tracks), 1)
-            self.assertEqual(len(tracks.subtitles), 1)
+            tracks = assert_video_info(self, video, expected_subtitles=1)
             self.assertEqual(tracks.subtitles[0].language, "pol")
 
     def test_subtitles_with_a_bit_different_names(self):
@@ -118,10 +113,7 @@ class SubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 2)
 
             for video in files_after:
-                self.assertEqual(video[-4:], ".mkv")
-                tracks = video_utils.get_video_data(video)
-                self.assertEqual(len(tracks.video_tracks), 1)
-                self.assertEqual(len(tracks.subtitles), 1)
+                tracks = assert_video_info(self, video, expected_subtitles=1)
                 self.assertEqual(tracks.subtitles[0].language, "ger")
 
     def test_multiple_subtitles_for_single_file(self):
@@ -138,10 +130,7 @@ class SubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 1)
 
             video = files_after[0]
-            self.assertEqual(video[-4:], ".mkv")
-            tracks = video_utils.get_video_data(video)
-            self.assertEqual(len(tracks.video_tracks), 1)
-            self.assertEqual(len(tracks.subtitles), 3)
+            assert_video_info(self, video, expected_subtitles=3)
 
     def test_raw_txt_subtitles_conversion(self):
         # Allow automatic txt to srt conversion
@@ -155,10 +144,7 @@ class SubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 1)
 
             video = files_after[0]
-            self.assertEqual(video[-4:], ".mkv")
-            tracks = video_utils.get_video_data(video)
-            self.assertEqual(len(tracks.video_tracks), 1)
-            self.assertEqual(len(tracks.subtitles), 1)
+            assert_video_info(self, video, expected_subtitles=1)
 
     def test_invalid_subtitle_extension(self):
         with WorkingDirectoryForTest() as td:
@@ -187,10 +173,7 @@ class SubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 1)
 
             video = files_after[0]
-            self.assertEqual(video[-4:], ".mkv")
-            tracks = video_utils.get_video_data(video)
-            self.assertEqual(len(tracks.video_tracks), 1)
-            self.assertEqual(len(tracks.subtitles), 2)
+            assert_video_info(self, video, expected_subtitles=2)
 
     def test_multilevel_structure(self):
         with WorkingDirectoryForTest() as td:
@@ -209,10 +192,7 @@ class SubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 2)
 
             for video in files_after:
-                self.assertEqual(video[-4:], ".mkv")
-                tracks = video_utils.get_video_data(video)
-                self.assertEqual(len(tracks.video_tracks), 1)
-                self.assertEqual(len(tracks.subtitles), 2)
+                assert_video_info(self, video, expected_subtitles=2)
 
     def test_subtitles_in_subdirectory(self):
         with WorkingDirectoryForTest() as td:
@@ -230,10 +210,7 @@ class SubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 1)
 
             video = files_after[0]
-            self.assertEqual(video[-4:], ".mkv")
-            tracks = video_utils.get_video_data(video)
-            self.assertEqual(len(tracks.video_tracks), 1)
-            self.assertEqual(len(tracks.subtitles), 4)
+            assert_video_info(self, video, expected_subtitles=4)
 
     def test_appending_subtitles_to_mkv_with_subtitles(self):
         with WorkingDirectoryForTest() as td:
@@ -253,10 +230,7 @@ class SubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 1)
 
             video = files_after[0]
-            self.assertEqual(video[-4:], ".mkv")
-            tracks = video_utils.get_video_data(video)
-            self.assertEqual(len(tracks.video_tracks), 1)
-            self.assertEqual(len(tracks.subtitles), 2)
+            tracks = assert_video_info(self, video, expected_subtitles=2)
             self.assertEqual(tracks.subtitles[0].language, "ger")
             self.assertEqual(tracks.subtitles[1].language, "pol")
 
@@ -299,10 +273,7 @@ class SubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 1)
 
             video = files_after[0]
-            self.assertEqual(video[-4:], ".mkv")
-            tracks = video_utils.get_video_data(video)
-            self.assertEqual(len(tracks.video_tracks), 1)
-            self.assertEqual(len(tracks.subtitles), 3)
+            assert_video_info(self, video, expected_subtitles=3)
 
 
 if __name__ == '__main__':

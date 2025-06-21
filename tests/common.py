@@ -5,10 +5,13 @@ import os
 import re
 import shutil
 import tempfile
+import unittest
 
 from pathlib import Path
 from platformdirs import user_cache_dir
 from typing import Dict, List, Union
+
+from twotone.tools.utils import video_utils
 
 import twotone.twotone
 import twotone.tools.utils.generic_utils
@@ -136,6 +139,17 @@ def get_audio(name: str) -> str:
 
 def get_video(name: str) -> str:
     return os.path.join(current_path, "videos", name)
+
+
+def assert_video_info(testcase: unittest.TestCase, path: str,
+                      expected_video_tracks: int = 1,
+                      expected_subtitles: int | None = None):
+    testcase.assertTrue(path.endswith(".mkv"))
+    tracks = video_utils.get_video_data(path)
+    testcase.assertEqual(len(tracks.video_tracks), expected_video_tracks)
+    if expected_subtitles is not None:
+        testcase.assertEqual(len(tracks.subtitles), expected_subtitles)
+    return tracks
 
 
 def hashes(path: str) -> Dict[str, str]:
