@@ -3,11 +3,10 @@ import os
 import unittest
 
 from twotone.tools.utils import video_utils
-from common import WorkingDirectoryForTest, list_files, add_test_media, run_twotone, write_subtitle
+from common import WorkingDirectoryForTest, assert_video_info, list_files, add_test_media, run_twotone, write_subtitle
 
 
 class SimpleSubtitlesMerge(unittest.TestCase):
-
     def test_english_recognition(self):
         with WorkingDirectoryForTest() as td:
             add_test_media("Frog.*mp4", td.path)
@@ -26,10 +25,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 1)
 
             video = files_after[0]
-            self.assertEqual(video[-4:], ".mkv")
-            tracks = video_utils.get_video_data(video)
-            self.assertEqual(len(tracks.video_tracks), 1)
-            self.assertEqual(len(tracks.subtitles), 1)
+            tracks = assert_video_info(self, video, expected_subtitles=1)
             self.assertEqual(tracks.subtitles[0].language, "eng")
 
     def test_polish_recognition(self):
@@ -50,10 +46,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 1)
 
             video = files_after[0]
-            self.assertEqual(video[-4:], ".mkv")
-            tracks = video_utils.get_video_data(video)
-            self.assertEqual(len(tracks.video_tracks), 1)
-            self.assertEqual(len(tracks.subtitles), 1)
+            tracks = assert_video_info(self, video, expected_subtitles=1)
             self.assertEqual(tracks.subtitles[0].language, "pol")
 
     def test_language_priority(self):
@@ -105,8 +98,7 @@ class SimpleSubtitlesMerge(unittest.TestCase):
             self.assertEqual(len(files_after), 1)
 
             video = files_after[0]
-            tracks = video_utils.get_video_data(video)
-            self.assertEqual(len(tracks.subtitles), 5)
+            tracks = assert_video_info(self, video, expected_subtitles=5)
             self.assertEqual(tracks.subtitles[0].language, "ger")
             self.assertEqual(tracks.subtitles[1].language, "cze")
             self.assertEqual(tracks.subtitles[0].default, 1)
