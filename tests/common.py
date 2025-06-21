@@ -6,19 +6,20 @@ import re
 import shutil
 import tempfile
 
+
+from contextlib import contextmanager
 from pathlib import Path
 from platformdirs import user_cache_dir
 from typing import Dict, List, Union
+from unittest.mock import patch
 
 import twotone.twotone
-import twotone.tools.utils.generic_utils
-from contextlib import contextmanager
-from unittest.mock import patch
-from twotone.tools.utils import files_utils, process_utils
+
+from twotone.tools.utils import files_utils, generic_utils, process_utils
 
 
 current_path = os.path.dirname(os.path.abspath(__file__))
-twotone.tools.utils.generic_utils.DISABLE_PROGRESSBARS = True
+generic_utils.DISABLE_PROGRESSBARS = True
 
 
 class WorkingDirectoryForTest:
@@ -177,6 +178,10 @@ def write_subtitle(path: str, lines: list[str], *, encoding: str = "utf-8") -> s
             if not line.endswith("\n"):
                 f.write("\n")
     return path
+
+
+def extract_subtitles(video_path: str, out_path: str):
+    process_utils.start_process("ffmpeg", ["-i", video_path, "-map", "0:s:0", out_path])
 
 
 def run_twotone(tool: str, tool_options = [], global_options = []):
