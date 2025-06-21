@@ -3,7 +3,7 @@ import os
 import unittest
 
 from twotone.tools.utils import subtitles_utils
-from common import WorkingDirectoryForTest
+from common import WorkingDirectoryForTest, write_subtitle
 
 
 class UtilsTests(unittest.TestCase):
@@ -12,8 +12,7 @@ class UtilsTests(unittest.TestCase):
         with WorkingDirectoryForTest() as wd:
             subtitle_path = os.path.join(wd.path, "subtitle.txt")
 
-            with open(subtitle_path, 'w') as subtitle_file:
-                subtitle_file.write(content)
+            write_subtitle(subtitle_path, [content])
 
             if valid:
                 self.assertTrue(subtitles_utils.is_subtitle(subtitle_path))

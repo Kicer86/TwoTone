@@ -5,7 +5,7 @@ import re
 import unittest
 
 from twotone.tools.utils import files_utils, video_utils
-from common import WorkingDirectoryForTest, list_files, add_test_media, hashes, run_twotone
+from common import WorkingDirectoryForTest, list_files, add_test_media, hashes, run_twotone, write_subtitle
 
 default_video_set = [
     "Atoms - 8579.mp4",
@@ -164,13 +164,22 @@ class SubtitlesMerge(unittest.TestCase):
         with WorkingDirectoryForTest() as td:
             add_test_media("Frog.*mp4", td.path)
 
-            with open(os.path.join(td.path, "Frog_en.srt"), "w") as sf:
-                sf.write("00:00:00:Hello World\n")
-                sf.write("00:00:06:This is some sample subtitle in english\n")
+            write_subtitle(
+                os.path.join(td.path, "Frog_en.srt"),
+                [
+                    "00:00:00:Hello World",
+                    "00:00:06:This is some sample subtitle in english",
+                ],
+            )
 
-            with open(os.path.join(td.path, "Frog_pl.srt"), "w", encoding="cp1250") as sf:
-                sf.write("00:00:00:Witaj Świecie\n")
-                sf.write("00:00:06:To jest przykładowy tekst po polsku\n")
+            write_subtitle(
+                os.path.join(td.path, "Frog_pl.srt"),
+                [
+                    "00:00:00:Witaj Świecie",
+                    "00:00:06:To jest przykładowy tekst po polsku",
+                ],
+                encoding="cp1250",
+            )
 
             run_twotone("merge", [td.path], ["--no-dry-run"])
 
