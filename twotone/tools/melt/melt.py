@@ -177,7 +177,7 @@ class Melter():
             "-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path
         ])
 
-    def _print_file_details(self, file: str, details: Dict[str, Any]):
+    def _print_file_details(self, file: str, details: Dict[str, Any], common_prefix: str):
         def formatter(key: str, value: any) -> str:
             if key == "fps":
                 return eval(value)
@@ -192,7 +192,13 @@ class Melter():
             else:
                 return True
 
-        self.logger.info(f"File {file} details:")
+        def printable_filepath(filepath: str, common_prefix: str) -> str:
+            pl = len(common_prefix)
+            assert filepath[:pl] == common_prefix
+
+            return filepath[pl:]
+
+        self.logger.info(f"File {printable_filepath(file, common_prefix)} details:")
         for stream_type, streams in details.items():
             info = f"{stream_type}: {len(streams)} track(s), languages: "
             info += ", ".join([ data.get("language") or "unknown" for data in streams])
@@ -223,9 +229,11 @@ class Melter():
         # analyze files in terms of quality and available content
         details = {file: video_utils.get_video_data2(file) for file in duplicates}
 
+        common_prefix = common_prefix = os.path.commonprefix(duplicates)
+
         # print input file details
         for file, file_details in details.items():
-            self._print_file_details(file, file_details)
+            self._print_file_details(file, file_details, common_prefix)
 
         streams_picker = StreamsPicker(self.logger, self.duplicates_source)
         video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(details)
