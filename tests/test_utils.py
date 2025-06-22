@@ -3,10 +3,10 @@ import os
 import unittest
 
 from twotone.tools.utils import subtitles_utils
-from common import WorkingDirectoryForTest, write_subtitle
+from common import WorkingDirectoryForTest, WorkingDirectoryTestCase, write_subtitle
 
 
-class UtilsTests(unittest.TestCase):
+class UtilsTests(WorkingDirectoryTestCase):
 
     def _test_content(self, content: str, valid: bool):
         with WorkingDirectoryForTest() as wd:
