@@ -1,8 +1,14 @@
 
+import itertools
 import logging
+import re
 import signal
 import sys
-import re
+import threading
+import time
+
+from tqdm import tqdm
+
 
 DISABLE_PROGRESSBARS = False
 
@@ -56,3 +62,41 @@ class InterruptibleProcess:
         if not self._work:
             logging.warning("Exiting now due to received signal.")
             sys.exit(1)
+
+
+class TqdmBouncingBar:
+    def __init__(self, **kwargs):
+        self._kwargs = kwargs
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._animate)
+        self._pbar = None
+
+    def _animate(self):
+        width = self._pbar.total or 40
+        positions = list(range(width)) + list(range(width - 2, -1, -1))
+        for pos in itertools.cycle(positions):
+            if self._stop_event.is_set():
+                break
+            self._pbar.n = pos
+            self._pbar.refresh()
+            time.sleep(self._kwargs.get("delay", 0.05))  # delay can be passed as kwarg
+
+    def __enter__(self):
+        self._pbar = tqdm(
+            total=self._kwargs.pop("total", 40),
+            bar_format=self._kwargs.pop("bar_format", "{desc} |{bar}|"),
+            **self._kwargs
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._stop_event.set()
+        self._thread.join()
+        self._pbar.close()
+
+    def update(self, n=1):
+        pass
+
+    def close(self):
+        self.__exit__(None, None, None)

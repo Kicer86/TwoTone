@@ -272,7 +272,10 @@ class Melter():
                 if self.live_run:
                     self.logger.info("Starting videos comparison to solve mismatching lenghts.")
                     # more than 100ms difference in lenght, perform content matching
-                    with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd:
+
+                    with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
+                         generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
+
                         pairMatcher = PairMatcher(self.interruption, mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
 
                         mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
