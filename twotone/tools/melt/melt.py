@@ -192,13 +192,7 @@ class Melter():
             else:
                 return True
 
-        def printable_filepath(filepath: str, common_prefix: str) -> str:
-            pl = len(common_prefix)
-            assert filepath[:pl] == common_prefix
-
-            return filepath[pl:]
-
-        self.logger.info(f"File {printable_filepath(file, common_prefix)} details:")
+        self.logger.info(f"File {files_utils.get_printable_path(file, common_prefix)} details:")
         for stream_type, streams in details.items():
             info = f"{stream_type}: {len(streams)} track(s), languages: "
             info += ", ".join([ data.get("language") or "unknown" for data in streams])
@@ -216,20 +210,26 @@ class Melter():
                         self.logger.debug(
                             f"\t\t{key_title:<16}{formatter(key, value)}")
 
-    def _print_streams_details(self, all_streams: List):
+    def _print_streams_details(self, common_prefix, all_streams: List):
         for stype, type_stream in all_streams:
             for stream in type_stream:
                 path = stream[0]
                 index = stream[1]
                 language = stream[2]
                 language = language if language else '---'
-                self.logger.info(f"{stype} stream #{index} with language {language} from {path}")
+
+                printable_path = files_utils.get_printable_path(path, common_prefix)
+                self.logger.info(f"{stype} stream #{index} with language {language} from {printable_path}")
 
     def _process_duplicates(self, duplicates: List[str]) -> List[Dict]:
+        self.logger.info("------------------------------------")
+        self.logger.info("Processing group of duplicated files")
+        self.logger.info("------------------------------------")
+
         # analyze files in terms of quality and available content
         details = {file: video_utils.get_video_data2(file) for file in duplicates}
 
-        common_prefix = common_prefix = os.path.commonprefix(duplicates)
+        common_prefix = files_utils.get_common_prefix(duplicates)
 
         # print input file details
         for file, file_details in details.items():
@@ -240,7 +240,7 @@ class Melter():
 
         # print proposed output file
         self.logger.info("Streams used to create output video file:")
-        self._print_streams_details([(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [video_streams, audio_streams, subtitle_streams])])
+        self._print_streams_details(common_prefix, [(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [video_streams, audio_streams, subtitle_streams])])
 
         # build streams mapping
         streams = defaultdict(list)
@@ -266,7 +266,8 @@ class Melter():
             lenght = details[path]["video"][0]["length"]
 
             if abs(base_lenght - lenght) > 100:
-                self.logger.warning(f"Audio stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}.")
+                printable_path = files_utils.get_printable_path(path, common_prefix)
+                self.logger.warning(f"Audio stream from file {printable_path} has lenght different that lenght of video stream from file {video_stream_path}.")
 
                 if self.live_run:
                     self.logger.info("Starting videos comparison to solve mismatching lenghts.")
@@ -294,7 +295,8 @@ class Melter():
             lenght = details[path]["video"][0]["length"]
 
             if abs(base_lenght - lenght) > 100:
-                error = f"Subtitles stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}. This is not supported yet"
+                printable_path = files_utils.get_printable_path(path, common_prefix)
+                error = f"Subtitles stream from file {printable_path} has lenght different that lenght of video stream from file {video_stream_path}. This is not supported yet"
                 self.logger.error(error)
                 raise RuntimeError(f"Unsupported case: {error}")
 
@@ -366,8 +368,11 @@ class Melter():
                 if len(streams) == 1:
                     # only one file is being used, just copy it to the output dir
                     first_file_path = list(streams)[0]
+
+                    self.logger.info(f"Using whole {first_file_path} file as an output.")
                     shutil.copy2(first_file_path, output)
                 else:
+                    self.logger.info("Starting output file generation from chosen streams.")
                     generation_args = [input for path in streams for input in ("-i", path)]
 
                     # convert streams to list for later sorting by language
@@ -430,7 +435,7 @@ class Melter():
 
                     generation_args.append(output)
 
-                    process_utils.raise_on_error(process_utils.start_process("ffmpeg", generation_args))
+                    process_utils.raise_on_error(process_utils.start_process("ffmpeg", generation_args, show_progress = True))
 
     def melt(self):
         with files_utils.ScopedDirectory(self.wd) as wd, logging_redirect_tqdm():
