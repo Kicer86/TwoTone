@@ -336,7 +336,10 @@ class Melter():
                 return sorted_file_lists
 
         for title, entries in tqdm(duplicates.items(), desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
+
+            self.logger.info( "-------------------------" + "-" * len(title))
             self.logger.info(f"Analyzing duplicates for {title}")
+            self.logger.info( "-------------------------" + "-" * len(title))
 
             files_groups = process_entries(entries)
 
