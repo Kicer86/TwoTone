@@ -300,7 +300,7 @@ class Melter():
 
     def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
         def process_entries(entries: List[str]) -> List[Tuple[List[str], str]]:
-            # function return list of: group of duplicates and name for final output file.
+            # function returns list of: group of duplicates and name for final output file.
             # when dirs are provided as entries, files from each dir are collected and sorted
             # and a files on the same position are grouped
             if all(os.path.isdir(p) for p in entries):
