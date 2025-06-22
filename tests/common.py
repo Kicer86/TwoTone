@@ -26,23 +26,32 @@ generic_utils.DISABLE_PROGRESSBARS = True
 
 
 class WorkingDirectoryForTest:
-    def __init__(self):
+    def __init__(self, class_name: str | None = None, test_name: str | None = None):
         self.directory = None
+        self.class_name = class_name
+        self.test_name = test_name
 
     @property
     def path(self):
         return self.directory
 
     def __enter__(self):
-        stack_level = inspect.stack()[1]
-        frame = stack_level.frame
-        cname = ""
-        if 'self' in frame.f_locals:
-            cname = frame.f_locals['self'].__class__.__name__
-        elif 'cls' in frame.f_locals:
-            cname = frame.f_locals['cls'].__name__
+        cname = self.class_name
+        tname = self.test_name
+        if cname is None or tname is None:
+            stack_level = inspect.stack()[1]
+            frame = stack_level.frame
+            if cname is None:
+                if 'self' in frame.f_locals:
+                    cname = frame.f_locals['self'].__class__.__name__
+                elif 'cls' in frame.f_locals:
+                    cname = frame.f_locals['cls'].__name__
+                else:
+                    cname = ""
+            if tname is None:
+                tname = stack_level.function
 
-        self.directory = os.path.join(tempfile.gettempdir(), "twotone_tests", cname, stack_level.function)
+        self.directory = os.path.join(tempfile.gettempdir(), "twotone_tests", cname, tname)
         if os.path.exists(self.directory):
             shutil.rmtree(self.directory)
 
@@ -51,6 +60,17 @@ class WorkingDirectoryForTest:
 
     def __exit__(self, type, value, traceback):
         shutil.rmtree(self.directory)
+
+
+class WorkingDirectoryTestCase(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.wd = WorkingDirectoryForTest(self.__class__.__name__, self._testMethodName)
+        self.wd.__enter__()
+
+    def tearDown(self):
+        self.wd.__exit__(None, None, None)
+        super().tearDown()
 
 
 class FileCache:

@@ -6,7 +6,7 @@ import tempfile
 from twotone.tools.utils import subtitles_utils, video_utils
 
 from common import (
-    WorkingDirectoryForTest,
+    WorkingDirectoryTestCase,
     add_test_media,
     hashes,
     current_path,
@@ -78,64 +78,61 @@ def create_broken_video_with_incompatible_subtitles(output_video_path: str, inpu
         process_utils.start_process("ffmpeg", ["-hide_banner", "-i", input_video, "-i", subtitle_path, "-map", "0", "-map", "1", "-c:v", "copy", "-c:a", "copy", output_video_path])
 
 
-class SubtitlesFixer(unittest.TestCase):
+class SubtitlesFixer(WorkingDirectoryTestCase):
 
     def setUp(self):
+        super().setUp()
         logging.getLogger().setLevel(logging.ERROR)
 
     def test_dry_run_is_respected(self):
-        with WorkingDirectoryForTest() as td:
-            output_video_path = f"{td.path}/test_video.mkv"
-            create_broken_video_with_scaled_subtitle_timings(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
+        output_video_path = f"{self.wd.path}/test_video.mkv"
+        create_broken_video_with_scaled_subtitle_timings(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
 
-            hashes_before = hashes(td.path)
-            run_twotone("subtitles_fix", [td.path])
-            hashes_after = hashes(td.path)
+        hashes_before = hashes(self.wd.path)
+        run_twotone("subtitles_fix", [self.wd.path])
+        hashes_after = hashes(self.wd.path)
 
-            self.assertEqual(hashes_before, hashes_after)
+        self.assertEqual(hashes_before, hashes_after)
 
     def test_video_with_scaled_subtitle_timings_fixing(self):
-        with WorkingDirectoryForTest() as td:
-            output_video_path = f"{td.path}/test_video.mkv"
-            create_broken_video_with_scaled_subtitle_timings(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
+        output_video_path = f"{self.wd.path}/test_video.mkv"
+        create_broken_video_with_scaled_subtitle_timings(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
 
-            hashes_before = hashes(td.path)
-            run_twotone("subtitles_fix", [td.path], ["-r"])
-            hashes_after = hashes(td.path)
+        hashes_before = hashes(self.wd.path)
+        run_twotone("subtitles_fix", [self.wd.path], ["-r"])
+        hashes_after = hashes(self.wd.path)
 
-            self.assertNotEqual(hashes_before, hashes_after)
+        self.assertNotEqual(hashes_before, hashes_after)
 
-            # run again - there should be no changes
-            run_twotone("subtitles_fix", [td.path], ["-r"])
-            hashes_after_after = hashes(td.path)
-            self.assertEqual(hashes_after, hashes_after_after)
+        # run again - there should be no changes
+        run_twotone("subtitles_fix", [self.wd.path], ["-r"])
+        hashes_after_after = hashes(self.wd.path)
+        self.assertEqual(hashes_after, hashes_after_after)
 
     def test_video_with_too_long_last_subtitle_fixing(self):
-        with WorkingDirectoryForTest() as td:
-            output_video_path = f"{td.path}/test_video.mkv"
-            create_broken_video_with_too_long_last_subtitle(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
+        output_video_path = f"{self.wd.path}/test_video.mkv"
+        create_broken_video_with_too_long_last_subtitle(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
 
-            hashes_before = hashes(td.path)
-            run_twotone("subtitles_fix", [td.path], ["-r"])
-            hashes_after = hashes(td.path)
+        hashes_before = hashes(self.wd.path)
+        run_twotone("subtitles_fix", [self.wd.path], ["-r"])
+        hashes_after = hashes(self.wd.path)
 
-            self.assertNotEqual(hashes_before, hashes_after)
+        self.assertNotEqual(hashes_before, hashes_after)
 
-            # run again - there should be no changes
-            run_twotone("subtitles_fix", [td.path], ["-r"])
-            hashes_after_after = hashes(td.path)
-            self.assertEqual(hashes_after, hashes_after_after)
+        # run again - there should be no changes
+        run_twotone("subtitles_fix", [self.wd.path], ["-r"])
+        hashes_after_after = hashes(self.wd.path)
+        self.assertEqual(hashes_after, hashes_after_after)
 
     def test_deal_with_incompatible_videos(self):
-        with WorkingDirectoryForTest() as td:
-            output_video_path = f"{td.path}/test_video.mkv"
-            create_broken_video_with_incompatible_subtitles(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
+        output_video_path = f"{self.wd.path}/test_video.mkv"
+        create_broken_video_with_incompatible_subtitles(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
 
-            hashes_before = hashes(td.path)
-            run_twotone("subtitles_fix", [td.path], ["-r"])
-            hashes_after = hashes(td.path)
+        hashes_before = hashes(self.wd.path)
+        run_twotone("subtitles_fix", [self.wd.path], ["-r"])
+        hashes_after = hashes(self.wd.path)
 
-            self.assertEqual(hashes_before, hashes_after)
+        self.assertEqual(hashes_before, hashes_after)
 
 if __name__ == '__main__':
     unittest.main()

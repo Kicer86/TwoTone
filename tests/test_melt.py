@@ -13,7 +13,7 @@ from twotone.tools.utils import generic_utils, process_utils, video_utils
 from twotone.tools.melt import Melter
 from twotone.tools.melt.melt import StaticSource, StreamsPicker
 from twotone.tools.utils.files_utils import ScopedDirectory
-from common import WorkingDirectoryForTest, FileCache, add_test_media, add_to_test_dir, current_path, get_audio, get_video, hashes, list_files
+from common import WorkingDirectoryTestCase, FileCache, add_test_media, add_to_test_dir, current_path, get_audio, get_video, hashes, list_files
 
 
 def normalize(obj):
@@ -36,67 +36,65 @@ def all_key_orders(d: Dict) -> Iterator[Dict]:
         yield {k: d[k] for k in perm}
 
 
-class MeltingTest(unittest.TestCase):
+class MeltingTest(WorkingDirectoryTestCase):
 
     def setUp(self):
+        super().setUp()
         logging.getLogger("Melter").setLevel(logging.CRITICAL)
 
     def test_simple_duplicate_detection(self):
-        with WorkingDirectoryForTest() as td:
-            file1 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v1"])[0]
-            file2 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v2"])[0]
+        file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = ["v1"])[0]
+        file2 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = ["v2"])[0]
 
-            interruption = generic_utils.InterruptibleProcess()
-            duplicates = StaticSource(interruption)
-            duplicates.add_entry("Grass", file1)
-            duplicates.add_entry("Grass", file2)
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Grass", file1)
+        duplicates.add_entry("Grass", file2)
 
-            input_file_hashes = hashes(td.path)
-            self.assertEqual(len(input_file_hashes), 2)
+        input_file_hashes = hashes(self.wd.path)
+        self.assertEqual(len(input_file_hashes), 2)
 
-            output_dir = os.path.join(td.path, "output")
-            os.makedirs(output_dir)
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
 
-            melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = td.path, output = output_dir)
-            melter.melt()
+        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter.melt()
 
-            # expect output to be equal to the first of files
-            output_file_hash = hashes(output_dir)
-            self.assertEqual(len(output_file_hash), 1)
+        # expect output to be equal to the first of files
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
 
-            # check if file was not altered
-            self.assertEqual(list(output_file_hash.values())[0], input_file_hashes[file1])
+        # check if file was not altered
+        self.assertEqual(list(output_file_hash.values())[0], input_file_hashes[file1])
 
 
     def test_dry_run_is_being_respected(self):
-        with WorkingDirectoryForTest() as td:
-            file1 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v1"])[0]
-            file2 = add_test_media("Grass - 66810.mp4", td.path, suffixes = ["v2"])[0]
+        file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = ["v1"])[0]
+        file2 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = ["v2"])[0]
 
-            interruption = generic_utils.InterruptibleProcess()
-            duplicates = StaticSource(interruption)
-            duplicates.add_entry("Grass", file1)
-            duplicates.add_entry("Grass", file2)
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Grass", file1)
+        duplicates.add_entry("Grass", file2)
 
-            input_file_hashes = hashes(td.path)
-            self.assertEqual(len(input_file_hashes), 2)
+        input_file_hashes = hashes(self.wd.path)
+        self.assertEqual(len(input_file_hashes), 2)
 
-            output_dir = os.path.join(td.path, "output")
-            os.makedirs(output_dir)
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
 
-            melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = False, wd = td.path, output = output_dir)
-            melter.melt()
+        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = False, wd = self.wd.path, output = output_dir)
+        melter.melt()
 
-            # expect output to be empty
-            output_file_hash = hashes(output_dir)
-            self.assertEqual(len(output_file_hash), 0)
+        # expect output to be empty
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 0)
 
 
     def test_same_multiscene_video_duplicate_detection(self):
         file_cache = FileCache("TwoToneTests")
 
-        with WorkingDirectoryForTest() as td:
-            def gen_sample(out_path: Path):
+        def gen_sample(out_path: Path):
                 videos = ["Atoms - 8579.mp4",
                           "Blue_Sky_and_Clouds_Timelapse_0892__Videvo.mov",
                           "Frog - 113403.mp4", "sea-waves-crashing-on-beach-shore-4793288.mp4",
@@ -107,7 +105,7 @@ class MeltingTest(unittest.TestCase):
                           "807419__kvgarlic__light-spring-rain-and-kids-and-birds-may-13-2025-vtwo.wav"]
 
                 #unify fps and add audio path
-                output_dir = os.path.join(td.path, "gen_sample")
+                output_dir = os.path.join(self.wd.path, "gen_sample")
 
                 with ScopedDirectory(output_dir) as sd:
                     output_files = []
@@ -130,7 +128,7 @@ class MeltingTest(unittest.TestCase):
 
                     process_utils.start_process("ffmpeg", ["-f", "concat", "-safe", "0", "-i", files_list_path, "-c", "copy", str(out_path)])
 
-            def gen_vhs(out_path: Path, input: str):
+        def gen_vhs(out_path: Path, input: str):
                 """
                     Process input file and worse its quality
                 """
@@ -159,119 +157,117 @@ class MeltingTest(unittest.TestCase):
 
                 process_utils.start_process("ffmpeg", args)
 
-            file1 = file_cache.get_or_generate("melter_tests_sample", "1", "mp4", gen_sample)
-            file1 = add_to_test_dir(td.path, str(file1))
-            file2 = file_cache.get_or_generate("melter_tests_vhs", "1", "mp4", partial(gen_vhs, input=file1))
-            file2 = add_to_test_dir(td.path, str(file2))
+        file1 = file_cache.get_or_generate("melter_tests_sample", "1", "mp4", gen_sample)
+        file1 = add_to_test_dir(self.wd.path, str(file1))
+        file2 = file_cache.get_or_generate("melter_tests_vhs", "1", "mp4", partial(gen_vhs, input=file1))
+        file2 = add_to_test_dir(self.wd.path, str(file2))
 
-            files = [file1, file2]
+        files = [file1, file2]
 
-            interruption = generic_utils.InterruptibleProcess()
-            duplicates = StaticSource(interruption)
-            duplicates.add_entry("video", file1)
-            duplicates.add_entry("video", file2)
-            duplicates.add_metadata(file1, "audio_lang", "eng")
-            duplicates.add_metadata(file2, "audio_lang", "pol")
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("video", file1)
+        duplicates.add_entry("video", file2)
+        duplicates.add_metadata(file1, "audio_lang", "eng")
+        duplicates.add_metadata(file2, "audio_lang", "pol")
 
-            input_file_hashes = hashes(td.path)
-            self.assertEqual(len(input_file_hashes), 2)
+        input_file_hashes = hashes(self.wd.path)
+        self.assertEqual(len(input_file_hashes), 2)
 
-            output_dir = os.path.join(td.path, "output")
-            os.makedirs(output_dir)
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
 
-            melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = td.path, output = output_dir)
-            melter.melt()
+        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter.melt()
 
-            # validate output
-            output_file_hash = hashes(output_dir)
-            self.assertEqual(len(output_file_hash), 1)
+        # validate output
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
 
-            output_file = list(output_file_hash)[0]
+        output_file = list(output_file_hash)[0]
 
-            output_file_data = video_utils.get_video_data2(output_file)
-            self.assertEqual(len(output_file_data["video"]), 1)
-            self.assertEqual(output_file_data["video"][0]["height"], 1080)
-            self.assertEqual(output_file_data["video"][0]["width"], 1920)
+        output_file_data = video_utils.get_video_data2(output_file)
+        self.assertEqual(len(output_file_data["video"]), 1)
+        self.assertEqual(output_file_data["video"][0]["height"], 1080)
+        self.assertEqual(output_file_data["video"][0]["width"], 1920)
 
-            self.assertEqual(len(output_file_data["audio"]), 2)
-            self.assertEqual(output_file_data["audio"][0]["language"], "eng")
-            self.assertEqual(output_file_data["audio"][1]["language"], "pol")
+        self.assertEqual(len(output_file_data["audio"]), 2)
+        self.assertEqual(output_file_data["audio"][0]["language"], "eng")
+        self.assertEqual(output_file_data["audio"][1]["language"], "pol")
 
 
     def test_series_duplication(self):
-        with WorkingDirectoryForTest() as td:
-            series1_dir = os.path.join(td.path, "series1")
-            series2_dir = os.path.join(td.path, "series2")
+        series1_dir = os.path.join(self.wd.path, "series1")
+        series2_dir = os.path.join(self.wd.path, "series2")
 
-            os.makedirs(series1_dir)
-            os.makedirs(series2_dir)
+        os.makedirs(series1_dir)
+        os.makedirs(series2_dir)
 
-            for episode in range(5):
-                add_test_media("Grass - 66810.mp4", series1_dir, suffixes = [f"suf-S1E{episode}"])[0]
-                add_test_media("Grass - 66810.mp4", series2_dir, suffixes = [f"S1E{episode}"])[0]
+        for episode in range(5):
+            add_test_media("Grass - 66810.mp4", series1_dir, suffixes = [f"suf-S1E{episode}"])[0]
+            add_test_media("Grass - 66810.mp4", series2_dir, suffixes = [f"S1E{episode}"])[0]
 
-            interruption = generic_utils.InterruptibleProcess()
-            duplicates = StaticSource(interruption)
-            duplicates.add_entry("Grass", series1_dir)
-            duplicates.add_entry("Grass", series2_dir)
-            duplicates.add_metadata(series1_dir, "audio_lang", "nor")
-            duplicates.add_metadata(series2_dir, "audio_lang", "ger")
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Grass", series1_dir)
+        duplicates.add_entry("Grass", series2_dir)
+        duplicates.add_metadata(series1_dir, "audio_lang", "nor")
+        duplicates.add_metadata(series2_dir, "audio_lang", "ger")
 
-            input_file_hashes = hashes(td.path)
-            self.assertEqual(len(input_file_hashes), 10)
+        input_file_hashes = hashes(self.wd.path)
+        self.assertEqual(len(input_file_hashes), 10)
 
-            output_dir = os.path.join(td.path, "output")
-            os.makedirs(output_dir)
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
 
-            melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = td.path, output = output_dir)
-            melter.melt()
+        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter.melt()
 
-            # validate output
-            output_file_hash = hashes(output_dir)
-            output_files = sorted(list(output_file_hash))
+        # validate output
+        output_file_hash = hashes(output_dir)
+        output_files = sorted(list(output_file_hash))
 
-            for i, output_file in enumerate(output_files):
-                output_file_name = os.path.basename(output_file)
-                self.assertEqual(output_file_name, f"Grass - 66810-suf-S1E{i}.mkv")
+        for i, output_file in enumerate(output_files):
+            output_file_name = os.path.basename(output_file)
+            self.assertEqual(output_file_name, f"Grass - 66810-suf-S1E{i}.mkv")
 
-                output_file_data = video_utils.get_video_data2(output_file)
-                self.assertEqual(len(output_file_data["video"]), 1)
-                self.assertEqual(output_file_data["video"][0]["height"], 2160)
-                self.assertEqual(output_file_data["video"][0]["width"], 3840)
+            output_file_data = video_utils.get_video_data2(output_file)
+            self.assertEqual(len(output_file_data["video"]), 1)
+            self.assertEqual(output_file_data["video"][0]["height"], 2160)
+            self.assertEqual(output_file_data["video"][0]["width"], 3840)
 
-                self.assertEqual(len(output_file_data["audio"]), 2)
-                self.assertEqual(output_file_data["audio"][0]["language"], "nor")
-                self.assertEqual(output_file_data["audio"][1]["language"], "deu")
+            self.assertEqual(len(output_file_data["audio"]), 2)
+            self.assertEqual(output_file_data["audio"][0]["language"], "nor")
+            self.assertEqual(output_file_data["audio"][1]["language"], "deu")
 
 
     def test_languages_prioritization(self):
-        with WorkingDirectoryForTest() as td:
-            interruption = generic_utils.InterruptibleProcess()
-            duplicates = StaticSource(interruption)
-            langs = ["pol", "en", "ger", "ja", "nor"]
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        langs = ["pol", "en", "ger", "ja", "nor"]
 
-            for i in range(5):
-                file = add_test_media("Grass - 66810.mp4", td.path, suffixes = [f"v{i}"])[0]
-                duplicates.add_entry("Grass", file)
-                duplicates.add_metadata(file, "audio_lang", langs[i])
+        for i in range(5):
+            file = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = [f"v{i}"])[0]
+            duplicates.add_entry("Grass", file)
+            duplicates.add_metadata(file, "audio_lang", langs[i])
 
-            output_dir = os.path.join(td.path, "output")
-            os.makedirs(output_dir)
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
 
-            melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = td.path, output = output_dir, languages_priority = ["de", "jpn", "eng", "no", "pl"])
-            melter.melt()
+        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir, languages_priority = ["de", "jpn", "eng", "no", "pl"])
+        melter.melt()
 
-            # validate order
-            output_file_hash = hashes(output_dir)
-            self.assertEqual(len(output_file_hash), 1)
+        # validate order
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
 
-            output_file = list(output_file_hash)[0]
-            output_file_data = video_utils.get_video_data2(output_file)
-            self.assertEqual(output_file_data["audio"][0]["language"], "deu")
-            self.assertEqual(output_file_data["audio"][1]["language"], "jpn")
-            self.assertEqual(output_file_data["audio"][2]["language"], "eng")
-            self.assertEqual(output_file_data["audio"][3]["language"], "nor")
-            self.assertEqual(output_file_data["audio"][4]["language"], "pol")
+        output_file = list(output_file_hash)[0]
+        output_file_data = video_utils.get_video_data2(output_file)
+        self.assertEqual(output_file_data["audio"][0]["language"], "deu")
+        self.assertEqual(output_file_data["audio"][1]["language"], "jpn")
+        self.assertEqual(output_file_data["audio"][2]["language"], "eng")
+        self.assertEqual(output_file_data["audio"][3]["language"], "nor")
+        self.assertEqual(output_file_data["audio"][4]["language"], "pol")
 
     sample_streams = [
         # case: merge all audio tracks

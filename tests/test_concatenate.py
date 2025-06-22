@@ -6,10 +6,10 @@ import unittest
 from typing import List
 
 from twotone.tools.utils.files_utils import split_path
-from common import WorkingDirectoryForTest, add_test_media, list_files, run_twotone
+from common import WorkingDirectoryTestCase, add_test_media, list_files, run_twotone
 
 
-class ConcatenateTests(unittest.TestCase):
+class ConcatenateTests(WorkingDirectoryTestCase):
 
     def _create_media(self, wd: str, base_file: str, partnames: List[str]):
         media_file_components = split_path(base_file)
@@ -66,39 +66,36 @@ class ConcatenateTests(unittest.TestCase):
 
 
     def test_dry_run_is_respected(self):
-        with WorkingDirectoryForTest() as td:
-            self._setup_valid_media(td.path)
+        self._setup_valid_media(self.wd.path)
 
-            files_before = list_files(td.path)
-            run_twotone("concatenate", [td.path])
+        files_before = list_files(self.wd.path)
+        run_twotone("concatenate", [self.wd.path])
 
-            files_after = list_files(td.path)
-            self.assertEqual(files_after, files_before)
+        files_after = list_files(self.wd.path)
+        self.assertEqual(files_after, files_before)
 
 
     def test_concatenation(self):
-        with WorkingDirectoryForTest() as td:
-            self._setup_valid_media(td.path)
+        self._setup_valid_media(self.wd.path)
 
-            run_twotone("concatenate", [td.path], ["-r"])
+        run_twotone("concatenate", [self.wd.path], ["-r"])
 
-            files_after = list_files(td.path)
-            tdl = len(td.path) + 1
+        files_after = list_files(self.wd.path)
+        tdl = len(self.wd.path) + 1
 
-            short_paths = [path[tdl:] for path in files_after]
-            short_paths.sort()
-            self.assertEqual(short_paths, ['0/Frog - 113403.mp4', '1/Frog - 113403.mp4', '2/Frog - 113403.mp4', '3/Frog - 113403.mp4', '4/Frog - 113403.mp4', '5/5.mp4', "6/''v''.mp4", 'Frog - 113403.mp4'])
+        short_paths = [path[tdl:] for path in files_after]
+        short_paths.sort()
+        self.assertEqual(short_paths, ['0/Frog - 113403.mp4', '1/Frog - 113403.mp4', '2/Frog - 113403.mp4', '3/Frog - 113403.mp4', '4/Frog - 113403.mp4', '5/5.mp4', "6/''v''.mp4", 'Frog - 113403.mp4'])
 
 
     def test_invalid_scenarios(self):
-         with WorkingDirectoryForTest() as td:
-            cases = self._setup_invalid_media(td.path)
-            files_before = list_files(td.path)
-            for case in cases:
-                run_twotone("concatenate", [case], ["-r"])
+        cases = self._setup_invalid_media(self.wd.path)
+        files_before = list_files(self.wd.path)
+        for case in cases:
+            run_twotone("concatenate", [case], ["-r"])
 
-            files_after = list_files(td.path)
-            self.assertEqual(files_after, files_before)
+        files_after = list_files(self.wd.path)
+        self.assertEqual(files_after, files_before)
 
 
 if __name__ == '__main__':
