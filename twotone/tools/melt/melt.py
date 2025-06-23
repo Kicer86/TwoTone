@@ -440,6 +440,8 @@ class Melter():
 
                     process_utils.raise_on_error(process_utils.start_process("ffmpeg", generation_args, show_progress = True))
 
+                    self.logger.info(f"{output} saved.")
+
     def melt(self):
         with files_utils.ScopedDirectory(self.wd) as wd, logging_redirect_tqdm():
             self.logger.debug(f"Starting `melt` with live run: {self.live_run} and working dir: {self.wd}")
