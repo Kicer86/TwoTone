@@ -177,7 +177,7 @@ class Melter():
             "-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path
         ])
 
-    def _print_file_details(self, file: str, details: Dict[str, Any]):
+    def _print_file_details(self, file: str, details: Dict[str, Any], common_prefix: str):
         def formatter(key: str, value: any) -> str:
             if key == "fps":
                 return eval(value)
@@ -192,7 +192,7 @@ class Melter():
             else:
                 return True
 
-        self.logger.info(f"File {file} details:")
+        self.logger.info(f"File {files_utils.get_printable_path(file, common_prefix)} details:")
         for stream_type, streams in details.items():
             info = f"{stream_type}: {len(streams)} track(s), languages: "
             info += ", ".join([ data.get("language") or "unknown" for data in streams])
@@ -210,29 +210,37 @@ class Melter():
                         self.logger.debug(
                             f"\t\t{key_title:<16}{formatter(key, value)}")
 
-    def _print_streams_details(self, all_streams: List):
+    def _print_streams_details(self, common_prefix, all_streams: List):
         for stype, type_stream in all_streams:
             for stream in type_stream:
                 path = stream[0]
                 index = stream[1]
                 language = stream[2]
                 language = language if language else '---'
-                self.logger.info(f"{stype} stream #{index} with language {language} from {path}")
+
+                printable_path = files_utils.get_printable_path(path, common_prefix)
+                self.logger.info(f"{stype} stream #{index} with language {language} from {printable_path}")
 
     def _process_duplicates(self, duplicates: List[str]) -> List[Dict]:
+        self.logger.info("------------------------------------")
+        self.logger.info("Processing group of duplicated files")
+        self.logger.info("------------------------------------")
+
         # analyze files in terms of quality and available content
         details = {file: video_utils.get_video_data2(file) for file in duplicates}
 
+        common_prefix = files_utils.get_common_prefix(duplicates)
+
         # print input file details
         for file, file_details in details.items():
-            self._print_file_details(file, file_details)
+            self._print_file_details(file, file_details, common_prefix)
 
         streams_picker = StreamsPicker(self.logger, self.duplicates_source)
         video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(details)
 
         # print proposed output file
         self.logger.info("Streams used to create output video file:")
-        self._print_streams_details([(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [video_streams, audio_streams, subtitle_streams])])
+        self._print_streams_details(common_prefix, [(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [video_streams, audio_streams, subtitle_streams])])
 
         # build streams mapping
         streams = defaultdict(list)
@@ -258,12 +266,16 @@ class Melter():
             lenght = details[path]["video"][0]["length"]
 
             if abs(base_lenght - lenght) > 100:
-                self.logger.warning(f"Audio stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}.")
+                printable_path = files_utils.get_printable_path(path, common_prefix)
+                self.logger.warning(f"Audio stream from file {printable_path} has lenght different that lenght of video stream from file {video_stream_path}.")
 
                 if self.live_run:
                     self.logger.info("Starting videos comparison to solve mismatching lenghts.")
                     # more than 100ms difference in lenght, perform content matching
-                    with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd:
+
+                    with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
+                         generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
+
                         pairMatcher = PairMatcher(self.interruption, mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
 
                         mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
@@ -286,7 +298,8 @@ class Melter():
             lenght = details[path]["video"][0]["length"]
 
             if abs(base_lenght - lenght) > 100:
-                error = f"Subtitles stream from file {path} has lenght different that lenght of video stream from file {video_stream_path}. This is not supported yet"
+                printable_path = files_utils.get_printable_path(path, common_prefix)
+                error = f"Subtitles stream from file {printable_path} has lenght different that lenght of video stream from file {video_stream_path}. This is not supported yet"
                 self.logger.error(error)
                 raise RuntimeError(f"Unsupported case: {error}")
 
@@ -300,7 +313,7 @@ class Melter():
 
     def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
         def process_entries(entries: List[str]) -> List[Tuple[List[str], str]]:
-            # function return list of: group of duplicates and name for final output file.
+            # function returns list of: group of duplicates and name for final output file.
             # when dirs are provided as entries, files from each dir are collected and sorted
             # and a files on the same position are grouped
             if all(os.path.isdir(p) for p in entries):
@@ -333,10 +346,13 @@ class Melter():
 
                 sorted_file_lists = [(entries, first_file_name)]
 
-            return sorted_file_lists
+                return sorted_file_lists
 
         for title, entries in tqdm(duplicates.items(), desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
+
+            self.logger.info( "-------------------------" + "-" * len(title))
             self.logger.info(f"Analyzing duplicates for {title}")
+            self.logger.info( "-------------------------" + "-" * len(title))
 
             files_groups = process_entries(entries)
 
@@ -355,8 +371,11 @@ class Melter():
                 if len(streams) == 1:
                     # only one file is being used, just copy it to the output dir
                     first_file_path = list(streams)[0]
+
+                    self.logger.info(f"Using whole {first_file_path} file as an output.")
                     shutil.copy2(first_file_path, output)
                 else:
+                    self.logger.info("Starting output file generation from chosen streams.")
                     generation_args = [input for path in streams for input in ("-i", path)]
 
                     # convert streams to list for later sorting by language
@@ -419,7 +438,9 @@ class Melter():
 
                     generation_args.append(output)
 
-                    process_utils.raise_on_error(process_utils.start_process("ffmpeg", generation_args))
+                    process_utils.raise_on_error(process_utils.start_process("ffmpeg", generation_args, show_progress = True))
+
+                    self.logger.info(f"{output} saved.")
 
     def melt(self):
         with files_utils.ScopedDirectory(self.wd) as wd, logging_redirect_tqdm():

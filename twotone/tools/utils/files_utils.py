@@ -53,3 +53,14 @@ class TempFileManager:
     def __exit__(self, exc_type, exc_value, traceback):
         if self.filepath and os.path.exists(self.filepath):
             os.remove(self.filepath)
+
+def get_common_prefix(paths) -> str:
+    unified = list(paths)
+    return os.path.commonprefix(unified)
+
+
+def get_printable_path(path: str, common_prefix: str) -> str:
+    pl = len(common_prefix)
+    assert path[:pl] == common_prefix
+
+    return path[pl:]

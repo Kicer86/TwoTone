@@ -5,7 +5,7 @@ from collections import defaultdict
 from functools import cmp_to_key
 from typing import Dict, List, Optional, Tuple
 
-from ..utils import language_utils
+from ..utils import files_utils, language_utils
 from .duplicates_source import DuplicatesSource
 
 class StreamsPicker:
@@ -109,21 +109,24 @@ class StreamsPicker:
 
         assert unique_keys and unique_keys[0] == "language", "First unique_key must be 'language'"
 
-        def get_language(stream) -> str:
+        paths_common_prefix = files_utils.get_common_prefix(files_details)
+
+        def get_language(stream, path) -> str:
+            printable_path = files_utils.get_printable_path(path, paths_common_prefix)
             lang = stream.get("language")
             if override_languages and path in override_languages:
                 original_lang = lang
                 lang = override_languages[path]
                 tid = stream["tid"]
                 if original_lang:
-                    self.logger.info(f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file {path}")
+                    self.logger.info(f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file {printable_path}")
                 else:
-                    self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file {path}")
+                    self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file {printable_path}")
             elif (not lang) and fallback_languages and path in fallback_languages:
                 original_lang = lang
                 lang = fallback_languages[path]
                 tid = stream["tid"]
-                self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file {path}")
+                self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file {printable_path}")
 
             return lang
 
@@ -136,7 +139,7 @@ class StreamsPicker:
                 stream_view = stream.copy()
 
                 # Determine language
-                lang = get_language(stream)
+                lang = get_language(stream, path)
                 stream_view["language"] = lang
 
                 # Build unique key based on stream view
