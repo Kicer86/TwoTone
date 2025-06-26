@@ -56,11 +56,15 @@ class TempFileManager:
 
 def get_common_prefix(paths) -> str:
     unified = list(paths)
-    return os.path.commonprefix(unified)
+    return os.path.commonpath(unified)
 
 
 def get_printable_path(path: str, common_prefix: str) -> str:
     pl = len(common_prefix)
     assert path[:pl] == common_prefix
 
-    return path[pl:]
+    # skip '/' or '\' (on windows) if first char
+    if path[pl] == os.sep or (os.altsep is not None and path[pl] == os.altsep):
+        return path[pl + 1:]
+    else:
+        return path[pl:]
