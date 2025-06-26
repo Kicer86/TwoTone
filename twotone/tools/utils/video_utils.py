@@ -364,7 +364,7 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
     if result.returncode != 0:
         if os.path.exists(output_path):
             os.remove(output_path)
-        raise RuntimeError(f"{cmd} exited with unexpected error:\n{result.stderr}")
+        raise RuntimeError(f"{cmd} exited with unexpected error:\n{result.stderr}\n\nAnd output: {result.stdout}")
 
     if not os.path.exists(output_path):
         logging.error("Output file was not created")
