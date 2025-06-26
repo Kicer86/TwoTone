@@ -1,0 +1,27 @@
+name: Linux-mypy
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  Mypy:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: true
+        lfs: true
+
+    - name: Install Python dependencies
+      uses: py-actions/py-dependency-install@v4
+      with:
+        path: "requirements.txt"
+        additional_requirements: "mypy"
+
+    - name: Run mypy
+      run: |
+        mypy twotone tests
