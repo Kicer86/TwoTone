@@ -25,18 +25,18 @@ TOOLS = {
 
 class CustomParserFormatter(argparse.HelpFormatter):
     @override
-    def _split_lines(self, text, width):
+    def _split_lines(self, text: str, width: int) -> list[str]:
         return text.splitlines()
 
     @override
-    def _get_help_string(self, action):
+    def _get_help_string(self, action: argparse.Action) -> str:
         help_str = action.help
         if '%(default)' not in help_str:
             if action.default is not argparse.SUPPRESS and action.default is not None:
                 help_str += f' (default: {action.default})'
         return help_str
 
-def execute(argv):
+def execute(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog = 'twotone',
         description='Videos manipulation toolkit. '
@@ -107,13 +107,13 @@ class CustomLoggerFormatter(logging.Formatter):
     }
 
     @override
-    def format(self, record):
+    def format(self, record: logging.LogRecord) -> str:
         log_fmt = self.FORMATS.get(record.levelno)
         formatter = logging.Formatter(log_fmt)
         return formatter.format(record)
 
 
-def main():
+def main() -> None:
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(CustomLoggerFormatter())
 

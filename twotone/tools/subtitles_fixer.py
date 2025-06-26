@@ -7,27 +7,28 @@ import tempfile
 from overrides import override
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
+from typing import Callable
 
 from .tool import Tool
 from twotone.tools.utils import generic_utils, process_utils, subtitles_utils, video_utils
 
 
 class Fixer(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, really_fix: bool):
+    def __init__(self, logger: logging.Logger, really_fix: bool) -> None:
         super().__init__()
         self.logger = logger
         self._do_fix = really_fix
 
-    def _print_broken_videos(self, broken_videos_info: [(video_utils.VideoInfo, [int])]):
+    def _print_broken_videos(self, broken_videos_info: list[tuple[video_utils.VideoInfo, list[int]]]) -> None:
         self.logger.info(f"Found {len(broken_videos_info)} broken videos:")
         for broken_video in broken_videos_info:
             self.logger.info(f"{len(broken_video[1])} broken subtitle(s) in {broken_video[0].path} found")
 
-    def _no_resolver(self, video_track: video_utils.VideoTrack, content: str):
+    def _no_resolver(self, video_track: video_utils.VideoTrack, content: str) -> None:
         self.logger.error("Cannot fix the file, no idea how to do it.")
         return None
 
-    def _long_tail_resolver(self, video_track: video_utils.VideoTrack, content: str):
+    def _long_tail_resolver(self, video_track: video_utils.VideoTrack, content: str) -> str:
         timestamps = list(subtitles_utils.subrip_time_pattern.finditer(content))
         last_timestamp = timestamps[-1]
         time_from, time_to = map(generic_utils.time_to_ms, last_timestamp.groups())
@@ -40,13 +41,13 @@ class Fixer(generic_utils.InterruptibleProcess):
         content = content[:begin_pos] + f"{generic_utils.ms_to_time(time_from)} --> {generic_utils.ms_to_time(new_time_to)}" + content[end_pos:]
         return content
 
-    def _fps_scale_resolver(self, video_track: video_utils.VideoTrack, content: str):
+    def _fps_scale_resolver(self, video_track: video_utils.VideoTrack, content: str) -> str:
         target_fps = generic_utils.fps_str_to_float(video_track.fps)
         multiplier = subtitles_utils.ffmpeg_default_fps / target_fps
 
         return subtitles_utils.alter_subrip_subtitles_times(content, multiplier)
 
-    def _get_resolver(self, content: str, video_length: int):
+    def _get_resolver(self, content: str, video_length: int) -> Callable[[video_utils.VideoTrack, str], str | None]:
         timestamps = list(subtitles_utils.subrip_time_pattern.finditer(content))
         if len(timestamps) == 0:
             return self._no_resolver
@@ -63,7 +64,7 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         return self._no_resolver
 
-    def _fix_subtitle(self, broken_subtitle, video_info: video_utils.VideoInfo) -> bool:
+    def _fix_subtitle(self, broken_subtitle: str, video_info: video_utils.VideoInfo) -> bool:
         video_track = video_info.video_tracks[0]
 
         with open(broken_subtitle, 'r', encoding='utf-8') as file:
@@ -81,7 +82,7 @@ class Fixer(generic_utils.InterruptibleProcess):
                 file.write(new_content)
             return True
 
-    def _extract_all_subtitles(self,video_file: str, subtitles: [subtitles_utils.Subtitle], wd: str) -> [subtitles_utils.SubtitleFile]:
+    def _extract_all_subtitles(self, video_file: str, subtitles: list[subtitles_utils.Subtitle], wd: str) -> list[subtitles_utils.SubtitleFile]:
         result = []
         options = ["tracks", video_file]
 
@@ -96,7 +97,7 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         return result
 
-    def _repair_videos(self, broken_videos_info: [(video_utils.VideoInfo, [int])]):
+    def _repair_videos(self, broken_videos_info: list[tuple[video_utils.VideoInfo, list[int]]]) -> None:
         self._print_broken_videos(broken_videos_info)
         self.logger.info("Fixing videos")
 
@@ -138,7 +139,7 @@ class Fixer(generic_utils.InterruptibleProcess):
                     else:
                         self.logger.debug("Skipping video due to errors")
 
-    def _check_if_broken(self, video_file: str): # -> (video.VideoInfo, [int]) | None:    // FIXME
+    def _check_if_broken(self, video_file: str) -> tuple[video_utils.VideoInfo, list[int]] | None:
         self.logger.debug(f"Processing file {video_file}")
 
         def diff(a, b):
@@ -171,7 +172,7 @@ class Fixer(generic_utils.InterruptibleProcess):
         self.logger.debug(f"Issues found in {video_file}")
         return (video_info, broken_subtitiles)
 
-    def _process_dir(self, path: str) -> []:
+    def _process_dir(self, path: str) -> list[tuple[video_utils.VideoInfo, list[int]]]:
         broken_videos = []
         video_files = []
 
@@ -194,7 +195,7 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         return broken_videos
 
-    def process_dir(self, path: str):
+    def process_dir(self, path: str) -> None:
         broken_videos = self._process_dir(path)
 
         self._repair_videos(broken_videos)
@@ -202,13 +203,13 @@ class Fixer(generic_utils.InterruptibleProcess):
 
 class FixerTool(Tool):
     @override
-    def setup_parser(self, parser: argparse.ArgumentParser):
+    def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument('videos_path',
                             nargs=1,
                             help='Path with videos to analyze.')
 
     @override
-    def run(self, args, no_dry_run: bool, logger: logging.Logger):
+    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger) -> None:
         for tool in ["mkvmerge", "mkvextract", "ffprobe"]:
             path = shutil.which(tool)
             if path is None:
