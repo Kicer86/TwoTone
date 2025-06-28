@@ -13,7 +13,7 @@ from twotone.tools.utils import generic_utils, process_utils, video_utils
 from twotone.tools.melt import Melter
 from twotone.tools.melt.melt import StaticSource, StreamsPicker
 from twotone.tools.utils.files_utils import ScopedDirectory
-from common import TwoToneTestCase, FileCache, add_test_media, add_to_test_dir, current_path, get_audio, get_video, hashes, list_files
+from common import TwoToneTestCase, FileCache, add_test_media, add_to_test_dir, build_test_video, current_path, get_audio, get_video, hashes, list_files
 
 
 def normalize(obj):
@@ -263,6 +263,44 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(output_file_data["audio"][2]["language"], "eng")
         self.assertEqual(output_file_data["audio"][3]["language"], "nor")
         self.assertEqual(output_file_data["audio"][4]["language"], "pol")
+
+
+    def test_subtitle_streams(self):
+        video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = True)
+        video2 = build_test_video(os.path.join(self.wd.path, "o2.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = True)
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Sea Waves", video1)
+        duplicates.add_entry("Sea Waves", video2)
+        duplicates.add_metadata(video1, "subtitle_lang", "jpn")
+        duplicates.add_metadata(video2, "subtitle_lang", "br")
+
+        input_file_hashes = hashes(self.wd.path)
+        self.assertEqual(len(input_file_hashes), 2)
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter.melt()
+
+        # validate output
+        output_file_hash = hashes(output_dir)
+        output_file = list(output_file_hash)[0]
+
+        output_file_data = video_utils.get_video_data(output_file)
+        self.assertEqual(len(output_file_data["video"]), 1)
+        self.assertEqual(output_file_data["video"][0]["height"], 1080)
+        self.assertEqual(output_file_data["video"][0]["width"], 1920)
+
+        self.assertEqual(len(output_file_data["audio"]), 1)
+
+        self.assertEqual(len(output_file_data["subtitle"]), 2)
+        languages = { output_file_data["subtitle"][0]["language"],
+                      output_file_data["subtitle"][1]["language"] }
+        self.assertEqual(languages, {"jpn", "bre"})
+
 
     sample_streams = [
         # case: merge all audio tracks
