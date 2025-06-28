@@ -174,23 +174,23 @@ def get_subtitle(name: str) -> str:
     return os.path.join(current_path, "subtitles", name)
 
 
-def build_test_video(tmp_dir: str, video_name: str, *, audio_name: Union[str, None] = None, subtitle: Union[str, bool, None] = None) -> str:
-    video_path = get_video(video_name)
-    audio_path = None if audio_name is None else get_audio(audio_name)
+def build_test_video(output_path: str, wd: str, video_name: str, *, audio_name: Union[str, None] = None, subtitle: Union[str, bool, None] = None) -> str:
+    with tempfile.TemporaryDirectory(dir = wd) as tmp_dir:
+        video_path = get_video(video_name)
+        audio_path = None if audio_name is None else get_audio(audio_name)
 
-    subtitle_path = get_subtitle(subtitle) if isinstance(subtitle, str) else None
-    if subtitle_path is None and isinstance(subtitle, bool) and subtitle:
-        video_length = video_utils.get_video_duration(video_path)
-        subtitle_path = os.path.join(tmp_dir, "temporary_subtitle_file.srt")
-        generate_subrip_subtitles(subtitle_path, length = video_length)
+        subtitle_path = get_subtitle(subtitle) if isinstance(subtitle, str) else None
+        if subtitle_path is None and isinstance(subtitle, bool) and subtitle:
+            video_length = video_utils.get_video_duration(video_path)
+            subtitle_path = os.path.join(tmp_dir, "temporary_subtitle_file.srt")
+            generate_subrip_subtitles(subtitle_path, length = video_length)
 
-    output_path = os.path.join(tmp_dir, "output_" + video_name + ".mkv")
-    video_utils.generate_mkv(output_path,
-                             video_path,
-                             [subtitles_utils.build_subtitle_from_path(subtitle_path)] if subtitle_path else None,
-                             [subtitles_utils.build_audio_from_path(audio_path)] if audio_path else None)
+        video_utils.generate_mkv(output_path,
+                                video_path,
+                                [subtitles_utils.build_subtitle_from_path(subtitle_path)] if subtitle_path else None,
+                                [subtitles_utils.build_audio_from_path(audio_path)] if audio_path else None)
 
-    return output_path
+        return output_path
 
 
 def assert_video_info(testcase: unittest.TestCase, path: str,
