@@ -2,6 +2,7 @@ pull_request_rules:
   - name: Squash and merge (one commit)
     conditions:
       - check-success=Tests
+      - check-success=Mypy
       - "#commits=1"
       - or:
         - "#approved-reviews-by>0"
@@ -15,6 +16,7 @@ pull_request_rules:
   - name: Merge pull request (more than one commit)
     conditions:
       - check-success=Tests
+      - check-success=Mypy
       - "#commits>1"
       - "#commits-behind=0"
       - or:
