@@ -6,6 +6,10 @@ on:
       - master
   pull_request:
 
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
 jobs:
   Mypy:
     runs-on: ubuntu-24.04
@@ -15,13 +19,64 @@ jobs:
       with:
         submodules: true
         lfs: true
+        fetch-depth: 0
 
     - name: Install Python dependencies
       uses: py-actions/py-dependency-install@v4
       with:
         path: "requirements.txt"
-        additional_requirements: "mypy"
 
-    - name: Run mypy
+    - name: Install mypy
       run: |
-        mypy twotone tests
+        python3 -m pip install mypy
+
+    - name: Save PR mypy errors
+      run: |
+        python -m mypy twotone tests > pr_mypy.txt || true
+
+    - name: Save master mypy errors
+      run: |
+        git checkout origin/master
+        python -m mypy twotone tests > master_mypy.txt || true
+
+    - name: Checkout PR branch again
+      run: git checkout -
+
+    - name: Compare mypy results
+      run: |
+        echo "==> Extracting mypy summary lines"
+        PR_SUMMARY=$(tail -n 1 pr_mypy.txt)
+        MASTER_SUMMARY=$(tail -n 1 master_mypy.txt)
+
+        echo "PR summary:     $PR_SUMMARY"
+        echo "Master summary: $MASTER_SUMMARY"
+
+        echo "==> Grouping error blocks with stable sort"
+        python .github/scripts/group_mypy_blocks.py pr_mypy.txt > pr_sorted.txt
+        python .github/scripts/group_mypy_blocks.py master_mypy.txt > master_sorted.txt
+
+        echo "==> Comparing error sets"
+        comm -12 master_sorted.txt pr_sorted.txt > mypy_shared.txt || true
+        comm -13 master_sorted.txt pr_sorted.txt > mypy_new.txt || true
+        comm -23 master_sorted.txt pr_sorted.txt > mypy_fixed.txt || true
+
+        echo ""
+        echo "✅ Errors already in master (to be fixed):"
+        cat mypy_shared.txt || echo "(none)"
+
+        echo ""
+        echo "❌ New errors introduced in PR:"
+        cat mypy_new.txt || echo "(none)"
+
+        echo ""
+        echo "🛠️  Errors fixed by this PR (removed):"
+        cat mypy_fixed.txt || echo "(none)"
+
+        echo ""
+        echo "==> Final verdict:"
+        if [ -s mypy_new.txt ]; then
+          echo "::error::PR introduces new mypy errors"
+          exit 1
+        else
+          echo "✅ No new mypy errors introduced."
+        fi

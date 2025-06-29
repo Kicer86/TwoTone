@@ -9,13 +9,14 @@ from concurrent.futures import ThreadPoolExecutor
 from overrides import override
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
+from typing import Callable, List
 
 from .tool import Tool
 from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
 
 
 class Transcoder(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, live_run: bool = False, target_ssim: float = 0.98, codec: str = "libx265"):
+    def __init__(self, logger: logging.Logger, live_run: bool = False, target_ssim: float = 0.98, codec: str = "libx265") -> None:
         super().__init__()
         self.logger = logger
         self.live_run = live_run
@@ -23,7 +24,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         self.codec = codec
 
 
-    def _find_video_files(self, directory):
+    def _find_video_files(self, directory: str) -> list[str]:
         """Find video files with specified extensions."""
         video_files = []
         for root, _, files in os.walk(directory):
@@ -33,7 +34,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         return video_files
 
 
-    def _calculate_quality(self, original, transcoded):
+    def _calculate_quality(self, original: str, transcoded: str) -> float | None:
         """Calculate SSIM between original and transcoded video_utils."""
         args = [
             "-i", original, "-i", transcoded,
@@ -55,7 +56,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         return None
 
 
-    def _transcode_video(self, input_file, output_file, crf, preset, input_params=[], output_params=[], audio_codec=["-an"], show_progress=False):
+    def _transcode_video(self, input_file: str, output_file: str, crf: int, preset: str, input_params: list[str] = [], output_params: list[str] = [], audio_codec: list[str] = ["-an"], show_progress: bool = False) -> None:
         """
         Encode video with a given CRF, preset, and extra parameters.
         By default audio is removed as in most cases this function is being used
@@ -79,7 +80,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         process_utils.raise_on_error(process_utils.start_process("ffmpeg", args, show_progress=show_progress))
 
 
-    def _extract_segment(self, video_file, start_time, end_time, output_file):
+    def _extract_segment(self, video_file: str, start_time: float, end_time: float, output_file: str) -> None:
         """ Extract video segment. Video is transcoded with lossless quality to rebuild damaged or troublesome videos """
         self._transcode_video(
             video_file,
@@ -90,7 +91,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         )
 
 
-    def _extract_segments(self, video_file: str, segments, output_dir: str):
+    def _extract_segments(self, video_file: str, segments: list[tuple[float, float]], output_dir: str) -> list[str]:
         output_files = []
         _, filename, ext = files_utils.split_path(video_file)
 
@@ -106,7 +107,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         return output_files
 
 
-    def _select_scenes(self, video_file, segment_duration=5):
+    def _select_scenes(self, video_file: str, segment_duration: int = 5) -> list[tuple[float, float]]:
         """
         Select video segments around detected scene changes, merging nearby timestamps.
 
@@ -143,7 +144,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
             segments.append((start, end))
 
         # # Merge overlapping segments
-        merged_segments = []
+        merged_segments: List[tuple[float, float]] = []
         for start, end in sorted(segments):
             if not merged_segments or start > merged_segments[-1][1]:  # No overlap
                 merged_segments.append((start, end))
@@ -153,7 +154,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         return merged_segments
 
 
-    def _select_segments(self, video_file, segment_duration=5):
+    def _select_segments(self, video_file: str, segment_duration: int = 5) -> list[tuple[float, float]]:
         duration = video_utils.get_video_duration(video_file) / 1000
         num_segments = max(3, min(10, int(duration // 30)))
 
@@ -166,12 +167,12 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
         step = (duration - segment_duration) / (num_segments - 1) if num_segments > 1 else 0
 
-        segments = [(round(i * step), round(i * step) + segment_duration) for i in range(num_segments)]
+        segments = [(float(round(i * step)), float(round(i * step) + segment_duration)) for i in range(num_segments)]
 
         return segments
 
 
-    def _bisection_search(self, eval_func, min_value, max_value, target_condition):
+    def _bisection_search(self, eval_func: Callable[[int], float | None], min_value: int, max_value: int, target_condition: Callable[[float], bool]) -> tuple[int | None, float | None]:
         """
         Generic bisection search algorithm.
 
@@ -203,7 +204,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         return best_value, best_result
 
 
-    def _transcode_segment_and_compare(self, wd_dir: str, segment_file: str, crf: int) -> float or None:
+    def _transcode_segment_and_compare(self, wd_dir: str, segment_file: str, crf: int) -> float | None:
         _, filename, ext = files_utils.split_path(segment_file)
 
         transcoded_segment_output = os.path.join(wd_dir, f"{filename}.transcoded.{ext}")
@@ -213,7 +214,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         quality = self._calculate_quality(segment_file, transcoded_segment_output)
         return quality
 
-    def _for_segments(self, segments, op, title, unit):
+    def _for_segments(self, segments: list[str], op: Callable[[str, str], None], title: str, unit: str) -> None:
         with logging_redirect_tqdm(), \
              tqdm(desc=title, unit=unit, total=len(segments), **generic_utils.get_tqdm_defaults()) as pbar, \
              tempfile.TemporaryDirectory() as wd_dir, \
@@ -225,7 +226,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
             for segment in segments:
                 executor.submit(worker, segment)
 
-    def _final_transcode(self, input_file, crf):
+    def _final_transcode(self, input_file: str, crf: int) -> None:
         """Perform the final transcoding with the best CRF using the determined extra_params."""
         dir, basename, ext = files_utils.split_path(input_file)
 
@@ -247,6 +248,9 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
         # Measure SSIM again after final transcoding
         final_quality = self._calculate_quality(input_file, temp_file)
+
+        if final_quality is None:
+            raise ValueError("Could not determine SSIM value.")
 
         try:
             if final_quality < self.target_ssim:
@@ -294,7 +298,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
 
 
-    def find_optimal_crf(self, input_file, allow_segments=True):
+    def find_optimal_crf(self, input_file: str, allow_segments: bool = True) -> int | None:
         """Find the optimal CRF using bisection."""
         original_size = os.path.getsize(input_file)
 
@@ -346,7 +350,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
                 raise RuntimeError(f"Top SSIM value: {top_quality} < requested SSIM: {self.target_ssim}")
 
             crf_min, crf_max = 0, 51
-            best_crf, best_quality = self._bisection_search(evaluate_crf, min_value = crf_min, max_value = crf_max, target_condition=lambda avg_quality: avg_quality >= self.target_ssim)
+            best_crf, best_quality = self._bisection_search(evaluate_crf, min_value = crf_min, max_value = crf_max, target_condition = lambda avg_quality: avg_quality >= self.target_ssim)
 
             if best_crf is not None and best_quality is not None:
                 self.logger.info(f"Finished CRF bisection. Optimal CRF: {best_crf} with quality: {best_quality}")
@@ -355,7 +359,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
             return best_crf
 
 
-    def transcode(self, directory: str):
+    def transcode(self, directory: str) -> None:
         self.logger.info(f"Starting video transcoding with {self.codec}. Target SSIM: {self.target_ssim}")
         video_files = self._find_video_files(directory)
 
@@ -376,7 +380,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
 class TranscodeTool(Tool):
     @override
-    def setup_parser(self, parser: argparse.ArgumentParser):
+    def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         def valid_ssim_value(value):
             try:
                 fvalue = float(value)
@@ -397,6 +401,6 @@ class TranscodeTool(Tool):
 
 
     @override
-    def run(self, args, no_dry_run: bool, logger):
+    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger) -> None:
         transcoder = Transcoder(logger, live_run = no_dry_run, target_ssim = args.ssim)
         transcoder.transcode(args.videos_path[0])

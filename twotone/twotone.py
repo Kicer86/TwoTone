@@ -25,18 +25,18 @@ TOOLS = {
 
 class CustomParserFormatter(argparse.HelpFormatter):
     @override
-    def _split_lines(self, text, width):
+    def _split_lines(self, text: str, width: int) -> list[str]:
         return text.splitlines()
 
     @override
-    def _get_help_string(self, action):
-        help_str = action.help
+    def _get_help_string(self, action: argparse.Action) -> str:
+        help_str = action.help or ""
         if '%(default)' not in help_str:
             if action.default is not argparse.SUPPRESS and action.default is not None:
                 help_str += f' (default: {action.default})'
         return help_str
 
-def execute(argv):
+def execute(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog = 'twotone',
         description='Videos manipulation toolkit. '
@@ -96,24 +96,24 @@ class CustomLoggerFormatter(logging.Formatter):
     red = "\x1b[31;20m"
     bold_red = "\x1b[31;1m"
     reset = "\x1b[0m"
-    format = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
+    format_txt = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 
     FORMATS = {
-        logging.DEBUG: grey + format + reset,
-        logging.INFO: grey + format + reset,
-        logging.WARNING: yellow + format + reset,
-        logging.ERROR: red + format + reset,
-        logging.CRITICAL: bold_red + format + reset
+        logging.DEBUG: grey + format_txt + reset,
+        logging.INFO: grey + format_txt + reset,
+        logging.WARNING: yellow + format_txt + reset,
+        logging.ERROR: red + format_txt + reset,
+        logging.CRITICAL: bold_red + format_txt + reset
     }
 
     @override
-    def format(self, record):
+    def format(self, record: logging.LogRecord) -> str:
         log_fmt = self.FORMATS.get(record.levelno)
         formatter = logging.Formatter(log_fmt)
         return formatter.format(record)
 
 
-def main():
+def main() -> None:
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(CustomLoggerFormatter())
 

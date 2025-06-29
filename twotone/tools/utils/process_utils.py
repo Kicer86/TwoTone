@@ -14,8 +14,8 @@ from . import video_utils
 @dataclass
 class ProcessResult:
     returncode: int
-    stdout: str | bytes
-    stderr: str | bytes
+    stdout: str
+    stderr: str
 
 
 def start_process(process: str, args: List[str], show_progress = False) -> ProcessResult:
@@ -31,7 +31,7 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
             index_of_i = args.index("-i")
             input_file = args[index_of_i + 1]
 
-            if video_utils.is_video(input_file):
+            if video_utils.is_video(input_file) and sub_process.stderr:
                 progress_pattern = re.compile(r"frame= *(\d+)")
                 frames = video_utils.get_video_frames_count(input_file)
                 with logging_redirect_tqdm(), \
@@ -51,7 +51,7 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
 
     logging.debug(f"Process finished with {sub_process.returncode}")
 
-    return ProcessResult(sub_process.returncode, stdout, stderr)
+    return ProcessResult(sub_process.returncode, str(stdout), str(stderr))
 
 
 def raise_on_error(status: ProcessResult):

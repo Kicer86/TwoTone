@@ -16,7 +16,7 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, subti
 
 class Merge(generic_utils.InterruptibleProcess):
 
-    def __init__(self, logger: logging.Logger, dry_run: bool, language: str, lang_priority: str):
+    def __init__(self, logger: logging.Logger, dry_run: bool, language: str, lang_priority: str) -> None:
         super().__init__()
         self.logger = logger
         self.dry_run = dry_run
@@ -28,7 +28,7 @@ class Merge(generic_utils.InterruptibleProcess):
 
         return subtitles_utils.build_subtitle_from_path(path, language)
 
-    def _directory_subtitle_matcher(self, dir_path: str) -> Dict[str, List[subtitles_utils.SubtitleFile]]:
+    def _directory_subtitle_matcher(self, dir_path: str) -> dict[str, list[subtitles_utils.SubtitleFile]]:
         """
             Match subtitles to videos found in 'path' directory
         """
@@ -75,7 +75,7 @@ class Merge(generic_utils.InterruptibleProcess):
         return matches
 
 
-    def _recursive_subtitle_search(self, path: str) -> [subtitles_utils.SubtitleFile]:
+    def _recursive_subtitle_search(self, path: str) -> list[subtitles_utils.SubtitleFile]:
         found_subtitles = []
         found_subdirs = []
 
@@ -100,7 +100,7 @@ class Merge(generic_utils.InterruptibleProcess):
 
         return subtitles
 
-    def _aggressive_subtitle_search(self, path: str) -> [subtitles_utils.SubtitleFile]:
+    def _aggressive_subtitle_search(self, path: str) -> list[subtitles_utils.SubtitleFile]:
         """
             Function collects all subtitles in video dir and from all subdirs
         """
@@ -118,20 +118,20 @@ class Merge(generic_utils.InterruptibleProcess):
         return subtitles
 
     @staticmethod
-    def _get_index_for(l: [], value):
+    def _get_index_for(l: list, value: object) -> int:
         try:
             return l.index(value)
         except ValueError:
             return len(l)
 
-    def _sort_subtitles(self, subtitles: [subtitles_utils.SubtitleFile]) -> [subtitles_utils.SubtitleFile]:
+    def _sort_subtitles(self, subtitles: list[subtitles_utils.SubtitleFile]) -> list[subtitles_utils.SubtitleFile]:
         priorities = self.lang_priority.copy()
         priorities.append(None)
         subtitles_sorted = sorted(subtitles, key=lambda s: self._get_index_for(priorities, s.language))
 
         return subtitles_sorted
 
-    def _convert_subtitle(self, video_fps: str, subtitle: subtitles_utils.SubtitleFile, temporary_dir: str) -> [subtitles_utils.SubtitleFile]:
+    def _convert_subtitle(self, video_fps: str, subtitle: subtitles_utils.SubtitleFile, temporary_dir: str) -> subtitles_utils.SubtitleFile:
         converted_subtitle = subtitle
 
         if not self.dry_run:
@@ -139,8 +139,10 @@ class Merge(generic_utils.InterruptibleProcess):
             output_file = files_utils.get_unique_file_name(temporary_dir, "srt")
             encoding = subtitle.encoding if subtitle.encoding != "UTF-8-SIG" else "utf-8"
 
-            status = process_utils.start_process("ffmpeg",
-                                           ["-hide_banner", "-y", "-sub_charenc", encoding, "-i", input_file, output_file])
+            status = process_utils.start_process(
+                "ffmpeg",
+                ["-hide_banner", "-y", "-sub_charenc", encoding, "-i", input_file, output_file]
+            )
 
             if status.returncode == 0:
                 # there is no way (as of now) to tell ffmpeg to convert subtitles with proper frame rate in mind.
@@ -163,7 +165,7 @@ class Merge(generic_utils.InterruptibleProcess):
 
         return converted_subtitle
 
-    def _merge(self, input_video: str, subtitles: [subtitles_utils.SubtitleFile]):
+    def _merge(self, input_video: str, subtitles: list[subtitles_utils.SubtitleFile]) -> None:
         self.logger.info(f"Merging video file: {input_video} with subtitles:")
 
         video_dir, video_name, video_extension = files_utils.split_path(input_video)
@@ -209,7 +211,7 @@ class Merge(generic_utils.InterruptibleProcess):
 
         self.logger.debug("\tDone")
 
-    def _process_single_video(self, video_file: str) -> Tuple[str, List[subtitles_utils.SubtitleFile]]:
+    def _process_single_video(self, video_file: str) -> tuple[str, list[subtitles_utils.SubtitleFile]] | None:
         self.logger.debug(f"Analyzing subtitles for a single video: {video_file}")
         subtitles = self._aggressive_subtitle_search(video_file)
 
@@ -218,7 +220,7 @@ class Merge(generic_utils.InterruptibleProcess):
         else:
             return (video_file, subtitles)
 
-    def _process_dir_with_many_videos(self, dir_path: str) -> Dict[str, List[subtitles_utils.SubtitleFile]]:
+    def _process_dir_with_many_videos(self, dir_path: str) -> dict[str, list[subtitles_utils.SubtitleFile]]:
         """
             Function launches matching for videos in subtitles in directory with many videos
         """
@@ -226,7 +228,7 @@ class Merge(generic_utils.InterruptibleProcess):
         return self._directory_subtitle_matcher(dir_path)
 
 
-    def _process_dir(self, path: str) -> Dict[str, List[subtitles_utils.SubtitleFile]]:
+    def _process_dir(self, path: str) -> dict[str, list[subtitles_utils.SubtitleFile]]:
         self.logger.debug(f"Finding videos in {path}")
         videos_and_subtitles = {}
 
@@ -262,7 +264,7 @@ class Merge(generic_utils.InterruptibleProcess):
         return videos_and_subtitles
 
 
-    def process_dir(self, path: str):
+    def process_dir(self, path: str) -> None:
         self.logger.info(f"Looking for video and subtitle files in {path}")
         vas = self._process_dir(path)
 
@@ -279,7 +281,7 @@ class Merge(generic_utils.InterruptibleProcess):
 
 class MergeTool(Tool):
     @override
-    def setup_parser(self, parser: argparse.ArgumentParser):
+    def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument('videos_path',
                             nargs=1,
                             help='Path with videos to combine.')
@@ -294,7 +296,7 @@ class MergeTool(Tool):
                                 'the end in undefined order')
 
     @override
-    def run(self, args, no_dry_run: bool, logger: logging.Logger):
+    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger) -> None:
         for tool in ["mkvmerge", "ffmpeg", "ffprobe"]:
             path = shutil.which(tool)
             if path is None:

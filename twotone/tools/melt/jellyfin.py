@@ -11,7 +11,7 @@ from .duplicates_source import DuplicatesSource
 
 
 class JellyfinSource(DuplicatesSource):
-    def __init__(self, interruption: generic_utils.InterruptibleProcess, url: str, token: str, path_fix: Tuple[str, str]):
+    def __init__(self, interruption: generic_utils.InterruptibleProcess, url: str, token: str, path_fix: Tuple[str, str]) -> None:
         super().__init__(interruption)
 
         self.url = url
@@ -41,7 +41,7 @@ class JellyfinSource(DuplicatesSource):
 
         paths_by_id = defaultdict(lambda: defaultdict(list))
 
-        def fetchItems(params: Dict[str, str] = {}):
+        def fetchItems(params: Dict[str, str] = {}) -> None:
             self.interruption._check_for_stop()
             params.update({"fields": "Path,ProviderIds"})
 

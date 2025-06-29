@@ -17,7 +17,7 @@ FramesInfo = Dict[int, Dict[str, str]]
 
 
 class PairMatcher:
-    def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger):
+    def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger) -> None:
         self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
         self.lhs_path = lhs_path
@@ -50,7 +50,7 @@ class PairMatcher:
         ]:
             os.makedirs(d)
 
-    def _normalize_frames(self, frames_info: FramesInfo, wd: str) -> Dict[int, str]:
+    def _normalize_frames(self, frames_info: FramesInfo, wd: str) -> FramesInfo:
         def crop_5_percent(image: cv.Mat) -> cv.Mat:
             height, width = image.shape
             dx = int(width * 0.05)
@@ -79,17 +79,17 @@ class PairMatcher:
         return dict(results)
 
     @staticmethod
-    def calculate_ratio(pairs: List[Tuple[int, int]]):
+    def calculate_ratio(pairs: List[Tuple[int, int]]) -> float:
         ratios = [(r[0] - l[0]) / (r[1] - l[1]) for l, r in zip(pairs[:-1], pairs[1:]) if (r[1] - l[1]) != 0]
         median_ratio = np.median(ratios)
-        return median_ratio
+        return float(median_ratio)
 
     @staticmethod
-    def is_ratio_acceptable(ratio: float, perfect_ratio: float):
+    def is_ratio_acceptable(ratio: float, perfect_ratio: float) -> bool:
         return abs(ratio - perfect_ratio) < 0.05 * perfect_ratio
 
     @staticmethod
-    def _is_rich(frame_path: str):
+    def _is_rich(frame_path: str) -> bool:
         return image_utils.image_entropy(frame_path) > 3.5
 
 
@@ -100,12 +100,12 @@ class PairMatcher:
         return new_info
 
     @staticmethod
-    def _filter_low_detailed(scenes: FramesInfo):
+    def _filter_low_detailed(scenes: FramesInfo) -> FramesInfo:
         valuable_scenes = {timestamp: info for timestamp, info in scenes.items() if PairMatcher._is_rich(info["path"])}
         return valuable_scenes
 
     @staticmethod
-    def _get_frames_for_timestamps(timestamps: List[int], frames_info: FramesInfo) -> List[str]:
+    def _get_frames_for_timestamps(timestamps: List[int], frames_info: FramesInfo) -> FramesInfo:
         frame_files = {timestamp: info for timestamp, info in frames_info.items() if timestamp in timestamps}
 
         return frame_files
@@ -119,7 +119,7 @@ class PairMatcher:
         return [pair for pair, dist in zip(pairs, dists) if dist <= threshold]
 
     @staticmethod
-    def summarize_pairs(phash, pairs: List[Tuple[int, int]], lhs: FramesInfo, rhs: FramesInfo, verbose: bool = False) -> str:
+    def summarize_pairs(phash: PhashCache, pairs: List[Tuple[int, int]], lhs: FramesInfo, rhs: FramesInfo, verbose: bool = False) -> str:
         distances = []
         for lhs_ts, rhs_ts in pairs:
             d = abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"]))
@@ -207,7 +207,7 @@ class PairMatcher:
         return '\n'.join(out)
 
     @staticmethod
-    def _compute_overlap(lhs_img: cv.typing.MatLike, rhs_img: cv.typing.MatLike, h):
+    def _compute_overlap(lhs_img: cv.typing.MatLike, rhs_img: cv.typing.MatLike, h) -> tuple[int, int, int, int]:
         # Expect images to be in the grayscale
         assert len(lhs_img.shape) == 2
         assert len(rhs_img.shape) == 2
@@ -228,15 +228,15 @@ class PairMatcher:
         return (x, y, w, h)
 
     @staticmethod
-    def _interpolate_crop_rects(timestamps, rects):
+    def _interpolate_crop_rects(timestamps_list: List[int], rects_list: List[Tuple[int, int, int, int]]) -> Callable[[int], Tuple[int, int, int, int]]:
         """
         Given a list of timestamps and matching crop rects, return a function that interpolates
         a crop for any timestamp between and extrapolates outside the range.
         rect = (x, y, w, h)
         """
 
-        timestamps = np.array(timestamps)
-        rects = np.array(rects)
+        timestamps = np.array(timestamps_list)
+        rects = np.array(rects_list)
 
         def interpolate(t):
             if t <= timestamps[0]:
@@ -253,7 +253,7 @@ class PairMatcher:
         return interpolate
 
     @staticmethod
-    def _find_interpolated_crop(pairs_with_timestamps, lhs_frames: FramesInfo, rhs_frames: FramesInfo):
+    def _find_interpolated_crop(pairs_with_timestamps: List[Tuple[int, int]], lhs_frames: FramesInfo, rhs_frames: FramesInfo) -> Tuple[Callable[[int], Tuple[int, int, int, int]], Callable[[int], Tuple[int, int, int, int]]]:
         timestamps_lhs = []
         timestamps_rhs = []
         lhs_crops = []
