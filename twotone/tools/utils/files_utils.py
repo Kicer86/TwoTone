@@ -15,7 +15,7 @@ def split_path(path: str) -> Tuple[str, str, str]:
 
 
 class ScopedDirectory:
-    def __init__(self, path: Path):
+    def __init__(self, path: str):
         self.path = Path(path)
 
     def __enter__(self):
