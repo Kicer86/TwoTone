@@ -51,18 +51,32 @@ jobs:
         echo "PR summary:     $PR_SUMMARY"
         echo "Master summary: $MASTER_SUMMARY"
 
-        echo "==> Comparing full error sets"
-        grep -v '^Found [0-9]\+ errors' pr_mypy.txt | sort -s > pr_sorted.txt
-        grep -v '^Found [0-9]\+ errors' master_mypy.txt | sort -s > master_sorted.txt
+        echo "==> Grouping error blocks with stable sort"
+        python .github/scripts/group_mypy_blocks.py pr_mypy.txt > pr_sorted.txt
+        python .github/scripts/group_mypy_blocks.py master_mypy.txt > master_sorted.txt
 
-        comm -13 master_sorted.txt pr_sorted.txt > mypy_diff.txt || true
+        echo "==> Comparing error sets"
+        comm -12 master_sorted.txt pr_sorted.txt > mypy_shared.txt || true
+        comm -13 master_sorted.txt pr_sorted.txt > mypy_new.txt || true
+        comm -23 master_sorted.txt pr_sorted.txt > mypy_fixed.txt || true
 
-        echo "==> New errors introduced in PR:"
-        cat mypy_diff.txt || true
+        echo ""
+        echo "✅ Errors already in master (to be fixed):"
+        cat mypy_shared.txt || echo "(none)"
 
-        if [ -s mypy_diff.txt ]; then
-            echo "::error::PR introduces new mypy errors"
-            exit 1
+        echo ""
+        echo "❌ New errors introduced in PR:"
+        cat mypy_new.txt || echo "(none)"
+
+        echo ""
+        echo "🛠️  Errors fixed by this PR (removed):"
+        cat mypy_fixed.txt || echo "(none)"
+
+        echo ""
+        echo "==> Final verdict:"
+        if [ -s mypy_new.txt ]; then
+          echo "::error::PR introduces new mypy errors"
+          exit 1
         else
-            echo "✅ No new errors introduced."
+          echo "✅ No new mypy errors introduced."
         fi
