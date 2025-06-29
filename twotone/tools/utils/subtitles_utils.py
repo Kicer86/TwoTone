@@ -76,7 +76,7 @@ def is_subtitle(file: str) -> bool:
     return False
 
 
-def is_subtitle_microdvd(subtitle: Subtitle) -> bool:
+def is_subtitle_microdvd(subtitle: SubtitleFile) -> bool:
     with open(subtitle.path, 'r', encoding=subtitle.encoding) as text_file:
         head = "".join(islice(text_file, 5)).strip()
 

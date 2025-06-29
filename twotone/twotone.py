@@ -30,7 +30,7 @@ class CustomParserFormatter(argparse.HelpFormatter):
 
     @override
     def _get_help_string(self, action: argparse.Action) -> str:
-        help_str = action.help
+        help_str = action.help or ""
         if '%(default)' not in help_str:
             if action.default is not argparse.SUPPRESS and action.default is not None:
                 help_str += f' (default: {action.default})'
@@ -96,14 +96,14 @@ class CustomLoggerFormatter(logging.Formatter):
     red = "\x1b[31;20m"
     bold_red = "\x1b[31;1m"
     reset = "\x1b[0m"
-    format = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
+    format_txt = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 
     FORMATS = {
-        logging.DEBUG: grey + format + reset,
-        logging.INFO: grey + format + reset,
-        logging.WARNING: yellow + format + reset,
-        logging.ERROR: red + format + reset,
-        logging.CRITICAL: bold_red + format + reset
+        logging.DEBUG: grey + format_txt + reset,
+        logging.INFO: grey + format_txt + reset,
+        logging.WARNING: yellow + format_txt + reset,
+        logging.ERROR: red + format_txt + reset,
+        logging.CRITICAL: bold_red + format_txt + reset
     }
 
     @override

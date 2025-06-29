@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from . import language_utils, process_utils
 from .generic_utils import fps_str_to_float, time_to_ms
+from .subtitles_utils import SubtitleFile
 
 
 @dataclass
@@ -26,13 +27,6 @@ class Subtitle:
     length: int | None
     tid: int
     format: str
-
-
-@dataclass
-class SubtitleFile:
-    path: str
-    language: str
-    encoding: str
 
 
 @dataclass
@@ -217,7 +211,7 @@ def get_video_duration(video_file):
         return None
 
 
-def get_video_full_info(path: str) -> str:
+def get_video_full_info(path: str) -> dict:
     args = []
     args.extend(["-v", "quiet"])
     args.extend(["-print_format", "json"])
@@ -238,7 +232,7 @@ def get_video_full_info(path: str) -> str:
 
 def get_video_data2(path: str) -> Dict:
 
-    def get_length(stream) -> int:
+    def get_length(stream) -> int | None:
         """
             get length in milliseconds
         """
@@ -321,7 +315,7 @@ def get_video_data2(path: str) -> Dict:
 
 def get_video_data(path: str) -> VideoInfo:
 
-    def get_length(stream) -> int:
+    def get_length(stream) -> int | None:
         """get length in milliseconds"""
         length = None
 

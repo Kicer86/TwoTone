@@ -41,9 +41,7 @@ class JellyfinSource(DuplicatesSource):
 
         paths_by_id = defaultdict(lambda: defaultdict(list))
 
-        def fetchItems(params: Dict[str, str] | None = None) -> None:
-            if params is None:
-                params = {}
+        def fetchItems(params: Dict[str, str] = {}) -> None:
             self.interruption._check_for_stop()
             params.update({"fields": "Path,ProviderIds"})
 

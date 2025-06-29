@@ -9,7 +9,7 @@ class DuplicatesSource:
         self.interruption = interruption
 
     def collect_duplicates(self) -> Dict[str, List[str]]:
-        pass
+        return {}
 
     def get_metadata_for(self, path: str) -> Dict[str, str]:
-        pass
+        return {}

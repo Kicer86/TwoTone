@@ -82,7 +82,7 @@ class PairMatcher:
     def calculate_ratio(pairs: List[Tuple[int, int]]) -> float:
         ratios = [(r[0] - l[0]) / (r[1] - l[1]) for l, r in zip(pairs[:-1], pairs[1:]) if (r[1] - l[1]) != 0]
         median_ratio = np.median(ratios)
-        return median_ratio
+        return float(median_ratio)
 
     @staticmethod
     def is_ratio_acceptable(ratio: float, perfect_ratio: float) -> bool:
@@ -228,15 +228,15 @@ class PairMatcher:
         return (x, y, w, h)
 
     @staticmethod
-    def _interpolate_crop_rects(timestamps: List[int], rects: List[Tuple[int, int, int, int]]) -> Callable[[int], Tuple[int, int, int, int]]:
+    def _interpolate_crop_rects(timestamps_list: List[int], rects_list: List[Tuple[int, int, int, int]]) -> Callable[[int], Tuple[int, int, int, int]]:
         """
         Given a list of timestamps and matching crop rects, return a function that interpolates
         a crop for any timestamp between and extrapolates outside the range.
         rect = (x, y, w, h)
         """
 
-        timestamps = np.array(timestamps)
-        rects = np.array(rects)
+        timestamps = np.array(timestamps_list)
+        rects = np.array(rects_list)
 
         def interpolate(t):
             if t <= timestamps[0]:

@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from overrides import override
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
-from typing import Callable
+from typing import Callable, List
 
 from .tool import Tool
 from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
@@ -144,7 +144,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
             segments.append((start, end))
 
         # # Merge overlapping segments
-        merged_segments = []
+        merged_segments: List[tuple[float, float]] = []
         for start, end in sorted(segments):
             if not merged_segments or start > merged_segments[-1][1]:  # No overlap
                 merged_segments.append((start, end))
@@ -154,7 +154,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         return merged_segments
 
 
-    def _select_segments(self, video_file: str, segment_duration: int = 5) -> list[tuple[int, int]]:
+    def _select_segments(self, video_file: str, segment_duration: int = 5) -> list[tuple[float, float]]:
         duration = video_utils.get_video_duration(video_file) / 1000
         num_segments = max(3, min(10, int(duration // 30)))
 
@@ -167,12 +167,12 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
         step = (duration - segment_duration) / (num_segments - 1) if num_segments > 1 else 0
 
-        segments = [(round(i * step), round(i * step) + segment_duration) for i in range(num_segments)]
+        segments = [(float(round(i * step)), float(round(i * step) + segment_duration)) for i in range(num_segments)]
 
         return segments
 
 
-    def _bisection_search(self, eval_func: Callable[[int], float | None], min_value: int, max_value: int, target_condition: Callable[[float | None], bool]) -> tuple[int | None, float | None]:
+    def _bisection_search(self, eval_func: Callable[[int], float | None], min_value: int, max_value: int, target_condition: Callable[[float], bool]) -> tuple[int | None, float | None]:
         """
         Generic bisection search algorithm.
 
@@ -248,6 +248,9 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
         # Measure SSIM again after final transcoding
         final_quality = self._calculate_quality(input_file, temp_file)
+
+        if final_quality is None:
+            raise ValueError("Could not determine SSIM value.")
 
         try:
             if final_quality < self.target_ssim:
@@ -347,7 +350,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
                 raise RuntimeError(f"Top SSIM value: {top_quality} < requested SSIM: {self.target_ssim}")
 
             crf_min, crf_max = 0, 51
-            best_crf, best_quality = self._bisection_search(evaluate_crf, min_value = crf_min, max_value = crf_max, target_condition=lambda avg_quality: avg_quality >= self.target_ssim)
+            best_crf, best_quality = self._bisection_search(evaluate_crf, min_value = crf_min, max_value = crf_max, target_condition = lambda avg_quality: avg_quality >= self.target_ssim)
 
             if best_crf is not None and best_quality is not None:
                 self.logger.info(f"Finished CRF bisection. Optimal CRF: {best_crf} with quality: {best_quality}")
