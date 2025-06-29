@@ -52,8 +52,8 @@ jobs:
         echo "Master summary: $MASTER_SUMMARY"
 
         echo "==> Comparing full error sets"
-        grep -v '^Found [0-9]\+ errors' pr_mypy.txt | sort > pr_sorted.txt
-        grep -v '^Found [0-9]\+ errors' master_mypy.txt | sort > master_sorted.txt
+        grep -v '^Found [0-9]\+ errors' pr_mypy.txt | sort -s > pr_sorted.txt
+        grep -v '^Found [0-9]\+ errors' master_mypy.txt | sort -s > master_sorted.txt
 
         comm -13 master_sorted.txt pr_sorted.txt > mypy_diff.txt || true
 
