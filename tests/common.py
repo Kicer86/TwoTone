@@ -167,9 +167,9 @@ def assert_video_info(testcase: unittest.TestCase, path: str,
                       expected_subtitles: int | None = None):
     testcase.assertTrue(path.endswith(".mkv"))
     tracks = video_utils.get_video_data(path)
-    testcase.assertEqual(len(tracks.video_tracks), expected_video_tracks)
+    testcase.assertEqual(len(tracks["video"]), expected_video_tracks)
     if expected_subtitles is not None:
-        testcase.assertEqual(len(tracks.subtitles), expected_subtitles)
+        testcase.assertEqual(len(tracks["subtitle"]), expected_subtitles)
     return tracks
 
 

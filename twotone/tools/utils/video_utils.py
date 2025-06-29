@@ -1,4 +1,3 @@
-
 import json
 import logging
 import os
@@ -7,33 +6,13 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Union, Tuple
 
-from dataclasses import dataclass
+
 
 from . import language_utils, process_utils
 from .generic_utils import fps_str_to_float, time_to_ms
 from .subtitles_utils import SubtitleFile
 
 
-@dataclass
-class VideoTrack:
-    fps: str
-    length: int
-
-
-@dataclass
-class Subtitle:
-    language: str
-    default: int | bool
-    length: int | None
-    tid: int
-    format: str
-
-
-@dataclass
-class VideoInfo:
-    video_tracks: List[VideoTrack]
-    subtitles: List[Subtitle]
-    path: str
 
 
 def is_video(file: str) -> bool:
@@ -230,12 +209,10 @@ def get_video_full_info(path: str) -> dict:
     return output_json
 
 
-def get_video_data2(path: str) -> Dict:
+def get_video_data(path: str) -> Dict:
 
     def get_length(stream) -> int | None:
-        """
-            get length in milliseconds
-        """
+        """Return stream length in milliseconds if available."""
         length = None
 
         if "tags" in stream:
@@ -272,7 +249,7 @@ def get_video_data2(path: str) -> Dict:
             tid = stream["index"]
             format = stream["codec_name"]
 
-            streams["subtitle"]. append({
+            streams["subtitle"].append({
                 "language": language,
                 "default": is_default,
                 "length": length,
@@ -313,61 +290,15 @@ def get_video_data2(path: str) -> Dict:
     return dict(streams)
 
 
-def get_video_data(path: str) -> VideoInfo:
-
-    def get_length(stream) -> int | None:
-        """get length in milliseconds"""
-        length = None
-
-        if "tags" in stream:
-            tags = stream["tags"]
-            duration = tags.get("DURATION", None)
-            if duration is not None:
-                length = time_to_ms(duration)
-
-        if length is None:
-            length = stream.get("duration", None)
-            if length is not None:
-                length = int(float(length) * 1000)
-
-        return length
-
-    output_json = get_video_full_info(path)
-
-    subtitles: List[Subtitle] = []
-    video_tracks: List[VideoTrack] = []
-    for stream in output_json["streams"]:
-        stream_type = stream["codec_type"]
-        if stream_type == "subtitle":
-            if "tags" in stream:
-                tags = stream["tags"]
-                language = tags.get("language", None)
-            else:
-                language = None
-            is_default = stream["disposition"]["default"]
-            length = get_length(stream)
-            tid = stream["index"]
-            format = stream["codec_name"]
-
-            subtitles.append(Subtitle(language, default=is_default, length=length, tid=tid, format=format))
-        elif stream_type == "video":
-            fps = stream["r_frame_rate"]
-            length = get_length(stream)
-            if length is None:
-                length = get_video_duration(path)
-
-            video_tracks.append(VideoTrack(fps=fps, length=length))
-
-    return VideoInfo(video_tracks, subtitles, path)
 
 
-def compare_videos(lhs: List[VideoTrack], rhs: List[VideoTrack]) -> bool:
+def compare_videos(lhs: List[Dict], rhs: List[Dict]) -> bool:
     if len(lhs) != len(rhs):
         return False
 
     for lhs_item, rhs_item in zip(lhs, rhs):
-        lhs_fps = fps_str_to_float(lhs_item.fps)
-        rhs_fps = fps_str_to_float(rhs_item.fps)
+        lhs_fps = fps_str_to_float(lhs_item["fps"])
+        rhs_fps = fps_str_to_float(rhs_item["fps"])
 
         if lhs_fps == rhs_fps:
             return True
@@ -442,7 +373,7 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
     output_file_details = get_video_data(output_path)
     input_file_details = get_video_data(input_video)
 
-    if not compare_videos(input_file_details.video_tracks, output_file_details.video_tracks) or \
-            len(input_file_details.subtitles) + len(subtitles) != len(output_file_details.subtitles):
+    if not compare_videos(input_file_details["video"], output_file_details["video"]) or \
+            len(input_file_details.get("subtitle", [])) + len(subtitles) != len(output_file_details.get("subtitle", [])):
         logging.error("Output file seems to be corrupted")
         raise RuntimeError("mkvmerge created a corrupted file")

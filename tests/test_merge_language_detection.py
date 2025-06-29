@@ -25,7 +25,7 @@ class SimpleSubtitlesMerge(WorkingDirectoryTestCase):
 
         video = files_after[0]
         tracks = assert_video_info(self, video, expected_subtitles=1)
-        self.assertEqual(tracks.subtitles[0].language, "eng")
+        self.assertEqual(tracks["subtitle"][0]["language"], "eng")
 
     def test_polish_recognition(self):
         add_test_media("Frog.*mp4", self.wd.path)
@@ -45,7 +45,7 @@ class SimpleSubtitlesMerge(WorkingDirectoryTestCase):
 
         video = files_after[0]
         tracks = assert_video_info(self, video, expected_subtitles=1)
-        self.assertEqual(tracks.subtitles[0].language, "pol")
+        self.assertEqual(tracks["subtitle"][0]["language"], "pol")
 
     def test_language_priority(self):
         add_test_media("close-up-of-flowers.*mp4", self.wd.path)
@@ -96,10 +96,10 @@ class SimpleSubtitlesMerge(WorkingDirectoryTestCase):
 
         video = files_after[0]
         tracks = assert_video_info(self, video, expected_subtitles=5)
-        self.assertEqual(tracks.subtitles[0].language, "ger")
-        self.assertEqual(tracks.subtitles[1].language, "cze")
-        self.assertEqual(tracks.subtitles[0].default, 1)
-        self.assertEqual(tracks.subtitles[1].default, 0)
+        self.assertEqual(tracks["subtitle"][0]["language"], "deu")
+        self.assertEqual(tracks["subtitle"][1]["language"], "ces")
+        self.assertEqual(tracks["subtitle"][0]["default"], 1)
+        self.assertEqual(tracks["subtitle"][1]["default"], 0)
 
 
 if __name__ == '__main__':
