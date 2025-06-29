@@ -82,7 +82,6 @@ class SubtitlesMerge(WorkingDirectoryTestCase):
             assert_video_info(self, video, expected_subtitles=1)
 
     def test_subtitles_language(self):
-
         # combine mp4 with srt into mkv
         add_test_media("Atoms.*(mp4|srt)", self.wd.path)
 
@@ -97,7 +96,6 @@ class SubtitlesMerge(WorkingDirectoryTestCase):
         self.assertEqual(tracks.subtitles[0].language, "pol")
 
     def test_subtitles_with_a_bit_different_names(self):
-
         add_test_media("moon_dark.*|Woman.*", self.wd.path)
         os.rename(os.path.join(self.wd.path, "moon_dark.srt"), os.path.join(self.wd.path, "moon_dark_de.srt"))
         os.rename(os.path.join(self.wd.path, "Woman - 58142.srt"), os.path.join(self.wd.path, "Woman - 58142_de.srt"))
@@ -113,7 +111,6 @@ class SubtitlesMerge(WorkingDirectoryTestCase):
             self.assertEqual(tracks.subtitles[0].language, "ger")
 
     def test_multiple_subtitles_for_single_file(self):
-
         # one file in directory with many subtitles
         add_test_media("Atoms.*mp4", self.wd.path)
         add_test_media("Atoms.*srt", self.wd.path, ["PL", "EN", "DE"])
@@ -204,7 +201,6 @@ class SubtitlesMerge(WorkingDirectoryTestCase):
         assert_video_info(self, video, expected_subtitles=4)
 
     def test_appending_subtitles_to_mkv_with_subtitles(self):
-
         # combine mp4 with srt into mkv
         add_test_media("fog-over-mountainside.*(mp4|srt)", self.wd.path)
 
@@ -225,7 +221,6 @@ class SubtitlesMerge(WorkingDirectoryTestCase):
         self.assertEqual(tracks.subtitles[1].language, "pol")
 
     def test_two_videos_one_subtitle(self):
-
         # create mkv file
         add_test_media("Woman.*(mp4|srt)", self.wd.path)
         run_twotone("merge", [self.wd.path], ["--no-dry-run"])
