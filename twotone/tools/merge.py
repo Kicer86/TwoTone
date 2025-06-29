@@ -192,7 +192,7 @@ class Merge(generic_utils.InterruptibleProcess):
 
                 # Subtitles are buggy sometimes, use ffmpeg to fix them.
                 # Also makemkv does not handle MicroDVD subtitles, so convert all to SubRip.
-                fps = input_file_details.video_tracks[0].fps
+                fps = input_file_details["video"][0]["fps"]
                 converted_subtitle = self._convert_subtitle(fps, subtitle, temporary_subtitles_dir)
 
                 prepared_subtitles.append(converted_subtitle)
@@ -297,12 +297,7 @@ class MergeTool(Tool):
 
     @override
     def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger) -> None:
-        for tool in ["mkvmerge", "ffmpeg", "ffprobe"]:
-            path = shutil.which(tool)
-            if path is None:
-                raise RuntimeError(f"{tool} not found in PATH")
-            else:
-                logger.debug(f"{tool} path: {path}")
+        process_utils.ensure_tools_exist(["mkvmerge", "ffmpeg", "ffprobe"], logger)
 
         logger.info("Searching for movie and subtitle files to be merged")
         two_tone = Merge(logger,

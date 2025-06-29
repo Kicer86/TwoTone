@@ -2,6 +2,7 @@
 import logging
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from tqdm import tqdm
@@ -57,3 +58,12 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
 def raise_on_error(status: ProcessResult):
     if status.returncode != 0:
         raise RuntimeError(f"Process exited with unexpected error:\n{status.stdout}\n{status.stderr}")
+
+
+def ensure_tools_exist(tools: List[str], logger: logging.Logger) -> None:
+    """Verify that all required external tools are available."""
+    for tool in tools:
+        path = shutil.which(tool)
+        if path is None:
+            raise RuntimeError(f"{tool} not found in PATH")
+        logger.debug(f"{tool} path: {path}")

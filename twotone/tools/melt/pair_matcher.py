@@ -24,8 +24,8 @@ class PairMatcher:
         self.rhs_path = rhs_path
         self.logger = logger
         self.phash = PhashCache()
-        self.lhs_fps = eval(video_utils.get_video_data2(lhs_path)["video"][0]["fps"])
-        self.rhs_fps = eval(video_utils.get_video_data2(rhs_path)["video"][0]["fps"])
+        self.lhs_fps = eval(video_utils.get_video_data(lhs_path)["video"][0]["fps"])
+        self.rhs_fps = eval(video_utils.get_video_data(rhs_path)["video"][0]["fps"])
 
         lhs_wd = os.path.join(self.wd, "lhs")
         rhs_wd = os.path.join(self.wd, "rhs")
