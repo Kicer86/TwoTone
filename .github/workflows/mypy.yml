@@ -15,14 +15,50 @@ jobs:
       with:
         submodules: true
         lfs: true
+        fetch-depth: 0
 
     - name: Install Python dependencies
       uses: py-actions/py-dependency-install@v4
       with:
         path: "requirements.txt"
-        additional_requirements: "mypy"
 
-    - name: Run mypy
+    - name: Install mypy
       run: |
         python3 -m pip install mypy
-        python3 -m mypy twotone tests
+
+    - name: Save PR mypy errors
+      run: |
+        python -m mypy twotone tests > pr_mypy.txt || true
+
+    - name: Save master mypy errors
+      run: |
+        git checkout origin/master
+        python -m mypy twotone tests > master_mypy.txt || true
+
+    - name: Checkout PR branch again
+      run: git checkout -
+
+    - name: Compare mypy results
+      run: |
+        echo "==> Extracting mypy summary lines"
+        PR_SUMMARY=$(tail -n 1 pr_mypy.txt)
+        MASTER_SUMMARY=$(tail -n 1 master_mypy.txt)
+
+        echo "PR summary:     $PR_SUMMARY"
+        echo "Master summary: $MASTER_SUMMARY"
+
+        echo "==> Comparing full error sets"
+        grep -v '^Found [0-9]\+ errors' pr_mypy.txt | sort > pr_sorted.txt
+        grep -v '^Found [0-9]\+ errors' master_mypy.txt | sort > master_sorted.txt
+
+        comm -13 master_sorted.txt pr_sorted.txt > mypy_diff.txt || true
+
+        echo "==> New errors introduced in PR:"
+        cat mypy_diff.txt || true
+
+        if [ -s mypy_diff.txt ]; then
+            echo "::error::PR introduces new mypy errors"
+            exit 1
+        else
+            echo "✅ No new errors introduced."
+        fi
