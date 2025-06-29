@@ -127,7 +127,7 @@ class MeltingTest(TwoToneTestCase):
                 """
                     Process input file and worse its quality
                 """
-                duration = video_utils.get_video_duration(input) / 1000                                           # duration of original video
+                duration = video_utils.get_video_duration(input) / 1000                                     # duration of original video
 
                 vf = ",".join([
                     "fps=26.5",                                                                             # use non standard fps
