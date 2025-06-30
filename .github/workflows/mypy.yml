@@ -29,6 +29,9 @@ jobs:
     - name: Install mypy
       run: |
         python3 -m pip install mypy
+        python3 -m pip install scipy-stubs
+        python3 -m pip install types-requests
+        python3 -m pip install types-tqdm
 
     - name: Save PR mypy errors
       run: |
