@@ -186,7 +186,7 @@ class MeltingTest(WorkingDirectoryTestCase):
 
         output_file = list(output_file_hash)[0]
 
-        output_file_data = video_utils.get_video_data2(output_file)
+        output_file_data = video_utils.get_video_data(output_file)
         self.assertEqual(len(output_file_data["video"]), 1)
         self.assertEqual(output_file_data["video"][0]["height"], 1080)
         self.assertEqual(output_file_data["video"][0]["width"], 1920)
@@ -231,7 +231,7 @@ class MeltingTest(WorkingDirectoryTestCase):
             output_file_name = os.path.basename(output_file)
             self.assertEqual(output_file_name, f"Grass - 66810-suf-S1E{i}.mkv")
 
-            output_file_data = video_utils.get_video_data2(output_file)
+            output_file_data = video_utils.get_video_data(output_file)
             self.assertEqual(len(output_file_data["video"]), 1)
             self.assertEqual(output_file_data["video"][0]["height"], 2160)
             self.assertEqual(output_file_data["video"][0]["width"], 3840)
@@ -262,7 +262,7 @@ class MeltingTest(WorkingDirectoryTestCase):
         self.assertEqual(len(output_file_hash), 1)
 
         output_file = list(output_file_hash)[0]
-        output_file_data = video_utils.get_video_data2(output_file)
+        output_file_data = video_utils.get_video_data(output_file)
         self.assertEqual(output_file_data["audio"][0]["language"], "deu")
         self.assertEqual(output_file_data["audio"][1]["language"], "jpn")
         self.assertEqual(output_file_data["audio"][2]["language"], "eng")

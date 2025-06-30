@@ -19,20 +19,20 @@ class Fixer(generic_utils.InterruptibleProcess):
         self.logger = logger
         self._do_fix = really_fix
 
-    def _print_broken_videos(self, broken_videos_info: list[tuple[video_utils.VideoInfo, list[int]]]) -> None:
+    def _print_broken_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
         self.logger.info(f"Found {len(broken_videos_info)} broken videos:")
         for broken_video in broken_videos_info:
-            self.logger.info(f"{len(broken_video[1])} broken subtitle(s) in {broken_video[0].path} found")
+            self.logger.info(f"{len(broken_video[1])} broken subtitle(s) in {broken_video[0]['path']} found")
 
-    def _no_resolver(self, video_track: video_utils.VideoTrack, content: str) -> None:
+    def _no_resolver(self, video_track: dict, content: str) -> None:
         self.logger.error("Cannot fix the file, no idea how to do it.")
         return None
 
-    def _long_tail_resolver(self, video_track: video_utils.VideoTrack, content: str) -> str:
+    def _long_tail_resolver(self, video_track: dict, content: str) -> str:
         timestamps = list(subtitles_utils.subrip_time_pattern.finditer(content))
         last_timestamp = timestamps[-1]
         time_from, time_to = map(generic_utils.time_to_ms, last_timestamp.groups())
-        length = video_track.length
+        length = video_track["length"]
         new_time_to = min(time_from + 5000, length)
 
         begin_pos = last_timestamp.start(1)
@@ -41,13 +41,13 @@ class Fixer(generic_utils.InterruptibleProcess):
         content = content[:begin_pos] + f"{generic_utils.ms_to_time(time_from)} --> {generic_utils.ms_to_time(new_time_to)}" + content[end_pos:]
         return content
 
-    def _fps_scale_resolver(self, video_track: video_utils.VideoTrack, content: str) -> str:
-        target_fps = generic_utils.fps_str_to_float(video_track.fps)
+    def _fps_scale_resolver(self, video_track: dict, content: str) -> str:
+        target_fps = generic_utils.fps_str_to_float(video_track["fps"])
         multiplier = subtitles_utils.ffmpeg_default_fps / target_fps
 
         return subtitles_utils.alter_subrip_subtitles_times(content, multiplier)
 
-    def _get_resolver(self, content: str, video_length: int) -> Callable[[video_utils.VideoTrack, str], str | None]:
+    def _get_resolver(self, content: str, video_length: int) -> Callable[[dict, str], str | None]:
         timestamps = list(subtitles_utils.subrip_time_pattern.finditer(content))
         if len(timestamps) == 0:
             return self._no_resolver
@@ -64,14 +64,14 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         return self._no_resolver
 
-    def _fix_subtitle(self, broken_subtitle: str, video_info: video_utils.VideoInfo) -> bool:
-        video_track = video_info.video_tracks[0]
+    def _fix_subtitle(self, broken_subtitle: str, video_info: dict) -> bool:
+        video_track = video_info["video"][0]
 
         with open(broken_subtitle, 'r', encoding='utf-8') as file:
             content = file.read()
 
         # figure out what is broken
-        resolver = self._get_resolver(content, video_track.length)
+        resolver = self._get_resolver(content, video_track["length"])
         new_content = resolver(video_track, content)
 
         if new_content is None:
@@ -82,22 +82,22 @@ class Fixer(generic_utils.InterruptibleProcess):
                 file.write(new_content)
             return True
 
-    def _extract_all_subtitles(self, video_file: str, subtitles: list[subtitles_utils.Subtitle], wd: str) -> list[subtitles_utils.SubtitleFile]:
+    def _extract_all_subtitles(self, video_file: str, subtitles: list[dict], wd: str) -> list[subtitles_utils.SubtitleFile]:
         result = []
         options = ["tracks", video_file]
 
         for subtitle in subtitles:
-            outputfile = f"{wd}/{subtitle.tid}.srt"
-            subtitleFile = subtitles_utils.SubtitleFile(path=outputfile, language=subtitle.language, encoding="utf8")
+            outputfile = f"{wd}/{subtitle['tid']}.srt"
+            subtitleFile = subtitles_utils.SubtitleFile(path=outputfile, language=subtitle['language'], encoding="utf8")
 
             result.append(subtitleFile)
-            options.append(f"{subtitle.tid}:{outputfile}")
+            options.append(f"{subtitle['tid']}:{outputfile}")
 
         process_utils.start_process("mkvextract", options)
 
         return result
 
-    def _repair_videos(self, broken_videos_info: list[tuple[video_utils.VideoInfo, list[int]]]) -> None:
+    def _repair_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
         self._print_broken_videos(broken_videos_info)
         self.logger.info("Fixing videos")
 
@@ -109,10 +109,10 @@ class Fixer(generic_utils.InterruptibleProcess):
                 broken_subtitiles = broken_video[1]
 
                 with tempfile.TemporaryDirectory() as wd_dir:
-                    video_file = video_info.path
+                    video_file = video_info["path"]
                     self.logger.info(f"Fixing subtitles in file {video_file}")
                     self.logger.debug("Extracting subtitles from file")
-                    subtitles = self._extract_all_subtitles(video_file, video_info.subtitles, wd_dir)
+                    subtitles = self._extract_all_subtitles(video_file, video_info.get("subtitle", []), wd_dir)
                     broken_subtitles_paths = [subtitles[i] for i in broken_subtitiles]
 
                     status = all(self._fix_subtitle(broken_subtitile.path, video_info) for broken_subtitile in broken_subtitles_paths)
@@ -139,14 +139,15 @@ class Fixer(generic_utils.InterruptibleProcess):
                     else:
                         self.logger.debug("Skipping video due to errors")
 
-    def _check_if_broken(self, video_file: str) -> tuple[video_utils.VideoInfo, list[int]] | None:
+    def _check_if_broken(self, video_file: str) -> tuple[dict, list[int]] | None:
         self.logger.debug(f"Processing file {video_file}")
 
         def diff(a, b):
             return abs(a - b) / max(a, b)
 
         video_info = video_utils.get_video_data(video_file)
-        video_length = video_info.video_tracks[0].length
+        video_info["path"] = video_file
+        video_length = video_info["video"][0]["length"]
 
         if video_length is None:
             self.logger.warning(f"File {video_file} has unknown length. Cannot proceed.")
@@ -154,14 +155,15 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         broken_subtitiles = []
 
-        for i in range(len(video_info.subtitles)):
-            subtitle = video_info.subtitles[i]
+        for i in range(len(video_info.get("subtitle", []))):
+            subtitle = video_info["subtitle"][i]
 
-            if not subtitle.format == "subrip":
-                self.logger.warning(f"Cannot analyse subtitle #{i} of {video_file}: unsupported format '{subtitle.format}'")
+            if not subtitle["format"] == "subrip":
+                subtitle_format = subtitle["format"]
+                self.logger.warning(f"Cannot analyse subtitle #{i} of {video_file}: unsupported format '{subtitle_format}'")
                 continue
 
-            length = subtitle.length
+            length = subtitle["length"]
             if length is not None and length > video_length * 1.001:                 # use 0.1% error margin as for some reason valid subtitles may appear longer than video
                 broken_subtitiles.append(i)
 
@@ -172,7 +174,7 @@ class Fixer(generic_utils.InterruptibleProcess):
         self.logger.debug(f"Issues found in {video_file}")
         return (video_info, broken_subtitiles)
 
-    def _process_dir(self, path: str) -> list[tuple[video_utils.VideoInfo, list[int]]]:
+    def _process_dir(self, path: str) -> list[tuple[dict, list[int]]]:
         broken_videos = []
         video_files = []
 
@@ -210,12 +212,7 @@ class FixerTool(Tool):
 
     @override
     def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger) -> None:
-        for tool in ["mkvmerge", "mkvextract", "ffprobe"]:
-            path = shutil.which(tool)
-            if path is None:
-                raise RuntimeError(f"{tool} not found in PATH")
-            else:
-                logging.debug(f"{tool} path: {path}")
+        process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
 
         logger.info("Searching for broken files")
         fixer = Fixer(logger, no_dry_run)

@@ -227,7 +227,7 @@ class Melter():
         self.logger.info("------------------------------------")
 
         # analyze files in terms of quality and available content
-        details = {file: video_utils.get_video_data2(file) for file in duplicates}
+        details = {file: video_utils.get_video_data(file) for file in duplicates}
 
         common_prefix = files_utils.get_common_prefix(duplicates)
 

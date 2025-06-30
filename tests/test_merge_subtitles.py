@@ -94,7 +94,7 @@ class SubtitlesMerge(WorkingDirectoryTestCase):
 
         video = files_after[0]
         tracks = assert_video_info(self, video, expected_subtitles=1)
-        self.assertEqual(tracks.subtitles[0].language, "pol")
+        self.assertEqual(tracks["subtitle"][0]["language"], "pol")
 
     def test_subtitles_with_a_bit_different_names(self):
 
@@ -102,7 +102,7 @@ class SubtitlesMerge(WorkingDirectoryTestCase):
         os.rename(os.path.join(self.wd.path, "moon_dark.srt"), os.path.join(self.wd.path, "moon_dark_de.srt"))
         os.rename(os.path.join(self.wd.path, "Woman - 58142.srt"), os.path.join(self.wd.path, "Woman - 58142_de.srt"))
 
-        run_twotone("merge", [self.wd.path, "-l", "ger"], ["--no-dry-run"])
+        run_twotone("merge", [self.wd.path, "-l", "deu"], ["--no-dry-run"])
 
         # verify results
         files_after = list_files(self.wd.path)
@@ -110,7 +110,7 @@ class SubtitlesMerge(WorkingDirectoryTestCase):
 
         for video in files_after:
             tracks = assert_video_info(self, video, expected_subtitles=1)
-            self.assertEqual(tracks.subtitles[0].language, "ger")
+            self.assertEqual(tracks["subtitle"][0]["language"], "deu")
 
     def test_multiple_subtitles_for_single_file(self):
 
@@ -221,8 +221,8 @@ class SubtitlesMerge(WorkingDirectoryTestCase):
 
         video = files_after[0]
         tracks = assert_video_info(self, video, expected_subtitles=2)
-        self.assertEqual(tracks.subtitles[0].language, "ger")
-        self.assertEqual(tracks.subtitles[1].language, "pol")
+        self.assertEqual(tracks["subtitle"][0]["language"], "deu")
+        self.assertEqual(tracks["subtitle"][1]["language"], "pol")
 
     def test_two_videos_one_subtitle(self):
 
