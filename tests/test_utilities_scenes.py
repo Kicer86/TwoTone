@@ -7,7 +7,7 @@ import re
 from typing import List
 
 from twotone.tools.utilities import extract_scenes
-from common import WorkingDirectoryTestCase, WorkingDirectoryForTest, get_video
+from common import TwoToneTestCase, WorkingDirectoryForTest, get_video
 
 
 def collect_files(directory: str):
@@ -56,8 +56,7 @@ def pick_first_last_sorted(files: List[str]) -> List[str]:
     return result
 
 
-class UtilitiesScenesTests(WorkingDirectoryTestCase):
-
+class UtilitiesScenesTests(TwoToneTestCase):
     def test_video_1_for_scenes_extraction(self):
         test_video = get_video("big_buck_bunny_720p_10mb.mp4")
         best_enc = extract_scenes(video_path = test_video, output_dir = self.wd.path, format = "png", scale = 10)
@@ -97,5 +96,4 @@ class UtilitiesScenesTests(WorkingDirectoryTestCase):
 
 
 if __name__ == '__main__':
-    logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.ERROR)
     unittest.main()

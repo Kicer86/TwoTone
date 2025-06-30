@@ -5,7 +5,7 @@ import re
 import unittest
 
 from twotone.tools.utils import files_utils, video_utils
-from common import WorkingDirectoryTestCase, assert_video_info, list_files, add_test_media, hashes, run_twotone, write_subtitle
+from common import TwoToneTestCase, assert_video_info, list_files, add_test_media, hashes, run_twotone, write_subtitle
 
 
 default_video_set = [
@@ -39,12 +39,7 @@ def get_default_media_set_regex():
     return filter
 
 
-class SubtitlesMerge(WorkingDirectoryTestCase):
-
-    def setUp(self):
-        super().setUp()
-        logging.getLogger().setLevel(logging.ERROR)
-
+class SubtitlesMerge(TwoToneTestCase):
     def test_dry_run_is_respected(self):
         add_test_media(get_default_media_set_regex(), self.wd.path)
 
@@ -204,7 +199,6 @@ class SubtitlesMerge(WorkingDirectoryTestCase):
         assert_video_info(self, video, expected_subtitles=4)
 
     def test_appending_subtitles_to_mkv_with_subtitles(self):
-
         # combine mp4 with srt into mkv
         add_test_media("fog-over-mountainside.*(mp4|srt)", self.wd.path)
 
@@ -225,7 +219,6 @@ class SubtitlesMerge(WorkingDirectoryTestCase):
         self.assertEqual(tracks.subtitles[1].language, "pol")
 
     def test_two_videos_one_subtitle(self):
-
         # create mkv file
         add_test_media("Woman.*(mp4|srt)", self.wd.path)
         run_twotone("merge", [self.wd.path], ["--no-dry-run"])

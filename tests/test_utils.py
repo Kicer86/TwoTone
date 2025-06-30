@@ -3,11 +3,10 @@ import os
 import unittest
 
 from twotone.tools.utils import subtitles_utils
-from common import WorkingDirectoryForTest, WorkingDirectoryTestCase, write_subtitle
+from common import WorkingDirectoryForTest, TwoToneTestCase, write_subtitle
 
 
-class UtilsTests(WorkingDirectoryTestCase):
-
+class UtilsTests(TwoToneTestCase):
     def _test_content(self, content: str, valid: bool):
         with WorkingDirectoryForTest() as wd:
             subtitle_path = os.path.join(wd.path, "subtitle.txt")

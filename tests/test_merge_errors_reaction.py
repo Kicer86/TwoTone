@@ -1,15 +1,8 @@
-import logging
 import unittest
 
-from common import WorkingDirectoryTestCase, add_test_media, hashes, run_twotone, simulate_process_failure
+from common import TwoToneTestCase, add_test_media, hashes, run_twotone, simulate_process_failure
 
-class SimpleSubtitlesMerge(WorkingDirectoryTestCase):
-
-    @classmethod
-    def setUpClass(cls):
-        logging.getLogger().setLevel(logging.CRITICAL)
-
-
+class SimpleSubtitlesMerge(TwoToneTestCase):
     def test_no_changes_when_mkvmerge_exits_with_error(self):
         with simulate_process_failure("mkvmerge") as mock_start_process:
             add_test_media("Blue_Sky_and_Clouds_Timelapse.*(?:mov|srt)", self.wd.path)

@@ -6,7 +6,7 @@ import tempfile
 from twotone.tools.utils import subtitles_utils, video_utils
 
 from common import (
-    WorkingDirectoryTestCase,
+    TwoToneTestCase,
     add_test_media,
     hashes,
     current_path,
@@ -78,12 +78,7 @@ def create_broken_video_with_incompatible_subtitles(output_video_path: str, inpu
         process_utils.start_process("ffmpeg", ["-hide_banner", "-i", input_video, "-i", subtitle_path, "-map", "0", "-map", "1", "-c:v", "copy", "-c:a", "copy", output_video_path])
 
 
-class SubtitlesFixer(WorkingDirectoryTestCase):
-
-    def setUp(self):
-        super().setUp()
-        logging.getLogger().setLevel(logging.ERROR)
-
+class SubtitlesFixer(TwoToneTestCase):
     def test_dry_run_is_respected(self):
         output_video_path = f"{self.wd.path}/test_video.mkv"
         create_broken_video_with_scaled_subtitle_timings(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")

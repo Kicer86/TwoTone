@@ -6,11 +6,10 @@ import unittest
 from typing import List
 
 from twotone.tools.utils.files_utils import split_path
-from common import WorkingDirectoryTestCase, add_test_media, list_files, run_twotone
+from common import TwoToneTestCase, add_test_media, list_files, run_twotone
 
 
-class ConcatenateTests(WorkingDirectoryTestCase):
-
+class ConcatenateTests(TwoToneTestCase):
     def _create_media(self, wd: str, base_file: str, partnames: List[str]):
         media_file_components = split_path(base_file)
 
@@ -99,5 +98,4 @@ class ConcatenateTests(WorkingDirectoryTestCase):
 
 
 if __name__ == '__main__':
-    logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.CRITICAL)
     unittest.main()
