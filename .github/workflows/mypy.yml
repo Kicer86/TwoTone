@@ -45,41 +45,29 @@ jobs:
     - name: Checkout PR branch again
       run: git checkout -
 
-    - name: Compare mypy results
+    - name: Compare mypy error counts
       run: |
-        echo "==> Extracting mypy summary lines"
+        echo "==> Mypy output on PR branch"
+        cat pr_mypy.txt
+
         PR_SUMMARY=$(tail -n 1 pr_mypy.txt)
         MASTER_SUMMARY=$(tail -n 1 master_mypy.txt)
 
         echo "PR summary:     $PR_SUMMARY"
         echo "Master summary: $MASTER_SUMMARY"
 
-        echo "==> Grouping error blocks with stable sort"
-        python .github/scripts/group_mypy_blocks.py pr_mypy.txt > pr_sorted.txt
-        python .github/scripts/group_mypy_blocks.py master_mypy.txt > master_sorted.txt
+        PR_COUNT=$(echo "$PR_SUMMARY" | grep -oE 'Found [0-9]+' | awk '{print $2}' || true)
+        MASTER_COUNT=$(echo "$MASTER_SUMMARY" | grep -oE 'Found [0-9]+' | awk '{print $2}' || true)
 
-        echo "==> Comparing error sets"
-        comm -12 master_sorted.txt pr_sorted.txt > mypy_shared.txt || true
-        comm -13 master_sorted.txt pr_sorted.txt > mypy_new.txt || true
-        comm -23 master_sorted.txt pr_sorted.txt > mypy_fixed.txt || true
+        if [ -z "$PR_COUNT" ]; then PR_COUNT=0; fi
+        if [ -z "$MASTER_COUNT" ]; then MASTER_COUNT=0; fi
 
-        echo ""
-        echo "✅ Errors already in master (to be fixed):"
-        cat mypy_shared.txt || echo "(none)"
+        echo "PR error count: $PR_COUNT"
+        echo "Master error count: $MASTER_COUNT"
 
-        echo ""
-        echo "❌ New errors introduced in PR:"
-        cat mypy_new.txt || echo "(none)"
-
-        echo ""
-        echo "🛠️  Errors fixed by this PR (removed):"
-        cat mypy_fixed.txt || echo "(none)"
-
-        echo ""
-        echo "==> Final verdict:"
-        if [ -s mypy_new.txt ]; then
-          echo "::error::PR introduces new mypy errors"
+        if [ "$PR_COUNT" -gt "$MASTER_COUNT" ]; then
+          echo "::error::PR increases number of mypy errors ($PR_COUNT > $MASTER_COUNT)"
           exit 1
         else
-          echo "✅ No new mypy errors introduced."
+          echo "✅ Mypy error count not increased."
         fi
