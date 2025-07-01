@@ -33,7 +33,7 @@ def create_broken_video_with_scaled_subtitle_timings(output_video_path: str, inp
 
         # convert to srt format
         srt_subtitle_path = f"{subtitle_dir}/sub.srt"
-        status = process_utils.start_process("ffmpeg", ["-hide_banner", "-y", "-i", subtitle_path, srt_subtitle_path])
+        status = process_utils.start_process("ffmpeg", ["-y", "-i", subtitle_path, srt_subtitle_path])
 
         video_utils.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [subtitles_utils.SubtitleFile(srt_subtitle_path, "eng", "utf8")])
 
@@ -75,7 +75,7 @@ def create_broken_video_with_incompatible_subtitles(output_video_path: str, inpu
         subtitle_path = f"{subtitle_dir}/sub.sub"
         generate_microdvd_subtitles(subtitle_path, int(length), fps)
 
-        process_utils.start_process("ffmpeg", ["-hide_banner", "-i", input_video, "-i", subtitle_path, "-map", "0", "-map", "1", "-c:v", "copy", "-c:a", "copy", output_video_path])
+        process_utils.start_process("ffmpeg", ["-i", input_video, "-i", subtitle_path, "-map", "0", "-map", "1", "-c:v", "copy", "-c:a", "copy", output_video_path])
 
 
 class SubtitlesFixer(TwoToneTestCase):

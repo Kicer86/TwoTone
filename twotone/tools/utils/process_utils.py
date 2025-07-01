@@ -7,10 +7,18 @@ import subprocess
 from dataclasses import dataclass
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
-from typing import List
+from typing import List, Dict
 
 from . import generic_utils
 from . import video_utils
+
+DEFAULT_TOOL_OPTIONS: Dict[str, List[str]] = {
+    "ffmpeg": ["-hide_banner"],
+    "ffprobe": ["-hide_banner"],
+    "mkvmerge": ["--quiet"],
+    "mkvextract": ["--quiet"],
+    "exiftool": ["-q"],
+}
 
 @dataclass
 class ProcessResult:
@@ -20,6 +28,11 @@ class ProcessResult:
 
 
 def start_process(process: str, args: List[str], show_progress = False) -> ProcessResult:
+    defaults = DEFAULT_TOOL_OPTIONS.get(process, [])
+    for opt in reversed(defaults):
+        if opt not in args:
+            args.insert(0, opt)
+
     command = [process]
     command.extend(args)
 
