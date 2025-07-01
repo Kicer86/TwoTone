@@ -141,7 +141,7 @@ class Merge(generic_utils.InterruptibleProcess):
 
             status = process_utils.start_process(
                 "ffmpeg",
-                ["-hide_banner", "-y", "-sub_charenc", encoding, "-i", input_file, output_file]
+                ["-y", "-sub_charenc", encoding, "-i", input_file, output_file]
             )
 
             if status.returncode == 0:
