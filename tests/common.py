@@ -1,6 +1,7 @@
 
 import hashlib
 import inspect
+import logging
 import os
 import re
 import shutil
@@ -62,9 +63,16 @@ class WorkingDirectoryForTest:
         shutil.rmtree(self.directory)
 
 
-class WorkingDirectoryTestCase(unittest.TestCase):
+class TwoToneTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        logging.getLogger().setLevel(logging.CRITICAL)
+        cls.logger = logging.getLogger(cls.__name__)
+
     def setUp(self):
         super().setUp()
+        self.logger = self.__class__.logger
         self.wd = WorkingDirectoryForTest(self.__class__.__name__, self._testMethodName)
         self.wd.__enter__()
 

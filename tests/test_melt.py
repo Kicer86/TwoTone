@@ -13,7 +13,7 @@ from twotone.tools.utils import generic_utils, process_utils, video_utils
 from twotone.tools.melt import Melter
 from twotone.tools.melt.melt import StaticSource, StreamsPicker
 from twotone.tools.utils.files_utils import ScopedDirectory
-from common import WorkingDirectoryTestCase, FileCache, add_test_media, add_to_test_dir, current_path, get_audio, get_video, hashes, list_files
+from common import TwoToneTestCase, FileCache, add_test_media, add_to_test_dir, current_path, get_audio, get_video, hashes, list_files
 
 
 def normalize(obj):
@@ -36,12 +36,7 @@ def all_key_orders(d: Dict) -> Iterator[Dict]:
         yield {k: d[k] for k in perm}
 
 
-class MeltingTest(WorkingDirectoryTestCase):
-
-    def setUp(self):
-        super().setUp()
-        logging.getLogger("Melter").setLevel(logging.CRITICAL)
-
+class MeltingTest(TwoToneTestCase):
     def test_simple_duplicate_detection(self):
         file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = ["v1"])[0]
         file2 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = ["v2"])[0]
@@ -57,7 +52,7 @@ class MeltingTest(WorkingDirectoryTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
         melter.melt()
 
         # expect output to be equal to the first of files
@@ -83,7 +78,7 @@ class MeltingTest(WorkingDirectoryTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = False, wd = self.wd.path, output = output_dir)
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = False, wd = self.wd.path, output = output_dir)
         melter.melt()
 
         # expect output to be empty
@@ -177,7 +172,7 @@ class MeltingTest(WorkingDirectoryTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
         melter.melt()
 
         # validate output
@@ -220,7 +215,7 @@ class MeltingTest(WorkingDirectoryTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
         melter.melt()
 
         # validate output
@@ -254,7 +249,7 @@ class MeltingTest(WorkingDirectoryTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir, languages_priority = ["de", "jpn", "eng", "no", "pl"])
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir, languages_priority = ["de", "jpn", "eng", "no", "pl"])
         melter.melt()
 
         # validate order
@@ -358,7 +353,7 @@ class MeltingTest(WorkingDirectoryTestCase):
     def test_streams_pick_decision(self, name, input, expected_streams):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        streams_picker = StreamsPicker(logging.getLogger("Melter"), duplicates)
+        streams_picker = StreamsPicker(self.logger.getChild("Melter"), duplicates)
 
         # Test all possible combinations of order of input files. Output should be stable
         for video_info in all_key_orders(input):

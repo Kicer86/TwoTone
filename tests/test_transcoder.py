@@ -3,15 +3,10 @@ import unittest
 import logging
 
 from twotone.tools.transcode import Transcoder
-from common import WorkingDirectoryTestCase, get_video, add_test_media, hashes, run_twotone
+from common import TwoToneTestCase, get_video, add_test_media, hashes, run_twotone
 
 
-class TranscoderTests(WorkingDirectoryTestCase):
-
-    def setUp(self):
-        super().setUp()
-        self.logger = logging.getLogger("TranscoderTests")
-
+class TranscoderTests(TwoToneTestCase):
     def test_video_1_for_best_crf(self):
         test_video = get_video("big_buck_bunny_720p_2mb.mp4")
         best_enc = Transcoder(self.logger).find_optimal_crf(test_video, allow_segments=False)
@@ -42,7 +37,6 @@ class TranscoderTests(WorkingDirectoryTestCase):
         self.assertEqual(hashes_after, hashes_before)
 
     def test_transcoding_on_short_videos_live_run(self):
-
         # VID_20240412_181520.mp4 does not transcode properly with ffmpeg 7.0. With 7.1 it works.
         # Disable as of now
         add_test_media("VID_20240412_1815.[^0]\\.mp4", self.wd.path, copy = True)
@@ -61,5 +55,4 @@ class TranscoderTests(WorkingDirectoryTestCase):
 
 
 if __name__ == '__main__':
-    logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.ERROR)
     unittest.main()

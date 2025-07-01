@@ -3,10 +3,10 @@ import os
 import unittest
 
 from twotone.tools.utils import video_utils
-from common import WorkingDirectoryTestCase, assert_video_info, list_files, add_test_media, run_twotone, write_subtitle
+from common import TwoToneTestCase, assert_video_info, list_files, add_test_media, run_twotone, write_subtitle
 
 
-class SimpleSubtitlesMerge(WorkingDirectoryTestCase):
+class SimpleSubtitlesMerge(TwoToneTestCase):
     def test_english_recognition(self):
         add_test_media("Frog.*mp4", self.wd.path)
 
