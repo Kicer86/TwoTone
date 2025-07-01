@@ -289,7 +289,7 @@ class MeltingTest(TwoToneTestCase):
         output_file_hash = hashes(output_dir)
         output_file = list(output_file_hash)[0]
 
-        output_file_data = video_utils.get_video_data2(output_file)
+        output_file_data = video_utils.get_video_data(output_file)
         self.assertEqual(len(output_file_data["video"]), 1)
         self.assertEqual(output_file_data["video"][0]["height"], 1080)
         self.assertEqual(output_file_data["video"][0]["width"], 1920)
