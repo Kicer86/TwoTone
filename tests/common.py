@@ -170,14 +170,27 @@ def get_video(name: str) -> str:
     return os.path.join(current_path, "videos", name)
 
 
+def get_image(name: str) -> str:
+    return os.path.join(current_path, "images", name)
+
+
 def get_subtitle(name: str) -> str:
     return os.path.join(current_path, "subtitles", name)
 
 
-def build_test_video(output_path: str, wd: str, video_name: str, *, audio_name: Union[str, None] = None, subtitle: Union[str, bool, None] = None) -> str:
+def build_test_video(
+    output_path: str,
+    wd: str,
+    video_name: str,
+    *,
+    audio_name: Union[str, None] = None,
+    subtitle: Union[str, bool, None] = None,
+    thumbnail_name: Union[str, None] = None,
+) -> str:
     with tempfile.TemporaryDirectory(dir = wd) as tmp_dir:
         video_path = get_video(video_name)
         audio_path = None if audio_name is None else get_audio(audio_name)
+        thumbnail_path = None if tempfile is None else get_image(thumbnail_name)
 
         subtitle_path = get_subtitle(subtitle) if isinstance(subtitle, str) else None
         if subtitle_path is None and isinstance(subtitle, bool) and subtitle:
@@ -188,7 +201,9 @@ def build_test_video(output_path: str, wd: str, video_name: str, *, audio_name: 
         video_utils.generate_mkv(output_path,
                                 video_path,
                                 [subtitles_utils.build_subtitle_from_path(subtitle_path)] if subtitle_path else None,
-                                [subtitles_utils.build_audio_from_path(audio_path)] if audio_path else None)
+                                [subtitles_utils.build_audio_from_path(audio_path)] if audio_path else None,
+                                thumbnail_path,
+        )
 
         return output_path
 
