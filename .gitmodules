@@ -4,3 +4,6 @@
 [submodule "tests/audio"]
  	path = tests/audio
  	url = https://gitlab.com/kicer86/audio-files.git
+[submodule "tests/images"]
+ 	path = tests/images
+ 	url = https://gitlab.com/kicer86/image-files.git
