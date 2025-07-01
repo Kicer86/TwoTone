@@ -58,3 +58,11 @@ For a full list of options:
 ```bash
 python -m twotone transcode --help
 ```
+
+#### Movies concatenation
+
+The concatenate tool looks for movie files which seem to be split into a few files (like CD1, CD2 etc) and glues them into one file.
+
+```bash
+python -m twotone concatenate --help
+```
