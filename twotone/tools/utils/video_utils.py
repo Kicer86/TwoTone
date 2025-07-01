@@ -327,7 +327,7 @@ def collect_video_files(path: str, interruptible) -> List[str]:
     return video_files
 
 
-def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | None = None, audios: List[Dict] | None = None):
+def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | None = None, audios: List[Dict] | None = None, thumbnail: Union[str, None] = None):
     subtitles = subtitles or []
     audios = audios or []
 
@@ -357,6 +357,9 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
             options.extend(["--default-track", "0:no"])
 
         options.append(subtitle.path)
+
+    if thumbnail:
+        options.extend(["--attach-file", thumbnail])
 
     cmd = "mkvmerge"
     result = process_utils.start_process(cmd, options)
