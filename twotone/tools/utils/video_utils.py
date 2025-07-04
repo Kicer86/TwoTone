@@ -258,6 +258,7 @@ def get_video_data(path: str) -> Dict:
         elif stream_type == "video":
             fps = stream["r_frame_rate"]
             length = get_length(stream)
+            disposition = stream.get("disposition", {})
             if length is None:
                 length = get_video_duration(path)
 
@@ -265,6 +266,7 @@ def get_video_data(path: str) -> Dict:
             height = stream["height"]
             bitrate = stream["bitrate"] if "bitrate" in stream else None
             codec = stream["codec_name"]
+            pic = disposition.get("attached_pic", 0) == 1
 
             streams["video"].append({
                 "fps": fps,
@@ -273,6 +275,7 @@ def get_video_data(path: str) -> Dict:
                 "height": height,
                 "bitrate": bitrate,
                 "codec": codec,
+                "attached_pic": pic,
             })
         elif stream_type == "audio":
             language = get_language(stream)
@@ -364,6 +367,7 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
     cmd = "mkvmerge"
     result = process_utils.start_process(cmd, options)
 
+    # validate result and output file
     if result.returncode != 0:
         if os.path.exists(output_path):
             os.remove(output_path)
@@ -375,6 +379,9 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
 
     output_file_details = get_video_data(output_path)
     input_file_details = get_video_data(input_video)
+
+    # exclude attached pic from output file details for fair comparison
+    output_file_details["video"] = [stream for stream in output_file_details["video"] if not stream["attached_pic"]]
 
     if not compare_videos(input_file_details["video"], output_file_details["video"]) or \
             len(input_file_details.get("subtitle", [])) + len(subtitles) != len(output_file_details.get("subtitle", [])):
