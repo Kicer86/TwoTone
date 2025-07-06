@@ -209,6 +209,115 @@ def get_video_full_info(path: str) -> dict:
     return output_json
 
 
+def get_video_full_info_mkvmerge(path: str) -> dict:
+    """Return file information using ``mkvmerge -J``."""
+
+    result = process_utils.start_process("mkvmerge", ["-J", path])
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"mkvmerge exited with unexpected error:\n{result.stderr}"
+        )
+
+    return json.loads(result.stdout)
+
+
+def get_video_data_mkvmerge(path: str) -> Dict:
+    """Return stream information parsed from ``mkvmerge -J`` output."""
+
+    info = get_video_full_info_mkvmerge(path)
+
+    container_props = info.get("container", {}).get("properties", {})
+    duration_ms = None
+    if "duration" in container_props:
+        try:
+            duration_ms = int(float(container_props["duration"]) * 1000)
+        except (TypeError, ValueError):
+            duration_ms = None
+
+    streams = defaultdict(list)
+    for track in info.get("tracks", []):
+        track_type = track.get("type")
+        tid = track.get("id")
+        props = track.get("properties", {})
+
+        language = props.get("language")
+        language = language_utils.unify_lang(language) if language else None
+
+        if track_type == "video":
+            dims = props.get("pixel_dimensions") or props.get("display_dimensions")
+            width = height = None
+            if dims and "x" in dims:
+                try:
+                    w, h = dims.split("x")
+                    width = int(w)
+                    height = int(h)
+                except ValueError:
+                    pass
+
+            fps = props.get("frame_rate")
+            if not fps:
+                default_duration = props.get("default_duration")
+                if default_duration:
+                    try:
+                        fps = 1_000_000_000 / float(default_duration)
+                    except (TypeError, ValueError):
+                        fps = None
+
+            fps_str = str(fps) if fps is not None else "0"
+
+            attached_pic = bool(
+                props.get("flag_attached_picture") or props.get("attached_picture")
+            )
+
+            streams["video"].append(
+                {
+                    "fps": fps_str,
+                    "length": duration_ms,
+                    "width": width,
+                    "height": height,
+                    "bitrate": None,
+                    "codec": track.get("codec"),
+                    "attached_pic": attached_pic,
+                    "tid": tid,
+                }
+            )
+        elif track_type == "audio":
+            channels = props.get("audio_channels")
+            sample_rate = props.get("audio_sampling_frequency")
+
+            streams["audio"].append(
+                {
+                    "language": language,
+                    "channels": channels,
+                    "sample_rate": sample_rate,
+                    "tid": tid,
+                }
+            )
+        elif track_type in ("subtitles", "subtitle"):
+            streams["subtitle"].append(
+                {
+                    "language": language,
+                    "default": props.get("default_track", False),
+                    "length": duration_ms,
+                    "tid": tid,
+                    "format": track.get("codec"),
+                }
+            )
+        elif track_type == "attachment":
+            width = props.get("pixel_width")
+            height = props.get("pixel_height")
+            streams["image"].append(
+                {
+                    "width": width,
+                    "height": height,
+                    "tid": tid,
+                }
+            )
+
+    return dict(streams)
+
+
 def get_video_data(path: str) -> Dict:
 
     def get_length(stream) -> int | None:

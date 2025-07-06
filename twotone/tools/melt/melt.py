@@ -227,7 +227,7 @@ class Melter():
         self.logger.info("------------------------------------")
 
         # analyze files in terms of quality and available content
-        details = {file: video_utils.get_video_data(file) for file in duplicates}
+        details = {file: video_utils.get_video_data_mkvmerge(file) for file in duplicates}
 
         common_prefix = files_utils.get_common_prefix(duplicates)
 
@@ -247,8 +247,10 @@ class Melter():
 
         #   process video streams
         for path, index, language in video_streams:
+            tid = details[path]["video"][index]["tid"]
             streams[path].append({
                 "index": index,
+                "tid": tid,
                 "language": language,
                 "type": "video",
             })
@@ -289,8 +291,10 @@ class Melter():
                 else:
                     self.logger.info("Skipping videos comparison to solve mismatching lenghts due to dry run.")
 
+            tid = details[path]["audio"][index]["tid"]
             streams[path].append({
                 "index": index,
+                "tid": tid,
                 "language": language,
                 "type": "audio",
             })
@@ -305,8 +309,10 @@ class Melter():
                 self.logger.error(error)
                 raise RuntimeError(f"Unsupported case: {error}")
 
+            tid = details[path]["subtitle"][index]["tid"]
             streams[path].append({
                 "index": index,
+                "tid": tid,
                 "language": language,
                 "type": "subtitle",
             })
@@ -378,20 +384,20 @@ class Melter():
                     shutil.copy2(first_file_path, output)
                 else:
                     self.logger.info("Starting output file generation from chosen streams.")
-                    generation_args = [input for path in streams for input in ("-i", path)]
 
-                    # convert streams to list for later sorting by language
+                    generation_args = ["-o", output]
+                    input_paths = list(streams.keys())
+                    file_index_map = {p: i for i, p in enumerate(input_paths)}
+
                     streams_list = []
-                    for file_index, (_, infos) in enumerate(streams.items()):
+                    for file_index, (path, infos) in enumerate(streams.items()):
                         for info in infos:
-                            stream_type = info["type"]
-                            stream_index = info["index"]
-                            language = info.get("language", None)
+                            stype = info["type"]
+                            tid = info["tid"]
+                            language = info.get("language")
+                            streams_list.append((stype, tid, file_index, language, path, info))
 
-                            streams_list.append((stream_type, stream_index, file_index, language))
-
-                    # sort by language
-                    def get_index_for(l: List[], value):
+                    def get_index_for(l: List, value):
                         try:
                             return l.index(value)
                         except ValueError:
@@ -399,58 +405,63 @@ class Melter():
 
                     priorities = self.languages_priority.copy()
                     priorities.append(None)
-                    streams_list_sorted = sorted(streams_list, key=lambda stream: get_index_for(priorities, stream[3]))
+                    streams_list_sorted = sorted(streams_list, key=lambda s: get_index_for(priorities, s[3]))
 
-                    # decide which track should be default
                     def find_preferred(stype: str):
                         for preferred in self.preferred_languages:
                             for info in streams_list_sorted:
-                                if info[0] == "audio" and info[3] == preferred:
+                                if info[0] == stype and info[3] == preferred:
                                     return info
                         return None
 
                     preferred_audio = find_preferred("audio")
                     preferred_subtitle = None if preferred_audio else find_preferred("subtitle")
 
-                    # generate map options
-                    output_stream_indexes = defaultdict(int)
-                    for stream in streams_list_sorted:
-                        def stream_type_mapper(stream_type: str) -> str:
-                            if stream_type == "video":
-                                return "v"
-                            elif stream_type == "audio":
-                                return "a"
-                            elif stream_type == "subtitle":
-                                return "s"
-                            else:
-                                assert False
+                    file_options = {p: [] for p in input_paths}
+                    track_groups = {p: {"video": [], "audio": [], "subtitle": []} for p in input_paths}
 
-                        stream_type, stream_index, file_index, language = stream
-                        stream_t = stream_type_mapper(stream_type)
-
-                        generation_args.extend(["-map", f"{file_index}:{stream_t}:{stream_index}"])
-
-                        output_stream_index = output_stream_indexes.get(stream_type, 0)
-
-                        if language:
-                            generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language={language}"])
+                    for entry in streams_list_sorted:
+                        stype, tid, fidx, lang, path, _ = entry
+                        if lang:
+                            file_options[path].extend(["--language", f"{tid}:{lang}"])
                         else:
-                            generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language=und"])          # mark as undefined
+                            file_options[path].extend(["--language", f"{tid}:und"])
 
-                        if stream_type == "audio" or stream_type == "subtitle":
-                            if stream == preferred_audio or stream == preferred_subtitle:
-                                generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "default"])
+                        if stype in ("audio", "subtitle"):
+                            if entry == preferred_audio or entry == preferred_subtitle:
+                                file_options[path].extend(["--default-track", f"{tid}:yes"])
                             else:
-                                generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "0"])         # without this, output file will not respect 'default' set above... Who knows why
+                                file_options[path].extend(["--default-track", f"{tid}:no"])
 
-                        output_stream_indexes[stream_type] = output_stream_index + 1
+                        track_groups[path][stype].append(str(tid))
 
-                    generation_args.append("-c")
-                    generation_args.append("copy")
+                    for path in input_paths:
+                        opts = file_options[path]
+                        vids = track_groups[path]["video"]
+                        auds = track_groups[path]["audio"]
+                        subs = track_groups[path]["subtitle"]
 
-                    generation_args.append(output)
+                        if vids:
+                            opts.extend(["--video-tracks", ",".join(vids)])
+                        else:
+                            opts.append("--no-video")
 
-                    process_utils.raise_on_error(process_utils.start_process("ffmpeg", generation_args, show_progress = True))
+                        if auds:
+                            opts.extend(["--audio-tracks", ",".join(auds)])
+                        else:
+                            opts.append("--no-audio")
+
+                        if subs:
+                            opts.extend(["--subtitle-tracks", ",".join(subs)])
+                        else:
+                            opts.append("--no-subtitles")
+
+                        generation_args += opts + [path]
+
+                    track_order = ",".join(f"{file_index_map[e[4]]}:{e[1]}" for e in streams_list_sorted)
+                    generation_args += ["--track-order", track_order]
+
+                    process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args))
 
                     self.logger.info(f"{output} saved.")
 
