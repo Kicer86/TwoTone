@@ -66,3 +66,19 @@ The concatenate tool looks for movie files which seem to be split into a few fil
 ```bash
 python -m twotone concatenate --help
 ```
+
+#### Combine Duplicate Videos (melt)
+
+The melt tool scans for duplicate video files and creates a single output using the best quality segments from each copy. Duplicates can be provided manually or taken from a Jellyfin server.
+
+```bash
+python -m twotone melt --help
+```
+
+#### Miscellaneous utilities
+
+The utilities tool groups smaller helpers. Currently it provides the *scenes* subtool for extracting frames from a video and saving them into per-scene folders.
+
+```bash
+python -m twotone utilities scenes --help
+```
