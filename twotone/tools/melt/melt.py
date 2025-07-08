@@ -245,19 +245,21 @@ class Melter():
         # build streams mapping
         streams = defaultdict(list)
 
-        #   process video stream
-        video_stream = video_streams[0]
-        video_stream_path = video_stream[0]
-        video_stream_index = video_stream[1]
-        streams[video_stream_path].append({
-            "index": video_stream_index,
-            "language": None,
-            "type": "video",
-        })
+        #   process video streams
+        for path, index, language in video_streams:
+            streams[path].append({
+                "index": index,
+                "language": language,
+                "type": "video",
+            })
 
         #   process audio streams
 
         #       check if input files are of the same lenght
+        video_stream = video_streams[0]
+        video_stream_path = video_stream[0]
+        video_stream_index = video_stream[1]
+
         base_lenght = details[video_stream_path]["video"][video_stream_index]["length"]
         file_name = 0
         self.logger.debug(f"Using video file {video_stream_path}:{video_stream_index} as a base")
@@ -389,7 +391,7 @@ class Melter():
                             streams_list.append((stream_type, stream_index, file_index, language))
 
                     # sort by language
-                    def get_index_for(l: [], value):
+                    def get_index_for(l: List, value):
                         try:
                             return l.index(value)
                         except ValueError:
@@ -413,8 +415,18 @@ class Melter():
                     # generate map options
                     output_stream_indexes = defaultdict(int)
                     for stream in streams_list_sorted:
+                        def stream_type_mapper(stream_type: str) -> str:
+                            if stream_type == "video":
+                                return "v"
+                            elif stream_type == "audio":
+                                return "a"
+                            elif stream_type == "subtitle":
+                                return "s"
+                            else:
+                                assert False
+
                         stream_type, stream_index, file_index, language = stream
-                        stream_t = stream_type[0]
+                        stream_t = stream_type_mapper(stream_type)
 
                         generation_args.extend(["-map", f"{file_index}:{stream_t}:{stream_index}"])
 

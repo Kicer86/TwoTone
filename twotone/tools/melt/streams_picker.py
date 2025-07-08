@@ -67,7 +67,6 @@ class StreamsPicker:
         ``0`` otherwise.
         """
 
-
         paths_common_prefix = files_utils.get_common_prefix(files_details)
 
         def get_language(stream, path) -> Optional[str]:
@@ -190,8 +189,12 @@ class StreamsPicker:
                 return 0
             return _cmp
 
+        #collect video streams (path and index) which are attached_pics so we can drop them later as not handled now
+        attached_pics = [(file_path, index) for (file_path, details) in files_details.items() for index, vd in enumerate(details["video"]) if vd.get("attached_pic", False)]
+
         best_file_candidate = StreamsPicker._pick_best_file_candidate(files_details)
-        video_streams = self._pick_streams(files_details, best_file_candidate, "video", [], video_cmp)
+        video_streams = self._pick_streams(files_details, best_file_candidate, "video", ["attached_pic"], video_cmp)
+        video_streams = [video_stream for video_stream in video_streams if (video_stream[0], video_stream[1]) not in attached_pics]
         video_stream = video_streams[0]
         video_stream_path = video_stream[0]
 
@@ -219,4 +222,5 @@ class StreamsPicker:
             override_languages=forced_subtitle_language,
         )
 
+        # results
         return video_streams, audio_streams, subtitle_streams

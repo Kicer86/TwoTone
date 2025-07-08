@@ -302,6 +302,34 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(languages, {"jpn", "bre"})
 
 
+    def test_additional_attachements(self):
+        video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "fog-over-mountainside-13008647.mp4", subtitle = True, thumbnail_name = "parrot.jpeg")
+        video2 = build_test_video(os.path.join(self.wd.path, "o2.mkv"), self.wd.path, "fog-over-mountainside-13008647.mp4", subtitle = True)
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Fog", video1)
+        duplicates.add_entry("Fog", video2)
+        duplicates.add_metadata(video1, "subtitle_lang", "pol")
+        duplicates.add_metadata(video2, "subtitle_lang", "eng")
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter.melt()
+
+        # validate output
+        output_file_hash = hashes(output_dir)
+        output_file = list(output_file_hash)[0]
+
+        # thumbnails should be dropped as not supported
+        output_file_data = video_utils.get_video_data(output_file)
+        self.assertEqual(len(output_file_data["video"]), 1)
+        #self.assertEqual(output_file_data["image"][0]["height"], 533)
+        #self.assertEqual(output_file_data["image"][0]["width"], 800)
+
+
     sample_streams = [
         # case: merge all audio tracks
         (
