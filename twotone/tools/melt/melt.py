@@ -182,7 +182,7 @@ class Melter():
             if key == "fps":
                 return eval(value)
             elif key == "length":
-                return generic_utils.ms_to_time(value)
+                return generic_utils.ms_to_time(value) if value else "-"
             else:
                 return value if value else "-"
 
