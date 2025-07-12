@@ -8,15 +8,14 @@ from common import WorkingDirectoryForTest, TwoToneTestCase, write_subtitle
 
 class UtilsTests(TwoToneTestCase):
     def _test_content(self, content: str, valid: bool):
-        with WorkingDirectoryForTest() as wd:
-            subtitle_path = os.path.join(wd.path, "subtitle.txt")
+        subtitle_path = os.path.join(self.wd.path, "subtitle.txt")
 
-            write_subtitle(subtitle_path, [content])
+        write_subtitle(subtitle_path, [content])
 
-            if valid:
-                self.assertTrue(subtitles_utils.is_subtitle(subtitle_path))
-            else:
-                self.assertFalse(subtitles_utils.is_subtitle(subtitle_path))
+        if valid:
+            self.assertTrue(subtitles_utils.is_subtitle(subtitle_path))
+        else:
+            self.assertFalse(subtitles_utils.is_subtitle(subtitle_path))
 
 
     def test_subtitle_detection(self):
