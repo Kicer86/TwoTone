@@ -242,11 +242,11 @@ def get_video_data(path: str) -> Dict:
     streams = defaultdict(list)
     for stream in output_json["streams"]:
         stream_type = stream["codec_type"]
+        tid = stream["index"]
         if stream_type == "subtitle":
             language = get_language(stream)
             is_default = stream["disposition"]["default"]
             length = get_length(stream)
-            tid = stream["index"]
             format = stream["codec_name"]
 
             streams["subtitle"].append({
@@ -276,12 +276,12 @@ def get_video_data(path: str) -> Dict:
                 "bitrate": bitrate,
                 "codec": codec,
                 "attached_pic": pic,
+                "tid": tid,
             })
         elif stream_type == "audio":
             language = get_language(stream)
             channels = stream["channels"]
             sample_rate = stream["sample_rate"]
-            tid = stream["index"]
 
             streams["audio"].append({
                 "language": language,
