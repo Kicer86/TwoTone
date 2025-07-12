@@ -83,6 +83,25 @@ class UtilsTests(TwoToneTestCase):
                 }]
             }
         ),
+        (
+            "MOV - no audio",
+            # input
+            "Blue_Sky_and_Clouds_Timelapse_0892__Videvo.mov",
+            # expected output
+            {
+                'video':
+                [{
+                    'fps': '25/1',
+                    'length': 15600,
+                    'width': 1920,
+                    'height': 1080,
+                    'bitrate': None,
+                    'codec': 'hevc',
+                    'attached_pic': False,
+                    'tid': 0
+                }]
+            }
+        ),
     ]
 
     @parameterized.expand(test_videos)
