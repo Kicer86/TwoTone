@@ -109,7 +109,7 @@ class UtilsTests(TwoToneTestCase):
         input_file_name = get_video(input)
         file_info = video_utils.get_video_data(input_file_name)
 
-        self.assertEqual(file_info, expected_streams)
+        self.assertEqual(expected_streams, file_info)
 
 
 if __name__ == '__main__':
