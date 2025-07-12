@@ -111,6 +111,88 @@ class UtilsTests(TwoToneTestCase):
 
         self.assertEqual(expected_streams, file_info)
 
+    test_videos_mkv = [
+        # case: merge all audio tracks
+        (
+            "MP4 - camera",
+            # input
+            "DSC_8073.MP4",
+            # expected output
+            {
+                'video':
+                [{
+                    'fps': '0',
+                    'length': None,
+                    'width': 3840,
+                    'height': 2160,
+                    'bitrate': None,
+                    'codec': 'HEVC/H.265/MPEG-H',
+                    'attached_pic': False,
+                    'tid': 0
+                }],
+                'audio':
+                [{
+                    'language': 'eng',
+                    'channels': 2,
+                    'sample_rate': 48000,
+                    'tid': 1
+                }]
+            }
+        ),
+        (
+            "MP4 - camera2",
+            # input
+            "moon.mp4",
+            # expected output
+            {
+                'video':
+                [{
+                    'fps': '0',
+                    'length': None,
+                    'width': 2160,
+                    'height': 3840,
+                    'bitrate': None,
+                    'codec': 'HEVC/H.265/MPEG-H',
+                    'attached_pic': False,
+                    'tid': 0
+                }],
+                'audio':
+                [{
+                    'language': 'eng',
+                    'channels': 2,
+                    'sample_rate': 48000,
+                    'tid': 1
+                }]
+            }
+        ),
+        (
+            "MOV - no audio",
+            # input
+            "Blue_Sky_and_Clouds_Timelapse_0892__Videvo.mov",
+            # expected output
+            {
+                'video':
+                [{
+                    'fps': '0',
+                    'length': None,
+                    'width': 1920,
+                    'height': 1080,
+                    'bitrate': None,
+                    'codec': 'HEVC/H.265/MPEG-H',
+                    'attached_pic': False,
+                    'tid': 0
+                }]
+            }
+        ),
+    ]
+
+    @parameterized.expand(test_videos_mkv)
+    def test_video_mkvinfo(self, name, input, expected_streams):
+        input_file_name = get_video(input)
+        file_info = video_utils.get_video_data_mkvmerge(input_file_name)
+
+        #print(file_info)
+        self.assertEqual(expected_streams, file_info)
 
 if __name__ == '__main__':
     unittest.main()
