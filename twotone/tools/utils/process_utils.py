@@ -15,7 +15,6 @@ from . import video_utils
 DEFAULT_TOOL_OPTIONS: Dict[str, List[str]] = {
     "ffmpeg": ["-hide_banner"],
     "ffprobe": ["-hide_banner"],
-    "mkvmerge": ["--quiet"],
     "mkvextract": ["--quiet"],
     "exiftool": ["-q"],
 }
