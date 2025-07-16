@@ -119,24 +119,28 @@ class UtilsTests(TwoToneTestCase):
             "DSC_8073.MP4",
             # expected output
             {
-                'video':
-                [{
-                    'fps': '0',
-                    'length': None,
-                    'width': 3840,
-                    'height': 2160,
-                    'bitrate': None,
-                    'codec': 'HEVC/H.265/MPEG-H',
-                    'attached_pic': False,
-                    'tid': 0
-                }],
-                'audio':
-                [{
-                    'language': 'eng',
-                    'channels': 2,
-                    'sample_rate': 48000,
-                    'tid': 1
-                }]
+                "attachments": [],
+                "tracks":
+                {
+                    'video':
+                    [{
+                        'fps': '0',
+                        'length': None,
+                        'width': 3840,
+                        'height': 2160,
+                        'bitrate': None,
+                        'codec': 'HEVC/H.265/MPEG-H',
+                        'attached_pic': False,
+                        'tid': 0
+                    }],
+                    'audio':
+                    [{
+                        'language': 'eng',
+                        'channels': 2,
+                        'sample_rate': 48000,
+                        'tid': 1
+                    }]
+                }
             }
         ),
         (
@@ -145,24 +149,28 @@ class UtilsTests(TwoToneTestCase):
             "moon.mp4",
             # expected output
             {
-                'video':
-                [{
-                    'fps': '0',
-                    'length': None,
-                    'width': 2160,
-                    'height': 3840,
-                    'bitrate': None,
-                    'codec': 'HEVC/H.265/MPEG-H',
-                    'attached_pic': False,
-                    'tid': 0
-                }],
-                'audio':
-                [{
-                    'language': 'eng',
-                    'channels': 2,
-                    'sample_rate': 48000,
-                    'tid': 1
-                }]
+                "attachments": [],
+                "tracks":
+                {
+                    'video':
+                    [{
+                        'fps': '0',
+                        'length': None,
+                        'width': 2160,
+                        'height': 3840,
+                        'bitrate': None,
+                        'codec': 'HEVC/H.265/MPEG-H',
+                        'attached_pic': False,
+                        'tid': 0
+                    }],
+                    'audio':
+                    [{
+                        'language': 'eng',
+                        'channels': 2,
+                        'sample_rate': 48000,
+                        'tid': 1
+                    }]
+                }
             }
         ),
         (
@@ -171,17 +179,21 @@ class UtilsTests(TwoToneTestCase):
             "Blue_Sky_and_Clouds_Timelapse_0892__Videvo.mov",
             # expected output
             {
-                'video':
-                [{
-                    'fps': '0',
-                    'length': None,
-                    'width': 1920,
-                    'height': 1080,
-                    'bitrate': None,
-                    'codec': 'HEVC/H.265/MPEG-H',
-                    'attached_pic': False,
-                    'tid': 0
-                }]
+                "attachments": [],
+                "tracks":
+                {
+                    'video':
+                    [{
+                        'fps': '0',
+                        'length': None,
+                        'width': 1920,
+                        'height': 1080,
+                        'bitrate': None,
+                        'codec': 'HEVC/H.265/MPEG-H',
+                        'attached_pic': False,
+                        'tid': 0
+                    }]
+                }
             }
         ),
     ]

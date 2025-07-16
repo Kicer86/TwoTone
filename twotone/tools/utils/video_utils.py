@@ -317,6 +317,7 @@ def get_video_data_mkvmerge(path: str) -> Dict:
         except (TypeError, ValueError):
             duration_ms = None
 
+    # process streams/tracks
     streams = defaultdict(list)
     for track in info.get("tracks", []):
         track_type = track.get("type")
@@ -397,7 +398,22 @@ def get_video_data_mkvmerge(path: str) -> Dict:
                 }
             )
 
-    return dict(streams)
+    # attachments
+    attachments = []
+    for attachment in info.get("attachments", []):
+        content_type = attachment.get("content_type", "")
+        if content_type[:5] == "image":
+            attachments.append(
+            {
+                "tid": content_type["id"],
+                "content_type": content_type,
+                "file_name": content_type["file_name"],
+            })
+
+    return {
+        "attachments": attachments,
+        "tracks": dict(streams),
+    }
 
 
 def compare_videos(lhs: List[Dict], rhs: List[Dict]) -> bool:
