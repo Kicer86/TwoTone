@@ -405,9 +405,9 @@ def get_video_data_mkvmerge(path: str) -> Dict:
         if content_type[:5] == "image":
             attachments.append(
             {
-                "tid": content_type["id"],
+                "tid": attachment["id"],
                 "content_type": content_type,
-                "file_name": content_type["file_name"],
+                "file_name": attachment["file_name"],
             })
 
     return {

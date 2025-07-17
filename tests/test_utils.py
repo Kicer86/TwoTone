@@ -196,14 +196,51 @@ class UtilsTests(TwoToneTestCase):
                 }
             }
         ),
+        (
+            "MP4 - image attachment",
+            # input
+            "Chess alert 🚨 This is why you need to protect your king 🚨 [Iwj5vgXMeVE].mp4",
+            # expected output
+            {
+                "attachments":
+                [
+                    {
+                        'tid': 0,
+                        'content_type': 'image/png',
+                        'file_name': 'cover.png'
+                    }
+                ],
+                "tracks":
+                {
+                    'video':
+                    [{
+                        'fps': '0',
+                        'length': None,
+                        'width': 1080,
+                        'height': 1112,
+                        'bitrate': None,
+                        'codec': 'VP9',
+                        'attached_pic': False,
+                        'tid': 0
+                    }],
+                    'audio':
+                    [{
+                        'language': 'und',
+                        'channels': 2,
+                        'sample_rate': 44100,
+                        'tid': 1
+                    }]
+                }
+            }
+        ),
     ]
 
     @parameterized.expand(test_videos_mkv)
     def test_video_mkvinfo(self, name, input, expected_streams):
+        self.maxDiff = None
         input_file_name = get_video(input)
         file_info = video_utils.get_video_data_mkvmerge(input_file_name)
 
-        #print(file_info)
         self.assertEqual(expected_streams, file_info)
 
 if __name__ == '__main__':
