@@ -323,6 +323,7 @@ def get_video_data_mkvmerge(path: str) -> Dict:
         track_type = track.get("type")
         tid = track.get("id")
         props = track.get("properties", {})
+        uid = props.get("uid", None)
 
         language = props.get("language")
         language = language_utils.unify_lang(language) if language else None
@@ -349,10 +350,6 @@ def get_video_data_mkvmerge(path: str) -> Dict:
 
             fps_str = str(fps) if fps is not None else "0"
 
-            attached_pic = bool(
-                props.get("flag_attached_picture") or props.get("attached_picture")
-            )
-
             streams["video"].append(
                 {
                     "fps": fps_str,
@@ -361,8 +358,8 @@ def get_video_data_mkvmerge(path: str) -> Dict:
                     "height": height,
                     "bitrate": None,
                     "codec": track.get("codec"),
-                    "attached_pic": attached_pic,
                     "tid": tid,
+                    "uid": uid,
                 }
             )
         elif track_type == "audio":
@@ -375,6 +372,7 @@ def get_video_data_mkvmerge(path: str) -> Dict:
                     "channels": channels,
                     "sample_rate": sample_rate,
                     "tid": tid,
+                    "uid": uid,
                 }
             )
         elif track_type in ("subtitles", "subtitle"):
@@ -384,17 +382,8 @@ def get_video_data_mkvmerge(path: str) -> Dict:
                     "default": props.get("default_track", False),
                     "length": duration_ms,
                     "tid": tid,
+                    "uid": uid,
                     "format": track.get("codec"),
-                }
-            )
-        elif track_type == "attachment":
-            width = props.get("pixel_width")
-            height = props.get("pixel_height")
-            streams["image"].append(
-                {
-                    "width": width,
-                    "height": height,
-                    "tid": tid,
                 }
             )
 
@@ -403,9 +392,12 @@ def get_video_data_mkvmerge(path: str) -> Dict:
     for attachment in info.get("attachments", []):
         content_type = attachment.get("content_type", "")
         if content_type[:5] == "image":
+            props = track.get("properties", {})
+            uid = props.get("uid", None)
             attachments.append(
             {
                 "tid": attachment["id"],
+                "uid": uid,
                 "content_type": content_type,
                 "file_name": attachment["file_name"],
             })

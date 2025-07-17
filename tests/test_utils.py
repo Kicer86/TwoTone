@@ -130,15 +130,16 @@ class UtilsTests(TwoToneTestCase):
                         'height': 2160,
                         'bitrate': None,
                         'codec': 'HEVC/H.265/MPEG-H',
-                        'attached_pic': False,
-                        'tid': 0
+                        'tid': 0,
+                        'uid': None,
                     }],
                     'audio':
                     [{
                         'language': 'eng',
                         'channels': 2,
                         'sample_rate': 48000,
-                        'tid': 1
+                        'tid': 1,
+                        'uid': None,
                     }]
                 }
             }
@@ -160,15 +161,16 @@ class UtilsTests(TwoToneTestCase):
                         'height': 3840,
                         'bitrate': None,
                         'codec': 'HEVC/H.265/MPEG-H',
-                        'attached_pic': False,
-                        'tid': 0
+                        'tid': 0,
+                        'uid': None,
                     }],
                     'audio':
                     [{
                         'language': 'eng',
                         'channels': 2,
                         'sample_rate': 48000,
-                        'tid': 1
+                        'tid': 1,
+                        'uid': None,
                     }]
                 }
             }
@@ -190,8 +192,8 @@ class UtilsTests(TwoToneTestCase):
                         'height': 1080,
                         'bitrate': None,
                         'codec': 'HEVC/H.265/MPEG-H',
-                        'attached_pic': False,
-                        'tid': 0
+                        'tid': 0,
+                        'uid': None,
                     }]
                 }
             }
@@ -206,6 +208,7 @@ class UtilsTests(TwoToneTestCase):
                 [
                     {
                         'tid': 0,
+                        'uid': None,
                         'content_type': 'image/png',
                         'file_name': 'cover.png'
                     }
@@ -220,15 +223,16 @@ class UtilsTests(TwoToneTestCase):
                         'height': 1112,
                         'bitrate': None,
                         'codec': 'VP9',
-                        'attached_pic': False,
-                        'tid': 0
+                        'tid': 0,
+                        'uid': None,
                     }],
                     'audio':
                     [{
                         'language': 'und',
                         'channels': 2,
                         'sample_rate': 44100,
-                        'tid': 1
+                        'tid': 1,
+                        'uid': None,
                     }]
                 }
             }
