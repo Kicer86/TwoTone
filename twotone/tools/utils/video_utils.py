@@ -304,8 +304,12 @@ def get_video_full_info_mkvmerge(path: str) -> dict:
     return json.loads(result.stdout)
 
 
-def get_video_data_mkvmerge(path: str) -> Dict:
-    """Return stream information parsed from ``mkvmerge -J`` output."""
+def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
+    """
+        Return stream information parsed from ``mkvmerge -J`` output.
+        For non mkv files, mkvmerge does not provide as much information as ffprobe.
+        Set 'enrich' to True to enrich mkvmerge's outpput with data from ffprobe.
+    """
 
     info = get_video_full_info_mkvmerge(path)
 
@@ -319,6 +323,8 @@ def get_video_data_mkvmerge(path: str) -> Dict:
 
     # process streams/tracks
     streams = defaultdict(list)
+    ffprobe_data = get_video_data(path) if enrich else None
+
     for track in info.get("tracks", []):
         track_type = track.get("type")
         tid = track.get("id")
