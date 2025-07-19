@@ -45,7 +45,6 @@ class UtilsTests(TwoToneTestCase):
                     'height': 2160,
                     'bitrate': None,
                     'codec': 'hevc',
-                    'attached_pic': False,
                     'tid': 0
                 }],
                 'audio':
@@ -71,7 +70,6 @@ class UtilsTests(TwoToneTestCase):
                     'height': 3840,
                     'bitrate': None,
                     'codec': 'hevc',
-                    'attached_pic': False,
                     'tid': 0
                 }],
                 'audio':
@@ -97,7 +95,6 @@ class UtilsTests(TwoToneTestCase):
                     'height': 1080,
                     'bitrate': None,
                     'codec': 'hevc',
-                    'attached_pic': False,
                     'tid': 0
                 }]
             }
