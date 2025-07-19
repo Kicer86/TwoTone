@@ -309,6 +309,33 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
         Set 'enrich' to True to enrich mkvmerge's outpput with data from ffprobe.
     """
 
+    def find_ffprobe_track(track_id: int, ffprobe_info: {}):
+        for streams in (ffprobe_info or {}).values():
+            for stream in streams:
+                if stream.get("tid", None) == track_id:
+                    return stream
+
+        return None
+
+    def merge_properties(initial: Dict or None, update: Dict):
+        if initial is None:
+            return update
+
+        output = initial
+        for key, value in update.items():
+            base_value = output.get(key, None)
+
+            if base_value is None:
+                output[key] = value
+            elif value is None:
+                pass
+            elif value != base_value:
+                if key != "codec":
+                    logging.warning(f"Inconsistent data provided by mkvmerge ({key}: {value}) and ffprobe ({key}: {base_value})")
+                output[key] = value
+
+        return output
+
     info = get_video_full_info_mkvmerge(path)
 
     container_props = info.get("container", {}).get("properties", {})
@@ -321,7 +348,7 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
 
     # process streams/tracks
     streams = defaultdict(list)
-    ffprobe_data = get_video_data(path) if enrich else None
+    ffprobe_info = get_video_data(path) if enrich else None
 
     for track in info.get("tracks", []):
         track_type = track.get("type")
@@ -331,6 +358,8 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
 
         language = props.get("language")
         language = language_utils.unify_lang(language) if language else None
+
+        track_initial_data = find_ffprobe_track(tid, ffprobe_info)
 
         if track_type == "video":
             dims = props.get("pixel_dimensions") or props.get("display_dimensions")
@@ -352,10 +381,10 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
                     except (TypeError, ValueError):
                         fps = None
 
-            fps_str = str(fps) if fps is not None else "0"
+            fps_str = str(fps) if fps else track_initial_data.get("fps", "0") if track_initial_data else "0"
 
             streams["video"].append(
-                {
+                merge_properties(track_initial_data, {
                     "fps": fps_str,
                     "length": duration_ms,
                     "width": width,
@@ -364,31 +393,31 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
                     "codec": track.get("codec"),
                     "tid": tid,
                     "uid": uid,
-                }
+                })
             )
         elif track_type == "audio":
             channels = props.get("audio_channels")
             sample_rate = props.get("audio_sampling_frequency")
 
             streams["audio"].append(
-                {
+                merge_properties(track_initial_data, {
                     "language": language,
                     "channels": channels,
                     "sample_rate": sample_rate,
                     "tid": tid,
                     "uid": uid,
-                }
+                })
             )
         elif track_type in ("subtitles", "subtitle"):
             streams["subtitle"].append(
-                {
+                merge_properties(track_initial_data, {
                     "language": language,
                     "default": props.get("default_track", False),
                     "length": duration_ms,
                     "tid": tid,
                     "uid": uid,
                     "format": track.get("codec"),
-                }
+                })
             )
 
     # attachments
