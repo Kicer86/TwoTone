@@ -39,20 +39,11 @@ class UtilsTests(TwoToneTestCase):
             {
                 'video':
                 [{
-                    'fps': '30000/1001',
-                    'length': 3403,
-                    'width': 3840,
-                    'height': 2160,
-                    'bitrate': None,
-                    'codec': 'hevc',
-                    'tid': 0
+                    'fps': '30000/1001', 'length': 3403, 'width': 3840, 'height': 2160, 'bitrate': None, 'codec': 'hevc', 'tid': 0
                 }],
                 'audio':
                 [{
-                    'language': 'eng',
-                    'channels': 2,
-                    'sample_rate': '48000',
-                    'tid': 1
+                    'language': 'eng', 'channels': 2, 'sample_rate': '48000', 'tid': 1
                 }]
             }
         ),
@@ -64,20 +55,11 @@ class UtilsTests(TwoToneTestCase):
             {
                 'video':
                 [{
-                    'fps': '29999/500',
-                    'length': 1000,
-                    'width': 2160,
-                    'height': 3840,
-                    'bitrate': None,
-                    'codec': 'hevc',
-                    'tid': 0
+                    'fps': '29999/500', 'length': 1000, 'width': 2160, 'height': 3840, 'bitrate': None, 'codec': 'hevc','tid': 0
                 }],
                 'audio':
                 [{
-                    'language': 'eng',
-                    'channels': 2,
-                    'sample_rate': '48000',
-                    'tid': 1
+                    'language': 'eng', 'channels': 2, 'sample_rate': '48000', 'tid': 1
                 }]
             }
         ),
@@ -89,13 +71,7 @@ class UtilsTests(TwoToneTestCase):
             {
                 'video':
                 [{
-                    'fps': '25/1',
-                    'length': 15600,
-                    'width': 1920,
-                    'height': 1080,
-                    'bitrate': None,
-                    'codec': 'hevc',
-                    'tid': 0
+                    'fps': '25/1', 'length': 15600, 'width': 1920, 'height': 1080, 'bitrate': None, 'codec': 'hevc', 'tid': 0
                 }]
             }
         ),
@@ -121,22 +97,11 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '0',
-                        'length': None,
-                        'width': 3840,
-                        'height': 2160,
-                        'bitrate': None,
-                        'codec': 'HEVC/H.265/MPEG-H',
-                        'tid': 0,
-                        'uid': None,
+                        'fps': '0', 'length': None, 'width': 3840, 'height': 2160, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
                     }],
                     'audio':
                     [{
-                        'language': 'eng',
-                        'channels': 2,
-                        'sample_rate': 48000,
-                        'tid': 1,
-                        'uid': None,
+                        'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
                     }]
                 }
             }
@@ -152,22 +117,11 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '0',
-                        'length': None,
-                        'width': 2160,
-                        'height': 3840,
-                        'bitrate': None,
-                        'codec': 'HEVC/H.265/MPEG-H',
-                        'tid': 0,
-                        'uid': None,
+                        'fps': '0', 'length': None, 'width': 2160, 'height': 3840, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
                     }],
                     'audio':
                     [{
-                        'language': 'eng',
-                        'channels': 2,
-                        'sample_rate': 48000,
-                        'tid': 1,
-                        'uid': None,
+                        'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
                     }]
                 }
             }
@@ -183,14 +137,7 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '0',
-                        'length': None,
-                        'width': 1920,
-                        'height': 1080,
-                        'bitrate': None,
-                        'codec': 'HEVC/H.265/MPEG-H',
-                        'tid': 0,
-                        'uid': None,
+                        'fps': '0', 'length': None, 'width': 1920, 'height': 1080, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
                     }]
                 }
             }
@@ -204,32 +151,18 @@ class UtilsTests(TwoToneTestCase):
                 "attachments":
                 [
                     {
-                        'tid': 0,
-                        'uid': None,
-                        'content_type': 'image/png',
-                        'file_name': 'cover.png'
+                        'tid': 0, 'uid': None, 'content_type': 'image/png', 'file_name': 'cover.png'
                     }
                 ],
                 "tracks":
                 {
                     'video':
                     [{
-                        'fps': '0',
-                        'length': None,
-                        'width': 1080,
-                        'height': 1112,
-                        'bitrate': None,
-                        'codec': 'VP9',
-                        'tid': 0,
-                        'uid': None,
+                        'fps': '0', 'length': None, 'width': 1080, 'height': 1112, 'bitrate': None, 'codec': 'VP9', 'tid': 0, 'uid': None,
                     }],
                     'audio':
                     [{
-                        'language': 'und',
-                        'channels': 2,
-                        'sample_rate': 44100,
-                        'tid': 1,
-                        'uid': None,
+                        'language': 'und', 'channels': 2, 'sample_rate': 44100, 'tid': 1, 'uid': None,
                     }]
                 }
             }
@@ -257,22 +190,11 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '30000/1001',
-                        'length': 3403,
-                        'width': 3840,
-                        'height': 2160,
-                        'bitrate': None,
-                        'codec': 'HEVC/H.265/MPEG-H',
-                        'tid': 0,
-                        'uid': None,
+                        'fps': '30000/1001', 'length': 3403, 'width': 3840, 'height': 2160, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
                     }],
                     'audio':
                     [{
-                        'language': 'eng',
-                        'channels': 2,
-                        'sample_rate': 48000,
-                        'tid': 1,
-                        'uid': None,
+                        'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
                     }]
                 }
             }
@@ -288,22 +210,11 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '29999/500',
-                        'length': 1000,
-                        'width': 2160,
-                        'height': 3840,
-                        'bitrate': None,
-                        'codec': 'HEVC/H.265/MPEG-H',
-                        'tid': 0,
-                        'uid': None,
+                        'fps': '29999/500', 'length': 1000, 'width': 2160, 'height': 3840, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
                     }],
                     'audio':
                     [{
-                        'language': 'eng',
-                        'channels': 2,
-                        'sample_rate': 48000,
-                        'tid': 1,
-                        'uid': None,
+                        'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
                     }]
                 }
             }
@@ -319,14 +230,7 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '25/1',
-                        'length': 15600,
-                        'width': 1920,
-                        'height': 1080,
-                        'bitrate': None,
-                        'codec': 'HEVC/H.265/MPEG-H',
-                        'tid': 0,
-                        'uid': None,
+                        'fps': '25/1', 'length': 15600, 'width': 1920, 'height': 1080, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
                     }]
                 }
             }
@@ -340,32 +244,18 @@ class UtilsTests(TwoToneTestCase):
                 "attachments":
                 [
                     {
-                        'tid': 0,
-                        'uid': None,
-                        'content_type': 'image/png',
-                        'file_name': 'cover.png'
+                        'tid': 0, 'uid': None, 'content_type': 'image/png', 'file_name': 'cover.png'
                     }
                 ],
                 "tracks":
                 {
                     'video':
                     [{
-                        'fps': '60/1',
-                        'length': 11583,
-                        'width': 1080,
-                        'height': 1112,
-                        'bitrate': None,
-                        'codec': 'VP9',
-                        'tid': 0,
-                        'uid': None,
+                        'fps': '60/1', 'length': 11583, 'width': 1080, 'height': 1112, 'bitrate': None, 'codec': 'VP9', 'tid': 0, 'uid': None,
                     }],
                     'audio':
                     [{
-                        'language': 'und',
-                        'channels': 2,
-                        'sample_rate': 44100,
-                        'tid': 1,
-                        'uid': None,
+                        'language': 'und', 'channels': 2, 'sample_rate': 44100, 'tid': 1, 'uid': None,
                     }]
                 }
             }
