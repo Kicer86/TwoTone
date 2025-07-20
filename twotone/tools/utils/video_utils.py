@@ -279,7 +279,7 @@ def get_video_data(path: str) -> Dict:
         elif stream_type == "audio":
             language = get_language(stream)
             channels = stream["channels"]
-            sample_rate = stream["sample_rate"]
+            sample_rate = int(stream["sample_rate"])
 
             streams["audio"].append({
                 "language": language,
@@ -330,8 +330,9 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
             elif value is None:
                 pass
             elif value != base_value:
-                if key != "codec":
-                    logging.warning(f"Inconsistent data provided by mkvmerge ({key}: {value}) and ffprobe ({key}: {base_value})")
+                if key != "codec" and key != "format":
+                    if key == "fps" and abs(eval(base_value) - eval(value)) > 0.001:
+                        logging.warning(f"Inconsistent data provided by mkvmerge ({key}: {value}) and ffprobe ({key}: {base_value})")
                 output[key] = value
 
         return output
