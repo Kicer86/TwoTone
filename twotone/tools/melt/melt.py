@@ -15,6 +15,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from ..tool import Tool
 from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
+from .attachments_picker import AttachmentsPicker
 from .debug_routines import DebugRoutines
 from .duplicates_source import DuplicatesSource
 from .jellyfin import JellyfinSource
@@ -193,13 +194,21 @@ class Melter():
                 return True
 
         self.logger.info(f"File {files_utils.get_printable_path(file, common_prefix)} details:")
-        for stream_type, streams in details.items():
+        tracks = details["tracks"]
+        attachments = details["attachments"]
+
+        for stream_type, streams in tracks.items():
             info = f"{stream_type}: {len(streams)} track(s), languages: "
             info += ", ".join([ data.get("language") or "unknown" for data in streams])
 
             self.logger.info(info)
 
-        for stream_type, streams in details.items():
+        for attachment in attachments:
+            file_name = attachment["file_name"]
+            self.logger.info(f"attachment: {file_name}")
+
+        # more details for debug
+        for stream_type, streams in tracks.items():
             self.logger.debug(f"\t{stream_type}:")
 
             for i, stream in enumerate(streams):
@@ -221,6 +230,14 @@ class Melter():
                 printable_path = files_utils.get_printable_path(path, common_prefix)
                 self.logger.info(f"{stype} track ID #{tid} with language {language} from {printable_path}")
 
+    def _print_attachements_details(self, common_prefix, all_attachments: List):
+         for stream in all_attachments:
+            path = stream[0]
+            tid = stream[1]
+
+            printable_path = files_utils.get_printable_path(path, common_prefix)
+            self.logger.info(f"Attachment ID #{tid} from {printable_path}")
+
     def _process_duplicates(self, duplicates: List[str]) -> List[Dict]:
         self.logger.info("------------------------------------")
         self.logger.info("Processing group of duplicated files")
@@ -229,20 +246,24 @@ class Melter():
         # analyze files in terms of quality and available content
         # use mkvmerge-based probing enriched with ffprobe data
         details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True) for file in duplicates}
+        attachments = {file: info["attachments"] for file, info in details_full.items()}
         tracks = {file: info["tracks"] for file, info in details_full.items()}
 
         common_prefix = files_utils.get_common_prefix(duplicates)
 
         # print input file details
-        for file, file_details in tracks.items():
+        for file, file_details in details_full.items():
             self._print_file_details(file, file_details, common_prefix)
 
         streams_picker = StreamsPicker(self.logger, self.duplicates_source)
         video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks)
 
+        picked_attachments = AttachmentsPicker(self.logger).pick_attachments(attachments)
+
         # print proposed output file
         self.logger.info("Streams used to create output video file:")
         self._print_streams_details(common_prefix, [(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [video_streams, audio_streams, subtitle_streams])])
+        self._print_attachements_details(common_prefix, picked_attachments)
 
         # build streams mapping
         streams = defaultdict(list)
@@ -314,7 +335,7 @@ class Melter():
                 "type": "subtitle",
             })
 
-        return streams
+        return streams, picked_attachments
 
     def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
         def process_entries(entries: List[str]) -> List[Tuple[List[str], str]]:
@@ -364,7 +385,7 @@ class Melter():
             for files, output_name in tqdm(files_groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
                 self.interruption._check_for_stop()
 
-                streams = self._process_duplicates(files)
+                streams, attachments = self._process_duplicates(files)
                 if not self.live_run:
                     self.logger.info("Dry run. Skipping output generation")
                     continue
@@ -383,20 +404,20 @@ class Melter():
                     self.logger.info("Starting output file generation from chosen streams.")
                     generation_args = ["-o", output]
                     paths = list(streams.keys())
-                    files_opts = [
-                        {"video": [], "audio": [], "subtitle": [], "languages": {}, "defaults": set()}
-                        for _ in paths
-                    ]
+                    files_opts = {
+                        path: {"video": [], "audio": [], "subtitle": [], "attachments": [], "languages": {}, "defaults": set()}
+                        for path in paths
+                    }
 
                     # convert streams to list for later sorting by language
                     streams_list = []
-                    for file_index, (_, infos) in enumerate(streams.items()):
+                    for path, infos in streams.items():
                         for info in infos:
                             stream_type = info["type"]
                             stream_index = info["tid"]
                             language = info.get("language", None)
 
-                            streams_list.append((stream_type, stream_index, file_index, language))
+                            streams_list.append((stream_type, stream_index, path, language))
 
                     # sort by language
                     def get_index_for(l: List, value):
@@ -423,15 +444,20 @@ class Melter():
                     # collect per-file options and track order
                     track_order = []
                     for stream in streams_list_sorted:
-                        stream_type, tid, file_index, language = stream
-                        fo = files_opts[file_index]
+                        stream_type, tid, file_path, language = stream
+                        fo = files_opts[file_path]
                         fo[stream_type].append(tid)
                         fo["languages"][tid] = language or "und"
                         if stream_type in ("audio", "subtitle") and (stream == preferred_audio or stream == preferred_subtitle):
                             fo["defaults"].add(tid)
+                        file_index = generic_utils.get_key_position(files_opts, file_path)
                         track_order.append(f"{file_index}:{tid}")
 
-                    for file_index, (path, fo) in enumerate(zip(paths, files_opts)):
+                    for file_path, tid in attachments:
+                        fo = files_opts[file_path]
+                        fo["attachments"].append(tid)
+
+                    for file_path, fo in files_opts.items():
                         if fo["video"]:
                             generation_args.extend(["--video-tracks", ",".join(str(i) for i in fo["video"])])
                         else:
@@ -447,7 +473,10 @@ class Melter():
                         else:
                             generation_args.append("--no-subtitles")
 
-                        generation_args.append("--no-attachments")
+                        if fo["attachments"]:
+                            generation_args.extend(["--attachments", ",".join(str(i) for i in fo["attachments"])])
+                        else:
+                            generation_args.append("--no-attachments")
 
                         for tid, lang in fo["languages"].items():
                             generation_args.extend(["--language", f"{tid}:{lang}"])
@@ -456,7 +485,7 @@ class Melter():
                             flag = "yes" if tid in fo["defaults"] else "no"
                             generation_args.extend(["--default-track", f"{tid}:{flag}"])
 
-                        generation_args.append(path)
+                        generation_args.append(file_path)
 
                     if track_order:
                         generation_args.extend(["--track-order", ",".join(track_order)])

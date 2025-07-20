@@ -323,11 +323,9 @@ class MeltingTest(TwoToneTestCase):
         output_file_hash = hashes(output_dir)
         output_file = list(output_file_hash)[0]
 
-        # thumbnails should be dropped as not supported
-        output_file_data = video_utils.get_video_data(output_file)
-        self.assertEqual(len(output_file_data["video"]), 1)
-        #self.assertEqual(output_file_data["image"][0]["height"], 533)
-        #self.assertEqual(output_file_data["image"][0]["width"], 800)
+        output_file_data = video_utils.get_video_data_mkvmerge(output_file)
+        self.assertEqual(len(output_file_data["tracks"]["video"]), 1)
+        self.assertEqual(len(output_file_data["attachments"]), 1)
 
 
     sample_streams = [
