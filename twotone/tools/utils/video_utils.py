@@ -343,7 +343,8 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
     duration_ms = None
     if "duration" in container_props:
         try:
-            duration_ms = int(float(container_props["duration"]) * 1000)
+            timestamp_scale = container_props.get("timestamp_scale", 1)
+            duration_ms = int(float(container_props["duration"]) / timestamp_scale)
         except (TypeError, ValueError):
             duration_ms = None
 
