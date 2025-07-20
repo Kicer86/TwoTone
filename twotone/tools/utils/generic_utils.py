@@ -48,6 +48,13 @@ def fps_str_to_float(fps: str) -> float:
     return eval(fps)
 
 
+def get_key_position(d: dict, key) -> int:
+    for i, k in enumerate(d):
+        if k == key:
+            return i
+    raise KeyError(f"Key {key} not found")
+
+
 class InterruptibleProcess:
     def __init__(self):
         self._work = True
