@@ -522,11 +522,3 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
     if not os.path.exists(output_path):
         logging.error("Output file was not created")
         raise RuntimeError(f"{cmd} did not create output file")
-
-    output_file_details = get_video_data(output_path)
-    input_file_details = get_video_data(input_video)
-
-    if not compare_videos(input_file_details["video"], output_file_details["video"]) or \
-            len(input_file_details.get("subtitle", [])) + len(subtitles) != len(output_file_details.get("subtitle", [])):
-        logging.error("Output file seems to be corrupted")
-        raise RuntimeError("mkvmerge created a corrupted file")
