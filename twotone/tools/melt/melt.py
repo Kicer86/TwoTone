@@ -229,16 +229,16 @@ class Melter():
         # analyze files in terms of quality and available content
         # use mkvmerge-based probing enriched with ffprobe data
         details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True) for file in duplicates}
-        details = {file: info["tracks"] for file, info in details_full.items()}
+        tracks = {file: info["tracks"] for file, info in details_full.items()}
 
         common_prefix = files_utils.get_common_prefix(duplicates)
 
         # print input file details
-        for file, file_details in details.items():
+        for file, file_details in tracks.items():
             self._print_file_details(file, file_details, common_prefix)
 
         streams_picker = StreamsPicker(self.logger, self.duplicates_source)
-        video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(details)
+        video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks)
 
         # print proposed output file
         self.logger.info("Streams used to create output video file:")
@@ -262,12 +262,12 @@ class Melter():
         video_stream_path = video_stream[0]
         video_stream_index = video_stream[1]
 
-        base_lenght = details[video_stream_path]["video"][video_stream_index]["length"]
+        base_lenght = tracks[video_stream_path]["video"][video_stream_index]["length"]
         file_name = 0
         self.logger.debug(f"Using video file {video_stream_path}:{video_stream_index} as a base")
 
         for path, tid, language in audio_streams:
-            lenght = details[path]["video"][0]["length"]
+            lenght = tracks[path]["video"][0]["length"]
 
             if abs(base_lenght - lenght) > 100:
                 printable_path = files_utils.get_printable_path(path, common_prefix)
@@ -300,7 +300,7 @@ class Melter():
 
         # process subtitle streams
         for path, tid, language in subtitle_streams:
-            lenght = details[path]["video"][0]["length"]
+            lenght = tracks[path]["video"][0]["length"]
 
             if abs(base_lenght - lenght) > 100:
                 printable_path = files_utils.get_printable_path(path, common_prefix)
