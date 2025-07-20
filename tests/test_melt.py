@@ -337,20 +337,20 @@ class MeltingTest(TwoToneTestCase):
             # input
             {
                 "fileA": {
-                    "video": [{"height": "1024", "width": "1024", "fps": "24"}],
-                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000"},
-                              {"language": "de", "channels": "2", "sample_rate": "32000"}]
+                    "video": [{"height": "1024", "width": "1024", "fps": "24", "tid": 0}],
+                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000", "tid": 2},
+                              {"language": "de", "channels": "2", "sample_rate": "32000", "tid": 4}]
                 },
                 "fileB": {
-                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
-                    "audio": [{"language": "br", "channels": "2", "sample_rate": "32000"},
-                              {"language": "nl", "channels": "2", "sample_rate": "32000"}]
+                    "video": [{"height": "1024", "width": "1024", "fps": "30", "tid": 6}],
+                    "audio": [{"language": "br", "channels": "2", "sample_rate": "32000", "tid": 8},
+                              {"language": "nl", "channels": "2", "sample_rate": "32000", "tid": 10}]
                 }
             },
             # expected output
             (
-                [("fileB", 0, None)],
-                [("fileA", 0, "jp"), ("fileA", 1, "de"), ("fileB", 0, "br"), ("fileB", 1, "nl")],
+                [("fileB", 6, None)],
+                [("fileA", 2, "jp"), ("fileA", 4, "de"), ("fileB", 8, "br"), ("fileB", 10, "nl")],
                 []
             )
         ),
@@ -361,22 +361,22 @@ class MeltingTest(TwoToneTestCase):
             # input (fileB is a superset of fileA, so prefer it)
             {
                 "fileA": {
-                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
-                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000"}],
-                    "subtitle": [{"language": "pl"}]
+                    "video": [{"height": "1024", "width": "1024", "fps": "30", "tid": 1}],
+                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000", "tid": 2}],
+                    "subtitle": [{"language": "pl", "tid": 3}]
                 },
                 "fileB": {
-                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
-                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000"}],
-                    "subtitle": [{"language": "pl"}, {"language": "br"}]
+                    "video": [{"height": "1024", "width": "1024", "fps": "30", "tid": 1}],
+                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000", "tid": 2}],
+                    "subtitle": [{"language": "pl", "tid": 4}, {"language": "br", "tid": 3}]
                 }
             },
             # expected output
             # Explanation: fileB is a superset of fileA, so no need to pick any streams from fileA
             (
-                [("fileB", 0, None)],
-                [("fileB", 0, "cz")],
-                [("fileB", 0, "pl"), ("fileB", 1, "br")]
+                [("fileB", 1, None)],
+                [("fileB", 2, "cz")],
+                [("fileB", 4, "pl"), ("fileB", 3, "br")]
             )
         ),
 
@@ -385,16 +385,16 @@ class MeltingTest(TwoToneTestCase):
             # input
             {
                 "fileA": {
-                    "video": [{"height": "1024", "width": "1024", "fps": "24"}],
-                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000"},
-                              {"language": "jp", "channels": "2", "sample_rate": "32000"}],
-                    "subtitle": [{"language": "de"}, {"language": "de"}]
+                    "video": [{"height": "1024", "width": "1024", "fps": "24", "tid": 1}],
+                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000", "tid": 4},
+                              {"language": "jp", "channels": "2", "sample_rate": "32000", "tid": 6}],
+                    "subtitle": [{"language": "de", "tid": 15}, {"language": "de", "tid": 8}]
                 },
                 "fileB": {
-                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
-                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000"},
-                              {"language": "jp", "channels": "6", "sample_rate": "32000"}],
-                    "subtitle": [{"language": "pl"}, {"language": "pl"}]
+                    "video": [{"height": "1024", "width": "1024", "fps": "30", "tid": 2}],
+                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000", "tid": 1},
+                              {"language": "jp", "channels": "6", "sample_rate": "32000", "tid": 0}],
+                    "subtitle": [{"language": "pl", "tid": 15}, {"language": "pl", "tid": 17}]
                 }
             },
             # expected output
@@ -407,9 +407,9 @@ class MeltingTest(TwoToneTestCase):
             # Same logic goes for subtitles. Include both (most likely different) subtitle tracks from file A and
             # both subtitle tracks from file B
             (
-                [("fileB", 0, None)],
-                [("fileA", 0, "jp"), ("fileA", 1, "jp"), ("fileB", 1, "jp")],
-                [("fileA", 0, "de"), ("fileA", 1, "de"), ("fileB", 0, "pl"), ("fileB", 1, "pl")]
+                [("fileB", 2, None)],
+                [("fileA", 4, "jp"), ("fileA", 6, "jp"), ("fileB", 0, "jp")],
+                [("fileA", 15, "de"), ("fileA", 8, "de"), ("fileB", 15, "pl"), ("fileB", 17, "pl")]
             )
         ),
     ]

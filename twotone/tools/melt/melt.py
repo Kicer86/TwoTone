@@ -214,12 +214,12 @@ class Melter():
         for stype, type_stream in all_streams:
             for stream in type_stream:
                 path = stream[0]
-                index = stream[1]
+                tid = stream[1]
                 language = stream[2]
                 language = language if language else '---'
 
                 printable_path = files_utils.get_printable_path(path, common_prefix)
-                self.logger.info(f"{stype} stream #{index} with language {language} from {printable_path}")
+                self.logger.info(f"{stype} track ID #{tid} with language {language} from {printable_path}")
 
     def _process_duplicates(self, duplicates: List[str]) -> List[Dict]:
         self.logger.info("------------------------------------")
@@ -227,7 +227,9 @@ class Melter():
         self.logger.info("------------------------------------")
 
         # analyze files in terms of quality and available content
-        details = {file: video_utils.get_video_data(file) for file in duplicates}
+        # use mkvmerge-based probing enriched with ffprobe data
+        details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True) for file in duplicates}
+        details = {file: info["tracks"] for file, info in details_full.items()}
 
         common_prefix = files_utils.get_common_prefix(duplicates)
 
@@ -246,9 +248,9 @@ class Melter():
         streams = defaultdict(list)
 
         #   process video streams
-        for path, index, language in video_streams:
+        for path, tid, language in video_streams:
             streams[path].append({
-                "index": index,
+                "tid": tid,
                 "language": language,
                 "type": "video",
             })
@@ -264,7 +266,7 @@ class Melter():
         file_name = 0
         self.logger.debug(f"Using video file {video_stream_path}:{video_stream_index} as a base")
 
-        for path, index, language in audio_streams:
+        for path, tid, language in audio_streams:
             lenght = details[path]["video"][0]["length"]
 
             if abs(base_lenght - lenght) > 100:
@@ -286,17 +288,18 @@ class Melter():
 
                         file_name += 1
                         path = output_file
+                        tid = 0
                 else:
                     self.logger.info("Skipping videos comparison to solve mismatching lenghts due to dry run.")
 
             streams[path].append({
-                "index": index,
+                "tid": tid,
                 "language": language,
                 "type": "audio",
             })
 
         # process subtitle streams
-        for path, index, language in subtitle_streams:
+        for path, tid, language in subtitle_streams:
             lenght = details[path]["video"][0]["length"]
 
             if abs(base_lenght - lenght) > 100:
@@ -306,7 +309,7 @@ class Melter():
                 raise RuntimeError(f"Unsupported case: {error}")
 
             streams[path].append({
-                "index": index,
+                "tid": tid,
                 "language": language,
                 "type": "subtitle",
             })
@@ -378,14 +381,19 @@ class Melter():
                     shutil.copy2(first_file_path, output)
                 else:
                     self.logger.info("Starting output file generation from chosen streams.")
-                    generation_args = [input for path in streams for input in ("-i", path)]
+                    generation_args = ["-o", output]
+                    paths = list(streams.keys())
+                    files_opts = [
+                        {"video": [], "audio": [], "subtitle": [], "languages": {}, "defaults": set()}
+                        for _ in paths
+                    ]
 
                     # convert streams to list for later sorting by language
                     streams_list = []
                     for file_index, (_, infos) in enumerate(streams.items()):
                         for info in infos:
                             stream_type = info["type"]
-                            stream_index = info["index"]
+                            stream_index = info["tid"]
                             language = info.get("language", None)
 
                             streams_list.append((stream_type, stream_index, file_index, language))
@@ -412,45 +420,48 @@ class Melter():
                     preferred_audio = find_preferred("audio")
                     preferred_subtitle = None if preferred_audio else find_preferred("subtitle")
 
-                    # generate map options
-                    output_stream_indexes = defaultdict(int)
+                    # collect per-file options and track order
+                    track_order = []
                     for stream in streams_list_sorted:
-                        def stream_type_mapper(stream_type: str) -> str:
-                            if stream_type == "video":
-                                return "v"
-                            elif stream_type == "audio":
-                                return "a"
-                            elif stream_type == "subtitle":
-                                return "s"
-                            else:
-                                assert False
+                        stream_type, tid, file_index, language = stream
+                        fo = files_opts[file_index]
+                        fo[stream_type].append(tid)
+                        fo["languages"][tid] = language or "und"
+                        if stream_type in ("audio", "subtitle") and (stream == preferred_audio or stream == preferred_subtitle):
+                            fo["defaults"].add(tid)
+                        track_order.append(f"{file_index}:{tid}")
 
-                        stream_type, stream_index, file_index, language = stream
-                        stream_t = stream_type_mapper(stream_type)
-
-                        generation_args.extend(["-map", f"{file_index}:{stream_t}:{stream_index}"])
-
-                        output_stream_index = output_stream_indexes.get(stream_type, 0)
-
-                        if language:
-                            generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language={language}"])
+                    for file_index, (path, fo) in enumerate(zip(paths, files_opts)):
+                        if fo["video"]:
+                            generation_args.extend(["--video-tracks", ",".join(str(i) for i in fo["video"])])
                         else:
-                            generation_args.extend([f"-metadata:s:{stream_t}:{output_stream_index}", f"language=und"])          # mark as undefined
+                            generation_args.append("--no-video")
 
-                        if stream_type == "audio" or stream_type == "subtitle":
-                            if stream == preferred_audio or stream == preferred_subtitle:
-                                generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "default"])
-                            else:
-                                generation_args.extend([f"-disposition:{stream_t}:{output_stream_index}", "0"])         # without this, output file will not respect 'default' set above... Who knows why
+                        if fo["audio"]:
+                            generation_args.extend(["--audio-tracks", ",".join(str(i) for i in fo["audio"])])
+                        else:
+                            generation_args.append("--no-audio")
 
-                        output_stream_indexes[stream_type] = output_stream_index + 1
+                        if fo["subtitle"]:
+                            generation_args.extend(["--subtitle-tracks", ",".join(str(i) for i in fo["subtitle"])])
+                        else:
+                            generation_args.append("--no-subtitles")
 
-                    generation_args.append("-c")
-                    generation_args.append("copy")
+                        generation_args.append("--no-attachments")
 
-                    generation_args.append(output)
+                        for tid, lang in fo["languages"].items():
+                            generation_args.extend(["--language", f"{tid}:{lang}"])
 
-                    process_utils.raise_on_error(process_utils.start_process("ffmpeg", generation_args, show_progress = True))
+                        for tid in fo["audio"] + fo["subtitle"]:
+                            flag = "yes" if tid in fo["defaults"] else "no"
+                            generation_args.extend(["--default-track", f"{tid}:{flag}"])
+
+                        generation_args.append(path)
+
+                    if track_order:
+                        generation_args.extend(["--track-order", ",".join(track_order)])
+
+                    process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args))
 
                     self.logger.info(f"{output} saved.")
 

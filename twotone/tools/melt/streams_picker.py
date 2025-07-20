@@ -98,7 +98,7 @@ class StreamsPicker:
 
         # organize all streams by unique_key and file
         for path, details in StreamsPicker._iter_starting_with(files_details, best_file):
-            for index, stream in enumerate(details.get(stream_type, [])):
+            for stream in details.get(stream_type, []):
                 # Build a modified copy of the stream for comparison
                 stream_view = stream.copy()
 
@@ -110,7 +110,10 @@ class StreamsPicker:
                 # Build unique key based on stream view
                 unique_key = tuple(stream_view.get(k) for k in unique_keys)
 
-                current = {"file": path, "index": index, "details": stream_view}
+                # put tid into top layer for easier access
+                tid = stream_view["tid"]
+
+                current = {"file": path, "tid": tid, "details": stream_view}
 
                 stream_index[unique_key][path].append(current)
 
@@ -148,10 +151,10 @@ class StreamsPicker:
         # Flatten result
         result = []
         for unique_key, entry in picked_streams:
-            index = entry["index"]
+            tid = entry["tid"]
             path = entry["file"]
             language = entry["details"].get("language")
-            result.append((path, index, language))
+            result.append((path, tid, language))
 
         return result
 
@@ -193,7 +196,7 @@ class StreamsPicker:
         attached_pics = [(file_path, index) for (file_path, details) in files_details.items() for index, vd in enumerate(details["video"]) if vd.get("attached_pic", False)]
 
         best_file_candidate = StreamsPicker._pick_best_file_candidate(files_details)
-        video_streams = self._pick_streams(files_details, best_file_candidate, "video", ["attached_pic"], video_cmp)
+        video_streams = self._pick_streams(files_details, best_file_candidate, "video", [], video_cmp)
         video_streams = [video_stream for video_stream in video_streams if (video_stream[0], video_stream[1]) not in attached_pics]
         video_stream = video_streams[0]
         video_stream_path = video_stream[0]
