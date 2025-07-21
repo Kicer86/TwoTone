@@ -492,7 +492,7 @@ class Melter():
                     if track_order:
                         generation_args.extend(["--track-order", ",".join(track_order)])
 
-                    process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args))
+                    process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args, show_progress = True))
 
                     self.logger.info(f"{output} saved.")
 
