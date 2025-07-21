@@ -179,7 +179,7 @@ class Melter():
         ])
 
     def _print_file_details(self, file: str, details: Dict[str, Any], common_prefix: str):
-        def formatter(key: str, value: any) -> str:
+        def formatter(key: str, value: Any) -> str:
             if key == "fps":
                 return eval(value)
             elif key == "length":
@@ -451,7 +451,7 @@ class Melter():
                     track_order = []
                     for stream in streams_list_sorted:
                         stream_type, tid, file_path, language = stream
-                        fo = files_opts[file_path]
+                        fo: Dict = files_opts[file_path]
                         fo[stream_type].append(tid)
                         fo["languages"][tid] = language or "und"
                         if stream_type in ("audio", "subtitle") and (stream == preferred_audio or stream == preferred_subtitle):
@@ -460,7 +460,7 @@ class Melter():
                         track_order.append(f"{file_index}:{tid}")
 
                     for file_path, tid in attachments:
-                        fo = files_opts[file_path]
+                        fo: Dict = files_opts[file_path]
                         fo["attachments"].append(tid)
 
                     for file_path, fo in files_opts.items():

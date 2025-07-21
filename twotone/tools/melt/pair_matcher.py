@@ -605,7 +605,7 @@ class PairMatcher:
         return refined_first, refined_last
 
 
-    def create_segments_mapping(self) -> List[Tuple[int, int]]:
+    def create_segments_mapping(self) -> Tuple[List[Tuple[int, int]], FramesInfo, FramesInfo]:
         lhs_scene_changes = video_utils.detect_scene_changes(self.lhs_path, threshold = 0.3)
         rhs_scene_changes = video_utils.detect_scene_changes(self.rhs_path, threshold = 0.3)
 
