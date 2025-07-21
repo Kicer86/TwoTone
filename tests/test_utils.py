@@ -43,7 +43,7 @@ class UtilsTests(TwoToneTestCase):
                 }],
                 'audio':
                 [{
-                    'language': 'eng', 'channels': 2, 'sample_rate': '48000', 'tid': 1
+                    'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1
                 }]
             }
         ),
@@ -59,7 +59,7 @@ class UtilsTests(TwoToneTestCase):
                 }],
                 'audio':
                 [{
-                    'language': 'eng', 'channels': 2, 'sample_rate': '48000', 'tid': 1
+                    'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1
                 }]
             }
         ),
