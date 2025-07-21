@@ -394,6 +394,10 @@ class Melter():
                 required_input_files |= { info[0] for info in attachments }
 
                 output = os.path.join(self.output, title, output_name + ".mkv")
+                if os.path.exists(output):
+                    self.logger.debug(f"Output file {output} exists, removing it.")
+                    os.remove(output)
+
                 output_dir = os.path.dirname(output)
                 os.makedirs(output_dir, exist_ok=True)
 
