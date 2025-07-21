@@ -390,23 +390,25 @@ class Melter():
                     self.logger.info("Dry run. Skipping output generation")
                     continue
 
+                required_input_files = { file_path for file_path in streams }
+                required_input_files |= { info[0] for info in attachments }
+
                 output = os.path.join(self.output, title, output_name + ".mkv")
                 output_dir = os.path.dirname(output)
                 os.makedirs(output_dir, exist_ok=True)
 
-                if len(streams) == 1:
+                if len(required_input_files) == 1:
                     # only one file is being used, just copy it to the output dir
-                    first_file_path = list(streams)[0]
+                    first_file_path = list(required_input_files)[0]
 
                     self.logger.info(f"Using whole {first_file_path} file as an output.")
                     shutil.copy2(first_file_path, output)
                 else:
                     self.logger.info("Starting output file generation from chosen streams.")
                     generation_args = ["-o", output]
-                    paths = list(streams.keys())
                     files_opts = {
                         path: {"video": [], "audio": [], "subtitle": [], "attachments": [], "languages": {}, "defaults": set()}
-                        for path in paths
+                        for path in required_input_files
                     }
 
                     # convert streams to list for later sorting by language
