@@ -331,7 +331,7 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
                 pass
             elif value != base_value:
                 if key != "codec" and key != "format":
-                    if key == "fps" and abs(eval(base_value) - eval(value)) > 0.001:
+                    if key == "fps" and abs(fps_str_to_float(base_value) - fps_str_to_float(value)) > 0.001:
                         logging.warning(f"Inconsistent data provided by mkvmerge ({key}: {value}) and ffprobe ({key}: {base_value})")
                 output[key] = value
 

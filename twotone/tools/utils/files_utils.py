@@ -44,7 +44,8 @@ class TempFileManager:
         self.filepath = None
 
     def __enter__(self):
-        with tempfile.NamedTemporaryFile(delete=False, suffix="." + self.extension, mode='w') as temp_file:
+        suffix = f".{self.extension}" if self.extension else ""
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="w") as temp_file:
             self.filepath = temp_file.name
             temp_file.write(self.content)
 
