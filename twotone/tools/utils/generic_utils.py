@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 
+from fractions import Fraction
 from tqdm import tqdm
 
 
@@ -45,7 +46,17 @@ def ms_to_time(ms: int) -> str:
 
 
 def fps_str_to_float(fps: str) -> float:
-    return eval(fps)
+    try:
+        return float(Fraction(fps))
+    except (ZeroDivisionError, ValueError) as exc:
+        raise ValueError(f"Invalid fps value: {fps}") from exc
+
+
+def get_key_position(d: dict, key) -> int:
+    for i, k in enumerate(d):
+        if k == key:
+            return i
+    raise KeyError(f"Key {key} not found")
 
 
 class InterruptibleProcess:

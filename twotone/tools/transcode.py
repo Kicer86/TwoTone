@@ -56,7 +56,17 @@ class Transcoder(generic_utils.InterruptibleProcess):
         return None
 
 
-    def _transcode_video(self, input_file: str, output_file: str, crf: int, preset: str, input_params: list[str] = [], output_params: list[str] = [], audio_codec: list[str] = ["-an"], show_progress: bool = False) -> None:
+    def _transcode_video(
+        self,
+        input_file: str,
+        output_file: str,
+        crf: int,
+        preset: str,
+        input_params: list[str] | None = None,
+        output_params: list[str] | None = None,
+        audio_codec: list[str] | None = None,
+        show_progress: bool = False,
+    ) -> None:
         """
         Encode video with a given CRF, preset, and extra parameters.
         By default audio is removed as in most cases this function is being used
@@ -66,14 +76,14 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
         args = [
             "-v", "error", "-stats", "-nostdin",
-            *input_params,
+            *(input_params or []),
             "-i", input_file,
             "-c:v", self.codec,
             "-crf", str(crf),
             "-preset", preset,
             "-profile:v", "main10",
-            *audio_codec,
-            *output_params,
+            *(audio_codec or ["-an"]),
+            *(output_params or []),
             output_file
         ]
 

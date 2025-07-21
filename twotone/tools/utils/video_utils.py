@@ -242,11 +242,11 @@ def get_video_data(path: str) -> Dict:
     streams = defaultdict(list)
     for stream in output_json["streams"]:
         stream_type = stream["codec_type"]
+        tid = stream["index"]
         if stream_type == "subtitle":
             language = get_language(stream)
             is_default = stream["disposition"]["default"]
             length = get_length(stream)
-            tid = stream["index"]
             format = stream["codec_name"]
 
             streams["subtitle"].append({
@@ -258,6 +258,7 @@ def get_video_data(path: str) -> Dict:
         elif stream_type == "video":
             fps = stream["r_frame_rate"]
             length = get_length(stream)
+            disposition = stream.get("disposition", {})
             if length is None:
                 length = get_video_duration(path)
 
@@ -273,12 +274,12 @@ def get_video_data(path: str) -> Dict:
                 "height": height,
                 "bitrate": bitrate,
                 "codec": codec,
+                "tid": tid,
             })
         elif stream_type == "audio":
             language = get_language(stream)
             channels = stream["channels"]
-            sample_rate = stream["sample_rate"]
-            tid = stream["index"]
+            sample_rate = int(stream["sample_rate"])
 
             streams["audio"].append({
                 "language": language,
@@ -290,6 +291,156 @@ def get_video_data(path: str) -> Dict:
     return dict(streams)
 
 
+def get_video_full_info_mkvmerge(path: str) -> dict:
+    """Return file information using ``mkvmerge -J``."""
+
+    result = process_utils.start_process("mkvmerge", ["-J", path])
+
+    if result.returncode != 0:
+        raise RuntimeError(f"mkvmerge exited with unexpected error:\n{result.stderr}")
+
+    return json.loads(result.stdout)
+
+
+def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
+    """
+        Return stream information parsed from ``mkvmerge -J`` output.
+        For non mkv files, mkvmerge does not provide as much information as ffprobe.
+        Set 'enrich' to True to enrich mkvmerge's outpput with data from ffprobe.
+    """
+
+    def find_ffprobe_track(track_id: int, ffprobe_info: {}):
+        for streams in (ffprobe_info or {}).values():
+            for stream in streams:
+                if stream.get("tid", None) == track_id:
+                    return stream
+
+        return None
+
+    def merge_properties(initial: Dict or None, update: Dict):
+        if initial is None:
+            return update
+
+        output = initial
+        for key, value in update.items():
+            base_value = output.get(key, None)
+
+            if base_value is None:
+                output[key] = value
+            elif value is None:
+                pass
+            elif value != base_value:
+                if key != "codec" and key != "format":
+                    if key == "fps" and abs(fps_str_to_float(base_value) - fps_str_to_float(value)) > 0.001:
+                        logging.warning(f"Inconsistent data provided by mkvmerge ({key}: {value}) and ffprobe ({key}: {base_value})")
+                output[key] = value
+
+        return output
+
+    info = get_video_full_info_mkvmerge(path)
+
+    container_props = info.get("container", {}).get("properties", {})
+    duration_ms = None
+    if "duration" in container_props:
+        try:
+            timestamp_scale = container_props.get("timestamp_scale", 1)
+            duration_ms = int(float(container_props["duration"]) / timestamp_scale)
+        except (TypeError, ValueError):
+            duration_ms = None
+
+    # process streams/tracks
+    streams = defaultdict(list)
+    ffprobe_info = get_video_data(path) if enrich else None
+
+    for track in info.get("tracks", []):
+        track_type = track.get("type")
+        tid = track.get("id")
+        props = track.get("properties", {})
+        uid = props.get("uid", None)
+
+        language = props.get("language")
+        language = language_utils.unify_lang(language) if language else None
+
+        track_initial_data = find_ffprobe_track(tid, ffprobe_info)
+
+        if track_type == "video":
+            dims = props.get("pixel_dimensions") or props.get("display_dimensions")
+            width = height = None
+            if dims and "x" in dims:
+                try:
+                    w, h = dims.split("x")
+                    width = int(w)
+                    height = int(h)
+                except ValueError:
+                    pass
+
+            fps = props.get("frame_rate")
+            if not fps:
+                default_duration = props.get("default_duration")
+                if default_duration:
+                    try:
+                        fps = 1_000_000_000 / float(default_duration)
+                    except (TypeError, ValueError):
+                        fps = None
+
+            fps_str = str(fps) if fps else track_initial_data.get("fps", "0") if track_initial_data else "0"
+
+            streams["video"].append(
+                merge_properties(track_initial_data, {
+                    "fps": fps_str,
+                    "length": duration_ms,
+                    "width": width,
+                    "height": height,
+                    "bitrate": None,
+                    "codec": track.get("codec"),
+                    "tid": tid,
+                    "uid": uid,
+                })
+            )
+        elif track_type == "audio":
+            channels = props.get("audio_channels")
+            sample_rate = props.get("audio_sampling_frequency")
+
+            streams["audio"].append(
+                merge_properties(track_initial_data, {
+                    "language": language,
+                    "channels": channels,
+                    "sample_rate": sample_rate,
+                    "tid": tid,
+                    "uid": uid,
+                })
+            )
+        elif track_type in ("subtitles", "subtitle"):
+            streams["subtitle"].append(
+                merge_properties(track_initial_data, {
+                    "language": language,
+                    "default": props.get("default_track", False),
+                    "length": duration_ms,
+                    "tid": tid,
+                    "uid": uid,
+                    "format": track.get("codec"),
+                })
+            )
+
+    # attachments
+    attachments = []
+    for attachment in info.get("attachments", []):
+        content_type = attachment.get("content_type", "")
+        if content_type[:5] == "image":
+            props = track.get("properties", {})
+            uid = props.get("uid", None)
+            attachments.append(
+            {
+                "tid": attachment["id"],
+                "uid": uid,
+                "content_type": content_type,
+                "file_name": attachment["file_name"],
+            })
+
+    return {
+        "attachments": attachments,
+        "tracks": dict(streams),
+    }
 
 
 def compare_videos(lhs: List[Dict], rhs: List[Dict]) -> bool:
@@ -327,7 +478,7 @@ def collect_video_files(path: str, interruptible) -> List[str]:
     return video_files
 
 
-def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | None = None, audios: List[Dict] | None = None):
+def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | None = None, audios: List[Dict] | None = None, thumbnail: Union[str, None] = None):
     subtitles = subtitles or []
     audios = audios or []
 
@@ -358,22 +509,18 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
 
         options.append(subtitle.path)
 
+    if thumbnail:
+        options.extend(["--attach-file", thumbnail])
+
     cmd = "mkvmerge"
     result = process_utils.start_process(cmd, options)
 
+    # validate result and output file
     if result.returncode != 0:
         if os.path.exists(output_path):
             os.remove(output_path)
-        raise RuntimeError(f"{cmd} exited with unexpected error:\n{result.stderr}")
+        raise RuntimeError(f"{cmd} exited with unexpected error:\n{result.stderr}\n\nAnd output: {result.stdout}")
 
     if not os.path.exists(output_path):
         logging.error("Output file was not created")
         raise RuntimeError(f"{cmd} did not create output file")
-
-    output_file_details = get_video_data(output_path)
-    input_file_details = get_video_data(input_video)
-
-    if not compare_videos(input_file_details["video"], output_file_details["video"]) or \
-            len(input_file_details.get("subtitle", [])) + len(subtitles) != len(output_file_details.get("subtitle", [])):
-        logging.error("Output file seems to be corrupted")
-        raise RuntimeError("mkvmerge created a corrupted file")

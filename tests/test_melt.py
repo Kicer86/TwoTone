@@ -13,7 +13,7 @@ from twotone.tools.utils import generic_utils, process_utils, video_utils
 from twotone.tools.melt import Melter
 from twotone.tools.melt.melt import StaticSource, StreamsPicker
 from twotone.tools.utils.files_utils import ScopedDirectory
-from common import TwoToneTestCase, FileCache, add_test_media, add_to_test_dir, current_path, get_audio, get_video, hashes, list_files
+from common import TwoToneTestCase, FileCache, add_test_media, add_to_test_dir, build_test_video, current_path, get_audio, get_video, hashes, list_files
 
 
 def normalize(obj):
@@ -127,7 +127,7 @@ class MeltingTest(TwoToneTestCase):
                 """
                     Process input file and worse its quality
                 """
-                duration = video_utils.get_video_duration(input) / 1000                                           # duration of original video
+                duration = video_utils.get_video_duration(input) / 1000                                     # duration of original video
 
                 vf = ",".join([
                     "fps=26.5",                                                                             # use non standard fps
@@ -264,6 +264,95 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(output_file_data["audio"][3]["language"], "nor")
         self.assertEqual(output_file_data["audio"][4]["language"], "pol")
 
+
+    def test_subtitle_streams(self):
+        video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = True)
+        video2 = build_test_video(os.path.join(self.wd.path, "o2.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = True)
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Sea Waves", video1)
+        duplicates.add_entry("Sea Waves", video2)
+        duplicates.add_metadata(video1, "subtitle_lang", "jpn")
+        duplicates.add_metadata(video2, "subtitle_lang", "br")
+
+        input_file_hashes = hashes(self.wd.path)
+        self.assertEqual(len(input_file_hashes), 2)
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter.melt()
+
+        # validate output
+        output_file_hash = hashes(output_dir)
+        output_file = list(output_file_hash)[0]
+
+        output_file_data = video_utils.get_video_data(output_file)
+        self.assertEqual(len(output_file_data["video"]), 1)
+        self.assertEqual(output_file_data["video"][0]["height"], 1080)
+        self.assertEqual(output_file_data["video"][0]["width"], 1920)
+
+        self.assertEqual(len(output_file_data["audio"]), 1)
+
+        self.assertEqual(len(output_file_data["subtitle"]), 2)
+        languages = { output_file_data["subtitle"][0]["language"],
+                      output_file_data["subtitle"][1]["language"] }
+        self.assertEqual(languages, {"jpn", "bre"})
+
+
+    def test_additional_attachements(self):
+        video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "fog-over-mountainside-13008647.mp4", subtitle = True, thumbnail_name = "parrot.jpeg")
+        video2 = build_test_video(os.path.join(self.wd.path, "o2.mkv"), self.wd.path, "fog-over-mountainside-13008647.mp4", subtitle = True)
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Fog", video1)
+        duplicates.add_entry("Fog", video2)
+        duplicates.add_metadata(video1, "subtitle_lang", "pol")
+        duplicates.add_metadata(video2, "subtitle_lang", "eng")
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter.melt()
+
+        # validate output
+        output_file_hash = hashes(output_dir)
+        output_file = list(output_file_hash)[0]
+
+        output_file_data = video_utils.get_video_data_mkvmerge(output_file)
+        self.assertEqual(len(output_file_data["tracks"]["video"]), 1)
+        self.assertEqual(len(output_file_data["attachments"]), 1)
+
+
+    def test_attachement_in_file_with_useless_streams(self):
+        # video #1 comes with all interesting data. the only thing video #2 can offer is an attachment.
+        video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "fog-over-mountainside-13008647.mp4", audio_name = "807184__logicmoon__mirrors.wav", subtitle = True)
+        video2 = build_test_video(os.path.join(self.wd.path, "o2.mkv"), self.wd.path, "fog-over-mountainside-13008647.mp4", thumbnail_name = "parrot.jpeg")
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Fog", video1)
+        duplicates.add_entry("Fog", video2)
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter.melt()
+
+        # validate output
+        output_file_hash = hashes(output_dir)
+        output_file = list(output_file_hash)[0]
+
+        output_file_data = video_utils.get_video_data_mkvmerge(output_file)
+        self.assertEqual(len(output_file_data["tracks"]["video"]), 1)
+        self.assertEqual(len(output_file_data["attachments"]), 1)
+
+
     sample_streams = [
         # case: merge all audio tracks
         (
@@ -271,20 +360,20 @@ class MeltingTest(TwoToneTestCase):
             # input
             {
                 "fileA": {
-                    "video": [{"height": "1024", "width": "1024", "fps": "24"}],
-                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000"},
-                              {"language": "de", "channels": "2", "sample_rate": "32000"}]
+                    "video": [{"height": "1024", "width": "1024", "fps": "24", "tid": 0}],
+                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000", "tid": 2},
+                              {"language": "de", "channels": "2", "sample_rate": "32000", "tid": 4}]
                 },
                 "fileB": {
-                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
-                    "audio": [{"language": "br", "channels": "2", "sample_rate": "32000"},
-                              {"language": "nl", "channels": "2", "sample_rate": "32000"}]
+                    "video": [{"height": "1024", "width": "1024", "fps": "30", "tid": 6}],
+                    "audio": [{"language": "br", "channels": "2", "sample_rate": "32000", "tid": 8},
+                              {"language": "nl", "channels": "2", "sample_rate": "32000", "tid": 10}]
                 }
             },
             # expected output
             (
-                [("fileB", 0, None)],
-                [("fileA", 0, "jp"), ("fileA", 1, "de"), ("fileB", 0, "br"), ("fileB", 1, "nl")],
+                [("fileB", 6, None)],
+                [("fileA", 2, "jp"), ("fileA", 4, "de"), ("fileB", 8, "br"), ("fileB", 10, "nl")],
                 []
             )
         ),
@@ -295,22 +384,22 @@ class MeltingTest(TwoToneTestCase):
             # input (fileB is a superset of fileA, so prefer it)
             {
                 "fileA": {
-                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
-                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000"}],
-                    "subtitle": [{"language": "pl"}]
+                    "video": [{"height": "1024", "width": "1024", "fps": "30", "tid": 1}],
+                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000", "tid": 2}],
+                    "subtitle": [{"language": "pl", "tid": 3}]
                 },
                 "fileB": {
-                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
-                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000"}],
-                    "subtitle": [{"language": "pl"}, {"language": "br"}]
+                    "video": [{"height": "1024", "width": "1024", "fps": "30", "tid": 1}],
+                    "audio": [{"language": "cz", "channels": "2", "sample_rate": "32000", "tid": 2}],
+                    "subtitle": [{"language": "pl", "tid": 4}, {"language": "br", "tid": 3}]
                 }
             },
             # expected output
             # Explanation: fileB is a superset of fileA, so no need to pick any streams from fileA
             (
-                [("fileB", 0, None)],
-                [("fileB", 0, "cz")],
-                [("fileB", 0, "pl"), ("fileB", 1, "br")]
+                [("fileB", 1, None)],
+                [("fileB", 2, "cz")],
+                [("fileB", 4, "pl"), ("fileB", 3, "br")]
             )
         ),
 
@@ -319,16 +408,16 @@ class MeltingTest(TwoToneTestCase):
             # input
             {
                 "fileA": {
-                    "video": [{"height": "1024", "width": "1024", "fps": "24"}],
-                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000"},
-                              {"language": "jp", "channels": "2", "sample_rate": "32000"}],
-                    "subtitle": [{"language": "de"}, {"language": "de"}]
+                    "video": [{"height": "1024", "width": "1024", "fps": "24", "tid": 1}],
+                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000", "tid": 4},
+                              {"language": "jp", "channels": "2", "sample_rate": "32000", "tid": 6}],
+                    "subtitle": [{"language": "de", "tid": 15}, {"language": "de", "tid": 8}]
                 },
                 "fileB": {
-                    "video": [{"height": "1024", "width": "1024", "fps": "30"}],
-                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000"},
-                              {"language": "jp", "channels": "6", "sample_rate": "32000"}],
-                    "subtitle": [{"language": "pl"}, {"language": "pl"}]
+                    "video": [{"height": "1024", "width": "1024", "fps": "30", "tid": 2}],
+                    "audio": [{"language": "jp", "channels": "2", "sample_rate": "32000", "tid": 1},
+                              {"language": "jp", "channels": "6", "sample_rate": "32000", "tid": 0}],
+                    "subtitle": [{"language": "pl", "tid": 15}, {"language": "pl", "tid": 17}]
                 }
             },
             # expected output
@@ -341,9 +430,9 @@ class MeltingTest(TwoToneTestCase):
             # Same logic goes for subtitles. Include both (most likely different) subtitle tracks from file A and
             # both subtitle tracks from file B
             (
-                [("fileB", 0, None)],
-                [("fileA", 0, "jp"), ("fileA", 1, "jp"), ("fileB", 1, "jp")],
-                [("fileA", 0, "de"), ("fileA", 1, "de"), ("fileB", 0, "pl"), ("fileB", 1, "pl")]
+                [("fileB", 2, None)],
+                [("fileA", 4, "jp"), ("fileA", 6, "jp"), ("fileB", 0, "jp")],
+                [("fileA", 15, "de"), ("fileA", 8, "de"), ("fileB", 15, "pl"), ("fileB", 17, "pl")]
             )
         ),
     ]

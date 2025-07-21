@@ -15,7 +15,6 @@ from . import video_utils
 DEFAULT_TOOL_OPTIONS: Dict[str, List[str]] = {
     "ffmpeg": ["-hide_banner"],
     "ffprobe": ["-hide_banner"],
-    "mkvmerge": ["--quiet"],
     "mkvextract": ["--quiet"],
     "exiftool": ["-q"],
 }
@@ -60,6 +59,19 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
                                 delta = current_frame - last_frame
                                 pbar.update(delta)
                                 last_frame = current_frame
+        elif process == "mkvmerge" and sub_process.stdout:
+            progress_pattern = re.compile(r"\w:\s*(\d+)%")
+            with logging_redirect_tqdm(), \
+                 tqdm(desc="Muxing", unit="%", total=100, **generic_utils.get_tqdm_defaults()) as pbar:
+                last_progress = 0
+                for line in sub_process.stdout:
+                    line = line.strip()
+                    match = progress_pattern.search(line)
+                    if match:
+                        current_progress = int(match.group(1))
+                        delta = current_progress - last_progress
+                        pbar.update(delta)
+                        last_progress = current_progress
 
     stdout, stderr = sub_process.communicate()
 

@@ -48,85 +48,49 @@ class StreamsPicker:
         # no specific candidate, return first
         return list(filtered_videos.keys())[0]
 
-    def _pick_best_video(self, files_details: Dict[str, Dict]) -> List[Tuple[str, int, str]]:
-        best_file = None
-        best_stream = None
 
-        # todo: handle many video streams
-        default_video_stream = 0
-
-        # todo: this shouldn't be there.
-        # _pick_best_video should most likely be merged with _pick_unique_streams and most_promising_video should be provided from the caller
-        most_promising_video = StreamsPicker._pick_best_file_candidate(files_details)
-
-        for file, details in StreamsPicker._iter_starting_with(files_details, most_promising_video):
-            if best_file is None:
-                best_file = file
-                best_stream = details
-                continue
-
-            lhs_video_stream = best_stream["video"][default_video_stream]
-            rhs_video_stream = details["video"][default_video_stream]
-
-            if lhs_video_stream["width"] < rhs_video_stream["width"] and lhs_video_stream["height"] < rhs_video_stream["height"]:
-                best_file = file
-                best_stream = details
-            elif lhs_video_stream["width"] > rhs_video_stream["width"] and lhs_video_stream["height"] > rhs_video_stream["height"]:
-                continue
-            else:
-                # equal or mixed width/height
-                if eval(lhs_video_stream["fps"]) < eval(rhs_video_stream["fps"]):
-                    best_file = file
-                    best_stream = details
-
-        return (best_file, default_video_stream, None)
-
-    def _pick_unique_streams(
+    def _pick_streams(
         self,
         files_details: Dict[str, Dict],
         best_file: str,
         stream_type: str,
         unique_keys: List[str],
-        preference_keys: List[str],
+        preference,
         fallback_languages: Optional[Dict[str, str]] = None,
         override_languages: Optional[Dict[str, str]] = None,
-    ) -> List[Tuple[str, int, str]]:
+    ) -> List[Tuple[str, int, Optional[str]]]:
+        """Pick best streams of ``stream_type`` from ``files_details``.
+
+        ``unique_keys`` determines the grouping for uniqueness. ``preference`` is
+        a callable accepting two stream dictionaries and returning ``-1`` if the
+        first argument should be preferred, ``1`` if the second is better and
+        ``0`` otherwise.
         """
-        Select unique streams of a given type across multiple files.
-
-        Args:
-            files_details: Mapping from file path to metadata.
-            best_file: File to prioritize when collecting streams.
-            stream_type: Stream type to extract (e.g., "audio", "subtitles").
-            unique_keys: Keys that define stream uniqueness (first must be 'language').
-            preference_keys: Keys used to resolve ties (e.g., ["bitrate"]).
-            fallback_languages: Optional per-file fallback if stream["language"] is None.
-            override_languages: Optional per-file override to force stream["language"].
-
-        Returns:
-            List of (file_path, stream_id, language) tuples.
-        """
-
-        assert unique_keys and unique_keys[0] == "language", "First unique_key must be 'language'"
 
         paths_common_prefix = files_utils.get_common_prefix(files_details)
 
-        def get_language(stream, path) -> str:
+        def get_language(stream, path) -> Optional[str]:
             printable_path = files_utils.get_printable_path(path, paths_common_prefix)
             lang = stream.get("language")
             if override_languages and path in override_languages:
                 original_lang = lang
                 lang = override_languages[path]
-                tid = stream["tid"]
+                tid = stream.get("tid")
                 if original_lang:
-                    self.logger.info(f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file {printable_path}")
+                    self.logger.info(
+                        f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file {printable_path}"
+                    )
                 else:
-                    self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file {printable_path}")
+                    self.logger.info(
+                        f"Setting {stream_type} stream #{tid} language to {lang} for file {printable_path}"
+                    )
             elif (not lang) and fallback_languages and path in fallback_languages:
                 original_lang = lang
                 lang = fallback_languages[path]
-                tid = stream["tid"]
-                self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file {printable_path}")
+                tid = stream.get("tid")
+                self.logger.info(
+                    f"Setting {stream_type} stream #{tid} language to {lang} for file {printable_path}"
+                )
 
             return lang
 
@@ -134,19 +98,22 @@ class StreamsPicker:
 
         # organize all streams by unique_key and file
         for path, details in StreamsPicker._iter_starting_with(files_details, best_file):
-            for index, stream in enumerate(details.get(stream_type, [])):
+            for stream in details.get(stream_type, []):
                 # Build a modified copy of the stream for comparison
                 stream_view = stream.copy()
 
-                # Determine language
+                # Determine language if available
                 lang = get_language(stream, path)
-                stream_view["language"] = lang
+                if lang is not None:
+                    stream_view["language"] = lang
 
                 # Build unique key based on stream view
                 unique_key = tuple(stream_view.get(k) for k in unique_keys)
-                language = unique_key[0] if unique_key else "default"
 
-                current = {"file": path, "index": index, "details": stream_view}
+                # put tid into top layer for easier access
+                tid = stream_view["tid"]
+
+                current = {"file": path, "tid": tid, "details": stream_view}
 
                 stream_index[unique_key][path].append(current)
 
@@ -167,28 +134,15 @@ class StreamsPicker:
 
             # two or more files provide streams of the same uniqness. choose better ones
             def preference_sorting(lhs, rhs):
-                lhs_details = lhs["details"]
-                rhs_details = rhs["details"]
-
-                for key in preference_keys:
-                    lhs_value = lhs_details.get(key)
-                    rhs_value = rhs_details.get(key)
-                    if lhs_value is None or rhs is None:
-                        continue
-                    if lhs_value > rhs_value:
-                        return -1
-                    elif lhs_value < rhs_value:
-                        return 1
-
-                return 0
+                return preference(lhs["details"], rhs["details"])
 
             # sort lists of details for each file
-            file_streams = {k: sorted(v,  key=cmp_to_key(preference_sorting)) for k, v in file_streams.items()}
+            file_streams = {k: sorted(v, key=cmp_to_key(preference_sorting)) for k, v in file_streams.items()}
 
             # pick best details
             best_file_streams = max(
                 file_streams.items(),
-                key=cmp_to_key(lambda a, b: preference_sorting(a[1][0], b[1][0]))   # compare best ([0]) items for each value([1]) in dicts
+                key=cmp_to_key(lambda a, b: preference_sorting(a[1][0], b[1][0]))
             )
 
             for stream in best_file_streams[1]:
@@ -197,27 +151,79 @@ class StreamsPicker:
         # Flatten result
         result = []
         for unique_key, entry in picked_streams:
-            index = entry["index"]
+            tid = entry["tid"]
             path = entry["file"]
-            language = unique_key[0]
-            result.append((path, index, language))
+            language = entry["details"].get("language")
+            result.append((path, tid, language))
 
         return result
 
 
     def pick_streams(self, files_details: Dict):
-        # pick video stream
-        video_stream = self._pick_best_video(files_details)
+        # video preference comparator
+        def video_cmp(lhs: Dict, rhs: Dict) -> int:
+            if lhs.get("width") > rhs.get("width") and lhs.get("height") > rhs.get("height"):
+                return 1
+            if lhs.get("width") < rhs.get("width") and lhs.get("height") < rhs.get("height"):
+                return -1
+
+            lhs_fps = eval(str(lhs.get("fps", "0")))
+            rhs_fps = eval(str(rhs.get("fps", "0")))
+
+            if lhs_fps > rhs_fps:
+                return 1
+            if lhs_fps < rhs_fps:
+                return -1
+
+            return 0
+
+        # comparator based on keys
+        def cmp_by_keys(keys):
+            def _cmp(lhs: Dict, rhs: Dict) -> int:
+                for key in keys:
+                    lhs_value = lhs.get(key)
+                    rhs_value = rhs.get(key)
+                    if lhs_value is None or rhs_value is None:
+                        continue
+                    if lhs_value > rhs_value:
+                        return -1
+                    if lhs_value < rhs_value:
+                        return 1
+                return 0
+            return _cmp
+
+        #collect video streams (path and index) which are attached_pics so we can drop them later as not handled now
+        attached_pics = [(file_path, index) for (file_path, details) in files_details.items() for index, vd in enumerate(details["video"]) if vd.get("attached_pic", False)]
+
+        best_file_candidate = StreamsPicker._pick_best_file_candidate(files_details)
+        video_streams = self._pick_streams(files_details, best_file_candidate, "video", [], video_cmp)
+        video_streams = [video_stream for video_stream in video_streams if (video_stream[0], video_stream[1]) not in attached_pics]
+        video_stream = video_streams[0]
         video_stream_path = video_stream[0]
 
         # pick audio streams
         forced_audio_language = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in files_details}
         forced_audio_language = {path: language_utils.unify_lang(lang) for path, lang in forced_audio_language.items() if lang}
-        audio_streams = self._pick_unique_streams(files_details, video_stream_path, "audio", ["language", "channels"], ["sample_rate"], override_languages=forced_audio_language)
+        audio_streams = self._pick_streams(
+            files_details,
+            video_stream_path,
+            "audio",
+            ["language", "channels"],
+            cmp_by_keys(["sample_rate"]),
+            override_languages=forced_audio_language,
+        )
 
         # pick subtitle streams
         forced_subtitle_language = {path: self.duplicates_source.get_metadata_for(path).get("subtitle_lang") for path in files_details}
         forced_subtitle_language = {path: lang for path, lang in forced_subtitle_language.items() if lang}
-        subtitle_streams = self._pick_unique_streams(files_details, video_stream_path, "subtitle", ["language"], [], override_languages=forced_subtitle_language)
+        subtitle_streams = self._pick_streams(
+            files_details,
+            video_stream_path,
+            "subtitle",
+            ["language"],
+            lambda a, b: 0,
+            override_languages=forced_subtitle_language,
+        )
 
-        return [video_stream], audio_streams, subtitle_streams
+        # results
+        return video_streams, audio_streams, subtitle_streams
