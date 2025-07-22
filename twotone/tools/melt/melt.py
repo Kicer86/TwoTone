@@ -341,10 +341,30 @@ class Melter():
         def process_entries(entries: List[str]) -> List[Tuple[List[str], str]]:
             # function returns list of: group of duplicates and name for final output file.
             # when dirs are provided as entries, files from each dir are collected and sorted
-            # and a files on the same position are grouped
+            # and files on the same position are grouped
+
+            def file_without_ext(path: str) -> str:
+                dir, name, _ = files_utils.split_path(path)
+                return os.path.join(dir, name)
+
             if all(os.path.isdir(p) for p in entries):
-                files_per_dir = []
                 dirs = entries
+
+                if len(dirs) == 1:
+                    # Special case: single dir → treat all files as one group of duplicates
+                    dir_path = dirs[0]
+                    media_files = [
+                        os.path.join(root, file)
+                        for root, _, filenames in os.walk(dir_path)
+                        for file in filenames
+                        if video_utils.is_video(file)
+                    ]
+                    media_files.sort()
+                    output_name = file_without_ext(os.path.relpath(media_files[0], dir_path)) if media_files else "output"
+                    return [(media_files, output_name)]
+
+                # Multiple dirs → group matching files by position
+                files_per_dir = []
                 for dir_path in dirs:
                     media_files = [
                         os.path.join(root, file)
@@ -355,24 +375,17 @@ class Melter():
                     media_files.sort()
                     files_per_dir.append(media_files)
 
-                def file_without_ext(path: str) -> str:
-                    dir, name, _ = files_utils.split_path(path)
-                    return os.path.join(dir, name)
-
                 sorted_file_lists = [list(entry) for entry in zip(*files_per_dir)]
                 first_file_fullnames = [os.path.relpath(path[0], dirs[0]) for path in sorted_file_lists]
                 first_file_names = [file_without_ext(path) for path in first_file_fullnames]
 
-                result = [ (files_group, output_name) for files_group, output_name in zip(sorted_file_lists, first_file_names) ]
+                return [(files_group, output_name) for files_group, output_name in zip(sorted_file_lists, first_file_names)]
 
-                return result
             else:
+                # List of individual files
                 first_file_fullname = os.path.basename(entries[0])
                 first_file_name = Path(first_file_fullname).stem
-
-                sorted_file_lists = [(entries, first_file_name)]
-
-                return sorted_file_lists
+                return [(entries, first_file_name)]
 
         for title, entries in tqdm(duplicates.items(), desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
 
@@ -544,7 +557,12 @@ class MeltTool(Tool):
                                        'path can be followed with a comma and some additional parameters:\n'
                                        'audio_lang:XXX  - information about audio language (like eng, de or pl).\n\n'
                                        'Example of usage:\n'
-                                       '--input some/path/file.mp4,audio_lang:jp')
+                                       '--input some/path/file.mp4,audio_lang:jp --input some/path/file.mp4,audio_lang:eng\n\n'
+                                       'If files are provided with this option, all of them are treated as duplicates of given title.\n'
+                                       'If directoriess are provided, a \'series\' mode is being used and melt will list and sort files from each dir, and corresponding '
+                                       'files from provided directories will be grouped as duplicates.\n'
+                                       'If only one directory is provided as input, all files found inside will be treated as duplicates of the title.\n'
+                                       'No other scenarios and combinations of inputs are supported.')
 
         # global options
         parser.add_argument('-w', '--working-dir',
