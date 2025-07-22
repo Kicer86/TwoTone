@@ -37,6 +37,80 @@ def all_key_orders(d: Dict) -> Iterator[Dict]:
 
 
 class MeltingTest(TwoToneTestCase):
+
+    def setUp(self):
+        super().setUp()
+        logging.getLogger("Melter").setLevel(logging.CRITICAL)
+
+        def gen_sample(out_path: Path):
+            videos = ["Atoms - 8579.mp4",
+                      "Blue_Sky_and_Clouds_Timelapse_0892__Videvo.mov",
+                      "Frog - 113403.mp4", "sea-waves-crashing-on-beach-shore-4793288.mp4",
+                      "Woman - 58142.mp4"]
+            audios = ["806912__kevp888__250510_122217_fr_large_crowd_in_palais_garnier.wav",
+                      "807385__josefpres__piano-loops-066-efect-4-octave-long-loop-120-bpm.wav",
+                      "807184__logicmoon__mirrors.wav",
+                      "807419__kvgarlic__light-spring-rain-and-kids-and-birds-may-13-2025-vtwo.wav"]
+
+            #unify fps and add audio path
+            output_dir = os.path.join(self.wd.path, "gen_sample")
+
+            with ScopedDirectory(output_dir) as sd:
+                output_files = []
+                for video, audio in zip(videos, audios):
+                    video_input_path = get_video(video)
+                    audio_input_path = get_audio(audio)
+                    output_path = os.path.join(output_dir, video + ".mp4")
+                    process_utils.start_process("ffmpeg", ["-i", video_input_path, "-i", audio_input_path, "-r", "25", "-vf", "fps=25", "-c:v", "libx265", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+                                                "-shortest", "-map", "0:v:0", "-map", "1:a:0", "-c:a", "libvorbis", "-ar", "44100",
+                                                output_path])
+                    output_files.append(output_path)
+
+                # concatenate
+                files_list_path = os.path.join(output_dir, "filelist.txt")
+                with open(files_list_path, "w", encoding="utf-8") as f:
+                    for path in output_files:
+                        # Escape single quotes if needed
+                        safe_path = path.replace("'", "'\\''")
+                        f.write(f"file '{safe_path}'\n")
+
+                process_utils.start_process("ffmpeg", ["-f", "concat", "-safe", "0", "-i", files_list_path, "-c", "copy", str(out_path)])
+
+        def gen_vhs(out_path: Path, input: str):
+            """
+                Process input file and worse its quality
+            """
+            duration = video_utils.get_video_duration(input) / 1000                                     # duration of original video
+
+            vf = ",".join([
+                "fps=26.5",                                                                             # use non standard fps
+                "setpts=PTS/1.05",                                                                      # speed it up by 5%
+                "boxblur=enable='between(t,5,10)':lr=2",                                                # add some blur
+                f"crop=w=iw*0.9:h=ih*0.9:x='(iw-iw*0.9)*t/{duration}':y='(ih-ih*0.9)*t/{duration}'",    # add a crop (90% H and W) which moves from top left corner to bottom right
+                f"scale={960}:{720}"                                                                    # scale to 4:3
+            ])
+
+            af = "atempo=1.05"
+
+            args = [
+                "-i", input,
+                "-filter_complex", vf,
+                "-filter:a", af,
+                "-c:v", "libx265",
+                "-crf", "40",                                                                           # use low quality
+                "-preset", "slow",
+                "-pix_fmt", "yuv420p",
+                str(out_path)
+            ]
+
+            process_utils.start_process("ffmpeg", args)
+
+        file_cache = FileCache("TwoToneTests")
+
+        self.sample_video_file = str(file_cache.get_or_generate("melter_tests_sample", "1", "mp4", gen_sample))
+        self.sample_vhs_video_file = str(file_cache.get_or_generate("melter_tests_vhs", "1", "mp4", partial(gen_vhs, input = self.sample_video_file)))
+
+
     def test_simple_duplicate_detection(self):
         file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = ["v1"])[0]
         file2 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = ["v2"])[0]
@@ -87,75 +161,8 @@ class MeltingTest(TwoToneTestCase):
 
 
     def test_same_multiscene_video_duplicate_detection(self):
-        file_cache = FileCache("TwoToneTests")
-
-        def gen_sample(out_path: Path):
-                videos = ["Atoms - 8579.mp4",
-                          "Blue_Sky_and_Clouds_Timelapse_0892__Videvo.mov",
-                          "Frog - 113403.mp4", "sea-waves-crashing-on-beach-shore-4793288.mp4",
-                          "Woman - 58142.mp4"]
-                audios = ["806912__kevp888__250510_122217_fr_large_crowd_in_palais_garnier.wav",
-                          "807385__josefpres__piano-loops-066-efect-4-octave-long-loop-120-bpm.wav",
-                          "807184__logicmoon__mirrors.wav",
-                          "807419__kvgarlic__light-spring-rain-and-kids-and-birds-may-13-2025-vtwo.wav"]
-
-                #unify fps and add audio path
-                output_dir = os.path.join(self.wd.path, "gen_sample")
-
-                with ScopedDirectory(output_dir) as sd:
-                    output_files = []
-                    for video, audio in zip(videos, audios):
-                        video_input_path = get_video(video)
-                        audio_input_path = get_audio(audio)
-                        output_path = os.path.join(output_dir, video + ".mp4")
-                        process_utils.start_process("ffmpeg", ["-i", video_input_path, "-i", audio_input_path, "-r", "25", "-vf", "fps=25", "-c:v", "libx265", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
-                                                        "-shortest", "-map", "0:v:0", "-map", "1:a:0", "-c:a", "libvorbis", "-ar", "44100",
-                                                        output_path])
-                        output_files.append(output_path)
-
-                    # concatenate
-                    files_list_path = os.path.join(output_dir, "filelist.txt")
-                    with open(files_list_path, "w", encoding="utf-8") as f:
-                        for path in output_files:
-                            # Escape single quotes if needed
-                            safe_path = path.replace("'", "'\\''")
-                            f.write(f"file '{safe_path}'\n")
-
-                    process_utils.start_process("ffmpeg", ["-f", "concat", "-safe", "0", "-i", files_list_path, "-c", "copy", str(out_path)])
-
-        def gen_vhs(out_path: Path, input: str):
-                """
-                    Process input file and worse its quality
-                """
-                duration = video_utils.get_video_duration(input) / 1000                                     # duration of original video
-
-                vf = ",".join([
-                    "fps=26.5",                                                                             # use non standard fps
-                    "setpts=PTS/1.05",                                                                      # speed it up by 5%
-                    "boxblur=enable='between(t,5,10)':lr=2",                                                # add some blur
-                    f"crop=w=iw*0.9:h=ih*0.9:x='(iw-iw*0.9)*t/{duration}':y='(ih-ih*0.9)*t/{duration}'",    # add a crop (90% H and W) which moves from top left corner to bottom right
-                    f"scale={960}:{720}"                                                                    # scale to 4:3
-                ])
-
-                af = "atempo=1.05"
-
-                args = [
-                    "-i", input,
-                    "-filter_complex", vf,
-                    "-filter:a", af,
-                    "-c:v", "libx265",
-                    "-crf", "40",                                                                           # use low quality
-                    "-preset", "slow",
-                    "-pix_fmt", "yuv420p",
-                    str(out_path)
-                ]
-
-                process_utils.start_process("ffmpeg", args)
-
-        file1 = file_cache.get_or_generate("melter_tests_sample", "1", "mp4", gen_sample)
-        file1 = add_to_test_dir(self.wd.path, str(file1))
-        file2 = file_cache.get_or_generate("melter_tests_vhs", "1", "mp4", partial(gen_vhs, input=file1))
-        file2 = add_to_test_dir(self.wd.path, str(file2))
+        file1 = add_to_test_dir(self.wd.path, str(self.sample_video_file))
+        file2 = add_to_test_dir(self.wd.path, str(self.sample_vhs_video_file))
 
         files = [file1, file2]
 
