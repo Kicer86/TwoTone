@@ -28,7 +28,7 @@ python -m twotone <tool-name> --help
 
 ### Important Notes
 
-Dry Run Mode: all tools run in a dry run mode by default (no files are being modified). Use the -r or --no-dry-run global option to perform actual operation.<br/>
+Dry Run Mode: all tools run in a dry run mode by default (no files are being modified). Use the -r or --no-dry-run global option to perform actual operation. In live run mode most tools remove their input files after successful processing.<br/>
 It is safe to stop execution with ctrl+c. All tools handle proper signal and will stop as soon as possible.<br/>
 
 Data Safety: Always back up your data before using any tool, as source files may be deleted during processing.
@@ -69,7 +69,7 @@ python -m twotone concatenate --help
 
 #### Combine Duplicate Videos (melt)
 
-The melt tool scans for duplicate video files and creates a single output using the best quality segments from each copy. Duplicates can be provided manually or taken from a Jellyfin server.
+The melt tool scans for duplicate video files and creates a single output using the best quality segments from each copy. Duplicates can be provided manually or taken from a Jellyfin server. By default all input files used to create the output are removed after a successful run. Use `--keep-input-files` to preserve them.
 
 ```bash
 python -m twotone melt --help
