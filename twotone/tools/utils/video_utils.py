@@ -19,7 +19,7 @@ def is_video(file: str) -> bool:
     return Path(file).suffix[1:].lower() in ["mkv", "mp4", "avi", "mpg", "mpeg", "mov", "rmvb"]
 
 
-def get_video_frames_count(video_file: str):
+def get_video_frames_count(video_file: str) -> int | None:
     result = process_utils.start_process("ffprobe", ["-v", "error", "-select_streams", "v:0", "-count_packets",
                                    "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", video_file])
 
@@ -179,7 +179,7 @@ def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", s
     return mapping
 
 
-def get_video_duration(video_file):
+def get_video_duration(video_file: str) -> int | None:
     """Get the duration of a video in milliseconds."""
     result = process_utils.start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
 

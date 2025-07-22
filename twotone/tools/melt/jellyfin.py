@@ -4,14 +4,14 @@ import requests
 
 from collections import defaultdict
 from overrides import override
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 from ..utils import generic_utils
 from .duplicates_source import DuplicatesSource
 
 
 class JellyfinSource(DuplicatesSource):
-    def __init__(self, interruption: generic_utils.InterruptibleProcess, url: str, token: str, path_fix: Tuple[str, str]) -> None:
+    def __init__(self, interruption: generic_utils.InterruptibleProcess, url: str, token: str, path_fix: Optional[Tuple[str, str]] = None) -> None:
         super().__init__(interruption)
 
         self.url = url
