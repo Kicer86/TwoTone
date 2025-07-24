@@ -258,7 +258,7 @@ def generate_subrip_subtitles(path: str, length: int):
 
     for i, t in enumerate(range(0, length, 1000)):
         b = generic_utils.ms_to_time(t)
-        e = generic_utils.ms_to_time(t + 500)
+        e = generic_utils.ms_to_time(t + 100)
 
         content.append(str(i + 1))
         content.append(f"{b} --> {e}")

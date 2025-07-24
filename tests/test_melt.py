@@ -257,7 +257,7 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir, allow_length_mismatch = True)
         melter.melt()
 
         # validate output
@@ -415,7 +415,7 @@ class MeltingTest(TwoToneTestCase):
 
     def test_attachement_in_file_with_useless_streams(self):
         # video #1 comes with all interesting data. the only thing video #2 can offer is an attachment.
-        video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "fog-over-mountainside-13008647.mp4", audio_name = "807184__logicmoon__mirrors.wav", subtitle = True)
+        video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "fog-over-mountainside-13008647.mp4", subtitle = True)
         video2 = build_test_video(os.path.join(self.wd.path, "o2.mkv"), self.wd.path, "fog-over-mountainside-13008647.mp4", thumbnail_name = "parrot.jpeg")
 
         interruption = generic_utils.InterruptibleProcess()
