@@ -110,6 +110,16 @@ class StreamsPicker:
                 # Build unique key based on stream view
                 unique_key = tuple(stream_view.get(k) for k in unique_keys)
 
+                # all components of key are valid?
+                key_is_valid = all(c for c in unique_key)
+
+                if not key_is_valid:
+                    missing_properties = [name for name, value in zip(unique_keys, unique_key) if value is None]
+                    missing_properties_str = ", ".join(missing_properties)
+
+                    raise RuntimeError(f"Could not properly build stream information of type {stream_type} for file {path}. "
+                                       f"Missing properties: {missing_properties_str}")
+
                 # put tid into top layer for easier access
                 tid = stream_view["tid"]
 
