@@ -240,7 +240,7 @@ class Melter():
             printable_path = files_utils.get_printable_path(path, common_prefix)
             self.logger.info(f"Attachment ID #{tid} from {printable_path}")
 
-    def _process_duplicates(self, duplicates: List[str]) -> List[Dict]:
+    def _process_duplicates(self, duplicates: List[str]) -> List[Dict] | None:
         self.logger.info("------------------------------------")
         self.logger.info("Processing group of duplicated files")
         self.logger.info("------------------------------------")
@@ -267,7 +267,11 @@ class Melter():
                     return None
 
         streams_picker = StreamsPicker(self.logger, self.duplicates_source)
-        video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks)
+        try:
+            video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks)
+        except RuntimeError as re:
+            self.logger.error(re)
+            return None
 
         picked_attachments = AttachmentsPicker(self.logger).pick_attachments(attachments)
 
