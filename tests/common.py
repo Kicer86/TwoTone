@@ -116,7 +116,7 @@ class FileCache:
         return out_path
 
 
-def list_files(path: str) -> []:
+def list_files(path: str) -> List:
     results = []
 
     for root, _, files in os.walk(path):
@@ -129,9 +129,11 @@ def list_files(path: str) -> []:
     return results
 
 
-def add_test_media(filter: str, test_case_path: str, suffixes: [str] = [None], copy: bool = False) -> List[str]:
+def add_test_media(filter: str, test_case_path: str, suffixes: List[str] | None = None, copy: bool = False) -> List[str]:
     filter_regex = re.compile(filter)
     output_files = []
+
+    suffixes = suffixes or [None]
 
     for media in ["subtitles", "subtitles_txt", "videos"]:
         for root, _, files in os.walk(os.path.join(current_path, media)):
@@ -256,7 +258,7 @@ def generate_subrip_subtitles(path: str, length: int):
 
     for i, t in enumerate(range(0, length, 1000)):
         b = generic_utils.ms_to_time(t)
-        e = generic_utils.ms_to_time(t + 500)
+        e = generic_utils.ms_to_time(t + 100)
 
         content.append(str(i + 1))
         content.append(f"{b} --> {e}")

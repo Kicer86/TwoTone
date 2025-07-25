@@ -33,7 +33,7 @@ def _split_path_fix(value: str) -> List[str]:
 
 
 class Melter():
-    def __init__(self, logger: logging.Logger, interruption: generic_utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = [], preferred_languages: List[str] = [], keep_input_files: bool = False):
+    def __init__(self, logger: logging.Logger, interruption: generic_utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = [], preferred_languages: List[str] = [], keep_input_files: bool = False, allow_length_mismatch: bool = False):
         self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
@@ -44,6 +44,7 @@ class Melter():
         self.languages_priority = [language_utils.unify_lang(language) for language in languages_priority]
         self.preferred_languages = [language_utils.unify_lang(language) for language in preferred_languages]
         self.keep_input_files = keep_input_files
+        self.allow_length_mismatch = allow_length_mismatch
 
         os.makedirs(self.wd, exist_ok=True)
 
@@ -256,6 +257,15 @@ class Melter():
         for file, file_details in details_full.items():
             self._print_file_details(file, file_details, common_prefix)
 
+        # verify if all videos have similar length
+        lengths = [info["video"][0]["length"] for info in tracks.values()]
+        if len(lengths) > 1:
+            base = lengths[0]
+            if any(abs(base - l) > 100 for l in lengths[1:]):
+                self.logger.warning("Input video lengths differ")
+                if not self.allow_length_mismatch:
+                    return None
+
         streams_picker = StreamsPicker(self.logger, self.duplicates_source)
         video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks)
 
@@ -399,7 +409,12 @@ class Melter():
             for files, output_name in tqdm(files_groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
                 self.interruption._check_for_stop()
 
-                streams, attachments = self._process_duplicates(files)
+                result = self._process_duplicates(files)
+                if result is None:
+                    self.logger.info("Skipping output generation")
+                    continue
+
+                streams, attachments = result
                 if not self.live_run:
                     self.logger.info("Dry run. Skipping output generation")
                     continue
@@ -596,6 +611,9 @@ class MeltTool(Tool):
         parser.add_argument('--keep-input-files',
                             action='store_true',
                             help='Do not delete input files after successful processing.')
+        parser.add_argument('--allow-length-mismatch', action='store_true',
+                            help='Continue processing even if input video lengths differ.\n'
+                                 'This may require additional processing that can consume significant time and disk space.')
 
 
     @override
@@ -652,5 +670,8 @@ class MeltTool(Tool):
                         output = args.output_dir,
                         languages_priority = languages_priority,
                         preferred_languages = preferred_languages,
-                        keep_input_files = args.keep_input_files)
+                        keep_input_files = args.keep_input_files,
+                        allow_length_mismatch = args.allow_length_mismatch
+        )
+
         melter.melt()

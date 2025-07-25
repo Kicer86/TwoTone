@@ -201,6 +201,43 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(len(hashes(output_dir)), 1)
 
 
+    def test_skip_on_length_mismatch(self):
+        file1 = add_test_media("DSC_8073.MP4", self.wd.path)[0]
+        file2 = add_test_media("moon.mp4", self.wd.path)[0]
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Video", file1)
+        duplicates.add_entry("Video", file2)
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter.melt()
+
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 0)
+
+    def test_allow_length_mismatch(self):
+        file1 = add_test_media("DSC_8073.MP4", self.wd.path)[0]
+        file2 = add_test_media("moon.mp4", self.wd.path)[0]
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Video", file1)
+        duplicates.add_entry("Video", file2)
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir, allow_length_mismatch = True)
+        melter.melt()
+
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
+
+
     def test_same_multiscene_video_duplicate_detection(self):
         file1 = add_to_test_dir(self.wd.path, str(self.sample_video_file))
         file2 = add_to_test_dir(self.wd.path, str(self.sample_vhs_video_file))
@@ -220,7 +257,7 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir, allow_length_mismatch = True)
         melter.melt()
 
         # validate output
@@ -378,7 +415,7 @@ class MeltingTest(TwoToneTestCase):
 
     def test_attachement_in_file_with_useless_streams(self):
         # video #1 comes with all interesting data. the only thing video #2 can offer is an attachment.
-        video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "fog-over-mountainside-13008647.mp4", audio_name = "807184__logicmoon__mirrors.wav", subtitle = True)
+        video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "fog-over-mountainside-13008647.mp4", subtitle = True)
         video2 = build_test_video(os.path.join(self.wd.path, "o2.mkv"), self.wd.path, "fog-over-mountainside-13008647.mp4", thumbnail_name = "parrot.jpeg")
 
         interruption = generic_utils.InterruptibleProcess()
