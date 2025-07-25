@@ -49,6 +49,12 @@ class Concatenate(generic_utils.InterruptibleProcess):
                 # remove last char before CDXXX as it is most likely space or hyphen and use it as a base for output video file
                 name_without_part_number = path[:-1] + match.group(3)
 
+            #
+            _, _, extn = files_utils.split_path(name_without_part_number)
+            if extn == "rmvb":
+                self.logger.error(f"RMVB files are not supported. Consider 'transcode' subtool to convert {video} file.")
+                continue
+
             part = match.group(2)
             partNo = int(part[2:])                                                                              # drop 'CD'
             matched_videos[name_without_part_number].append((video, partNo))
