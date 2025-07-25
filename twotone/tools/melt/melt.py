@@ -257,6 +257,22 @@ class Melter():
         for file, file_details in details_full.items():
             self._print_file_details(file, file_details, common_prefix)
 
+        # abort when languages are unknown and no metadata provided
+        for file in duplicates:
+            metadata = self.duplicates_source.get_metadata_for(file)
+            meta_audio = metadata.get("audio_lang")
+            meta_subtitle = metadata.get("subtitle_lang")
+            file_tracks = tracks[file]
+            audio_unknown = any(stream.get("language") is None for stream in file_tracks.get("audio", []))
+            subtitle_unknown = any(stream.get("language") is None for stream in file_tracks.get("subtitle", []))
+
+            if (audio_unknown and not meta_audio) or (subtitle_unknown and not meta_subtitle):
+                printable = files_utils.get_printable_path(file, common_prefix)
+                self.logger.warning(
+                    f"Missing language information for {printable}. Aborting processing of this group."
+                )
+                return None
+
         # verify if all videos have similar length
         lengths = [info["video"][0]["length"] for info in tracks.values()]
         if len(lengths) > 1:
