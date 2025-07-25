@@ -32,7 +32,7 @@ class StreamsPicker:
                 yield k, v
 
     @staticmethod
-    def _pick_best_file_candidate(files_details: Dict[str, Dict]):
+    def _pick_best_file_candidate(files_details: Dict[str, Dict]) -> str:
         """
             Function returns file with most streams.
         """
@@ -159,7 +159,11 @@ class StreamsPicker:
         return result
 
 
-    def pick_streams(self, files_details: Dict):
+    def pick_streams(self, files_details: Dict[str, Dict]) -> Tuple[
+        List[Tuple[str, int, Optional[str]]],
+        List[Tuple[str, int, Optional[str]]],
+        List[Tuple[str, int, Optional[str]]],
+    ]:
         # video preference comparator
         def video_cmp(lhs: Dict, rhs: Dict) -> int:
             if lhs.get("width") > rhs.get("width") and lhs.get("height") > rhs.get("height"):

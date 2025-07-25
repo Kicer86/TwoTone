@@ -1,11 +1,10 @@
 
-import shutil
-
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Iterable
 import os
 import tempfile
 import uuid
+import shutil
 
 
 def split_path(path: str) -> Tuple[str, str, str]:
@@ -18,7 +17,7 @@ class ScopedDirectory:
     def __init__(self, path: str):
         self.path = Path(path)
 
-    def __enter__(self):
+    def __enter__(self) -> Path:
         if self.path.exists():
             shutil.rmtree(self.path)
         self.path.mkdir(parents=True, exist_ok=False)
@@ -41,9 +40,9 @@ class TempFileManager:
     def __init__(self, content: str, extension: str | None = None):
         self.content = content
         self.extension = extension
-        self.filepath = None
+        self.filepath: str | None = None
 
-    def __enter__(self):
+    def __enter__(self) -> str:
         suffix = f".{self.extension}" if self.extension else ""
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="w") as temp_file:
             self.filepath = temp_file.name
@@ -55,7 +54,7 @@ class TempFileManager:
         if self.filepath and os.path.exists(self.filepath):
             os.remove(self.filepath)
 
-def get_common_prefix(paths) -> str:
+def get_common_prefix(paths: Iterable[str]) -> str:
     unified = list(paths)
     return os.path.commonpath(unified)
 
