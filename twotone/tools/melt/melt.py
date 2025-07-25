@@ -570,8 +570,8 @@ class MeltTool(Tool):
         jellyfin_group.add_argument('--jellyfin-path-fix',
                                     action=RequireJellyfinServer,
                                     help='Specify a replacement pattern for file paths to ensure "melt" can access Jellyfin video files.\n\n'
-                                         '"Melt" requires direct access to video files. If Jellyfin is not running on the same machine as "melt,"\n'
-                                         'you must set up network access to Jellyfin’s video storage and specify how paths should be resolved.\n\n'
+                                         '"Melt" requires direct access to video files. If Jellyfin is not running on the same machine as "melt",\n'
+                                         'you need to set up network access to Jellyfin’s video storage and specify how paths should be resolved.\n\n'
                                          'For example, suppose Jellyfin runs on a Linux machine where the video library is stored at "/srv/videos" (a shared directory).\n'
                                          'If "melt" is running on another Linux machine that accesses this directory remotely at "/mnt/shared_videos,"\n'
                                          'you need to map "/srv/videos" (Jellyfin’s path) to "/mnt/shared_videos" (the path accessible on the machine running "melt").\n\n'
