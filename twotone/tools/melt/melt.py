@@ -575,7 +575,8 @@ class MeltTool(Tool):
                                          'For example, suppose Jellyfin runs on a Linux machine where the video library is stored at "/srv/videos" (a shared directory).\n'
                                          'If "melt" is running on another Linux machine that accesses this directory remotely at "/mnt/shared_videos,"\n'
                                          'you need to map "/srv/videos" (Jellyfin’s path) to "/mnt/shared_videos" (the path accessible on the machine running "melt").\n\n'
-                                         'In this case, use: --jellyfin-path-fix "/srv/videos","/mnt/shared_videos" to define the replacement pattern.')
+                                         'In this case, use: --jellyfin-path-fix \\"/srv/videos\\",\\"/mnt/shared_videos\\" to define the replacement pattern.' \
+                                         'Please mind that \\ to preserve \" are crucial')
 
         manual_group = parser.add_argument_group("Manual input source")
         manual_group.add_argument('-t', '--title',
