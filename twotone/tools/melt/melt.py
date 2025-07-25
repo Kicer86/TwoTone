@@ -411,7 +411,7 @@ class Melter():
 
                 result = self._process_duplicates(files)
                 if result is None:
-                    self.logger.info("Skipping due to mismatched video lengths")
+                    self.logger.info("Skipping output generation")
                     continue
 
                 streams, attachments = result
