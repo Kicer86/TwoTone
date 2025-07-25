@@ -72,6 +72,10 @@ class StreamsPicker:
         def get_language(stream, path) -> Optional[str]:
             printable_path = files_utils.get_printable_path(path, paths_common_prefix)
             lang = stream.get("language")
+
+            if lang == "und":
+                lang = None
+
             if override_languages and path in override_languages:
                 original_lang = lang
                 lang = override_languages[path]
@@ -104,8 +108,7 @@ class StreamsPicker:
 
                 # Determine language if available
                 lang = get_language(stream, path)
-                if lang is not None:
-                    stream_view["language"] = lang
+                stream_view["language"] = lang
 
                 # Build unique key based on stream view
                 unique_key = tuple(stream_view.get(k) for k in unique_keys)
