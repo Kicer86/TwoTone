@@ -77,7 +77,7 @@ class ConcatenateTests(TwoToneTestCase):
     def test_concatenation(self):
         self._setup_valid_media(self.wd.path)
 
-        run_twotone("concatenate", [self.wd.path], ["-r"])
+        run_twotone("concatenate", [self.wd.path], ["-r"]) 
 
         files_after = list_files(self.wd.path)
         tdl = len(self.wd.path) + 1

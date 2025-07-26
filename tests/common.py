@@ -281,8 +281,19 @@ def extract_subtitles(video_path: str, out_path: str):
     process_utils.start_process("ffmpeg", ["-i", video_path, "-map", "0:s:0", out_path])
 
 
-def run_twotone(tool: str, tool_options = [], global_options = []):
-    global_options.append("--quiet")
+def run_twotone(tool: str, tool_options = [], global_options = None):
+    if global_options is None:
+        global_options = []
+
+    for opt in global_options:
+        if opt in ("-w", "--working-dir") or opt.startswith("--working-dir=") or opt.startswith("-w="):
+            raise ValueError("Tests must not override working directory")
+
+    wd = user_cache_dir("TwoToneTests")
+    os.makedirs(wd, exist_ok=True)
+
+    global_options.extend(["--quiet", "--working-dir", wd])
+
     twotone.twotone.execute([*global_options, tool, *tool_options])
 
 
