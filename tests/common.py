@@ -289,7 +289,7 @@ def run_twotone(tool: str, tool_options = [], global_options = None):
         if opt in ("-w", "--working-dir") or opt.startswith("--working-dir=") or opt.startswith("-w="):
             raise ValueError("Tests must not override working directory")
 
-    wd = user_cache_dir("TwoToneTests")
+    wd = generic_utils.get_twotone_working_dir()
     os.makedirs(wd, exist_ok=True)
 
     global_options.extend(["--quiet", "--working-dir", wd])
