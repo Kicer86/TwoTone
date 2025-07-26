@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 import shutil
-import platformdirs
+
 
 from overrides import override
 
@@ -15,6 +15,8 @@ from .tools import          \
     subtitles_fixer,        \
     transcode,              \
     utilities
+
+from .tools.utils import generic_utils
 
 TOOLS = {
     "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file"),
@@ -64,7 +66,7 @@ def execute(argv: list[str]) -> None:
     parser.add_argument(
         "--working-dir",
         "-w",
-        default=platformdirs.user_cache_dir("twotone"),
+        default=generic_utils.get_twotone_working_dir(),
         help="Directory for temporary files",
     )
     subparsers = parser.add_subparsers(dest="tool", help="Available tools:")
