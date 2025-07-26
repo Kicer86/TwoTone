@@ -1,5 +1,6 @@
 
 import logging
+import os
 import requests
 
 from collections import defaultdict
@@ -82,8 +83,16 @@ class JellyfinSource(DuplicatesSource):
                     same = all(x == names[0] for x in names)
 
                     if same:
+                        all_paths_are_files = all(os.path.isfile(path) for path in fixed_paths)
                         name = names[0]
-                        duplicates[name] = fixed_paths
+
+                        if not all_paths_are_files:
+                            logging.warning(f"Some paths for title {name} are not files:")
+                            for path in fixed_paths:
+                                logging.warning(f"\t{path}")
+                            logging.warning("Skipping title")
+                        else:
+                            duplicates[name] = fixed_paths
                     else:
                         names_str = '\n'.join(names)
                         paths_str = '\n'.join(fixed_paths)
