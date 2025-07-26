@@ -14,10 +14,11 @@ from twotone.tools.utils import generic_utils, process_utils, subtitles_utils, v
 
 
 class Fixer(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, really_fix: bool) -> None:
+    def __init__(self, logger: logging.Logger, really_fix: bool, working_dir: str) -> None:
         super().__init__()
         self.logger = logger
         self._do_fix = really_fix
+        self.working_dir = working_dir
 
     def _print_broken_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
         self.logger.info(f"Found {len(broken_videos_info)} broken videos:")
@@ -108,12 +109,12 @@ class Fixer(generic_utils.InterruptibleProcess):
                 video_info = broken_video[0]
                 broken_subtitiles = broken_video[1]
 
-                with tempfile.TemporaryDirectory() as wd_dir:
-                    video_file = video_info["path"]
-                    self.logger.info(f"Fixing subtitles in file {video_file}")
-                    self.logger.debug("Extracting subtitles from file")
-                    subtitles = self._extract_all_subtitles(video_file, video_info.get("subtitle", []), wd_dir)
-                    broken_subtitles_paths = [subtitles[i] for i in broken_subtitiles]
+                wd_dir = self.working_dir
+                video_file = video_info["path"]
+                self.logger.info(f"Fixing subtitles in file {video_file}")
+                self.logger.debug("Extracting subtitles from file")
+                subtitles = self._extract_all_subtitles(video_file, video_info.get("subtitle", []), wd_dir)
+                broken_subtitles_paths = [subtitles[i] for i in broken_subtitiles]
 
                     status = all(self._fix_subtitle(broken_subtitile.path, video_info) for broken_subtitile in broken_subtitles_paths)
 
@@ -211,10 +212,10 @@ class FixerTool(Tool):
                             help='Path with videos to analyze.')
 
     @override
-    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger) -> None:
+    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
         process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
 
         logger.info("Searching for broken files")
-        fixer = Fixer(logger, no_dry_run)
+        fixer = Fixer(logger, no_dry_run, working_dir)
         fixer.process_dir(args.videos_path[0])
         logger.info("Done")
