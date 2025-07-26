@@ -8,7 +8,6 @@ import shutil
 import tempfile
 import unittest
 
-
 from contextlib import contextmanager
 from pathlib import Path
 from platformdirs import user_cache_dir
