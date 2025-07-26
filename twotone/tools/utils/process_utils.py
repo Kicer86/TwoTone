@@ -35,9 +35,9 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
     command = [process]
     command.extend(args)
 
-    logging.debug(f"Starting {process} with options: {' '.join(args)}")
-    sub_process = subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, bufsize=1, preexec_fn=os.setsid)
+    full_cmd = f"{process} {' '.join(args)}"
+    logging.debug(f"Starting {full_cmd}")
+    sub_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, bufsize=1, preexec_fn=os.setsid)
 
     if show_progress:
         if process == "ffmpeg":
@@ -82,7 +82,8 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
 
 def raise_on_error(status: ProcessResult):
     if status.returncode != 0:
-        raise RuntimeError(f"Process exited with unexpected error:\n{status.stdout}\n{status.stderr}")
+        error = f"Process exited with unexpected error:\n{status.stdout}\n{status.stderr}"
+        raise RuntimeError(error)
 
 
 def ensure_tools_exist(tools: List[str], logger: logging.Logger) -> None:
