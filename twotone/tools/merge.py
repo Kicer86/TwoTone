@@ -185,30 +185,30 @@ class Merge(generic_utils.InterruptibleProcess):
         sorted_subtitles = self._sort_subtitles(subtitles)
         sorted_subtitles_str = ", ".join([subtitle.language if subtitle.language is not None else "unknown" for subtitle in sorted_subtitles])
 
-        with tempfile.TemporaryDirectory(dir=self.working_dir) as temporary_subtitles_dir:
-            prepared_subtitles = []
-            for subtitle in sorted_subtitles:
-                self.logger.info(f"\t[{subtitle.language}]: {subtitle.path}")
-                input_files.append(subtitle.path)
+        temporary_subtitles_dir = self.working_dir
+        prepared_subtitles = []
+        for subtitle in sorted_subtitles:
+            self.logger.info(f"\t[{subtitle.language}]: {subtitle.path}")
+            input_files.append(subtitle.path)
 
-                # Subtitles are buggy sometimes, use ffmpeg to fix them.
-                # Also makemkv does not handle MicroDVD subtitles, so convert all to SubRip.
-                fps = input_file_details["video"][0]["fps"]
-                converted_subtitle = self._convert_subtitle(fps, subtitle, temporary_subtitles_dir)
+            # Subtitles are buggy sometimes, use ffmpeg to fix them.
+            # Also makemkv does not handle MicroDVD subtitles, so convert all to SubRip.
+            fps = input_file_details["video"][0]["fps"]
+            converted_subtitle = self._convert_subtitle(fps, subtitle, temporary_subtitles_dir)
 
-                prepared_subtitles.append(converted_subtitle)
+            prepared_subtitles.append(converted_subtitle)
 
-            # perform
-            self.logger.debug("\tMerge in progress...")
-            if not self.dry_run:
-                video_utils.generate_mkv(input_video=input_video, output_path=temporary_output_video, subtitles=prepared_subtitles)
+        # perform
+        self.logger.debug("\tMerge in progress...")
+        if not self.dry_run:
+            video_utils.generate_mkv(input_video=input_video, output_path=temporary_output_video, subtitles=prepared_subtitles)
 
-                # Remove all inputs
-                for input in input_files:
-                    os.remove(input)
+            # Remove all inputs
+            for input in input_files:
+                os.remove(input)
 
-                # rename final file to a proper one
-                shutil.move(temporary_output_video, output_video)
+            # rename final file to a proper one
+            shutil.move(temporary_output_video, output_video)
 
         self.logger.debug("\tDone")
 
