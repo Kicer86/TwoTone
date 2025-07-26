@@ -16,12 +16,13 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, video
 
 
 class Transcoder(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, live_run: bool = False, target_ssim: float = 0.98, codec: str = "libx265") -> None:
+    def __init__(self, logger: logging.Logger, live_run: bool = False, target_ssim: float = 0.98, codec: str = "libx265", working_dir: str | None = None) -> None:
         super().__init__()
         self.logger = logger
         self.live_run = live_run
         self.target_ssim = target_ssim
         self.codec = codec
+        self.working_dir = working_dir
 
 
     def _find_video_files(self, directory: str) -> list[str]:
@@ -227,7 +228,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
     def _for_segments(self, segments: list[str], op: Callable[[str, str], None], title: str, unit: str) -> None:
         with logging_redirect_tqdm(), \
              tqdm(desc=title, unit=unit, total=len(segments), **generic_utils.get_tqdm_defaults()) as pbar, \
-             tempfile.TemporaryDirectory() as wd_dir, \
+             tempfile.TemporaryDirectory(dir=self.working_dir) as wd_dir, \
              ThreadPoolExecutor() as executor:
             def worker(file_path):
                 op(wd_dir, file_path)
@@ -249,7 +250,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
             overwrite_input = False
 
         self.logger.info(f"Starting final transcoding with CRF: {crf}")
-        temp_file = os.path.join(dir, f"{basename}.temp.{ext}")
+        temp_file = os.path.join(self.working_dir or dir, f"{basename}.temp.{ext}")
         self._transcode_video(input_file, temp_file, crf, "veryslow", audio_codec = audio_codec, output_params = ["-vsync", "passthrough"], show_progress=True)
 
         original_size = os.path.getsize(input_file)
@@ -319,7 +320,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         # convert to seconds
         duration /= 1000
 
-        with tempfile.TemporaryDirectory() as wd_dir:
+        with tempfile.TemporaryDirectory(dir=self.working_dir) as wd_dir:
             segment_files = []
             if allow_segments and duration > 30:
                 self.logger.info(f"Picking segments from {input_file}")
@@ -411,6 +412,6 @@ class TranscodeTool(Tool):
 
 
     @override
-    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger) -> None:
-        transcoder = Transcoder(logger, live_run = no_dry_run, target_ssim = args.ssim)
+    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
+        transcoder = Transcoder(logger, live_run = no_dry_run, target_ssim = args.ssim, working_dir = working_dir)
         transcoder.transcode(args.videos_path[0])

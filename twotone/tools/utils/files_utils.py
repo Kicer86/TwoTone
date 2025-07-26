@@ -38,14 +38,15 @@ def get_unique_file_name(directory: str, extension: str) -> str:
 
 
 class TempFileManager:
-    def __init__(self, content: str, extension: str | None = None):
+    def __init__(self, content: str, extension: str | None = None, directory: str | None = None):
         self.content = content
         self.extension = extension
         self.filepath = None
+        self.directory = directory
 
     def __enter__(self):
         suffix = f".{self.extension}" if self.extension else ""
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="w") as temp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="w", dir=self.directory) as temp_file:
             self.filepath = temp_file.name
             temp_file.write(self.content)
 
