@@ -40,7 +40,6 @@ class MeltingTest(TwoToneTestCase):
 
     def setUp(self):
         super().setUp()
-        logging.getLogger("Melter").setLevel(logging.CRITICAL)
 
         def gen_sample(out_path: Path):
             videos = ["Atoms - 8579.mp4",
@@ -358,6 +357,8 @@ class MeltingTest(TwoToneTestCase):
         duplicates = StaticSource(interruption)
         duplicates.add_entry("Sea Waves", video1)
         duplicates.add_entry("Sea Waves", video2)
+        duplicates.add_metadata(video1, "audio_lang", "eng")
+        duplicates.add_metadata(video2, "audio_lang", "eng")
         duplicates.add_metadata(video1, "subtitle_lang", "jpn")
         duplicates.add_metadata(video2, "subtitle_lang", "br")
 
@@ -372,6 +373,7 @@ class MeltingTest(TwoToneTestCase):
 
         # validate output
         output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
         output_file = list(output_file_hash)[0]
 
         output_file_data = video_utils.get_video_data(output_file)
@@ -395,6 +397,8 @@ class MeltingTest(TwoToneTestCase):
         duplicates = StaticSource(interruption)
         duplicates.add_entry("Fog", video1)
         duplicates.add_entry("Fog", video2)
+        duplicates.add_metadata(video1, "audio_lang", "eng")
+        duplicates.add_metadata(video2, "audio_lang", "eng")
         duplicates.add_metadata(video1, "subtitle_lang", "pol")
         duplicates.add_metadata(video2, "subtitle_lang", "eng")
 
@@ -406,6 +410,7 @@ class MeltingTest(TwoToneTestCase):
 
         # validate output
         output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
         output_file = list(output_file_hash)[0]
 
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
@@ -420,6 +425,9 @@ class MeltingTest(TwoToneTestCase):
 
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
+        duplicates.add_metadata(video1, "subtitle_lang", "eng")
+        duplicates.add_metadata(video1, "audio_lang", "eng")
+        duplicates.add_metadata(video2, "audio_lang", "eng")
         duplicates.add_entry("Fog", video1)
         duplicates.add_entry("Fog", video2)
 
@@ -431,6 +439,7 @@ class MeltingTest(TwoToneTestCase):
 
         # validate output
         output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
         output_file = list(output_file_hash)[0]
 
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
