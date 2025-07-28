@@ -115,7 +115,7 @@ class FileCache:
         return out_path
 
 
-def list_files(path: str) -> List:
+def list_files(path: str) -> List[str]:
     results = []
 
     for root, _, files in os.walk(path):
@@ -129,6 +129,7 @@ def list_files(path: str) -> List:
 
 
 def add_test_media(filter: str, test_case_path: str, suffixes: List[str] | None = None, copy: bool = False) -> List[str]:
+    suffixes = suffixes or [""]
     filter_regex = re.compile(filter)
     output_files = []
 
@@ -139,7 +140,7 @@ def add_test_media(filter: str, test_case_path: str, suffixes: List[str] | None 
             for file in files:
                 if filter_regex.fullmatch(file):
                     for suffix in suffixes:
-                        suffix = "" if suffix is None else "-" + suffix
+                        suffix = "-" + suffix if suffix else ""
                         file_path = Path(os.path.join(root, file))
                         dst_file_name = file_path.stem + suffix + file_path.suffix
 
