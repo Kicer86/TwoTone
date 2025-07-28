@@ -62,7 +62,7 @@ def get_key_position(d: dict, key) -> int:
 
 def get_twotone_working_dir():
     """Return the default cache directory for twotone temporary files."""
-    return platformdirs.user_cache_dir("twotone")
+    return platformdirs.user_data_dir("twotone")
 
 
 class InterruptibleProcess:

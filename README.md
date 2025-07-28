@@ -30,7 +30,7 @@ python -m twotone <tool-name> --help
 
 Dry Run Mode: all tools run in a dry run mode by default (no files are being modified). Use the -r or --no-dry-run global option to perform actual operation. In live run mode most tools remove their input files after successful processing.<br/>
 It is safe to stop execution with ctrl+c. All tools handle proper signal and will stop as soon as possible.<br/>
-Working Directory: use -w or --working-dir to specify where temporary and working files are created. By default the directory is taken from the operating system's user cache location for the application.<br/>
+Working Directory: use -w or --working-dir to specify where temporary and working files are created. By default the directory is taken from the operating system's user data location for the application.<br/>
 
 Data Safety: Always back up your data before using any tool, as source files may be deleted during processing.
 
