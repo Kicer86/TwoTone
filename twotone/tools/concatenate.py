@@ -13,11 +13,12 @@ from twotone.tools.utils import generic_utils, process_utils, video_utils, files
 
 
 class Concatenate(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, live_run: bool):
+    def __init__(self, logger: logging.Logger, live_run: bool, working_dir: str):
         super().__init__()
 
         self.logger = logger
         self.live_run = live_run
+        self.working_dir = working_dir
 
     def run(self, path: str):
         self.logger.info(f"Collecting video files from path {path}")
@@ -110,7 +111,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
                     return path.replace("'", "'\\''")
 
                 input_file_content = [f"file '{escape_path(input_file)}'" for input_file in input_files]
-                with files_utils.TempFileManager("\n".join(input_file_content), "txt") as input_file:
+                with files_utils.TempFileManager("\n".join(input_file_content), "txt", directory=self.working_dir) as input_file:
                     ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c", "copy", output]
 
                     self.logger.info(f"Concatenating files into {output} file")
@@ -145,6 +146,6 @@ class ConcatenateTool(Tool):
                             help='Path with videos to concatenate.')
 
     @override
-    def run(self, args, no_dry_run, logger: logging.Logger):
-        concatenate = Concatenate(logger, no_dry_run)
+    def run(self, args, no_dry_run, logger: logging.Logger, working_dir: str):
+        concatenate = Concatenate(logger, no_dry_run, working_dir)
         concatenate.run(args.videos_path[0])

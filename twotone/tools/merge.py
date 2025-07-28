@@ -16,12 +16,13 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, subti
 
 class Merge(generic_utils.InterruptibleProcess):
 
-    def __init__(self, logger: logging.Logger, dry_run: bool, language: str, lang_priority: str) -> None:
+    def __init__(self, logger: logging.Logger, dry_run: bool, language: str, lang_priority: str, working_dir: str) -> None:
         super().__init__()
         self.logger = logger
         self.dry_run = dry_run
         self.language = language
         self.lang_priority = [] if not lang_priority or lang_priority == "" else lang_priority.split(",")
+        self.working_dir = working_dir
 
     def _build_subtitle_from_path(self, path: str) -> subtitles_utils.SubtitleFile:
         language = None if self.language == "auto" else self.language
@@ -184,30 +185,30 @@ class Merge(generic_utils.InterruptibleProcess):
         sorted_subtitles = self._sort_subtitles(subtitles)
         sorted_subtitles_str = ", ".join([subtitle.language if subtitle.language is not None else "unknown" for subtitle in sorted_subtitles])
 
-        with tempfile.TemporaryDirectory() as temporary_subtitles_dir:
-            prepared_subtitles = []
-            for subtitle in sorted_subtitles:
-                self.logger.info(f"\t[{subtitle.language}]: {subtitle.path}")
-                input_files.append(subtitle.path)
+        temporary_subtitles_dir = self.working_dir
+        prepared_subtitles = []
+        for subtitle in sorted_subtitles:
+            self.logger.info(f"\t[{subtitle.language}]: {subtitle.path}")
+            input_files.append(subtitle.path)
 
-                # Subtitles are buggy sometimes, use ffmpeg to fix them.
-                # Also makemkv does not handle MicroDVD subtitles, so convert all to SubRip.
-                fps = input_file_details["video"][0]["fps"]
-                converted_subtitle = self._convert_subtitle(fps, subtitle, temporary_subtitles_dir)
+            # Subtitles are buggy sometimes, use ffmpeg to fix them.
+            # Also makemkv does not handle MicroDVD subtitles, so convert all to SubRip.
+            fps = input_file_details["video"][0]["fps"]
+            converted_subtitle = self._convert_subtitle(fps, subtitle, temporary_subtitles_dir)
 
-                prepared_subtitles.append(converted_subtitle)
+            prepared_subtitles.append(converted_subtitle)
 
-            # perform
-            self.logger.debug("\tMerge in progress...")
-            if not self.dry_run:
-                video_utils.generate_mkv(input_video=input_video, output_path=temporary_output_video, subtitles=prepared_subtitles)
+        # perform
+        self.logger.debug("\tMerge in progress...")
+        if not self.dry_run:
+            video_utils.generate_mkv(input_video=input_video, output_path=temporary_output_video, subtitles=prepared_subtitles)
 
-                # Remove all inputs
-                for input in input_files:
-                    os.remove(input)
+            # Remove all inputs
+            for input in input_files:
+                os.remove(input)
 
-                # rename final file to a proper one
-                shutil.move(temporary_output_video, output_video)
+            # rename final file to a proper one
+            shutil.move(temporary_output_video, output_video)
 
         self.logger.debug("\tDone")
 
@@ -296,12 +297,13 @@ class MergeTool(Tool):
                                 'the end in undefined order')
 
     @override
-    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger) -> None:
+    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
         process_utils.ensure_tools_exist(["mkvmerge", "ffmpeg", "ffprobe"], logger)
 
         logger.info("Searching for movie and subtitle files to be merged")
         two_tone = Merge(logger,
                          dry_run=not no_dry_run,
                          language=args.language,
-                         lang_priority=args.languages_priority)
+                         lang_priority=args.languages_priority,
+                         working_dir=working_dir)
         two_tone.process_dir(args.videos_path[0])

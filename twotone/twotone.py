@@ -1,7 +1,9 @@
 
 import argparse
 import logging
+import os
 import sys
+import shutil
 
 from overrides import override
 
@@ -12,6 +14,8 @@ from .tools import          \
     subtitles_fixer,        \
     transcode,              \
     utilities
+
+from .tools.utils import generic_utils
 
 TOOLS = {
     "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file"),
@@ -58,6 +62,12 @@ def execute(argv: list[str]) -> None:
                         action='store_true',
                         default=False,
                         help='Perform actual operation.')
+    parser.add_argument(
+        "--working-dir",
+        "-w",
+        default=generic_utils.get_twotone_working_dir(),
+        help="Directory for temporary files",
+    )
     subparsers = parser.add_subparsers(dest="tool", help="Available tools:")
 
     for tool_name, (tool, desc) in TOOLS.items():
@@ -84,7 +94,19 @@ def execute(argv: list[str]) -> None:
 
     if args.tool in TOOLS:
         tool, _ = TOOLS[args.tool]
-        tool.run(args, no_dry_run = args.no_dry_run, logger = logger.getChild(args.tool))
+        base_wd = args.working_dir
+        pid_wd = os.path.join(base_wd, str(os.getpid()))
+        tool_wd = os.path.join(pid_wd, args.tool)
+        os.makedirs(tool_wd, exist_ok=True)
+        try:
+            tool.run(
+                args,
+                no_dry_run=args.no_dry_run,
+                logger=logger.getChild(args.tool),
+                working_dir=tool_wd,
+            )
+        finally:
+            shutil.rmtree(pid_wd, ignore_errors=True)
     else:
         logging.error(f"Error: Unknown tool {args.tool}")
         sys.exit(1)

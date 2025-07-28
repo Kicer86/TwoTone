@@ -110,7 +110,7 @@ class UtilitiesTool(Tool):
                                       help = "Frames scale in %%. Default is 100")
 
     @override
-    def run(self, args, no_dry_run: bool, logger: logging.Logger):
+    def run(self, args, no_dry_run: bool, logger: logging.Logger, working_dir: str):
         if args.subtool == "scenes":
             extract_scenes(video_path = args.video_path[0], output_dir = args.output, format = args.format, scale = float(args.scale))
         else:

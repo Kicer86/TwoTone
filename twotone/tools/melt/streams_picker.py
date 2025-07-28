@@ -175,9 +175,9 @@ class StreamsPicker:
     def pick_streams(self, files_details: Dict):
         # video preference comparator
         def video_cmp(lhs: Dict, rhs: Dict) -> int:
-            if lhs.get("width") > rhs.get("width") and lhs.get("height") > rhs.get("height"):
+            if lhs["width"] > rhs["width"] and lhs["height"] > rhs["height"]:
                 return 1
-            if lhs.get("width") < rhs.get("width") and lhs.get("height") < rhs.get("height"):
+            if lhs["width"] < rhs["width"] and lhs["height"] < rhs["height"]:
                 return -1
 
             lhs_fps = eval(str(lhs.get("fps", "0")))
