@@ -16,7 +16,7 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, video
 
 
 class Transcoder(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, live_run: bool = False, target_ssim: float = 0.98, codec: str = "libx265", working_dir: str | None = None) -> None:
+    def __init__(self, working_dir: str, logger: logging.Logger, live_run: bool = False, target_ssim: float = 0.98, codec: str = "libx265") -> None:
         super().__init__()
         self.logger = logger
         self.live_run = live_run
@@ -216,9 +216,8 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
 
     def _transcode_segment_and_compare(self, wd_dir: str, segment_file: str, crf: int) -> float | None:
-        _, filename, ext = files_utils.split_path(segment_file)
-
-        transcoded_segment_output = os.path.join(wd_dir, f"{filename}.transcoded.{ext}")
+        basename = os.path.basename(segment_file)
+        transcoded_segment_output = os.path.join(wd_dir, basename)
 
         self._transcode_video(segment_file, transcoded_segment_output, crf, "veryfast", output_params = ["-vsync", "vfr"])
 
@@ -228,18 +227,19 @@ class Transcoder(generic_utils.InterruptibleProcess):
     def _for_segments(self, segments: list[str], op: Callable[[str, str], None], title: str, unit: str) -> None:
         with logging_redirect_tqdm(), \
              tqdm(desc=title, unit=unit, total=len(segments), **generic_utils.get_tqdm_defaults()) as pbar, \
-             tempfile.TemporaryDirectory(dir=self.working_dir) as wd_dir, \
+             files_utils.ScopedDirectory(os.path.join(self.working_dir, "segments")) as wd_dir, \
              ThreadPoolExecutor() as executor:
             def worker(file_path):
                 op(wd_dir, file_path)
                 pbar.update(1)
 
             for segment in segments:
-                executor.submit(worker, segment)
+                #executor.submit(worker, segment)
+                worker(segment)
 
     def _final_transcode(self, input_file: str, crf: int) -> None:
         """Perform the final transcoding with the best CRF using the determined extra_params."""
-        dir, basename, ext = files_utils.split_path(input_file)
+        _, basename, ext = files_utils.split_path(input_file)
 
         # As of now ffmpeg does not support rmvb outputs and copying cook audio codec
         overwrite_input = True
@@ -250,7 +250,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
             overwrite_input = False
 
         self.logger.info(f"Starting final transcoding with CRF: {crf}")
-        temp_file = os.path.join(self.working_dir or dir, f"{basename}.temp.{ext}")
+        temp_file = os.path.join(self.working_dir, f"{basename}.temp.{ext}")
         self._transcode_video(input_file, temp_file, crf, "veryslow", audio_codec = audio_codec, output_params = ["-vsync", "passthrough"], show_progress=True)
 
         original_size = os.path.getsize(input_file)
@@ -320,7 +320,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         # convert to seconds
         duration /= 1000
 
-        with tempfile.TemporaryDirectory(dir=self.working_dir) as wd_dir:
+        with files_utils.ScopedDirectory(os.path.join(self.working_dir, "opt_crf")) as wd_dir:
             segment_files = []
             if allow_segments and duration > 30:
                 self.logger.info(f"Picking segments from {input_file}")
@@ -331,8 +331,9 @@ class Transcoder(generic_utils.InterruptibleProcess):
                 segment_files = self._extract_segments(
                     input_file, segments, wd_dir)
 
-                self.logger.info(f"Starting CRF bisection for {input_file} "
-                             f"with veryfast preset using {len(segment_files)} segments")
+                self.logger.info(
+                    f"Starting CRF bisection for {input_file} "
+                    f"with veryfast preset using {len(segment_files)} segments")
             else:
                 segment_files = [input_file]
                 self.logger.info(f"Starting CRF bisection for {input_file} with veryfast preset using whole file")
@@ -413,5 +414,5 @@ class TranscodeTool(Tool):
 
     @override
     def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
-        transcoder = Transcoder(logger, live_run = no_dry_run, target_ssim = args.ssim, working_dir = working_dir)
+        transcoder = Transcoder(working_dir = working_dir, logger = logger, live_run = no_dry_run, target_ssim = args.ssim)
         transcoder.transcode(args.videos_path[0])

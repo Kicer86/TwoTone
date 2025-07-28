@@ -109,36 +109,36 @@ class Fixer(generic_utils.InterruptibleProcess):
                 video_info = broken_video[0]
                 broken_subtitiles = broken_video[1]
 
-                with tempfile.TemporaryDirectory(dir=self.working_dir) as wd_dir:
-                    video_file = video_info["path"]
-                    self.logger.info(f"Fixing subtitles in file {video_file}")
-                    self.logger.debug("Extracting subtitles from file")
-                    subtitles = self._extract_all_subtitles(video_file, video_info.get("subtitle", []), wd_dir)
-                    broken_subtitles_paths = [subtitles[i] for i in broken_subtitiles]
+                wd_dir = self.working_dir
+                video_file = video_info["path"]
+                self.logger.info(f"Fixing subtitles in file {video_file}")
+                self.logger.debug("Extracting subtitles from file")
+                subtitles = self._extract_all_subtitles(video_file, video_info.get("subtitle", []), wd_dir)
+                broken_subtitles_paths = [subtitles[i] for i in broken_subtitiles]
 
-                    status = all(self._fix_subtitle(broken_subtitile.path, video_info) for broken_subtitile in broken_subtitles_paths)
+                status = all(self._fix_subtitle(broken_subtitile.path, video_info) for broken_subtitile in broken_subtitles_paths)
 
-                    if status:
-                        if self._do_fix:
-                            # remove all subtitles from video
-                            self.logger.debug("Removing existing subtitles from file")
-                            video_without_subtitles = video_file + ".nosubtitles.mkv"
-                            process_utils.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file])
+                if status:
+                    if self._do_fix:
+                        # remove all subtitles from video
+                        self.logger.debug("Removing existing subtitles from file")
+                        video_without_subtitles = video_file + ".nosubtitles.mkv"
+                        process_utils.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file])
 
-                            # add fixed subtitles to video
-                            self.logger.debug("Adding fixed subtitles to file")
-                            temporaryVideoPath = video_file + ".fixed.mkv"
-                            video_utils.generate_mkv(input_video=video_without_subtitles, output_path=temporaryVideoPath, subtitles=subtitles)
+                        # add fixed subtitles to video
+                        self.logger.debug("Adding fixed subtitles to file")
+                        temporaryVideoPath = video_file + ".fixed.mkv"
+                        video_utils.generate_mkv(input_video=video_without_subtitles, output_path=temporaryVideoPath, subtitles=subtitles)
 
-                            # overwrite broken video with fixed one
-                            os.replace(temporaryVideoPath, video_file)
+                        # overwrite broken video with fixed one
+                        os.replace(temporaryVideoPath, video_file)
 
-                            # remove temporary file
-                            os.remove(video_without_subtitles)
-                        else:
-                            self.logger.info("Not applying fixes - dry run mode.")
+                        # remove temporary file
+                        os.remove(video_without_subtitles)
                     else:
-                        self.logger.debug("Skipping video due to errors")
+                        self.logger.info("Not applying fixes - dry run mode.")
+                else:
+                    self.logger.debug("Skipping video due to errors")
 
     def _check_if_broken(self, video_file: str) -> tuple[dict, list[int]] | None:
         self.logger.debug(f"Processing file {video_file}")
