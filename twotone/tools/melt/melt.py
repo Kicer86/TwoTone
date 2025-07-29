@@ -179,6 +179,50 @@ class Melter():
             "-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path
         ])
 
+    def _stream_short_details(self, stype: str, stream: Dict[str, Any]) -> str:
+        def fmt_fps(value: str) -> str | None:
+            try:
+                fps = generic_utils.fps_str_to_float(str(value))
+            except Exception:
+                return None
+
+            if abs(fps - round(fps)) < 0.01:
+                return str(int(round(fps)))
+            return f"{fps:.2f}"
+
+        if stype == "video":
+            width = stream.get("width")
+            height = stream.get("height")
+            fps = stream.get("fps")
+            codec = stream.get("codec")
+            details = []
+            if width and height:
+                fps_val = fmt_fps(fps) if fps else None
+                if fps_val:
+                    details.append(f"{width}x{height}@{fps_val}")
+                else:
+                    details.append(f"{width}x{height}")
+            elif fps:
+                fps_val = fmt_fps(fps)
+                if fps_val:
+                    details.append(f"{fps_val}fps")
+            if codec:
+                details.append(codec)
+            return ", ".join(details)
+        if stype == "audio":
+            channels = stream.get("channels")
+            sample_rate = stream.get("sample_rate")
+            details = []
+            if channels:
+                details.append(f"{channels}ch")
+            if sample_rate:
+                details.append(f"{sample_rate}Hz")
+            return ", ".join(details)
+        if stype == "subtitle":
+            fmt = stream.get("format")
+            return fmt or ""
+        return ""
+
     def _print_file_details(self, file: str, details: Dict[str, Any], common_prefix: str):
         def formatter(key: str, value: Any) -> str:
             if key == "fps":
@@ -199,10 +243,16 @@ class Melter():
         attachments = details["attachments"]
 
         for stream_type, streams in tracks.items():
-            info = f"{stream_type}: {len(streams)} track(s), languages: "
-            info += ", ".join([ data.get("language") or "unknown" for data in streams])
+            self.logger.info(f"  {stream_type}: {len(streams)} track(s)")
+            for i, stream in enumerate(streams):
+                lang_name = language_utils.language_name(stream.get("language"))
+                short = self._stream_short_details(stream_type, stream)
 
-            self.logger.info(info)
+                details = lang_name
+                if short:
+                    details += f" ({short})"
+
+                self.logger.info(f"    #{i + 1}: {details}")
 
         for attachment in attachments:
             file_name = attachment["file_name"]
@@ -220,16 +270,25 @@ class Melter():
                         self.logger.debug(
                             f"\t\t{key_title:<16}{formatter(key, value)}")
 
-    def _print_streams_details(self, common_prefix, all_streams: List):
+    def _print_streams_details(self, common_prefix, all_streams: List, tracks: Dict[str, Dict]):
         for stype, type_stream in all_streams:
             for stream in type_stream:
                 path = stream[0]
                 tid = stream[1]
-                language = stream[2]
-                language = language if language else '---'
+                language = language_utils.language_name(stream[2])
 
                 printable_path = files_utils.get_printable_path(path, common_prefix)
-                self.logger.info(f"{stype} track ID #{tid} with language {language} from {printable_path}")
+
+                stream_details = None
+                track_infos = tracks.get(path, {}).get(stype, [])
+                for info in track_infos:
+                    if info.get("tid") == tid:
+                        stream_details = self._stream_short_details(stype, info)
+                        break
+
+                extra = f" ({stream_details})" if stream_details else ""
+
+                self.logger.info(f"{stype} track #{tid}: {language} from {printable_path}{extra}")
 
     def _print_attachements_details(self, common_prefix, all_attachments: List):
          for stream in all_attachments:
@@ -276,7 +335,11 @@ class Melter():
 
         # print proposed output file
         self.logger.info("Streams used to create output video file:")
-        self._print_streams_details(common_prefix, [(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [video_streams, audio_streams, subtitle_streams])])
+        self._print_streams_details(
+            common_prefix,
+            [(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [video_streams, audio_streams, subtitle_streams])],
+            tracks,
+        )
         self._print_attachements_details(common_prefix, picked_attachments)
 
         # build streams mapping
