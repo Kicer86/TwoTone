@@ -14,3 +14,21 @@ def unify_lang(lang: str) -> str:
             return lang_info.alpha_3
         else:
             raise ValueError(f"Invalid or unsupported language code: {lang}")
+
+
+def language_name(lang: str | None) -> str:
+    """Return a human friendly language name for ``lang`` code.
+
+    If ``lang`` is ``None`` or not recognized, ``"Unknown"`` is returned.
+    """
+
+    if not lang:
+        return "Unknown"
+
+    try:
+        lang_code = unify_lang(lang)
+    except ValueError:
+        return lang
+
+    lang_info = pycountry.languages.get(alpha_3=lang_code)
+    return lang_info.name if lang_info else lang
