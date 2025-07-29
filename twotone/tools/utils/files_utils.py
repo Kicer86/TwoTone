@@ -2,7 +2,7 @@
 import shutil
 
 from pathlib import Path
-from typing import Tuple
+from typing import Iterable, Tuple
 import os
 import tempfile
 import uuid
@@ -56,7 +56,8 @@ class TempFileManager:
         if self.filepath and os.path.exists(self.filepath):
             os.remove(self.filepath)
 
-def get_common_prefix(paths) -> str:
+def get_common_prefix(paths: Iterable[str]) -> str:
+    """Return common prefix for ``paths`` list."""
     unified = list(paths)
     return os.path.commonpath(unified)
 

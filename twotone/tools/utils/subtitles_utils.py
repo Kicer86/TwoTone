@@ -116,8 +116,8 @@ def build_audio_from_path(path: str, language: str | None = "") -> Dict:
 def alter_subrip_subtitles_times(content: str, multiplier: float) -> str:
     def multiply_time(match):
         time_from, time_to = map(time_to_ms, match.groups())
-        time_from *= multiplier
-        time_to *= multiplier
+        time_from = int(time_from * multiplier)
+        time_to = int(time_to * multiplier)
 
         time_from_srt = ms_to_time(time_from)
         time_to_srt = ms_to_time(time_to)

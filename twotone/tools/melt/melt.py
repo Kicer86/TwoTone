@@ -355,25 +355,25 @@ class Melter():
 
         #   process audio streams
 
-        #       check if input files are of the same lenght
+        #       check if input files are of the same length
         video_stream = video_streams[0]
         video_stream_path = video_stream[0]
         video_stream_index = video_stream[1]
 
-        base_lenght = tracks[video_stream_path]["video"][video_stream_index]["length"]
+        base_length = tracks[video_stream_path]["video"][video_stream_index]["length"]
         file_name = 0
         self.logger.debug(f"Using video file {video_stream_path}:{video_stream_index} as a base")
 
         for path, tid, language in audio_streams:
-            lenght = tracks[path]["video"][0]["length"]
+            length = tracks[path]["video"][0]["length"]
 
-            if abs(base_lenght - lenght) > 100:
+            if abs(base_length - length) > 100:
                 printable_path = files_utils.get_printable_path(path, common_prefix)
-                self.logger.warning(f"Audio stream from file {printable_path} has lenght different that lenght of video stream from file {video_stream_path}.")
+                self.logger.warning(f"Audio stream from file {printable_path} has length different than length of video stream from file {video_stream_path}.")
 
                 if self.live_run:
-                    self.logger.info("Starting videos comparison to solve mismatching lenghts.")
-                    # more than 100ms difference in lenght, perform content matching
+                    self.logger.info("Starting videos comparison to solve mismatching lengths.")
+                    # more than 100ms difference in length, perform content matching
 
                     with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
                          generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
@@ -388,7 +388,7 @@ class Melter():
                         path = output_file
                         tid = 0
                 else:
-                    self.logger.info("Skipping videos comparison to solve mismatching lenghts due to dry run.")
+                    self.logger.info("Skipping videos comparison to solve mismatching lengths due to dry run.")
 
             streams[path].append({
                 "tid": tid,
@@ -398,11 +398,11 @@ class Melter():
 
         # process subtitle streams
         for path, tid, language in subtitle_streams:
-            lenght = tracks[path]["video"][0]["length"]
+            length = tracks[path]["video"][0]["length"]
 
-            if abs(base_lenght - lenght) > 100:
+            if abs(base_length - length) > 100:
                 printable_path = files_utils.get_printable_path(path, common_prefix)
-                error = f"Subtitles stream from file {printable_path} has lenght different that lenght of video stream from file {video_stream_path}. This is not supported yet"
+                error = f"Subtitles stream from file {printable_path} has length different than length of video stream from file {video_stream_path}. This is not supported yet"
                 self.logger.error(error)
                 raise RuntimeError(f"Unsupported case: {error}")
 
