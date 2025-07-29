@@ -3,7 +3,7 @@ import logging
 
 from collections import defaultdict
 from functools import cmp_to_key
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from ..utils import files_utils, language_utils
 from .duplicates_source import DuplicatesSource
@@ -15,7 +15,7 @@ class StreamsPicker:
 
 
     @staticmethod
-    def _iter_starting_with(d: dict, start_key) -> Tuple:
+    def _iter_starting_with(d: dict, start_key) -> Generator[Any, Any, Any]:
         """Yield (key, value) pairs starting from start_key, then the rest in order."""
         if start_key not in d:
             raise KeyError(f"{start_key} not found in dictionary")
