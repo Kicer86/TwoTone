@@ -248,11 +248,11 @@ class Melter():
                 lang_name = language_utils.language_name(stream.get("language"))
                 short = self._stream_short_details(stream_type, stream)
 
-                details = lang_name
+                info = lang_name
                 if short:
-                    details += f" ({short})"
+                    info += f" ({short})"
 
-                self.logger.info(f"    #{i + 1}: {details}")
+                self.logger.info(f"    #{i + 1}: {info}")
 
         for attachment in attachments:
             file_name = attachment["file_name"]
@@ -298,7 +298,7 @@ class Melter():
             printable_path = files_utils.get_printable_path(path, common_prefix)
             self.logger.info(f"Attachment ID #{tid} from {printable_path}")
 
-    def _process_duplicates(self, duplicates: List[str]) -> List[Dict] | None:
+    def _process_duplicates(self, duplicates: List[str]) -> Tuple[Dict, List] | None:
         self.logger.info("------------------------------------")
         self.logger.info("Processing group of duplicated files")
         self.logger.info("------------------------------------")
