@@ -320,7 +320,7 @@ class Melter():
         if len(lengths) > 1:
             base = lengths[0]
             if any(abs(base - l) > 100 for l in lengths[1:]):
-                self.logger.warning("Input video lengths differ")
+                self.logger.warning("Input video lengths differ. Check for --allow-length-mismatch option.")
                 if not self.allow_length_mismatch:
                     return None
 
