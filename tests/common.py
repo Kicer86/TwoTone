@@ -128,6 +128,19 @@ def list_files(path: str) -> List[str]:
     return results
 
 
+def remove_key(obj, key_to_remove):
+    if isinstance(obj, dict):
+        return {
+            k: remove_key(v, key_to_remove)
+            for k, v in obj.items()
+            if k != key_to_remove
+        }
+    elif isinstance(obj, list):
+        return [remove_key(item, key_to_remove) for item in obj]
+    else:
+        return obj
+
+
 def add_test_media(filter: str, test_case_path: str, suffixes: List[str] | None = None, copy: bool = False) -> List[str]:
     suffixes = suffixes or [""]
     filter_regex = re.compile(filter)
