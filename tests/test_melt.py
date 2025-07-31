@@ -158,7 +158,7 @@ class MeltingTest(TwoToneTestCase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 0)
 
-    def test_inputs_are_removed_by_default(self):
+    def test_inputs_are_kept_by_default(self):
         file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["r1"])[0]
         file2 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["r2"])[0]
 
@@ -172,27 +172,6 @@ class MeltingTest(TwoToneTestCase):
 
         melter = Melter(self.logger.getChild("Melter"), interruption, duplicates,
                         live_run=True, wd=self.wd.path, output=output_dir)
-        melter.melt()
-
-        self.assertFalse(os.path.exists(file1))
-        self.assertFalse(os.path.exists(file2))
-        self.assertEqual(len(hashes(output_dir)), 1)
-
-    def test_keep_input_files_flag(self):
-        file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["k1"])[0]
-        file2 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["k2"])[0]
-
-        interruption = generic_utils.InterruptibleProcess()
-        duplicates = StaticSource(interruption)
-        duplicates.add_entry("Grass", file1)
-        duplicates.add_entry("Grass", file2)
-
-        output_dir = os.path.join(self.wd.path, "output")
-        os.makedirs(output_dir)
-
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates,
-                        live_run=True, wd=self.wd.path, output=output_dir,
-                        keep_input_files=True)
         melter.melt()
 
         self.assertTrue(os.path.exists(file1))

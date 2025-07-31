@@ -32,7 +32,7 @@ def _split_path_fix(value: str) -> List[str]:
 
 
 class Melter():
-    def __init__(self, logger: logging.Logger, interruption: generic_utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = [], preferred_languages: List[str] = [], keep_input_files: bool = False, allow_length_mismatch: bool = False):
+    def __init__(self, logger: logging.Logger, interruption: generic_utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = [], preferred_languages: List[str] = [], allow_length_mismatch: bool = False):
         self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
@@ -42,7 +42,6 @@ class Melter():
         self.output = output
         self.languages_priority = [language_utils.unify_lang(language) for language in languages_priority]
         self.preferred_languages = [language_utils.unify_lang(language) for language in preferred_languages]
-        self.keep_input_files = keep_input_files
         self.allow_length_mismatch = allow_length_mismatch
 
         os.makedirs(self.wd, exist_ok=True)
@@ -595,13 +594,7 @@ class Melter():
 
                     self.logger.info(f"{output} saved.")
 
-                if self.live_run and not self.keep_input_files:
-                    for file_path in files:
-                        try:
-                            os.remove(file_path)
-                            self.logger.info(f"Removed input file {file_path}")
-                        except OSError as e:
-                            self.logger.warning(f"Failed to remove {file_path}: {e}")
+                # keep input files intact
 
     def melt(self):
         with files_utils.ScopedDirectory(self.wd) as wd, logging_redirect_tqdm():
@@ -669,9 +662,6 @@ class MeltTool(Tool):
                                  'For example for value: jp,pl,de melt will set default audio track to japanese or polish or german in given order if audio track in given language exists.\n'
                                  'If audio for given languages was not found, `melt` will look for subtitles in given languages and set the first one found to default.\n'
                                  'If this parameter is not set, first audio track will be chosen, and none of the subtitles will be set as default.')
-        parser.add_argument('--keep-input-files',
-                            action='store_true',
-                            help='Do not delete input files after successful processing.')
         parser.add_argument('--allow-length-mismatch', action='store_true',
                             help='Continue processing even if input video lengths differ.\n'
                                  'This may require additional processing that can consume significant time and disk space.')
@@ -731,7 +721,6 @@ class MeltTool(Tool):
                         output = args.output_dir,
                         languages_priority = languages_priority,
                         preferred_languages = preferred_languages,
-                        keep_input_files = args.keep_input_files,
                         allow_length_mismatch = args.allow_length_mismatch
         )
 

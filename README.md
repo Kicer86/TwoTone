@@ -70,7 +70,7 @@ python -m twotone concatenate --help
 
 #### Combine Duplicate Videos (melt)
 
-The melt tool scans for duplicate video files and creates a single output using the best quality segments from each copy. Duplicates can be provided manually or taken from a Jellyfin server. By default all input files used to create the output are removed after a successful run. Use `--keep-input-files` to preserve them.
+The melt tool scans for duplicate video files and creates a single output using the best quality segments from each copy. Duplicates can be provided manually or taken from a Jellyfin server. Input files are kept intact by default.
 
 ```bash
 python -m twotone melt --help
