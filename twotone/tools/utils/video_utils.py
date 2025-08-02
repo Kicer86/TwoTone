@@ -309,7 +309,7 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
         Set 'enrich' to True to enrich mkvmerge's outpput with data from ffprobe.
     """
 
-    def find_ffprobe_track(track_id: int, ffprobe_info: {}):
+    def find_ffprobe_track(track_id: int, ffprobe_info: Dict | None) -> Dict | None:
         for streams in (ffprobe_info or {}).values():
             for stream in streams:
                 if stream.get("tid", None) == track_id:
@@ -317,7 +317,7 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
 
         return None
 
-    def merge_properties(initial: Dict or None, update: Dict):
+    def merge_properties(initial: Dict | None, update: Dict) -> Dict:
         if initial is None:
             return update
 
@@ -427,7 +427,7 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
     for attachment in info.get("attachments", []):
         content_type = attachment.get("content_type", "")
         if content_type[:5] == "image":
-            props = track.get("properties", {})
+            props = attachment.get("properties", {})
             uid = props.get("uid", None)
             attachments.append(
             {
@@ -450,9 +450,6 @@ def compare_videos(lhs: List[Dict], rhs: List[Dict]) -> bool:
     for lhs_item, rhs_item in zip(lhs, rhs):
         lhs_fps = fps_str_to_float(lhs_item["fps"])
         rhs_fps = fps_str_to_float(rhs_item["fps"])
-
-        if lhs_fps == rhs_fps:
-            return True
 
         diff = abs(lhs_fps - rhs_fps)
 

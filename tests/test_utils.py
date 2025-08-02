@@ -4,7 +4,7 @@ import unittest
 from parameterized import parameterized
 
 from twotone.tools.utils import subtitles_utils, video_utils
-from common import WorkingDirectoryForTest, TwoToneTestCase, get_video, write_subtitle
+from common import TwoToneTestCase, get_video, remove_key, write_subtitle
 
 
 class UtilsTests(TwoToneTestCase):
@@ -151,7 +151,7 @@ class UtilsTests(TwoToneTestCase):
                 "attachments":
                 [
                     {
-                        'tid': 0, 'uid': None, 'content_type': 'image/png', 'file_name': 'cover.png'
+                        'tid': 0, 'uid': 15146541822372754365, 'content_type': 'image/png', 'file_name': 'cover.png'
                     }
                 ],
                 "tracks":
@@ -174,6 +174,9 @@ class UtilsTests(TwoToneTestCase):
         self.maxDiff = None
         input_file_name = get_video(input)
         file_info = video_utils.get_video_data_mkvmerge(input_file_name)
+
+        file_info = remove_key(file_info, "uid")
+        expected_streams = remove_key(expected_streams, "uid")
 
         self.assertEqual(expected_streams, file_info)
 
@@ -244,7 +247,7 @@ class UtilsTests(TwoToneTestCase):
                 "attachments":
                 [
                     {
-                        'tid': 0, 'uid': None, 'content_type': 'image/png', 'file_name': 'cover.png'
+                        'tid': 0, 'uid': 7991968932496793124, 'content_type': 'image/png', 'file_name': 'cover.png'
                     }
                 ],
                 "tracks":
@@ -267,6 +270,9 @@ class UtilsTests(TwoToneTestCase):
         self.maxDiff = None
         input_file_name = get_video(input)
         file_info = video_utils.get_video_data_mkvmerge(input_file_name, enrich = True)
+
+        file_info = remove_key(file_info, "uid")
+        expected_streams = remove_key(expected_streams, "uid")
 
         self.assertEqual(expected_streams, file_info)
 
