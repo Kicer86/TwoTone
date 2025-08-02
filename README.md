@@ -72,6 +72,14 @@ python -m twotone concatenate --help
 
 The melt tool scans for duplicate video files and creates a single output using the best quality segments from each copy. Duplicates can be provided manually or taken from a Jellyfin server. By default all input files used to create the output are removed after a successful run. Use `--keep-input-files` to preserve them.
 
+In addition to thumbnails, melt now preserves all kinds of attachments (such as
+fonts or images) found in the source files. If multiple files provide
+incomparable attachments of the same content type, melt chooses one from the
+best-quality video file and logs a warning. Chapter data is treated in the same
+way and copied from the selected source. Attached fonts are especially important
+for styled ASS/SSA subtitles as players rely on them to display the subtitles
+with the intended typography.
+
 ```bash
 python -m twotone melt --help
 ```

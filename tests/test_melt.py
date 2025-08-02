@@ -13,7 +13,20 @@ from twotone.tools.utils import generic_utils, process_utils, video_utils
 from twotone.tools.melt import Melter
 from twotone.tools.melt.melt import StaticSource, StreamsPicker
 from twotone.tools.utils.files_utils import ScopedDirectory
-from common import TwoToneTestCase, FileCache, add_test_media, add_to_test_dir, build_test_video, current_path, get_audio, get_video, hashes, list_files
+from common import (
+    TwoToneTestCase,
+    FileCache,
+    add_test_media,
+    add_to_test_dir,
+    build_test_video,
+    current_path,
+    get_audio,
+    get_video,
+    get_font,
+    get_chapter,
+    hashes,
+    list_files,
+)
 
 
 def normalize(obj):
@@ -417,6 +430,48 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(len(output_file_data["tracks"]["video"]), 1)
         self.assertEqual(len(output_file_data["attachments"]), 1)
 
+    def test_chapters(self):
+        video1 = build_test_video(
+            os.path.join(self.wd.path, "c1.mkv"),
+            self.wd.path,
+            "fog-over-mountainside-13008647.mp4",
+            subtitle=True,
+            chapter_name="simple_chapters.txt",
+        )
+        video2 = build_test_video(
+            os.path.join(self.wd.path, "c2.mkv"),
+            self.wd.path,
+            "fog-over-mountainside-13008647.mp4",
+            subtitle=True,
+        )
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Fog", video1)
+        duplicates.add_entry("Fog", video2)
+        duplicates.add_metadata(video1, "audio_lang", "eng")
+        duplicates.add_metadata(video2, "audio_lang", "eng")
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(
+            logging.getLogger("Melter"),
+            interruption,
+            duplicates,
+            live_run=True,
+            wd=self.wd.path,
+            output=output_dir,
+        )
+        melter.melt()
+
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
+        output_file = list(output_file_hash)[0]
+
+        output_file_data = video_utils.get_video_data_mkvmerge(output_file)
+        self.assertTrue(output_file_data["chapters"])
+
 
     def test_attachement_in_file_with_useless_streams(self):
         # video #1 comes with all interesting data. the only thing video #2 can offer is an attachment.
@@ -438,6 +493,50 @@ class MeltingTest(TwoToneTestCase):
         melter.melt()
 
         # validate output
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
+        output_file = list(output_file_hash)[0]
+
+        output_file_data = video_utils.get_video_data_mkvmerge(output_file)
+        self.assertEqual(len(output_file_data["tracks"]["video"]), 1)
+        self.assertEqual(len(output_file_data["attachments"]), 1)
+
+    def test_font_attachment(self):
+        font = get_font("dummy.ttf")
+        video1 = build_test_video(
+            os.path.join(self.wd.path, "o1.mkv"),
+            self.wd.path,
+            "fog-over-mountainside-13008647.mp4",
+            subtitle=True,
+            attachments=[font],
+        )
+        video2 = build_test_video(
+            os.path.join(self.wd.path, "o2.mkv"),
+            self.wd.path,
+            "fog-over-mountainside-13008647.mp4",
+            subtitle=True,
+        )
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Fog", video1)
+        duplicates.add_entry("Fog", video2)
+        duplicates.add_metadata(video1, "audio_lang", "eng")
+        duplicates.add_metadata(video2, "audio_lang", "eng")
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(
+            logging.getLogger("Melter"),
+            interruption,
+            duplicates,
+            live_run=True,
+            wd=self.wd.path,
+            output=output_dir,
+        )
+        melter.melt()
+
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
         output_file = list(output_file_hash)[0]

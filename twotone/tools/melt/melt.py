@@ -197,6 +197,7 @@ class Melter():
         self.logger.info(f"File {files_utils.get_printable_path(file, common_prefix)} details:")
         tracks = details["tracks"]
         attachments = details["attachments"]
+        chapters = details.get("chapters")
 
         for stream_type, streams in tracks.items():
             info = f"{stream_type}: {len(streams)} track(s), languages: "
@@ -207,6 +208,8 @@ class Melter():
         for attachment in attachments:
             file_name = attachment["file_name"]
             self.logger.info(f"attachment: {file_name}")
+
+        self.logger.info(f"chapters: {'yes' if chapters else 'no'}")
 
         # more details for debug
         for stream_type, streams in tracks.items():
@@ -232,14 +235,19 @@ class Melter():
                 self.logger.info(f"{stype} track ID #{tid} with language {language} from {printable_path}")
 
     def _print_attachements_details(self, common_prefix, all_attachments: List):
-         for stream in all_attachments:
+        for stream in all_attachments:
             path = stream[0]
             tid = stream[1]
 
             printable_path = files_utils.get_printable_path(path, common_prefix)
             self.logger.info(f"Attachment ID #{tid} from {printable_path}")
 
-    def _process_duplicates(self, duplicates: List[str]) -> List[Dict] | None:
+    def _print_chapter_details(self, common_prefix, chapter: str | None):
+        if chapter:
+            printable_path = files_utils.get_printable_path(chapter, common_prefix)
+            self.logger.info(f"Chapters from {printable_path}")
+
+    def _process_duplicates(self, duplicates: List[str]) -> Tuple[Dict, List, str | None] | None:
         self.logger.info("------------------------------------")
         self.logger.info("Processing group of duplicated files")
         self.logger.info("------------------------------------")
@@ -248,6 +256,7 @@ class Melter():
         # use mkvmerge-based probing enriched with ffprobe data
         details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True) for file in duplicates}
         attachments = {file: info["attachments"] for file, info in details_full.items()}
+        chapters_info = {file: info.get("chapters") for file, info in details_full.items()}
         tracks = {file: info["tracks"] for file, info in details_full.items()}
 
         common_prefix = files_utils.get_common_prefix(duplicates)
@@ -272,12 +281,16 @@ class Melter():
             self.logger.error(re)
             return None
 
-        picked_attachments = AttachmentsPicker(self.logger).pick_attachments(attachments)
+        best_video_file = video_streams[0][0]
+        picker = AttachmentsPicker(self.logger)
+        picked_attachments = picker.pick_attachments(attachments, best_video_file)
+        picked_chapter = picker.pick_chapter(chapters_info, best_video_file)
 
         # print proposed output file
         self.logger.info("Streams used to create output video file:")
         self._print_streams_details(common_prefix, [(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [video_streams, audio_streams, subtitle_streams])])
         self._print_attachements_details(common_prefix, picked_attachments)
+        self._print_chapter_details(common_prefix, picked_chapter)
 
         # build streams mapping
         streams = defaultdict(list)
@@ -349,7 +362,7 @@ class Melter():
                 "type": "subtitle",
             })
 
-        return streams, picked_attachments
+        return streams, picked_attachments, picked_chapter
 
     def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
         def process_entries(entries: List[str]) -> List[Tuple[List[str], str]]:
@@ -417,13 +430,15 @@ class Melter():
                     self.logger.info("Skipping output generation")
                     continue
 
-                streams, attachments = result
+                streams, attachments, chapter = result
                 if not self.live_run:
                     self.logger.info("Dry run. Skipping output generation")
                     continue
 
                 required_input_files = { file_path for file_path in streams }
                 required_input_files |= { info[0] for info in attachments }
+                if chapter:
+                    required_input_files.add(chapter)
 
                 output = os.path.join(self.output, title, output_name + ".mkv")
                 if os.path.exists(output):
@@ -527,6 +542,11 @@ class Melter():
 
                     if track_order:
                         generation_args.extend(["--track-order", ",".join(track_order)])
+
+                    if chapter:
+                        generation_args.extend(["--chapters", chapter])
+                    else:
+                        generation_args.append("--no-chapters")
 
                     process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args, show_progress = True))
 

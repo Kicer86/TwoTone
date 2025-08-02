@@ -426,20 +426,23 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
     attachments = []
     for attachment in info.get("attachments", []):
         content_type = attachment.get("content_type", "")
-        if content_type[:5] == "image":
-            props = track.get("properties", {})
-            uid = props.get("uid", None)
-            attachments.append(
+        props = attachment.get("properties", {})
+        uid = props.get("uid")
+        attachments.append(
             {
-                "tid": attachment["id"],
+                "tid": attachment.get("id"),
                 "uid": uid,
                 "content_type": content_type,
-                "file_name": attachment["file_name"],
-            })
+                "file_name": attachment.get("file_name"),
+            }
+        )
+
+    has_chapters = info.get("chapters", {}).get("num_entries", 0) > 0
 
     return {
         "attachments": attachments,
         "tracks": dict(streams),
+        "chapters": has_chapters,
     }
 
 
@@ -478,7 +481,15 @@ def collect_video_files(path: str, interruptible) -> List[str]:
     return video_files
 
 
-def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | None = None, audios: List[Dict] | None = None, thumbnail: Union[str, None] = None):
+def generate_mkv(
+    output_path: str,
+    input_video: str,
+    subtitles: List[SubtitleFile] | None = None,
+    audios: List[Dict] | None = None,
+    thumbnail: Union[str, None] = None,
+    chapters: Union[str, None] = None,
+    attachments: List[str] | None = None,
+):
     subtitles = subtitles or []
     audios = audios or []
 
@@ -509,8 +520,17 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
 
         options.append(subtitle.path)
 
+    attachments = attachments or []
     if thumbnail:
-        options.extend(["--attach-file", thumbnail])
+        attachments.append(thumbnail)
+
+    if chapters:
+        options.extend(["--chapters", chapters])
+    else:
+        options.append("--no-chapters")
+
+    for att in attachments:
+        options.extend(["--attach-file", att])
 
     cmd = "mkvmerge"
     result = process_utils.start_process(cmd, options)

@@ -180,6 +180,14 @@ def get_subtitle(name: str) -> str:
     return os.path.join(current_path, "subtitles", name)
 
 
+def get_font(name: str) -> str:
+    return os.path.join(current_path, "fonts", name)
+
+
+def get_chapter(name: str) -> str:
+    return os.path.join(current_path, "chapters", name)
+
+
 def build_test_video(
     output_path: str,
     wd: str,
@@ -188,11 +196,14 @@ def build_test_video(
     audio_name: Union[str, None] = None,
     subtitle: Union[str, bool, None] = None,
     thumbnail_name: Union[str, None] = None,
+    chapter_name: Union[str, None] = None,
+    attachments: List[str] | None = None,
 ) -> str:
     with tempfile.TemporaryDirectory(dir = wd) as tmp_dir:
         video_path = get_video(video_name)
         audio_path = None if audio_name is None else get_audio(audio_name)
         thumbnail_path = None if thumbnail_name is None else get_image(thumbnail_name)
+        chapters_path = None if chapter_name is None else get_chapter(chapter_name)
 
         subtitle_path = get_subtitle(subtitle) if isinstance(subtitle, str) else None
         if subtitle_path is None and isinstance(subtitle, bool) and subtitle:
@@ -200,11 +211,14 @@ def build_test_video(
             subtitle_path = os.path.join(tmp_dir, "temporary_subtitle_file.srt")
             generate_subrip_subtitles(subtitle_path, length = video_length)
 
-        video_utils.generate_mkv(output_path,
-                                video_path,
-                                [subtitles_utils.build_subtitle_from_path(subtitle_path)] if subtitle_path else None,
-                                [subtitles_utils.build_audio_from_path(audio_path)] if audio_path else None,
-                                thumbnail_path,
+        video_utils.generate_mkv(
+            output_path,
+            video_path,
+            [subtitles_utils.build_subtitle_from_path(subtitle_path)] if subtitle_path else None,
+            [subtitles_utils.build_audio_from_path(audio_path)] if audio_path else None,
+            thumbnail_path,
+            chapters_path,
+            attachments,
         )
 
         return output_path
