@@ -198,26 +198,68 @@ def build_test_video(
     wd: str,
     video_name: str,
     *,
-    audio_name: Union[str, None] = None,
-    subtitle: Union[str, bool, None] = None,
+    audio_name: Union[str, tuple[str, str], List[Union[str, tuple[str, str]]], None] = None,
+    subtitle: Union[str, bool, tuple[str, str], List[Union[str, bool, tuple[str, str]]], None] = None,
     thumbnail_name: Union[str, None] = None,
 ) -> str:
-    with tempfile.TemporaryDirectory(dir = wd) as tmp_dir:
+    def _parse_media(media, get_func, build_func):
+        if media is None:
+            return None
+        if isinstance(media, (str, bool)):
+            path = get_func(media)
+            return [build_func(path)]
+        if isinstance(media, tuple):
+            path = get_func(media[0])
+            lang = media[1]
+            return [build_func(path, lang)]
+        if isinstance(media, list):
+            result = [_parse_media(item) for item in media if item]
+            return result
+        return None
+
+    with tempfile.TemporaryDirectory(dir=wd) as tmp_dir:
         video_path = get_video(video_name)
-        audio_path = None if audio_name is None else get_audio(audio_name)
         thumbnail_path = None if thumbnail_name is None else get_image(thumbnail_name)
 
-        subtitle_path = get_subtitle(subtitle) if isinstance(subtitle, str) else None
-        if subtitle_path is None and isinstance(subtitle, bool) and subtitle:
-            video_length = video_utils.get_video_duration(video_path)
-            subtitle_path = os.path.join(tmp_dir, "temporary_subtitle_file.srt")
-            generate_subrip_subtitles(subtitle_path, length = video_length)
+        def subtitle_builder(path, lang=None):
+            return subtitles_utils.build_subtitle_from_path(path, lang) if lang else subtitles_utils.build_subtitle_from_path(path)
 
-        video_utils.generate_mkv(output_path,
-                                video_path,
-                                [subtitles_utils.build_subtitle_from_path(subtitle_path)] if subtitle_path else None,
-                                [subtitles_utils.build_audio_from_path(audio_path)] if audio_path else None,
-                                thumbnail_path,
+        def audio_builder(path, lang=None):
+            return subtitles_utils.build_audio_from_path(path, lang) if lang else subtitles_utils.build_audio_from_path(path)
+
+        # Special handling for boolean subtitle (generate temporary subtitle)
+        def subtitle_getter(sub):
+            if isinstance(sub, bool):
+                if sub:
+                    video_length = video_utils.get_video_duration(video_path)
+                    subtitle_path = os.path.join(tmp_dir, "temporary_subtitle_file.srt")
+                    generate_subrip_subtitles(subtitle_path, length=video_length)
+                    return subtitle_path
+                else:
+                    return None
+            else:
+                return get_subtitle(sub)
+
+        subtitle_objs = None
+        if subtitle is not None:
+            subtitle_objs = _parse_media(subtitle, subtitle_getter, subtitle_builder)
+            if isinstance(subtitle_objs, list):
+                subtitle_objs = [s for s in subtitle_objs if s]
+                if not subtitle_objs:
+                    subtitle_objs = None
+
+        audio_objs = None
+        if audio_name is not None:
+            audio_objs = _parse_media(audio_name, get_audio, audio_builder)
+            if isinstance(audio_objs, list) and not audio_objs:
+                audio_objs = None
+
+        video_utils.generate_mkv(
+            output_path,
+            video_path,
+            subtitle_objs,
+            audio_objs,
+            thumbnail_path,
         )
 
         return output_path
