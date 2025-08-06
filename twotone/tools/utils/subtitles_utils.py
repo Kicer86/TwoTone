@@ -104,7 +104,7 @@ def build_subtitle_from_path(path: str, language: str | None = "") -> SubtitleFi
                    2/3 letter language code - use that language
     """
     encoding = file_encoding(path)
-    language = guess_language(path, encoding) if language is None else language
+    language = language or guess_language(path, encoding)
 
     return SubtitleFile(path, language, encoding)
 
