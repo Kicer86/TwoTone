@@ -329,8 +329,8 @@ class MeltingTest(TwoToneTestCase):
 
 
     def test_subtitle_streams(self):
-        video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = True)
-        video2 = build_test_video(os.path.join(self.wd.path, "o2.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = True)
+        video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", audio_name = True, subtitle = True)
+        video2 = build_test_video(os.path.join(self.wd.path, "o2.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", audio_name = True, subtitle = True)
 
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)

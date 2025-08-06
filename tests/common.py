@@ -204,7 +204,7 @@ def build_test_video(
 ) -> str:
     def _parse_media(media, get_func, build_func):
         if media is None:
-            return None
+            return []
         if isinstance(media, (str, bool)):
             path = get_func(media)
             return [build_func(path)]
@@ -213,32 +213,77 @@ def build_test_video(
             lang = media[1]
             return [build_func(path, lang)]
         if isinstance(media, list):
-            result = [_parse_media(item) for item in media if item]
+            result = [subitem for item2 in media for subitem in _parse_media(item2, get_func, build_func)]
             return result
-        return None
+        return []
 
     with tempfile.TemporaryDirectory(dir=wd) as tmp_dir:
-        video_path = get_video(video_name)
+        class TempFileManager:
+            def __init__(self, tmp_dir):
+                self.tmp_dir = tmp_dir
+                self.counter = 0
+            def next(self, prefix, ext):
+                self.counter += 1
+                return os.path.join(self.tmp_dir, f"{prefix}_{self.counter}.{ext}")
+
+        temp_files = TempFileManager(tmp_dir)
+
+        # Strip all streams but video from video_name and place in temp dir
+        original_video_path = get_video(video_name)
+        stripped_video_path = temp_files.next("stripped_video", "mkv")
+        process_utils.start_process(
+            "ffmpeg",
+            [
+                "-i", original_video_path,
+                "-map", "0:v:0",
+                "-c:v", "copy",
+                "-an",
+                "-sn",
+                "-dn",
+                stripped_video_path
+            ]
+        )
+        video_path = stripped_video_path
         thumbnail_path = None if thumbnail_name is None else get_image(thumbnail_name)
 
         def subtitle_builder(path, lang=None):
             return subtitles_utils.build_subtitle_from_path(path, lang) if lang else subtitles_utils.build_subtitle_from_path(path)
 
-        def audio_builder(path, lang=None):
-            return subtitles_utils.build_audio_from_path(path, lang) if lang else subtitles_utils.build_audio_from_path(path)
-
-        # Special handling for boolean subtitle (generate temporary subtitle)
         def subtitle_getter(sub):
             if isinstance(sub, bool):
                 if sub:
                     video_length = video_utils.get_video_duration(video_path)
-                    subtitle_path = os.path.join(tmp_dir, "temporary_subtitle_file.srt")
+                    subtitle_path = temp_files.next("temporary_subtitle", "srt")
                     generate_subrip_subtitles(subtitle_path, length=video_length)
                     return subtitle_path
                 else:
                     return None
             else:
                 return get_subtitle(sub)
+
+        def audio_builder(path, lang=None):
+            return subtitles_utils.build_audio_from_path(path, lang) if lang else subtitles_utils.build_audio_from_path(path)
+
+        def audio_getter(aud):
+            if isinstance(aud, bool):
+                if aud:
+                    video_length = video_utils.get_video_duration(video_path)
+                    audio_path = temp_files.next("temporary_audio", "wav")
+                    # Generate silent audio using ffmpeg
+                    duration_sec = max(1, int(video_length / 1000))
+                    process_utils.start_process("ffmpeg", [
+                        "-f", "lavfi",
+                        "-i", f"anullsrc=r=44100:cl=stereo",
+                        "-t", str(duration_sec),
+                        "-q:a", "9",
+                        "-acodec", "pcm_s16le",
+                        audio_path
+                    ])
+                    return audio_path
+                else:
+                    return None
+            else:
+                return get_audio(aud)
 
         subtitle_objs = None
         if subtitle is not None:
@@ -250,9 +295,11 @@ def build_test_video(
 
         audio_objs = None
         if audio_name is not None:
-            audio_objs = _parse_media(audio_name, get_audio, audio_builder)
-            if isinstance(audio_objs, list) and not audio_objs:
-                audio_objs = None
+            audio_objs = _parse_media(audio_name, audio_getter, audio_builder)
+            if isinstance(audio_objs, list):
+                audio_objs = [a for a in audio_objs if a]
+                if not audio_objs:
+                    audio_objs = None
 
         video_utils.generate_mkv(
             output_path,
