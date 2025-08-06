@@ -158,6 +158,7 @@ class MeltingTest(TwoToneTestCase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 0)
 
+
     def test_inputs_are_kept_by_default(self):
         file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["r1"])[0]
         file2 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["r2"])[0]
@@ -196,6 +197,7 @@ class MeltingTest(TwoToneTestCase):
 
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 0)
+
 
     def test_allow_length_mismatch(self):
         file1 = add_test_media("DSC_8073.MP4", self.wd.path)[0]
@@ -326,6 +328,41 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(output_file_data["audio"][2]["language"], "eng")
         self.assertEqual(output_file_data["audio"][3]["language"], "nor")
         self.assertEqual(output_file_data["audio"][4]["language"], "pol")
+
+
+    def test_languages_order_simple_case(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        langs = ["pol", "en", "ger", "ja", "nor"]
+
+        for f in range(2):
+            audio_tracks = [(True, lang) for lang in langs]
+            subtitle_tracks = [(True, lang) for lang in langs[::-1]]
+            file = build_test_video(os.path.join(self.wd.path, f"o{f}.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = subtitle_tracks, audio_name = audio_tracks)
+            duplicates.add_entry("Flowers", file)
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir, languages_priority = ["de", "jpn", "eng", "no", "pl"])
+        melter.melt()
+
+        # validate order
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
+
+        output_file = list(output_file_hash)[0]
+        output_file_data = video_utils.get_video_data(output_file)
+        self.assertEqual(output_file_data["audio"][0]["language"], "pol")
+        self.assertEqual(output_file_data["audio"][1]["language"], "eng")
+        self.assertEqual(output_file_data["audio"][2]["language"], "deu")
+        self.assertEqual(output_file_data["audio"][3]["language"], "jpn")
+        self.assertEqual(output_file_data["audio"][4]["language"], "nor")
+        self.assertEqual(output_file_data["subtitle"][0]["language"], "nor")
+        self.assertEqual(output_file_data["subtitle"][1]["language"], "jpn")
+        self.assertEqual(output_file_data["subtitle"][2]["language"], "deu")
+        self.assertEqual(output_file_data["subtitle"][3]["language"], "eng")
+        self.assertEqual(output_file_data["subtitle"][4]["language"], "pol")
 
 
     def test_subtitle_streams(self):
