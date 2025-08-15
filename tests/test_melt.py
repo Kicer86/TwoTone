@@ -2,6 +2,7 @@
 import logging
 import unittest
 import os
+import tempfile
 
 from functools import partial
 from itertools import permutations
@@ -13,7 +14,57 @@ from twotone.tools.utils import generic_utils, process_utils, video_utils
 from twotone.tools.melt import Melter
 from twotone.tools.melt.melt import StaticSource, StreamsPicker
 from twotone.tools.utils.files_utils import ScopedDirectory
-from common import TwoToneTestCase, FileCache, add_test_media, add_to_test_dir, build_test_video, current_path, get_audio, get_video, hashes, list_files
+from common import (
+    TwoToneTestCase,
+    FileCache,
+    add_test_media,
+    add_to_test_dir,
+    build_test_video,
+    current_path,
+    get_audio,
+    get_video,
+    hashes,
+    list_files,
+)
+
+
+def generate_video(path: str, *, duration: int, width: int, height: int, audio_lang: str | None = None) -> str:
+    """Create a small MKV video for tests."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        video_tmp = os.path.join(tmp_dir, "video.mp4")
+        process_utils.start_process(
+            "ffmpeg",
+            [
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c=black:s={width}x{height}:d={duration}",
+                "-pix_fmt",
+                "yuv420p",
+                video_tmp,
+            ],
+        )
+
+        audios = []
+        if audio_lang:
+            audio_tmp = os.path.join(tmp_dir, "audio.wav")
+            process_utils.start_process(
+                "ffmpeg",
+                [
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    f"sine=frequency=1000:sample_rate=44100:duration={duration}",
+                    audio_tmp,
+                ],
+            )
+            audios = [{"path": audio_tmp, "language": audio_lang}]
+
+        video_utils.generate_mkv(path, video_tmp, audios=audios)
+
+    return path
 
 
 def normalize(obj):
@@ -187,6 +238,8 @@ class MeltingTest(TwoToneTestCase):
         duplicates = StaticSource(interruption)
         duplicates.add_entry("Video", file1)
         duplicates.add_entry("Video", file2)
+        duplicates.add_metadata(file1, "audio_lang", "eng")
+        duplicates.add_metadata(file2, "audio_lang", "de")
 
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
@@ -198,13 +251,15 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(len(output_file_hash), 0)
 
     def test_allow_length_mismatch(self):
-        file1 = add_test_media("DSC_8073.MP4", self.wd.path)[0]
-        file2 = add_test_media("moon.mp4", self.wd.path)[0]
+        file1 = add_to_test_dir(self.wd.path, str(self.sample_video_file))
+        file2 = add_to_test_dir(self.wd.path, str(self.sample_vhs_video_file))
 
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
         duplicates.add_entry("Video", file1)
         duplicates.add_entry("Video", file2)
+        duplicates.add_metadata(file1, "audio_lang", "eng")
+        duplicates.add_metadata(file2, "audio_lang", "de")
 
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
@@ -214,6 +269,62 @@ class MeltingTest(TwoToneTestCase):
 
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
+
+        output_file = list(output_file_hash.keys())[0]
+        output_file_data = video_utils.get_video_data_mkvmerge(output_file)
+        self.assertEqual(len(output_file_data["tracks"]["audio"]), 2)
+
+
+    def test_mismatch_unused_file_ignored(self):
+        file1 = generate_video(os.path.join(self.wd.path, "rich.mkv"), duration=1, width=1280, height=720, audio_lang="eng")
+        file2 = generate_video(os.path.join(self.wd.path, "unused.mkv"), duration=2, width=640, height=480)
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Video", file1)
+        duplicates.add_entry("Video", file2)
+        duplicates.add_metadata(file1, "audio_lang", "eng")
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run=True, wd=self.wd.path, output=output_dir)
+        melter.melt()
+
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
+
+        output_file = list(output_file_hash.keys())[0]
+        output_file_data = video_utils.get_video_data_mkvmerge(output_file)
+        self.assertEqual(len(output_file_data["tracks"]["audio"]), 1)
+
+
+    def test_mismatch_unused_third_input(self):
+        file1 = generate_video(os.path.join(self.wd.path, "a.mkv"), duration=1, width=1280, height=720, audio_lang="eng")
+        file2 = generate_video(os.path.join(self.wd.path, "b.mkv"), duration=1, width=640, height=480, audio_lang="de")
+        file3 = generate_video(os.path.join(self.wd.path, "c.mkv"), duration=2, width=320, height=240)
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Video", file1)
+        duplicates.add_entry("Video", file2)
+        duplicates.add_entry("Video", file3)
+        duplicates.add_metadata(file1, "audio_lang", "eng")
+        duplicates.add_metadata(file2, "audio_lang", "de")
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run=True, wd=self.wd.path, output=output_dir)
+        melter.melt()
+
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
+
+        output_file = list(output_file_hash.keys())[0]
+        output_file_data = video_utils.get_video_data_mkvmerge(output_file)
+        self.assertEqual(len(output_file_data["tracks"]["audio"]), 2)
+        self.assertEqual({a["language"] for a in output_file_data["tracks"]["audio"]}, {"eng", "deu"})
 
 
     def test_same_multiscene_video_duplicate_detection(self):
