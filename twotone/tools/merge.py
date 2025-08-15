@@ -190,7 +190,7 @@ class Merge(generic_utils.InterruptibleProcess):
         for s in sorted_subtitles:
             subtitles_by_lang[s.language].append(s)
 
-        for lang, subs in subtitles_by_lang.items():
+        for _, subs in subtitles_by_lang.items():
             if len(subs) > 1:
                 for s in subs:
                     subtitle_name = Path(s.path).stem
