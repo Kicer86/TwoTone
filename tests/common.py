@@ -196,11 +196,26 @@ def get_subtitle(name: str) -> str:
 def build_test_video(
     output_path: str,
     wd: str,
-    video_name: str,
+    video_name: str | None,
     *,
-    audio_name: Union[str, tuple[str, str], List[Union[str, tuple[str, str]]], None] = None,
-    subtitle: Union[str, bool, tuple[str, str], List[Union[str, bool, tuple[str, str]]], None] = None,
+    audio_name: Union[
+        str,
+        bool,
+        tuple[Union[str, bool], str],
+        List[Union[str, bool, tuple[Union[str, bool], str]]],
+        None,
+    ] = None,
+    subtitle: Union[
+        str,
+        bool,
+        tuple[str, str],
+        List[Union[str, bool, tuple[str, str]]],
+        None,
+    ] = None,
     thumbnail_name: Union[str, None] = None,
+    duration: int | None = None,
+    width: int = 640,
+    height: int = 480,
 ) -> str:
     def _parse_media(media, get_func, build_func):
         if media is None:
@@ -228,8 +243,27 @@ def build_test_video(
 
         temp_files = TempFileManager(tmp_dir)
 
-        # Strip all streams but video from video_name and place in temp dir
-        original_video_path = get_video(video_name)
+        if video_name is None:
+            if duration is None:
+                raise ValueError("duration must be provided when video_name is None")
+            generated_video = temp_files.next("generated_video", "mp4")
+            process_utils.start_process(
+                "ffmpeg",
+                [
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    f"color=c=black:s={width}x{height}:d={duration}",
+                    "-pix_fmt",
+                    "yuv420p",
+                    generated_video,
+                ],
+            )
+            original_video_path = generated_video
+        else:
+            original_video_path = get_video(video_name)
+
         stripped_video_path = temp_files.next("stripped_video", "mkv")
         process_utils.start_process(
             "ffmpeg",
@@ -240,8 +274,8 @@ def build_test_video(
                 "-an",
                 "-sn",
                 "-dn",
-                stripped_video_path
-            ]
+                stripped_video_path,
+            ],
         )
         video_path = stripped_video_path
         thumbnail_path = None if thumbnail_name is None else get_image(thumbnail_name)
@@ -269,16 +303,17 @@ def build_test_video(
                 if aud:
                     video_length = video_utils.get_video_duration(video_path)
                     audio_path = temp_files.next("temporary_audio", "wav")
-                    # Generate silent audio using ffmpeg
+                    # Generate simple sine wave audio using ffmpeg
                     duration_sec = max(1, int(video_length / 1000))
-                    process_utils.start_process("ffmpeg", [
-                        "-f", "lavfi",
-                        "-i", f"anullsrc=r=44100:cl=stereo",
-                        "-t", str(duration_sec),
-                        "-q:a", "9",
-                        "-acodec", "pcm_s16le",
-                        audio_path
-                    ])
+                    process_utils.start_process(
+                        "ffmpeg",
+                        [
+                            "-y",
+                            "-f", "lavfi",
+                            "-i", f"sine=frequency=1000:sample_rate=44100:duration={duration_sec}",
+                            audio_path,
+                        ],
+                    )
                     return audio_path
                 else:
                     return None
