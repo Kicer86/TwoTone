@@ -119,6 +119,44 @@ class SubtitlesMerge(TwoToneTestCase):
         video = files_after[0]
         assert_video_info(self, video, expected_subtitles=3)
 
+    def test_comment_added_for_subtitles_with_different_name(self):
+        add_test_media("Atoms.*mp4", self.wd.path)
+        add_test_media("Atoms.*srt", self.wd.path)
+
+        write_subtitle(
+            os.path.join(self.wd.path, "commentary by director.srt"),
+            [
+                "00:00:00:Hello",
+                "00:00:06:Commentary",
+            ],
+        )
+
+        run_twotone("merge", [self.wd.path, "-l", "eng"], ["--no-dry-run"])
+
+        files_after = list_files(self.wd.path)
+        self.assertEqual(len(files_after), 1)
+
+        video = files_after[0]
+        tracks = assert_video_info(self, video, expected_subtitles=2)
+        titles = [track.get("title") for track in tracks["subtitle"]]
+        self.assertIn("commentary by director", titles)
+        self.assertIn(None, titles)
+
+    def test_no_comment_when_subtitle_names_similar(self):
+        add_test_media("Atoms.*mp4", self.wd.path)
+        add_test_media("Atoms.*srt", self.wd.path)
+        add_test_media("Atoms.*srt", self.wd.path, ["director"])
+
+        run_twotone("merge", [self.wd.path, "-l", "eng"], ["--no-dry-run"])
+
+        files_after = list_files(self.wd.path)
+        self.assertEqual(len(files_after), 1)
+
+        video = files_after[0]
+        tracks = assert_video_info(self, video, expected_subtitles=2)
+        for track in tracks["subtitle"]:
+            self.assertIsNone(track.get("name"))
+
     def test_raw_txt_subtitles_conversion(self):
         # Allow automatic txt to srt conversion
         add_test_media("herd-of-horses-in-fog.*(mp4|txt)", self.wd.path)

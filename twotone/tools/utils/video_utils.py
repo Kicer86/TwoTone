@@ -248,12 +248,14 @@ def get_video_data(path: str) -> Dict:
             is_default = stream["disposition"]["default"]
             length = get_length(stream)
             format = stream["codec_name"]
+            title = stream.get("tags", {}).get("title", None)
 
             streams["subtitle"].append({
                 "language": language,
                 "default": is_default,
                 "length": length,
                 "tid": tid,
+                "title": title,
                 "format": format})
         elif stream_type == "video":
             fps = stream["r_frame_rate"]
@@ -419,6 +421,7 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
                     "tid": tid,
                     "uid": uid,
                     "format": track.get("codec"),
+                    "name": props.get("track_name"),
                 })
             )
 
@@ -498,6 +501,9 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
 
         if lang:
             options.extend(["--language", f"0:{lang}"])
+
+        if subtitle.comment:
+            options.extend(["--track-name", f"0:{subtitle.comment}"])
 
         if i == 0:
             options.extend(["--default-track", "0:yes"])

@@ -18,6 +18,7 @@ class SubtitleFile:
     path: str
     language: str
     encoding: str
+    comment: str | None = None
 
 
 @dataclass
