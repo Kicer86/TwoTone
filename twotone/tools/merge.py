@@ -200,7 +200,10 @@ class Merge(generic_utils.InterruptibleProcess):
         temporary_subtitles_dir = self.working_dir
         prepared_subtitles = []
         for subtitle in sorted_subtitles:
-            self.logger.info(f"\t[{subtitle.language}]: {subtitle.path}")
+            if subtitle.comment:
+                self.logger.info(f"\t[{subtitle.language}][{subtitle.comment}]: {subtitle.path}")
+            else:
+                self.logger.info(f"\t[{subtitle.language}]: {subtitle.path}")
             input_files.append(subtitle.path)
 
             # Subtitles are buggy sometimes, use ffmpeg to fix them.
