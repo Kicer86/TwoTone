@@ -248,12 +248,14 @@ def get_video_data(path: str) -> Dict:
             is_default = stream["disposition"]["default"]
             length = get_length(stream)
             format = stream["codec_name"]
+            title = stream.get("tags", {}).get("title", None)
 
             streams["subtitle"].append({
                 "language": language,
                 "default": is_default,
                 "length": length,
                 "tid": tid,
+                "title": title,
                 "format": format})
         elif stream_type == "video":
             fps = stream["r_frame_rate"]

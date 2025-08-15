@@ -138,9 +138,9 @@ class SubtitlesMerge(TwoToneTestCase):
 
         video = files_after[0]
         tracks = assert_video_info(self, video, expected_subtitles=2)
-        names = [track.get("name") for track in tracks["subtitle"]]
-        self.assertIn("commentary by director", names)
-        self.assertIn(None, names)
+        titles = [track.get("title") for track in tracks["subtitle"]]
+        self.assertIn("commentary by director", titles)
+        self.assertIn(None, titles)
 
     def test_no_comment_when_subtitle_names_similar(self):
         add_test_media("Atoms.*mp4", self.wd.path)
