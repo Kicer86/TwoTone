@@ -419,6 +419,7 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
                     "tid": tid,
                     "uid": uid,
                     "format": track.get("codec"),
+                    "name": props.get("track_name"),
                 })
             )
 
@@ -498,6 +499,9 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
 
         if lang:
             options.extend(["--language", f"0:{lang}"])
+
+        if subtitle.comment:
+            options.extend(["--track-name", f"0:{subtitle.comment}"])
 
         if i == 0:
             options.extend(["--default-track", "0:yes"])

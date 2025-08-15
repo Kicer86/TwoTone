@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import tempfile
+from collections import defaultdict
 from overrides import override
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
@@ -162,7 +163,7 @@ class Merge(generic_utils.InterruptibleProcess):
             else:
                 raise RuntimeError(f"ffmpeg exited with unexpected error:\n{status.stderr}")
 
-            converted_subtitle = subtitles_utils.SubtitleFile(output_file, subtitle.language, "utf-8")
+            converted_subtitle = subtitles_utils.SubtitleFile(output_file, subtitle.language, "utf-8", subtitle.comment)
 
         return converted_subtitle
 
@@ -183,7 +184,18 @@ class Merge(generic_utils.InterruptibleProcess):
 
         # set subtitles and languages
         sorted_subtitles = self._sort_subtitles(subtitles)
-        sorted_subtitles_str = ", ".join([subtitle.language if subtitle.language is not None else "unknown" for subtitle in sorted_subtitles])
+
+        # add comments for subtitles with same language but different names
+        subtitles_by_lang: dict[str | None, list[subtitles_utils.SubtitleFile]] = defaultdict(list)
+        for s in sorted_subtitles:
+            subtitles_by_lang[s.language].append(s)
+
+        for lang, subs in subtitles_by_lang.items():
+            if len(subs) > 1:
+                for s in subs:
+                    subtitle_name = Path(s.path).stem
+                    if not subtitle_name.lower().startswith(video_name.lower()):
+                        s.comment = subtitle_name
 
         temporary_subtitles_dir = self.working_dir
         prepared_subtitles = []
