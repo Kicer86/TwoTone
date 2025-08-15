@@ -314,21 +314,22 @@ class Melter():
         for file, file_details in details_full.items():
             self._print_file_details(file, file_details, common_prefix)
 
-        # verify if all videos have similar length
-        lengths = [info["video"][0]["length"] for info in tracks.values()]
-        if len(lengths) > 1:
-            base = lengths[0]
-            if any(abs(base - l) > 100 for l in lengths[1:]):
-                self.logger.warning("Input video lengths differ. Check for --allow-length-mismatch option.")
-                if not self.allow_length_mismatch:
-                    return None
-
         streams_picker = StreamsPicker(self.logger, self.duplicates_source)
         try:
             video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks)
         except RuntimeError as re:
             self.logger.error(re)
             return None
+
+        # verify if all chosen streams come from inputs of similar length
+        used_paths = {path for path, _, _ in (video_streams + audio_streams + subtitle_streams)}
+        lengths = [tracks[path]["video"][0]["length"] for path in used_paths]
+        if len(lengths) > 1:
+            base = lengths[0]
+            if any(abs(base - l) > 100 for l in lengths[1:]):
+                self.logger.warning("Input video lengths differ. Check for --allow-length-mismatch option.")
+                if not self.allow_length_mismatch:
+                    return None
 
         picked_attachments = AttachmentsPicker(self.logger).pick_attachments(attachments)
 
