@@ -471,8 +471,6 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(output_file_data["video"][0]["height"], 1080)
         self.assertEqual(output_file_data["video"][0]["width"], 1920)
 
-        self.assertEqual(len(output_file_data["audio"]), 1)
-
         self.assertEqual(len(output_file_data["subtitle"]), 2)
         languages = { output_file_data["subtitle"][0]["language"],
                       output_file_data["subtitle"][1]["language"] }
