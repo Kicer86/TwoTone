@@ -22,7 +22,7 @@ def extract_scenes(video_path, output_dir, format: str, scale: float):
     os.makedirs(output_dir, exist_ok=True)
 
     # Get scene change timestamps
-    scene_changes = video_utils.detect_scene_changes(video_path)
+    scene_changes = [float(sc) for sc in video_utils.detect_scene_changes(video_path)]
     scene_changes.append(math.inf)
 
     # Extract all frames while capturing PTS times
