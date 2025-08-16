@@ -20,6 +20,11 @@ jobs:
         submodules: true
         lfs: true
 
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
     - name: Install Python dependencies
       uses: py-actions/py-dependency-install@v4
       with:
