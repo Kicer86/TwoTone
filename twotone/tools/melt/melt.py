@@ -664,7 +664,7 @@ class MeltTool(Tool):
                                  'If audio for given languages was not found, `melt` will look for subtitles in given languages and set the first one found to default.\n'
                                  'If this parameter is not set, first audio track will be chosen, and none of the subtitles will be set as default.')
         parser.add_argument('--allow-length-mismatch', action='store_true',
-                            help='Continue processing even if input video lengths differ.\n'
+                            help='[EXPERIMENTAL] Continue processing even if input video lengths differ.\n'
                                  'This may require additional processing that can consume significant time and disk space.')
 
 
