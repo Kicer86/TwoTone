@@ -49,6 +49,7 @@ jobs:
       if: runner.os == 'Windows'
       run: |
         choco install -y exiftool ffmpeg mkvtoolnix
+        refreshenv
 
     - name: Run unit tests
       run: |
