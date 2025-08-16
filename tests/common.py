@@ -123,7 +123,9 @@ def list_files(path: str) -> List[str]:
             filepath = os.path.join(root, filename)
 
             if os.path.isfile(filepath):
-                results.append(filepath)
+                # Normalize to POSIX-style separators so tests behave
+                # consistently across platforms.
+                results.append(Path(filepath).as_posix())
 
     return results
 

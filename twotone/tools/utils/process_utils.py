@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
-from typing import List, Dict
+from typing import Any, Dict, List
 
 from . import generic_utils
 from . import video_utils
@@ -37,7 +37,17 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
 
     full_cmd = f"{process} {' '.join(args)}"
     logging.debug(f"Starting {full_cmd}")
-    sub_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, bufsize=1, preexec_fn=os.setsid)
+    popen_kwargs: Dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "universal_newlines": True,
+        "bufsize": 1,
+    }
+    if os.name != "nt":
+        popen_kwargs["preexec_fn"] = os.setsid
+    else:
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    sub_process = subprocess.Popen(command, **popen_kwargs)
 
     if show_progress:
         if process == "ffmpeg":
