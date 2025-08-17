@@ -37,8 +37,7 @@ jobs:
         sudo apt-get install -y \
           exiftool \
           ffmpeg \
-          mkvtoolnix \
-          libgl1
+          mkvtoolnix
 
     - name: Install required tools (macOS)
       if: runner.os == 'macOS'
