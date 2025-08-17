@@ -37,7 +37,8 @@ jobs:
         sudo apt-get install -y \
           exiftool \
           ffmpeg \
-          mkvtoolnix
+          mkvtoolnix \
+          libgl1
 
     - name: Install required tools (macOS)
       if: runner.os == 'macOS'
@@ -47,8 +48,10 @@ jobs:
 
     - name: Install required tools (Windows)
       if: runner.os == 'Windows'
+      shell: pwsh
       run: |
         choco install -y exiftool ffmpeg mkvtoolnix
+        Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
         refreshenv
 
     - name: Run unit tests
