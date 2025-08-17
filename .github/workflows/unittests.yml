@@ -49,9 +49,7 @@ jobs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        choco install -y exiftool ffmpeg mkvtoolnix
-        Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
-        refreshenv
+        choco install -y exiftool ffmpeg mkvtoolnix.portable
 
     - name: Run unit tests
       run: |
