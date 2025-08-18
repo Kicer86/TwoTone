@@ -1,8 +1,8 @@
 
-import logging
 import os
 import shutil
 import unittest
+from pathlib import Path
 from typing import List
 
 from twotone.tools.utils.files_utils import split_path
@@ -84,6 +84,7 @@ class ConcatenateTests(TwoToneTestCase):
 
         short_paths = [path[tdl:] for path in files_after]
         short_paths.sort()
+        short_paths = [Path(path).as_posix() for path in short_paths]
         self.assertEqual(short_paths, ['0/Frog - 113403.mp4', '1/Frog - 113403.mp4', '2/Frog - 113403.mp4', '3/Frog - 113403.mp4', '4/Frog - 113403.mp4', '5/5.mp4', "6/''v''.mp4", 'Frog - 113403.mp4'])
 
 

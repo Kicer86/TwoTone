@@ -1,6 +1,5 @@
 
 import unittest
-import logging
 import os
 import re
 
@@ -59,7 +58,7 @@ def pick_first_last_sorted(files: List[str]) -> List[str]:
 class UtilitiesScenesTests(TwoToneTestCase):
     def test_video_1_for_scenes_extraction(self):
         test_video = get_video("big_buck_bunny_720p_10mb.mp4")
-        best_enc = extract_scenes(video_path = test_video, output_dir = self.wd.path, format = "png", scale = 10)
+        extract_scenes(video_path = test_video, output_dir = self.wd.path, format = "png", scale = 10)
 
         files = pick_first_last_sorted(collect_files(self.wd.path))
         files = [Path(file).as_posix() for file in files]
