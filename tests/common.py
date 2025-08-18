@@ -3,6 +3,7 @@ import hashlib
 import inspect
 import logging
 import os
+import platform
 import re
 import shutil
 import tempfile
@@ -123,9 +124,7 @@ def list_files(path: str) -> List[str]:
             filepath = os.path.join(root, filename)
 
             if os.path.isfile(filepath):
-                # Normalize to POSIX-style separators so tests behave
-                # consistently across platforms.
-                results.append(Path(filepath).as_posix())
+                results.append(filepath)
 
     return results
 
@@ -171,14 +170,12 @@ def add_to_test_dir(test_case_path: str, file_path: str, copy: bool = False, dst
     basename = os.path.basename(file_path) if dst_file_name is None else dst_file_name
     dst = os.path.join(test_case_path, basename)
 
-    if copy:
+    if copy or platform.system() == "Windows":
         shutil.copy2(file_path, dst)
     else:
         os.symlink(file_path, dst)
 
-    # Normalize to POSIX-style separators so callers receive a
-    # consistent path representation across platforms.
-    return Path(dst).as_posix()
+    return dst
 
 
 def get_audio(name: str) -> str:

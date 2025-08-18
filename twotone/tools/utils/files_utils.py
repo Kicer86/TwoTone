@@ -59,7 +59,9 @@ class TempFileManager:
 def get_common_prefix(paths: Iterable[str]) -> str:
     """Return common prefix for ``paths`` list."""
     unified = list(paths)
-    return os.path.commonpath(unified)
+    common_path = os.path.commonpath(unified)
+    
+    return common_path
 
 
 def get_printable_path(path: str, common_prefix: str) -> str:

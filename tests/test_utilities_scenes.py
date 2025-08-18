@@ -17,8 +17,7 @@ def collect_files(directory: str):
 
     for root, _, files in os.walk(directory):
         for file in files:
-            # Compute relative path and normalize to POSIX separators
-            relative_path = (Path(root) / file).relative_to(directory).as_posix()
+            relative_path = os.path.relpath(os.path.join(root, file), start=directory)
             file_list.append(relative_path)
 
     return file_list
@@ -63,6 +62,7 @@ class UtilitiesScenesTests(TwoToneTestCase):
         best_enc = extract_scenes(video_path = test_video, output_dir = self.wd.path, format = "png", scale = 10)
 
         files = pick_first_last_sorted(collect_files(self.wd.path))
+        files = [Path(file).as_posix() for file in files]
 
         expected_files = [
             "scene_0/frame_0.000.png",
