@@ -176,7 +176,9 @@ def add_to_test_dir(test_case_path: str, file_path: str, copy: bool = False, dst
     else:
         os.symlink(file_path, dst)
 
-    return dst
+    # Normalize to POSIX-style separators so callers receive a
+    # consistent path representation across platforms.
+    return Path(dst).as_posix()
 
 
 def get_audio(name: str) -> str:

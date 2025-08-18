@@ -4,6 +4,7 @@ import logging
 import os
 import re
 
+from pathlib import Path
 from typing import List
 
 from twotone.tools.utilities import extract_scenes
@@ -16,8 +17,8 @@ def collect_files(directory: str):
 
     for root, _, files in os.walk(directory):
         for file in files:
-            # Compute relative path
-            relative_path = os.path.relpath(os.path.join(root, file), start=directory)
+            # Compute relative path and normalize to POSIX separators
+            relative_path = (Path(root) / file).relative_to(directory).as_posix()
             file_list.append(relative_path)
 
     return file_list
