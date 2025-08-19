@@ -1,4 +1,5 @@
 
+import platform
 import os
 from typing import Dict
 
@@ -11,8 +12,12 @@ class DebugRoutines:
         self.debug_dir = debug_dir
         self.lhs_all_frames = lhs_all_frames
         self.rhs_all_frames = rhs_all_frames
+        self.work = platform.system() != "Windows"
 
-    def dump_frames(self, matches: FramesInfo, phase: str) -> None:
+    def dump_frames(self, matches: FramesInfo, phase: str) -> None:     
+        if not self.work:
+            return
+
         target_dir = os.path.join(self.debug_dir, f"#{self.it} {phase}")
         self.it += 1
 
@@ -23,6 +28,9 @@ class DebugRoutines:
             os.symlink(path, os.path.join(target_dir, f"{i:06d}_lhs_{ts:08d}"))
 
     def dump_matches(self, matches: list[tuple[int, int]], phase: str) -> None:
+        if not self.work:
+            return
+
         target_dir = os.path.join(self.debug_dir, f"#{self.it} {phase}")
         self.it += 1
 
@@ -35,6 +43,9 @@ class DebugRoutines:
             os.symlink(rhs_path, os.path.join(target_dir, f"{i:06d}_rhs_{rhs_ts:08d}"))
 
     def dump_pairs(self, matches: list[tuple[int, int, int, int]]) -> None:
+        if not self.work:
+            return
+
         target_dir = os.path.join(self.debug_dir, f"#{self.it} subsegments")
         self.it += 1
 
@@ -49,4 +60,3 @@ class DebugRoutines:
             os.symlink(lhs_e_path, os.path.join(target_dir, f"{i:06d}_lhs_e_{lhs_ts_e:08d}"))
             os.symlink(rhs_b_path, os.path.join(target_dir, f"{i:06d}_rhs_b_{rhs_ts_b:08d}"))
             os.symlink(rhs_e_path, os.path.join(target_dir, f"{i:06d}_rhs_e_{rhs_ts_e:08d}"))
-

@@ -3,6 +3,7 @@ import hashlib
 import inspect
 import logging
 import os
+import platform
 import re
 import shutil
 import tempfile
@@ -169,7 +170,7 @@ def add_to_test_dir(test_case_path: str, file_path: str, copy: bool = False, dst
     basename = os.path.basename(file_path) if dst_file_name is None else dst_file_name
     dst = os.path.join(test_case_path, basename)
 
-    if copy:
+    if copy or platform.system() == "Windows":
         shutil.copy2(file_path, dst)
     else:
         os.symlink(file_path, dst)
