@@ -1,6 +1,7 @@
 
 import logging
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -43,10 +44,12 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
         "universal_newlines": True,
         "bufsize": 1,
     }
-    if os.name != "nt":
-        popen_kwargs["preexec_fn"] = os.setsid
+
+    if platform.system() == "Windows":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)        
     else:
-        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        popen_kwargs["preexec_fn"] = os.setsid
+        
     sub_process = subprocess.Popen(command, **popen_kwargs)
 
     if show_progress:
