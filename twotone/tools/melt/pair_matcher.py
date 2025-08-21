@@ -24,8 +24,8 @@ class PairMatcher:
         self.rhs_path = rhs_path
         self.logger = logger
         self.phash = PhashCache()
-        self.lhs_fps = eval(video_utils.get_video_data(lhs_path)["video"][0]["fps"])
-        self.rhs_fps = eval(video_utils.get_video_data(rhs_path)["video"][0]["fps"])
+        self.lhs_fps = eval(video_utils.get_video_data(lhs_path, logger=self.logger)["video"][0]["fps"])
+        self.rhs_fps = eval(video_utils.get_video_data(rhs_path, logger=self.logger)["video"][0]["fps"])
 
         lhs_wd = os.path.join(self.wd, "lhs")
         rhs_wd = os.path.join(self.wd, "rhs")
@@ -606,15 +606,15 @@ class PairMatcher:
 
 
     def create_segments_mapping(self) -> Tuple[List[Tuple[int, int]], FramesInfo, FramesInfo]:
-        lhs_scene_changes = video_utils.detect_scene_changes(self.lhs_path, threshold = 0.3)
-        rhs_scene_changes = video_utils.detect_scene_changes(self.rhs_path, threshold = 0.3)
+        lhs_scene_changes = video_utils.detect_scene_changes(self.lhs_path, threshold=0.3, logger=self.logger)
+        rhs_scene_changes = video_utils.detect_scene_changes(self.rhs_path, threshold=0.3, logger=self.logger)
 
         if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
             raise RuntimeError("Not enought scene changes detected")
 
         # extract all scenes
-        self.lhs_all_frames = video_utils.extract_all_frames(self.lhs_path, self.lhs_all_wd, scale = 0.5, format = "png")
-        self.rhs_all_frames = video_utils.extract_all_frames(self.rhs_path, self.rhs_all_wd, scale = 0.5, format = "png")
+        self.lhs_all_frames = video_utils.extract_all_frames(self.lhs_path, self.lhs_all_wd, scale=0.5, format="png", logger=self.logger)
+        self.rhs_all_frames = video_utils.extract_all_frames(self.rhs_path, self.rhs_all_wd, scale=0.5, format="png", logger=self.logger)
 
         lhs_key_frames_str = [str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes]
         rhs_key_frames_str = [str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes]
