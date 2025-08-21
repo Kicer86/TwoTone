@@ -640,7 +640,8 @@ class MeltTool(Tool):
         manual_group.add_argument('-i', '--input', dest='input_files', action='append',
                                   help='Add an input video file or directory with video files (can be specified multiple times).\n'
                                        'path can be followed with a comma and some additional parameters:\n'
-                                       'audio_lang:XXX  - information about audio language (like eng, de or pl).\n\n'
+                                       'audio_lang:XXX       - information about audio language (like eng, de or pl).\n'
+                                       'audio_prod_lang:XXX - original/production audio language.\n\n'
                                        'Example of usage:\n'
                                        '--input some/path/file.mp4,audio_lang:jp --input some/path/file.mp4,audio_lang:eng\n\n'
                                        'If files are provided with this option, all of them are treated as duplicates of given title.\n'
@@ -701,16 +702,21 @@ class MeltTool(Tool):
                     raise ValueError(f"Path {path} does not exist")
 
                 audio_lang = ""
+                audio_prod_lang = ""
 
                 if len(input_split) > 1:
                     for extra_arg in input_split[1:]:
                         if extra_arg[:11] == "audio_lang:":
                             audio_lang = extra_arg[11:]
+                        if extra_arg[:15] == "audio_prod_lang:":
+                            audio_prod_lang = extra_arg[15:]
 
                 data_source.add_entry(title, path)
 
                 if audio_lang:
                     data_source.add_metadata(path, "audio_lang", audio_lang)
+                if audio_prod_lang:
+                    data_source.add_metadata(path, "audio_prod_lang", audio_prod_lang)
 
         languages_priority = args.languages_priority.split(",") if args.languages_priority else []
         preferred_languages = args.preferred_languages.split(",") if args.preferred_languages else []
