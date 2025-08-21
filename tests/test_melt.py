@@ -147,6 +147,22 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(list(output_file_hash.values())[0], input_file_hashes[file1])
 
 
+    def test_static_source_production_audio_language_metadata(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        path = "/tmp/fake.mkv"
+        duplicates.add_entry("Some title", path)
+        duplicates.add_metadata(path, "audio_prod_lang", "eng")
+
+        self.assertEqual(
+            "eng",
+            duplicates.get_metadata_for(path)["audio_prod_lang"],
+        )
+        self.assertIsNone(
+            duplicates.get_metadata_for("/not/exists").get("audio_prod_lang")
+        )
+
+
     def test_dry_run_is_being_respected(self):
         file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = ["v1"])[0]
         file2 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = ["v2"])[0]
