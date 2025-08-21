@@ -11,6 +11,9 @@ from ..utils import generic_utils
 from .duplicates_source import DuplicatesSource
 
 
+logger = logging.getLogger("TwoTone.melt.jellyfin")
+
+
 class JellyfinSource(DuplicatesSource):
     def __init__(self, interruption: generic_utils.InterruptibleProcess, url: str, token: str, path_fix: Tuple[str, str] | None) -> None:
         super().__init__(interruption)
@@ -28,7 +31,7 @@ class JellyfinSource(DuplicatesSource):
             if path.startswith(pfrom):
                 fixed_path = f"{pto}{path[len(pfrom):]}"
             else:
-                logging.error(f"Could not replace \"{pfrom}\" in \"{path}\"")
+                logger.error(f"Could not replace \"{pfrom}\" in \"{path}\"")
 
         return fixed_path
 
@@ -87,16 +90,16 @@ class JellyfinSource(DuplicatesSource):
                         name = names[0]
 
                         if not all_paths_are_files:
-                            logging.warning(f"Some paths for title {name} are not files:")
+                            logger.warning(f"Some paths for title {name} are not files:")
                             for path in fixed_paths:
-                                logging.warning(f"\t{path}")
-                            logging.warning("Skipping title")
+                                logger.warning(f"\t{path}")
+                            logger.warning("Skipping title")
                         else:
                             duplicates[name] = fixed_paths
                     else:
                         names_str = '\n'.join(names)
                         paths_str = '\n'.join(fixed_paths)
-                        logging.warning(f"Different names for the same movie ({provider}: {id}):\n{names_str}.\nJellyfin files:\n{paths_str}\nSkipping.")
+                        logger.warning(f"Different names for the same movie ({provider}: {id}):\n{names_str}.\nJellyfin files:\n{paths_str}\nSkipping.")
 
         return duplicates
 

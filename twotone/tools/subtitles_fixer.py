@@ -15,7 +15,7 @@ from twotone.tools.utils import generic_utils, process_utils, subtitles_utils, v
 
 class Fixer(generic_utils.InterruptibleProcess):
     def __init__(self, logger: logging.Logger, really_fix: bool, working_dir: str) -> None:
-        super().__init__()
+        super().__init__(logger)
         self.logger = logger
         self._do_fix = really_fix
         self.working_dir = working_dir
@@ -94,7 +94,7 @@ class Fixer(generic_utils.InterruptibleProcess):
             result.append(subtitleFile)
             options.append(f"{subtitle['tid']}:{outputfile}")
 
-        process_utils.start_process("mkvextract", options)
+        process_utils.start_process("mkvextract", options, logger=self.logger)
 
         return result
 
@@ -123,12 +123,12 @@ class Fixer(generic_utils.InterruptibleProcess):
                         # remove all subtitles from video
                         self.logger.debug("Removing existing subtitles from file")
                         video_without_subtitles = video_file + ".nosubtitles.mkv"
-                        process_utils.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file])
+                        process_utils.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file], logger=self.logger)
 
                         # add fixed subtitles to video
                         self.logger.debug("Adding fixed subtitles to file")
                         temporaryVideoPath = video_file + ".fixed.mkv"
-                        video_utils.generate_mkv(input_video=video_without_subtitles, output_path=temporaryVideoPath, subtitles=subtitles)
+                        video_utils.generate_mkv(input_video=video_without_subtitles, output_path=temporaryVideoPath, subtitles=subtitles, logger=self.logger)
 
                         # overwrite broken video with fixed one
                         os.replace(temporaryVideoPath, video_file)
@@ -146,7 +146,7 @@ class Fixer(generic_utils.InterruptibleProcess):
         def diff(a, b):
             return abs(a - b) / max(a, b)
 
-        video_info = video_utils.get_video_data(video_file)
+        video_info = video_utils.get_video_data(video_file, logger=self.logger)
         video_info["path"] = video_file
         video_length = video_info["video"][0]["length"]
 

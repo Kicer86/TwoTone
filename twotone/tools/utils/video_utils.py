@@ -6,11 +6,12 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Union, Tuple
 
-
-
 from . import language_utils, process_utils
 from .generic_utils import fps_str_to_float, time_to_ms
 from .subtitles_utils import SubtitleFile
+
+
+DEFAULT_LOGGER = logging.getLogger("TwoTone.utils.video_utils")
 
 
 
@@ -19,23 +20,25 @@ def is_video(file: str) -> bool:
     return Path(file).suffix[1:].lower() in ["mkv", "mp4", "avi", "mpg", "mpeg", "mov", "rmvb"]
 
 
-def get_video_frames_count(video_file: str):
+def get_video_frames_count(video_file: str, logger: logging.Logger | None = None):
+    logger = logger or DEFAULT_LOGGER
     result = process_utils.start_process("ffprobe", ["-v", "error", "-select_streams", "v:0", "-count_packets",
-                                   "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", video_file])
+                                   "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", video_file], logger=logger)
 
     try:
         return int(result.stdout.strip())
     except ValueError:
-        logging.error(f"Failed to get frame count for {video_file}")
+        logger.error(f"Failed to get frame count for {video_file}")
         return None
 
 
-def detect_scene_changes(file_path, threshold = 0.4) -> List[int]:
+def detect_scene_changes(file_path, threshold: float = 0.4, logger: logging.Logger | None = None) -> List[int]:
     """
         Run ffmpeg with a scene detection filter and extract scene change times.
         Function returns list of scene changes in milliseconds
     """
 
+    logger = logger or DEFAULT_LOGGER
     args = [
         "-i", file_path,
         "-an",                                              # Ignore all audio streams
@@ -46,7 +49,7 @@ def detect_scene_changes(file_path, threshold = 0.4) -> List[int]:
         "-filter_complex", f"select='gt(scene,{threshold})',showinfo",
         "-f", "null", "-"
     ]
-    result = process_utils.start_process("ffmpeg", args = args)
+    result = process_utils.start_process("ffmpeg", args = args, logger=logger)
 
     # Look for lines with "pts_time:"; these indicate the timestamp of a scene change.
     scene_times = []
@@ -62,7 +65,7 @@ def detect_scene_changes(file_path, threshold = 0.4) -> List[int]:
     return sorted(set(scene_times))
 
 
-def extract_timestamp_frame_mapping(video_path: str) -> Dict[int, int]:
+def extract_timestamp_frame_mapping(video_path: str, logger: logging.Logger | None = None) -> Dict[int, int]:
     """
     Extracts a mapping of timestamp (seconds) to frame number from a video.
 
@@ -73,6 +76,7 @@ def extract_timestamp_frame_mapping(video_path: str) -> Dict[int, int]:
         dict: A dictionary mapping {timestamp in ms (int): frame number (int)}
     """
 
+    logger = logger or DEFAULT_LOGGER
     args = [
         "-v", "error",
         "-select_streams", "v:0",
@@ -82,7 +86,7 @@ def extract_timestamp_frame_mapping(video_path: str) -> Dict[int, int]:
     ]
 
     # Run the command
-    result = process_utils.start_process("ffprobe", args)
+    result = process_utils.start_process("ffprobe", args, logger=logger)
 
     # Parse output
     timestamp_frame_map = {}
@@ -98,13 +102,15 @@ def extract_timestamp_frame_mapping(video_path: str) -> Dict[int, int]:
     return timestamp_frame_map
 
 
-def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", scale: Union[float, Tuple[int, int]] = 0.5) -> Dict[int, Dict]:
+def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", scale: Union[float, Tuple[int, int]] = 0.5, logger: logging.Logger | None = None) -> Dict[int, Dict]:
     """
         Function extracts all frames into the given directory (should be empty).
         Returns a dict mapping timestamp (ms) -> {'path': frame_path, 'frame': frame_number}
     """
+    logger = logger or DEFAULT_LOGGER
+
     def run_ffmpeg(args):
-        return process_utils.start_process("ffmpeg", args=args)
+        return process_utils.start_process("ffmpeg", args=args, logger=logger)
 
     # Clear target directory
     def clean_target_dir():
@@ -179,18 +185,20 @@ def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", s
     return mapping
 
 
-def get_video_duration(video_file):
+def get_video_duration(video_file, logger: logging.Logger | None = None):
     """Get the duration of a video in milliseconds."""
-    result = process_utils.start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
+    logger = logger or DEFAULT_LOGGER
+    result = process_utils.start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file], logger=logger)
 
     try:
         return int(float(result.stdout.strip())*1000)
     except ValueError:
-        logging.error(f"Failed to get duration for {video_file}")
+        logger.error(f"Failed to get duration for {video_file}")
         return None
 
 
-def get_video_full_info(path: str) -> dict:
+def get_video_full_info(path: str, logger: logging.Logger | None = None) -> dict:
+    logger = logger or DEFAULT_LOGGER
     args = []
     args.extend(["-v", "quiet"])
     args.extend(["-print_format", "json"])
@@ -198,7 +206,7 @@ def get_video_full_info(path: str) -> dict:
     args.append("-show_streams")
     args.append(path)
 
-    result = process_utils.start_process("ffprobe", args)
+    result = process_utils.start_process("ffprobe", args, logger=logger)
 
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe exited with unexpected error:\n{result.stderr}")
@@ -209,7 +217,8 @@ def get_video_full_info(path: str) -> dict:
     return output_json
 
 
-def get_video_data(path: str) -> Dict:
+def get_video_data(path: str, logger: logging.Logger | None = None) -> Dict:
+    logger = logger or DEFAULT_LOGGER
 
     def get_length(stream) -> int | None:
         """Return stream length in milliseconds if available."""
@@ -237,7 +246,7 @@ def get_video_data(path: str) -> Dict:
 
         return language_utils.unify_lang(language) if language else None
 
-    output_json = get_video_full_info(path)
+    output_json = get_video_full_info(path, logger=logger)
 
     streams = defaultdict(list)
     for stream in output_json["streams"]:
@@ -262,7 +271,7 @@ def get_video_data(path: str) -> Dict:
             length = get_length(stream)
             disposition = stream.get("disposition", {})
             if length is None:
-                length = get_video_duration(path)
+                length = get_video_duration(path, logger=logger)
 
             width = stream["width"]
             height = stream["height"]
@@ -293,10 +302,11 @@ def get_video_data(path: str) -> Dict:
     return dict(streams)
 
 
-def get_video_full_info_mkvmerge(path: str) -> dict:
+def get_video_full_info_mkvmerge(path: str, logger: logging.Logger | None = None) -> dict:
     """Return file information using ``mkvmerge -J``."""
 
-    result = process_utils.start_process("mkvmerge", ["-J", path])
+    logger = logger or DEFAULT_LOGGER
+    result = process_utils.start_process("mkvmerge", ["-J", path], logger=logger)
 
     if result.returncode != 0:
         raise RuntimeError(f"mkvmerge exited with unexpected error:\n{result.stderr}")
@@ -304,7 +314,7 @@ def get_video_full_info_mkvmerge(path: str) -> dict:
     return json.loads(result.stdout)
 
 
-def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
+def get_video_data_mkvmerge(path: str, enrich: bool = False, logger: logging.Logger | None = None) -> Dict:
     """
         Return stream information parsed from ``mkvmerge -J`` output.
         For non mkv files, mkvmerge does not provide as much information as ffprobe.
@@ -334,12 +344,13 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
             elif value != base_value:
                 if key != "codec" and key != "format":
                     if key == "fps" and abs(fps_str_to_float(base_value) - fps_str_to_float(value)) > 0.001:
-                        logging.warning(f"Inconsistent data provided by mkvmerge ({key}: {value}) and ffprobe ({key}: {base_value})")
+                        logger.warning(f"Inconsistent data provided by mkvmerge ({key}: {value}) and ffprobe ({key}: {base_value})")
                 output[key] = value
 
         return output
 
-    info = get_video_full_info_mkvmerge(path)
+    logger = logger or DEFAULT_LOGGER
+    info = get_video_full_info_mkvmerge(path, logger=logger)
 
     container_props = info.get("container", {}).get("properties", {})
     duration_ms = None
@@ -352,7 +363,7 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
 
     # process streams/tracks
     streams = defaultdict(list)
-    ffprobe_info = get_video_data(path) if enrich else None
+    ffprobe_info = get_video_data(path, logger=logger) if enrich else None
 
     for track in info.get("tracks", []):
         track_type = track.get("type")
@@ -478,9 +489,10 @@ def collect_video_files(path: str, interruptible) -> List[str]:
     return video_files
 
 
-def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | None = None, audios: List[Dict] | None = None, thumbnail: Union[str, None] = None):
+def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | None = None, audios: List[Dict] | None = None, thumbnail: Union[str, None] = None, logger: logging.Logger | None = None):
     subtitles = subtitles or []
     audios = audios or []
+    logger = logger or DEFAULT_LOGGER
 
     options = ["-o", output_path]
     options.append(input_video)
@@ -516,7 +528,7 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
         options.extend(["--attach-file", thumbnail])
 
     cmd = "mkvmerge"
-    result = process_utils.start_process(cmd, options)
+    result = process_utils.start_process(cmd, options, logger=logger)
 
     # validate result and output file
     if result.returncode != 0:
@@ -525,5 +537,5 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
         raise RuntimeError(f"{cmd} exited with unexpected error:\n{result.stderr}\n\nAnd output: {result.stdout}")
 
     if not os.path.exists(output_path):
-        logging.error("Output file was not created")
+        logger.error("Output file was not created")
         raise RuntimeError(f"{cmd} did not create output file")

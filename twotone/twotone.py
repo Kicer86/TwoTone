@@ -108,7 +108,7 @@ def execute(argv: list[str]) -> None:
         finally:
             shutil.rmtree(pid_wd, ignore_errors=True)
     else:
-        logging.error(f"Error: Unknown tool {args.tool}")
+        logger.error(f"Error: Unknown tool {args.tool}")
         sys.exit(1)
 
 
@@ -144,7 +144,7 @@ def main() -> None:
     try:
         execute(sys.argv[1:])
     except RuntimeError as e:
-        logging.error(f"Error occurred: {e}. Terminating")
+        logging.getLogger("TwoTone").error(f"Error occurred: {e}. Terminating")
     except ValueError as e:
         print(f"error: {e}")
 

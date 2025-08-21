@@ -14,7 +14,7 @@ from twotone.tools.utils import generic_utils, process_utils, video_utils, files
 
 class Concatenate(generic_utils.InterruptibleProcess):
     def __init__(self, logger: logging.Logger, live_run: bool, working_dir: str):
-        super().__init__()
+        super().__init__(logger)
 
         self.logger = logger
         self.live_run = live_run
@@ -116,7 +116,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
 
                     self.logger.info(f"Concatenating files into {output} file")
                     if self.live_run:
-                        status = process_utils.start_process("ffmpeg", ffmpeg_args)
+                        status = process_utils.start_process("ffmpeg", ffmpeg_args, logger=self.logger)
                         if status.returncode == 0:
                             for input_file in input_files:
                                 os.remove(input_file)
