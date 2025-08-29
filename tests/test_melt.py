@@ -2,6 +2,7 @@
 import logging
 import unittest
 import os
+import platform
 
 from functools import partial
 from itertools import permutations
@@ -150,7 +151,7 @@ class MeltingTest(TwoToneTestCase):
     def test_static_source_production_audio_language_metadata(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        path = "/tmp/fake.mkv"
+        path = "/tmp/fake.mkv" if platform.system() != "Windows" else "c:\tmp\fake.mkv"
         duplicates.add_entry("Some title", path)
         duplicates.add_metadata(path, "audio_prod_lang", "eng")
 
