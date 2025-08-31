@@ -315,12 +315,12 @@ class PairMatcher:
 
     def _three_before(self, timestamps: List[int], target: int) -> List[int]:
         timestamps = sorted(timestamps)
-        idx = np.searchsorted(timestamps, target)
+        idx = int(np.searchsorted(timestamps, target))
         return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-3):idx]))
 
     def _nearest_three(self, timestamps: List[int], target: int) -> List[int]:
         timestamps = sorted(timestamps)
-        idx = np.searchsorted(timestamps, target)
+        idx = int(np.searchsorted(timestamps, target))
         return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-1):idx+2]))
 
     def _best_phash_match(self, lhs_ts: int, rhs_ts_guess: int, lhs_all_set: FramesInfo, rhs_all_set: FramesInfo) -> Tuple[int, int]:
