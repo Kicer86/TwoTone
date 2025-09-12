@@ -20,19 +20,19 @@ class JellyfinSource(DuplicatesSource):
         self.url = url
         self.token = token
         self.path_fix = path_fix
-        self._tmdb_id_by_path: Dict[str, str] = {}
+        self.tmdb_id_by_path: Dict[str, str] = {}
 
         cache_dir = generic_utils.get_twotone_working_dir()
         os.makedirs(cache_dir, exist_ok=True)
-        self._tmdb_cache_file = os.path.join(cache_dir, "tmdb_cache.json")
+        self.tmdb_cache_file = os.path.join(cache_dir, "tmdb_cache.json")
         try:
-            with open(self._tmdb_cache_file, "r", encoding="utf-8") as f:
-                self._tmdb_cache = json.load(f)
+            with open(self.tmdb_cache_file, "r", encoding="utf-8") as f:
+                self.tmdb_cache = json.load(f)
         except FileNotFoundError:
-            self._tmdb_cache = {}
+            self.tmdb_cache = {}
 
-        self._last_tmdb_request: float = 0.0
-        self._tmdb_api_key = os.getenv("TMDB_API_KEY")
+        self.last_tmdb_request: float = 0.0
+        self.tmdb_api_key = os.getenv("TMDB_API_KEY")
 
     def _fix_path(self, path: str) -> str:
         fixed_path = path
@@ -82,7 +82,7 @@ class JellyfinSource(DuplicatesSource):
 
                     tmdb_id = providers.get("Tmdb")
                     if tmdb_id:
-                        self._tmdb_id_by_path[fixed_path] = tmdb_id
+                        self.tmdb_id_by_path[fixed_path] = tmdb_id
 
                     for provider, id in providers.items():
                         # ignore collection ID
@@ -120,20 +120,20 @@ class JellyfinSource(DuplicatesSource):
 
     @override
     def get_metadata_for(self, path: str) -> Dict[str, str]:
-        tmdb_id = self._tmdb_id_by_path.get(path)
+        tmdb_id = self.tmdb_id_by_path.get(path)
 
         if not tmdb_id:
             return {"audio_prod_lang": None}
 
-        if tmdb_id in self._tmdb_cache:
-            return {"audio_prod_lang": self._tmdb_cache[tmdb_id]}
+        if tmdb_id in self.tmdb_cache:
+            return {"audio_prod_lang": self.tmdb_cache[tmdb_id]}
 
-        if not self._tmdb_api_key:
+        if not self.tmdb_api_key:
             logging.error("TMDB_API_KEY not set")
             return {"audio_prod_lang": None}
 
         now = time.time()
-        delta = now - self._last_tmdb_request
+        delta = now - self.last_tmdb_request
         if delta < 0.3:
             wait = 0.3 - delta
             logging.warning(f"TMDB API limit reached. Waiting {wait:.2f}s.")
@@ -141,9 +141,9 @@ class JellyfinSource(DuplicatesSource):
 
         response = requests.get(
             f"https://api.themoviedb.org/3/movie/{tmdb_id}",
-            params={"api_key": self._tmdb_api_key}
+            params={"api_key": self.tmdb_api_key}
         )
-        self._last_tmdb_request = time.time()
+        self.last_tmdb_request = time.time()
 
         if response.status_code != 200:
             logging.error(f"TMDB request failed for id {tmdb_id}: {response.status_code}")
@@ -151,10 +151,10 @@ class JellyfinSource(DuplicatesSource):
 
         data = response.json()
         lang = data.get("original_language")
-        self._tmdb_cache[tmdb_id] = lang
+        self.tmdb_cache[tmdb_id] = lang
         try:
-            with open(self._tmdb_cache_file, "w", encoding="utf-8") as f:
-                json.dump(self._tmdb_cache, f)
+            with open(self.tmdb_cache_file, "w", encoding="utf-8") as f:
+                json.dump(self.tmdb_cache, f)
         except OSError as exc:
             logging.warning(f"Could not write TMDB cache: {exc}")
 
