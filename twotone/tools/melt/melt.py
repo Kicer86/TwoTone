@@ -525,7 +525,11 @@ class Melter():
                     default_video_stream = next(filter(lambda stream: stream[0] == "video", streams_list))
                     default_audio_stream = next(filter(lambda stream: stream[0] == "audio", streams_list), None)
                     metadata = self.duplicates_source.get_metadata_for(default_video_stream[2])
-                    preferred_lang = metadata.get("audio_prod_lang") or default_audio_stream[3] if default_audio_stream else None
+                    preferred_lang = metadata.get("audio_prod_lang")
+                    if preferred_lang:
+                        preferred_lang = language_utils.unify_lang(preferred_lang)
+                    else:
+                        preferred_lang = default_audio_stream[3] if default_audio_stream else None
 
                     def find_preferred_audio():
                         for info in streams_list_sorted:

@@ -453,6 +453,36 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(output_file_data["audio"][3]["language"], "nor")
         self.assertEqual(output_file_data["audio"][4]["language"], "pol")
 
+    def test_default_language(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        langs = ["pol", "en", "ger", "ja", "nor"]
+
+        for i in range(5):
+            file = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = [f"v{i}"])[0]
+            duplicates.add_entry("Grass", file)
+            duplicates.add_metadata(file, "audio_lang", langs[i])
+            duplicates.add_metadata(file, "audio_prod_lang", "ja")
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter.melt()
+
+        # validate alphabetical order
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
+
+        output_file = list(output_file_hash)[0]
+        output_file_data = video_utils.get_video_data(output_file)
+        self.assertEqual(output_file_data["audio"][0]["language"], "deu")
+        self.assertEqual(output_file_data["audio"][1]["language"], "eng")
+        self.assertEqual(output_file_data["audio"][2]["language"], "jpn")
+        self.assertEqual(output_file_data["audio"][2]["default"], True)
+        self.assertEqual(output_file_data["audio"][3]["language"], "nor")
+        self.assertEqual(output_file_data["audio"][4]["language"], "pol")
+
 
     def test_subtitle_streams(self):
         video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = True)
