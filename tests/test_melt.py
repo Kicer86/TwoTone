@@ -421,11 +421,11 @@ class MeltingTest(TwoToneTestCase):
             self.assertEqual(output_file_data["video"][0]["width"], 3840)
 
             self.assertEqual(len(output_file_data["audio"]), 2)
-            self.assertEqual(output_file_data["audio"][0]["language"], "nor")
-            self.assertEqual(output_file_data["audio"][1]["language"], "deu")
+            self.assertEqual(output_file_data["audio"][0]["language"], "deu")
+            self.assertEqual(output_file_data["audio"][1]["language"], "nor")
 
 
-    def test_languages_prioritization(self):
+    def test_languages_ordering(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
         langs = ["pol", "en", "ger", "ja", "nor"]
@@ -438,18 +438,18 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir, languages_priority = ["de", "jpn", "eng", "no", "pl"])
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
         melter.melt()
 
-        # validate order
+        # validate alphabetical order
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
         output_file = list(output_file_hash)[0]
         output_file_data = video_utils.get_video_data(output_file)
         self.assertEqual(output_file_data["audio"][0]["language"], "deu")
-        self.assertEqual(output_file_data["audio"][1]["language"], "jpn")
-        self.assertEqual(output_file_data["audio"][2]["language"], "eng")
+        self.assertEqual(output_file_data["audio"][1]["language"], "eng")
+        self.assertEqual(output_file_data["audio"][2]["language"], "jpn")
         self.assertEqual(output_file_data["audio"][3]["language"], "nor")
         self.assertEqual(output_file_data["audio"][4]["language"], "pol")
 

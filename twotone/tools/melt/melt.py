@@ -32,7 +32,7 @@ def _split_path_fix(value: str) -> List[str]:
 
 
 class Melter():
-    def __init__(self, logger: logging.Logger, interruption: generic_utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = [], preferred_languages: List[str] = [], allow_length_mismatch: bool = False):
+    def __init__(self, logger: logging.Logger, interruption: generic_utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, allow_length_mismatch: bool = False):
         self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
@@ -40,8 +40,6 @@ class Melter():
         self.debug_it: int = 0
         self.wd = os.path.join(wd, str(os.getpid()))
         self.output = output
-        self.languages_priority = [language_utils.unify_lang(language) for language in languages_priority]
-        self.preferred_languages = [language_utils.unify_lang(language) for language in preferred_languages]
         self.allow_length_mismatch = allow_length_mismatch
 
         os.makedirs(self.wd, exist_ok=True)
@@ -520,27 +518,23 @@ class Melter():
 
                             streams_list.append((stream_type, stream_index, path, language))
 
-                    # sort by language
-                    def get_index_for(l: List, value):
-                        try:
-                            return l.index(value)
-                        except ValueError:
-                            return len(l)
-
-                    priorities = self.languages_priority.copy()
-                    priorities.append(None)
-                    streams_list_sorted = sorted(streams_list, key=lambda stream: get_index_for(priorities, stream[3]))
+                    # sort streams by language alphabetically
+                    streams_list_sorted = sorted(streams_list, key=lambda stream: stream[3] if stream[3] else "")
 
                     # decide which track should be default
-                    def find_preferred(stype: str):
-                        for preferred in self.preferred_languages:
-                            for info in streams_list_sorted:
-                                if info[0] == "audio" and info[3] == preferred:
-                                    return info
+                    default_video_stream = next(filter(lambda stream: stream[0] == "video", streams_list))
+                    default_audio_stream = next(filter(lambda stream: stream[0] == "audio", streams_list), None)
+                    metadata = self.duplicates_source.get_metadata_for(default_video_stream[2])
+                    preferred_lang = metadata.get("audio_prod_lang") or default_audio_stream[3] if default_audio_stream else None
+
+                    def find_preferred_audio():
+                        for info in streams_list_sorted:
+                            if info[0] == "audio" and info[3] == preferred_lang:
+                                return info
+
                         return None
 
-                    preferred_audio = find_preferred("audio")
-                    preferred_subtitle = None if preferred_audio else find_preferred("subtitle")
+                    preferred_audio = find_preferred_audio()
 
                     # collect per-file options and track order
                     track_order = []
@@ -549,7 +543,7 @@ class Melter():
                         fo: Dict = files_opts[file_path]
                         fo[stream_type].append(tid)
                         fo["languages"][tid] = language or "und"
-                        if stream_type in ("audio", "subtitle") and (stream == preferred_audio or stream == preferred_subtitle):
+                        if stream_type in ("audio", "subtitle") and stream == preferred_audio:
                             fo["defaults"].add(tid)
                         file_index = generic_utils.get_key_position(files_opts, file_path)
                         track_order.append(f"{file_index}:{tid}")
@@ -654,16 +648,6 @@ class MeltTool(Tool):
         parser.add_argument('-o', '--output-dir',
                             help="Directory for output files")
 
-        parser.add_argument('-p', '--languages-priority',
-                            help='Comma separated list of two/three letter language codes. Order on the list defines order of audio and subtitle streams.\n'
-                                 'For example, for --languages-priority pl,de,en,fr all used subtitles and audio tracks will be\n'
-                                 'ordered so polish goes as first, then german, english and french.\n'
-                                 'If there are subtitles in any other language, they will be append at the end in an undefined order')
-        parser.add_argument('-l', '--preferred-languages',
-                            help='Comma separated list of two/three letter language codes. `Melt` will force default tracks basing on the given order.\n'
-                                 'For example for value: jp,pl,de melt will set default audio track to japanese or polish or german in given order if audio track in given language exists.\n'
-                                 'If audio for given languages was not found, `melt` will look for subtitles in given languages and set the first one found to default.\n'
-                                 'If this parameter is not set, first audio track will be chosen, and none of the subtitles will be set as default.')
         parser.add_argument('--allow-length-mismatch', action='store_true',
                             help='[EXPERIMENTAL] Continue processing even if input video lengths differ.\n'
                                  'This may require additional processing that can consume significant time and disk space.')
@@ -718,16 +702,12 @@ class MeltTool(Tool):
                 if audio_prod_lang:
                     data_source.add_metadata(path, "audio_prod_lang", audio_prod_lang)
 
-        languages_priority = args.languages_priority.split(",") if args.languages_priority else []
-        preferred_languages = args.preferred_languages.split(",") if args.preferred_languages else []
         melter = Melter(logger,
                         interruption,
                         data_source,
                         live_run = no_dry_run,
                         wd = working_dir,
                         output = args.output_dir,
-                        languages_priority = languages_priority,
-                        preferred_languages = preferred_languages,
                         allow_length_mismatch = args.allow_length_mismatch
         )
 
