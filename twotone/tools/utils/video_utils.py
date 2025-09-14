@@ -243,16 +243,24 @@ def get_video_data(path: str) -> Dict:
     for stream in output_json["streams"]:
         stream_type = stream["codec_type"]
         tid = stream["index"]
+        disposition = stream.get("disposition", {})
+        is_default = disposition.get("default", 0)
+        if_forced = disposition.get("forced", 0)
+
+        stream_data = {
+            "default": bool(is_default),
+            "forced": bool(if_forced),
+            "tid": tid
+        }
+
         if stream_type == "subtitle":
             language = get_language(stream)
-            is_default = stream["disposition"]["default"]
             length = get_length(stream)
             format = stream["codec_name"]
             title = stream.get("tags", {}).get("title", None)
 
-            streams["subtitle"].append({
+            stream_data.update({
                 "language": language,
-                "default": is_default,
                 "length": length,
                 "tid": tid,
                 "title": title,
@@ -260,7 +268,6 @@ def get_video_data(path: str) -> Dict:
         elif stream_type == "video":
             fps = stream["r_frame_rate"]
             length = get_length(stream)
-            disposition = stream.get("disposition", {})
             if length is None:
                 length = get_video_duration(path)
 
@@ -269,7 +276,7 @@ def get_video_data(path: str) -> Dict:
             bitrate = stream["bitrate"] if "bitrate" in stream else None
             codec = stream["codec_name"]
 
-            streams["video"].append({
+            stream_data.update({
                 "fps": fps,
                 "length": length,
                 "width": width,
@@ -283,12 +290,14 @@ def get_video_data(path: str) -> Dict:
             channels = stream["channels"]
             sample_rate = int(stream["sample_rate"])
 
-            streams["audio"].append({
+            stream_data.update({
                 "language": language,
                 "channels": channels,
                 "sample_rate": sample_rate,
                 "tid": tid,
             })
+
+        streams[stream_type].append(stream_data)
 
     return dict(streams)
 
