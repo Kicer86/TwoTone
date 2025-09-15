@@ -68,7 +68,7 @@ class TmdbCache:
 
         try:
             with open(self._cache_path, "w", encoding="utf-8") as cache_file:
-                json.dump(self._data, cache_file, indent=2)
+                json.dump(self._data, cache_file, indent=2, sort_keys=True)
         except OSError as exc:
             self._logger.warning("Could not write TMDB cache: %s", exc)
 
