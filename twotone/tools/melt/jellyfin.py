@@ -1,5 +1,4 @@
 
-import json
 import logging
 import os
 import time
@@ -10,6 +9,7 @@ from overrides import override
 from typing import Dict, List, Tuple
 
 from ..utils import generic_utils, language_utils
+from ..utils.tmdb_cache import TmdbCache
 from .duplicates_source import DuplicatesSource
 
 
@@ -23,15 +23,7 @@ class JellyfinSource(DuplicatesSource):
         # allow injecting a logger for better control in callers/tests
         self.logger = logger or logging.getLogger(__name__)
         self.tmdb_id_by_path: Dict[str, str] = {}
-
-        cache_dir = generic_utils.get_twotone_config_dir()
-        os.makedirs(cache_dir, exist_ok=True)
-        self.tmdb_cache_file = os.path.join(cache_dir, "tmdb_cache.json")
-        try:
-            with open(self.tmdb_cache_file, "r", encoding="utf-8") as f:
-                self.tmdb_cache = json.load(f)
-        except FileNotFoundError:
-            self.tmdb_cache = {}
+        self.tmdb_cache = TmdbCache(logger=self.logger)
 
         self.last_tmdb_request: float = 0.0
         self.tmdb_api_key = os.getenv("TMDB_API_KEY")
@@ -127,8 +119,9 @@ class JellyfinSource(DuplicatesSource):
         if not tmdb_id:
             return {"audio_prod_lang": None}
 
-        if tmdb_id in self.tmdb_cache:
-            return {"audio_prod_lang": self.tmdb_cache[tmdb_id]}
+        cached_lang = self.tmdb_cache.get(tmdb_id, "audio_prod_lang")
+        if cached_lang is not None:
+            return {"audio_prod_lang": cached_lang}
 
         if not self.tmdb_api_key:
             self.logger.error("TMDB_API_KEY not set")
@@ -154,11 +147,6 @@ class JellyfinSource(DuplicatesSource):
         data = response.json()
         lang = data.get("original_language")
         lang = language_utils.unify_lang(lang) if lang else None
-        self.tmdb_cache[tmdb_id] = lang
-        try:
-            with open(self.tmdb_cache_file, "w", encoding="utf-8") as f:
-                json.dump(self.tmdb_cache, f)
-        except OSError as exc:
-            self.logger.warning(f"Could not write TMDB cache: {exc}")
+        self.tmdb_cache.set(tmdb_id, "audio_prod_lang", lang)
 
         return {"audio_prod_lang": lang}
