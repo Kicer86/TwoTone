@@ -671,7 +671,8 @@ class MeltTool(Tool):
             data_source = JellyfinSource(interruption=interruption,
                                          url=args.jellyfin_server,
                                          token=args.jellyfin_token,
-                                         path_fix=path_fix)
+                                         path_fix=path_fix,
+                                         logger=logger.getChild("JellyfinSource"))
         elif args.input_files:
             title = args.title
             input_entries = args.input_files

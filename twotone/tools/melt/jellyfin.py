@@ -9,17 +9,19 @@ from collections import defaultdict
 from overrides import override
 from typing import Dict, List, Tuple
 
-from ..utils import generic_utils
+from ..utils import generic_utils, language_utils
 from .duplicates_source import DuplicatesSource
 
 
 class JellyfinSource(DuplicatesSource):
-    def __init__(self, interruption: generic_utils.InterruptibleProcess, url: str, token: str, path_fix: Tuple[str, str] | None) -> None:
+    def __init__(self, interruption: generic_utils.InterruptibleProcess, url: str, token: str, path_fix: Tuple[str, str] | None, logger: logging.Logger | None = None) -> None:
         super().__init__(interruption)
 
         self.url = url
         self.token = token
         self.path_fix = path_fix
+        # allow injecting a logger for better control in callers/tests
+        self.logger = logger or logging.getLogger(__name__)
         self.tmdb_id_by_path: Dict[str, str] = {}
 
         cache_dir = generic_utils.get_twotone_config_dir()
@@ -43,7 +45,7 @@ class JellyfinSource(DuplicatesSource):
             if path.startswith(pfrom):
                 fixed_path = f"{pto}{path[len(pfrom):]}"
             else:
-                logging.error(f"Could not replace \"{pfrom}\" in \"{path}\"")
+                self.logger.error(f"Could not replace \"{pfrom}\" in \"{path}\"")
 
         return fixed_path
 
@@ -105,16 +107,16 @@ class JellyfinSource(DuplicatesSource):
                         name = names[0]
 
                         if not all_paths_are_files:
-                            logging.warning(f"Some paths for title {name} are not files:")
+                            self.logger.warning(f"Some paths for title {name} are not files:")
                             for path in fixed_paths:
-                                logging.warning(f"\t{path}")
-                            logging.warning("Skipping title")
+                                self.logger.warning(f"\t{path}")
+                            self.logger.warning("Skipping title")
                         else:
                             duplicates[name] = fixed_paths
                     else:
                         names_str = '\n'.join(names)
                         paths_str = '\n'.join(fixed_paths)
-                        logging.warning(f"Different names for the same movie ({provider}: {id}):\n{names_str}.\nJellyfin files:\n{paths_str}\nSkipping.")
+                        self.logger.warning(f"Different names for the same movie ({provider}: {id}):\n{names_str}.\nJellyfin files:\n{paths_str}\nSkipping.")
 
         return duplicates
 
@@ -129,14 +131,14 @@ class JellyfinSource(DuplicatesSource):
             return {"audio_prod_lang": self.tmdb_cache[tmdb_id]}
 
         if not self.tmdb_api_key:
-            logging.error("TMDB_API_KEY not set")
+            self.logger.error("TMDB_API_KEY not set")
             return {"audio_prod_lang": None}
 
         now = time.time()
         delta = now - self.last_tmdb_request
         if delta < 0.3:
             wait = 0.3 - delta
-            logging.warning(f"TMDB API limit reached. Waiting {wait:.2f}s.")
+            self.logger.warning(f"TMDB API limit reached. Waiting {wait:.2f}s.")
             time.sleep(wait)
 
         response = requests.get(
@@ -146,16 +148,17 @@ class JellyfinSource(DuplicatesSource):
         self.last_tmdb_request = time.time()
 
         if response.status_code != 200:
-            logging.error(f"TMDB request failed for id {tmdb_id}: {response.status_code}")
+            self.logger.error(f"TMDB request failed for id {tmdb_id}: {response.status_code}")
             return {"audio_prod_lang": None}
 
         data = response.json()
         lang = data.get("original_language")
+        lang = language_utils.unify_lang(lang) if lang else None
         self.tmdb_cache[tmdb_id] = lang
         try:
             with open(self.tmdb_cache_file, "w", encoding="utf-8") as f:
                 json.dump(self.tmdb_cache, f)
         except OSError as exc:
-            logging.warning(f"Could not write TMDB cache: {exc}")
+            self.logger.warning(f"Could not write TMDB cache: {exc}")
 
         return {"audio_prod_lang": lang}
