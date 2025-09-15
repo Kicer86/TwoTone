@@ -90,12 +90,12 @@ class Melter():
         seg2_start, seg2_end = min(s2_all), max(s2_all)
 
         # 1. Extract main audio
-        process_utils.start_process("ffmpeg", ["-y", "-i", video1_path, "-map", "0:a:0", "-c:a", "flac", v1_audio])
-        process_utils.start_process("ffmpeg", ["-y", "-i", video2_path, "-map", "0:a:0", "-c:a", "flac", v2_audio])
+        process_utils.start_process("ffmpeg", ["-y", "-i", video1_path, "-map", "0:a:0", "-c:a", "flac", v1_audio], logger=self.logger)
+        process_utils.start_process("ffmpeg", ["-y", "-i", video2_path, "-map", "0:a:0", "-c:a", "flac", v2_audio], logger=self.logger)
 
         # 2. Extract head and tail
-        process_utils.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(seg1_start / 1000), "-i", v1_audio, "-c:a", "flac", head_path])
-        process_utils.start_process("ffmpeg", ["-y", "-ss", str(seg1_end / 1000), "-i", v1_audio, "-c:a", "flac", tail_path])
+        process_utils.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(seg1_start / 1000), "-i", v1_audio, "-c:a", "flac", head_path], logger=self.logger)
+        process_utils.start_process("ffmpeg", ["-y", "-ss", str(seg1_end / 1000), "-i", v1_audio, "-c:a", "flac", tail_path], logger=self.logger)
 
         # 3. Generate subsegment split points using pair list boundaries
         total_left_duration = seg1_end - seg1_start
@@ -149,13 +149,13 @@ class Melter():
             process_utils.start_process("ffmpeg", [
                 "-y", "-ss", str(r_start / 1000), "-to", str(r_end / 1000),
                 "-i", v2_audio, "-c:a", "flac", raw_cut
-            ])
+            ], logger=self.logger)
 
             process_utils.start_process("ffmpeg", [
                 "-y", "-i", raw_cut,
                 "-filter:a", f"atempo={ratio:.3f}",
                 "-c:a", "flac", scaled_cut
-            ])
+            ], logger=self.logger)
 
             temp_segments.append(scaled_cut)
 
@@ -171,12 +171,12 @@ class Melter():
         process_utils.start_process("ffmpeg", [
             "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
             "-c:a", "flac", merged_flac
-        ])
+        ], logger=self.logger)
 
         # 5. Re-encode to output file
         process_utils.start_process("ffmpeg", [
             "-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path
-        ])
+        ], logger=self.logger)
 
     def _stream_short_details(self, stype: str, stream: Dict[str, Any]) -> str:
         def fmt_fps(value: str) -> str | None:
@@ -304,7 +304,7 @@ class Melter():
 
         # analyze files in terms of quality and available content
         # use mkvmerge-based probing enriched with ffprobe data
-        details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True) for file in duplicates}
+        details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True, logger=self.logger) for file in duplicates}
         attachments = {file: info["attachments"] for file, info in details_full.items()}
         tracks = {file: info["tracks"] for file, info in details_full.items()}
 
@@ -591,7 +591,7 @@ class Melter():
                     if track_order:
                         generation_args.extend(["--track-order", ",".join(track_order)])
 
-                    process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args, show_progress = True))
+                    process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args, show_progress = True, logger=self.logger))
 
                     self.logger.info(f"{output} saved.")
 

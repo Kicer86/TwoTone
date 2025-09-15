@@ -18,7 +18,7 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, subti
 class Merge(generic_utils.InterruptibleProcess):
 
     def __init__(self, logger: logging.Logger, dry_run: bool, language: str, lang_priority: str, working_dir: str) -> None:
-        super().__init__()
+        super().__init__(logger)
         self.logger = logger
         self.dry_run = dry_run
         self.language = language
@@ -45,7 +45,7 @@ class Merge(generic_utils.InterruptibleProcess):
                     path = entry.path
                     if video_utils.is_video(path):
                         videos.append(path)
-                    elif subtitles_utils.is_subtitle(path):
+                    elif subtitles_utils.is_subtitle(path, logger=self.logger.getChild("subtitles_utils")):
                         subtitles.append(path)
 
         # sort both lists by length
@@ -90,7 +90,7 @@ class Merge(generic_utils.InterruptibleProcess):
                         # if there is a video file then all possible subtitles at this level (and below) belong to
                         # it, quit recursion for current directory
                         return []
-                    elif subtitles_utils.is_subtitle(entry.path):
+                    elif subtitles_utils.is_subtitle(entry.path, logger=self.logger.getChild("subtitles_utils")):
                         found_subtitles.append(entry.path)
 
         # if we got here, then no video was found at this level
@@ -113,7 +113,7 @@ class Merge(generic_utils.InterruptibleProcess):
             if entry.is_dir():
                 sub_subtitles = self._recursive_subtitle_search(entry.path)
                 subtitles.extend(sub_subtitles)
-            elif entry.is_file() and subtitles_utils.is_subtitle(entry.path):
+            elif entry.is_file() and subtitles_utils.is_subtitle(entry.path, logger=self.logger.getChild("subtitles_utils")):
                 subtitle = self._build_subtitle_from_path(entry.path)
                 subtitles.append(subtitle)
 
@@ -143,7 +143,8 @@ class Merge(generic_utils.InterruptibleProcess):
 
             status = process_utils.start_process(
                 "ffmpeg",
-                ["-y", "-sub_charenc", encoding, "-i", input_file, output_file]
+                ["-y", "-sub_charenc", encoding, "-i", input_file, output_file],
+                logger=self.logger
             )
 
             if status.returncode == 0:
@@ -175,7 +176,7 @@ class Merge(generic_utils.InterruptibleProcess):
         temporary_output_video = video_dir + "/_tt_merge_" + video_name + "." + "mkv"
 
         # collect details about input file
-        input_file_details = video_utils.get_video_data(input_video)
+        input_file_details = video_utils.get_video_data(input_video, logger=self.logger)
 
         input_files = []
 
@@ -216,7 +217,7 @@ class Merge(generic_utils.InterruptibleProcess):
         # perform
         self.logger.debug("\tMerge in progress...")
         if not self.dry_run:
-            video_utils.generate_mkv(input_video=input_video, output_path=temporary_output_video, subtitles=prepared_subtitles)
+            video_utils.generate_mkv(input_video=input_video, output_path=temporary_output_video, subtitles=prepared_subtitles, logger=self.logger)
 
             # Remove all inputs
             for input in input_files:

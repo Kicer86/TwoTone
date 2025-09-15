@@ -13,6 +13,9 @@ import py3langid as langid
 from .generic_utils import ms_to_time, time_to_ms
 
 
+DEFAULT_LOGGER = logging.getLogger("TwoTone.utils.subtitles_utils")
+
+
 @dataclass
 class SubtitleFile:
     path: str
@@ -55,8 +58,9 @@ def file_encoding(file: str) -> str:
     return encoding
 
 
-def is_subtitle(file: str) -> bool:
-    logging.debug(f"Checking file {file} for being subtitle")
+def is_subtitle(file: str, logger: logging.Logger | None = None) -> bool:
+    logger = logger or DEFAULT_LOGGER
+    logger.debug(f"Checking file {file} for being subtitle")
     ext = file[-4:]
 
     if ext == ".srt" or ext == ".sub" or ext == ".txt":
@@ -64,17 +68,17 @@ def is_subtitle(file: str) -> bool:
         encoding = file_encoding(file)
 
         if encoding:
-            logging.debug(f"\tOpening file with encoding {encoding}")
+            logger.debug(f"\tOpening file with encoding {encoding}")
 
             with open(file, 'r', encoding=encoding) as text_file:
                 head = "".join(islice(text_file, 5)).strip()
 
                 for subtitle_format in [subtitle_format1, microdvd_time_pattern, weird_microdvd_time_pattern, subtitle_format2]:
                     if subtitle_format.match(head):
-                        logging.debug("\tSubtitle format detected")
+                        logger.debug("\tSubtitle format detected")
                         return True
 
-    logging.debug("\tNot a subtitle file")
+    logger.debug("\tNot a subtitle file")
     return False
 
 

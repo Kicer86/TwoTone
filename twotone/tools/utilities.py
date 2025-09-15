@@ -11,7 +11,7 @@ from .tool import Tool
 from .utils import video_utils, process_utils, files_utils
 
 
-def extract_scenes(video_path, output_dir, format: str, scale: float):
+def extract_scenes(video_path, output_dir, format: str, scale: float, logger: logging.Logger):
     """
     Extracts all video frames, names them based on their timestamp, and groups them into scene subdirectories.
 
@@ -22,7 +22,7 @@ def extract_scenes(video_path, output_dir, format: str, scale: float):
     os.makedirs(output_dir, exist_ok=True)
 
     # Get scene change timestamps
-    scene_changes = [float(sc) for sc in video_utils.detect_scene_changes(video_path)]
+    scene_changes = [float(sc) for sc in video_utils.detect_scene_changes(video_path, logger=logger)]
     scene_changes.append(math.inf)
 
     # Extract all frames while capturing PTS times
@@ -40,7 +40,7 @@ def extract_scenes(video_path, output_dir, format: str, scale: float):
         output_pattern
     ]
 
-    result = process_utils.start_process("ffmpeg", args = args)
+    result = process_utils.start_process("ffmpeg", args = args, logger=logger)
 
     # Parse PTS times from stderr
     frame_pts_map = {}  # Maps sequential frame numbers to PTS timestamps
@@ -112,6 +112,6 @@ class UtilitiesTool(Tool):
     @override
     def run(self, args, no_dry_run: bool, logger: logging.Logger, working_dir: str):
         if args.subtool == "scenes":
-            extract_scenes(video_path = args.video_path[0], output_dir = args.output, format = args.format, scale = float(args.scale))
+            extract_scenes(video_path = args.video_path[0], output_dir = args.output, format = args.format, scale = float(args.scale), logger=logger.getChild("extract_scenes"))
         else:
-            logging.error(f"Error: Unknown subtool {args.subtool}")
+            logger.error(f"Error: Unknown subtool {args.subtool}")
