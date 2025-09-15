@@ -1,6 +1,7 @@
 
 import itertools
 import logging
+import os
 import platformdirs
 import re
 import signal
@@ -60,9 +61,13 @@ def get_key_position(d: dict, key) -> int:
     raise KeyError(f"Key {key} not found")
 
 
+def get_twotone_config_dir():
+    return platformdirs.user_data_dir("twotone")
+
+
 def get_twotone_working_dir():
     """Return the default cache directory for twotone temporary files."""
-    return platformdirs.user_data_dir("twotone")
+    return os.path.join(get_twotone_config_dir(), "working")
 
 
 class InterruptibleProcess:

@@ -22,7 +22,7 @@ class JellyfinSource(DuplicatesSource):
         self.path_fix = path_fix
         self.tmdb_id_by_path: Dict[str, str] = {}
 
-        cache_dir = generic_utils.get_twotone_working_dir()
+        cache_dir = generic_utils.get_twotone_config_dir()
         os.makedirs(cache_dir, exist_ok=True)
         self.tmdb_cache_file = os.path.join(cache_dir, "tmdb_cache.json")
         try:
