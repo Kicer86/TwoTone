@@ -146,6 +146,11 @@ class JellyfinSource(DuplicatesSource):
 
         data = response.json()
         lang = data.get("original_language")
+
+        # TMDB would return 'cn' for 'Cantonese', but it's not a valid ISO 639-1 or ISO 639-2 code. Map it to 'yue' instead.
+        if lang.lower() == "cn":
+            lang = "yue"
+
         lang = language_utils.unify_lang(lang) if lang else None
         self.tmdb_cache.set(tmdb_id, "audio_prod_lang", lang)
 
