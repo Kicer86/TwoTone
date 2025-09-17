@@ -508,7 +508,7 @@ class Melter():
                         for path in required_input_files
                     }
 
-                    # convert streams to list for later sorting by language
+                    # convert streams to list for later sorting
                     streams_list = []
                     for path, infos in streams.items():
                         for info in infos:
@@ -525,9 +525,9 @@ class Melter():
                     default_video_stream = next(filter(lambda stream: stream[0] == "video", streams_list))
                     default_audio_stream = next(filter(lambda stream: stream[0] == "audio", streams_list), None)
                     metadata = self.duplicates_source.get_metadata_for(default_video_stream[2])
-                    preferred_lang = metadata.get("audio_prod_lang")
-                    if preferred_lang:
-                        preferred_lang = language_utils.unify_lang(preferred_lang)
+                    prod_lang = metadata.get("audio_prod_lang")
+                    if prod_lang:
+                        preferred_lang = language_utils.unify_lang(prod_lang)
                     else:
                         preferred_lang = default_audio_stream[3] if default_audio_stream else None
 
@@ -539,6 +539,13 @@ class Melter():
                         return None
 
                     preferred_audio = find_preferred_audio()
+
+                    if prod_lang:
+                        language_name = language_utils.language_name(prod_lang)
+                        if preferred_audio:
+                            self.logger.info(f"Setting production audio language '{language_name}' as default.")
+                        else:
+                            self.logger.warning(f"Production audio language '{language_name}' not found among audio streams.")
 
                     # collect per-file options and track order
                     track_order = []
