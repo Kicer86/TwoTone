@@ -479,17 +479,16 @@ class Melter():
                     continue
 
                 streams, attachments = result
-                if not self.live_run:
-                    self.logger.info("Dry run. Skipping output generation")
-                    continue
-
                 required_input_files = { file_path for file_path in streams }
                 required_input_files |= { info[0] for info in attachments }
 
                 output = os.path.join(self.output, title, output_name + ".mkv")
                 if os.path.exists(output):
-                    self.logger.debug(f"Output file {output} exists, removing it.")
-                    os.remove(output)
+                    if self.live_run:
+                        self.logger.info(f"Output file {output} exists, removing it.")
+                        os.remove(output)
+                    else:
+                        self.logger.info(f"Dry run, skipping step: output file {output} exists.")
 
                 output_dir = os.path.dirname(output)
                 os.makedirs(output_dir, exist_ok=True)
@@ -498,8 +497,11 @@ class Melter():
                     # only one file is being used, just copy it to the output dir
                     first_file_path = list(required_input_files)[0]
 
-                    self.logger.info(f"Using whole {first_file_path} file as an output.")
-                    shutil.copy2(first_file_path, output)
+                    if self.live_run:
+                        self.logger.info(f"Using whole {first_file_path} file as an output.")
+                        shutil.copy2(first_file_path, output)
+                    else:
+                        self.logger.info(f"Dry run, skipping step: using whole {first_file_path} file as an output.")
                 else:
                     self.logger.info("Starting output file generation from chosen streams.")
                     generation_args = ["-o", output]
@@ -596,11 +598,12 @@ class Melter():
                     if track_order:
                         generation_args.extend(["--track-order", ",".join(track_order)])
 
-                    process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args, show_progress = True))
+                    if self.live_run:
+                        process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args, show_progress = True))
 
-                    self.logger.info(f"{output} saved.")
-
-                # keep input files intact
+                        self.logger.info(f"{output} saved.")
+                    else:
+                        self.logger.info("Dry run, skipping output file generation")
 
     def melt(self):
         with files_utils.ScopedDirectory(self.wd) as wd, logging_redirect_tqdm():
