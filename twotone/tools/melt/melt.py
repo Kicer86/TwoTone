@@ -498,7 +498,7 @@ class Melter():
                     first_file_path = list(required_input_files)[0]
 
                     if self.live_run:
-                        self.logger.info(f"Using whole {first_file_path} file as an output.")
+                        self.logger.info(f"File {first_file_path} is superior. Using it whole as an output.")
                         shutil.copy2(first_file_path, output)
                     else:
                         self.logger.info(f"Dry run, skipping step: using whole {first_file_path} file as an output.")
