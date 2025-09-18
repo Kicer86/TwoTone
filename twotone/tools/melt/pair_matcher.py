@@ -447,8 +447,7 @@ class PairMatcher:
         lhs_frames: FramesInfo,
         rhs_frames: FramesInfo,
         lhs_cropped_dir: str,
-        rhs_cropped_dir: str,
-        final_crop_percent: float = 0.02
+        rhs_cropped_dir: str
     ) -> Tuple[FramesInfo, FramesInfo]:
         # Step 1: Get interpolated crop functions for both sets
         lhs_crop_fn, rhs_crop_fn = PairMatcher._find_interpolated_crop(pairs_with_timestamps, lhs_frames, rhs_frames)
