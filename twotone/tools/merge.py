@@ -3,13 +3,12 @@ import argparse
 import logging
 import os
 import shutil
-import tempfile
 from collections import defaultdict
 from overrides import override
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import List, Union, Sequence
 
 from .tool import Tool
 from twotone.tools.utils import files_utils, generic_utils, process_utils, subtitles_utils, video_utils
@@ -22,7 +21,7 @@ class Merge(generic_utils.InterruptibleProcess):
         self.logger = logger
         self.dry_run = dry_run
         self.language = language
-        self.lang_priority = [] if not lang_priority or lang_priority == "" else lang_priority.split(",")
+        self.lang_priority = lang_priority.split(",") if lang_priority else []
         self.working_dir = working_dir
 
     def _build_subtitle_from_path(self, path: str) -> subtitles_utils.SubtitleFile:
