@@ -220,7 +220,7 @@ class Melter():
             return fmt or ""
         return ""
 
-    def _print_file_details(self, file: str, details: Dict[str, Any], common_prefix: str):
+    def _print_file_details(self, file: str, details: Dict[str, Any], ids: Dict[str, int]):
         def formatter(key: str, value: Any) -> str:
             if key == "fps":
                 return eval(value)
@@ -235,7 +235,8 @@ class Melter():
             else:
                 return True
 
-        self.logger.info(f"File {files_utils.get_printable_path(file, common_prefix)} details:")
+        id = ids[file]
+        self.logger.info(f"File #{id} details:")
         tracks = details["tracks"]
         attachments = details["attachments"]
 
@@ -267,14 +268,12 @@ class Melter():
                         self.logger.debug(
                             f"\t\t{key_title:<16}{formatter(key, value)}")
 
-    def _print_streams_details(self, common_prefix, all_streams: List, tracks: Dict[str, Dict]):
+    def _print_streams_details(self, ids: Dict[str, int], all_streams: List, tracks: Dict[str, Dict]):
         for stype, type_stream in all_streams:
             for stream in type_stream:
                 path = stream[0]
                 tid = stream[1]
                 language = language_utils.language_name(stream[2])
-
-                printable_path = files_utils.get_printable_path(path, common_prefix)
 
                 stream_details = None
                 track_infos = tracks.get(path, {}).get(stype, [])
@@ -285,32 +284,27 @@ class Melter():
 
                 extra = f" ({stream_details})" if stream_details else ""
 
-                self.logger.info(f"{stype} track #{tid}: {language} from {printable_path}{extra}")
+                id = ids[path]
+                self.logger.info(f"{stype} track #{tid}: {language} from file #{id}{extra}")
 
-    def _print_attachements_details(self, common_prefix, all_attachments: List):
+    def _print_attachements_details(self, ids: Dict[str, int], all_attachments: List):
          for stream in all_attachments:
             path = stream[0]
             tid = stream[1]
 
-            printable_path = files_utils.get_printable_path(path, common_prefix)
-            self.logger.info(f"Attachment ID #{tid} from {printable_path}")
+            id = ids[path]
+            self.logger.info(f"Attachment ID #{tid} from file #{id}")
 
-    def _process_duplicates(self, duplicates: List[str]) -> Tuple[Dict, List] | None:
-        self.logger.info("------------------------------------")
-        self.logger.info("Processing group of duplicated files")
-        self.logger.info("------------------------------------")
-
+    def _process_duplicates(self, duplicates: List[str], ids: Dict[str, int]) -> Tuple[Dict, List] | None:
         # analyze files in terms of quality and available content
         # use mkvmerge-based probing enriched with ffprobe data
         details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True) for file in duplicates}
         attachments = {file: info["attachments"] for file, info in details_full.items()}
         tracks = {file: info["tracks"] for file, info in details_full.items()}
 
-        common_prefix = files_utils.get_common_prefix(duplicates)
-
         # print input file details
         for file, file_details in details_full.items():
-            self._print_file_details(file, file_details, common_prefix)
+            self._print_file_details(file, file_details, ids)
 
         streams_picker = StreamsPicker(self.logger, self.duplicates_source)
         try:
@@ -334,11 +328,11 @@ class Melter():
         # print proposed output file
         self.logger.info("Streams used to create output video file:")
         self._print_streams_details(
-            common_prefix,
+            ids,
             [(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [video_streams, audio_streams, subtitle_streams])],
             tracks,
         )
-        self._print_attachements_details(common_prefix, picked_attachments)
+        self._print_attachements_details(ids, picked_attachments)
 
         # build streams mapping
         streams = defaultdict(list)
@@ -473,7 +467,18 @@ class Melter():
             for files, output_name in tqdm(files_groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
                 self.interruption._check_for_stop()
 
-                result = self._process_duplicates(files)
+                if len(files) > 1:
+                    self.logger.info("------------------------------------")
+                    self.logger.info("Processing group of duplicated files")
+                    self.logger.info("------------------------------------")
+
+                ids = {}
+                for i, file in enumerate(files):
+                    id = i + 1
+                    ids[file] = id
+                    self.logger.info(f"#{id}: {file}")
+
+                result = self._process_duplicates(files, ids)
                 if result is None:
                     self.logger.info("Skipping output generation")
                     continue
@@ -503,7 +508,6 @@ class Melter():
                     else:
                         self.logger.info(f"Dry run, skipping step: using whole {first_file_path} file as an output.")
                 else:
-                    self.logger.info("Starting output file generation from chosen streams.")
                     generation_args = ["-o", output]
                     files_opts = {
                         path: {"video": [], "audio": [], "subtitle": [], "attachments": [], "languages": {}, "defaults": set()}
@@ -599,8 +603,8 @@ class Melter():
                         generation_args.extend(["--track-order", ",".join(track_order)])
 
                     if self.live_run:
+                        self.logger.info("Starting output file generation from chosen streams.")
                         process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args, show_progress = True))
-
                         self.logger.info(f"{output} saved.")
                     else:
                         self.logger.info("Dry run, skipping output file generation")
