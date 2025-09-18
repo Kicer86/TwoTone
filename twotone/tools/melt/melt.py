@@ -242,7 +242,7 @@ class Melter():
 
         for stream_type, streams in tracks.items():
             self.logger.info(f"  {stream_type}: {len(streams)} track(s)")
-            for i, stream in enumerate(streams):
+            for stream in streams:
                 lang_name = language_utils.language_name(stream.get("language"))
                 short = self._stream_short_details(stream_type, stream)
 
@@ -250,7 +250,8 @@ class Melter():
                 if short:
                     info += f" ({short})"
 
-                self.logger.info(f"    #{i + 1}: {info}")
+                id = stream.get("tid")
+                self.logger.info(f"    #{id}: {info}")
 
         for attachment in attachments:
             file_name = attachment["file_name"]
@@ -260,8 +261,9 @@ class Melter():
         for stream_type, streams in tracks.items():
             self.logger.debug(f"\t{stream_type}:")
 
-            for i, stream in enumerate(streams):
-                self.logger.debug(f"\t#{i + 1}:")
+            for stream in streams:
+                id = stream.get("tid")
+                self.logger.debug(f"\t#{id}:")
                 for key, value in stream.items():
                     if show(key):
                         key_title = key + ":"
