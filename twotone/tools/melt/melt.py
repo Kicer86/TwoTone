@@ -310,7 +310,7 @@ class Melter():
 
         streams_picker = StreamsPicker(self.logger, self.duplicates_source)
         try:
-            video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks)
+            video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks, ids)
         except RuntimeError as re:
             self.logger.error(re)
             return None
@@ -362,8 +362,8 @@ class Melter():
             length = tracks[path]["video"][0]["length"]
 
             if abs(base_length - length) > 100:
-                printable_path = files_utils.get_printable_path(path, common_prefix)
-                self.logger.warning(f"Audio stream from file {printable_path} has length different than length of video stream from file {video_stream_path}.")
+                id = ids[path]
+                self.logger.warning(f"Audio stream from file #{id} has length different than length of video stream from file {video_stream_path}.")
 
                 if self.live_run:
                     self.logger.info("Starting videos comparison to solve mismatching lengths.")
@@ -395,8 +395,8 @@ class Melter():
             length = tracks[path]["video"][0]["length"]
 
             if abs(base_length - length) > 100:
-                printable_path = files_utils.get_printable_path(path, common_prefix)
-                error = f"Subtitles stream from file {printable_path} has length different than length of video stream from file {video_stream_path}. This is not supported yet"
+                id = ids[path]
+                error = f"Subtitles stream from file #{id} has length different than length of video stream from file {video_stream_path}. This is not supported yet"
                 self.logger.error(error)
                 raise RuntimeError(f"Unsupported case: {error}")
 
