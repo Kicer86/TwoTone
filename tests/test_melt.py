@@ -46,6 +46,10 @@ def all_key_orders(d: Dict) -> Iterator[Dict]:
         yield {k: d[k] for k in perm}
 
 
+def _build_path_to_id_map(input: Dict) -> Dict[str, int]:
+    return {path: idx for idx, path in enumerate(input.keys())}
+
+
 class MeltingTest(TwoToneTestCase):
 
     def setUp(self):
@@ -669,9 +673,11 @@ class MeltingTest(TwoToneTestCase):
         duplicates = StaticSource(interruption)
         streams_picker = StreamsPicker(self.logger.getChild("Melter"), duplicates)
 
+        ids = _build_path_to_id_map(input)
+
         # Test all possible combinations of order of input files. Output should be stable
         for video_info in all_key_orders(input):
-            picked_streams = streams_picker.pick_streams(video_info)
+            picked_streams = streams_picker.pick_streams(video_info, ids)
             picked_streams_normalized = normalize(picked_streams)
             expected_streams_normalized = normalize(expected_streams)
 
