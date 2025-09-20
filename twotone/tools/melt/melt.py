@@ -255,7 +255,7 @@ class Melter():
 
         for attachment in attachments:
             file_name = attachment["file_name"]
-            self.logger.info(f"attachment: {file_name}")
+            self.logger.info(f"  attachment: {file_name}")
 
         # more details for debug
         for stream_type, streams in tracks.items():
