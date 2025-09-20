@@ -666,7 +666,8 @@ class MeltTool(Tool):
 
         # global options
         parser.add_argument('-o', '--output-dir',
-                            help="Directory for output files")
+                            help="Directory for output files",
+                            required = True)
 
         parser.add_argument('--allow-length-mismatch', action='store_true',
                             help='[EXPERIMENTAL] Continue processing even if input video lengths differ.\n'
