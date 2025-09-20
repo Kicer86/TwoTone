@@ -469,7 +469,7 @@ class Melter():
             for files, output_name in tqdm(files_groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
                 self.interruption._check_for_stop()
 
-                if len(files) > 1:
+                if len(files_groups) > 1:
                     self.logger.info("------------------------------------")
                     self.logger.info("Processing group of duplicated files")
                     self.logger.info("------------------------------------")
