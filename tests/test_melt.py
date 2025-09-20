@@ -20,11 +20,9 @@ from common import (
     add_test_media,
     add_to_test_dir,
     build_test_video,
-    current_path,
     get_audio,
     get_video,
     hashes,
-    list_files,
 )
 
 
