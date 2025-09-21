@@ -192,6 +192,8 @@ class Melter():
             height = stream.get("height")
             fps = stream.get("fps")
             codec = stream.get("codec")
+            length = stream.get("length")
+            length_formatted = generic_utils.ms_to_time(length) if length else None
             details = []
             if width and height:
                 fps_val = fmt_fps(fps) if fps else None
@@ -205,6 +207,10 @@ class Melter():
                     details.append(f"{fps_val}fps")
             if codec:
                 details.append(codec)
+
+            if length_formatted:
+                details.append(f"duration: {length_formatted}")
+
             return ", ".join(details)
         if stype == "audio":
             channels = stream.get("channels")
