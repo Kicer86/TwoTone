@@ -323,7 +323,7 @@ class PairMatcher:
         idx = int(np.searchsorted(timestamps, target))
         return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-1):idx+2]))
 
-    def _best_phash_match(self, lhs_ts: int, rhs_ts_guess: int, lhs_all_set: FramesInfo, rhs_all_set: FramesInfo) -> Tuple[int, int]:
+    def _best_phash_match(self, lhs_ts: int, rhs_ts_guess: int, lhs_all_set: FramesInfo, rhs_all_set: FramesInfo) -> Tuple[int, int] | None:
         lhs_near = self._nearest_three(list(lhs_all_set.keys()), lhs_ts)
         rhs_near = self._nearest_three(list(rhs_all_set.keys()), rhs_ts_guess)
         best = None
@@ -380,8 +380,8 @@ class PairMatcher:
         return [p for p, keep in zip(pairs, inliers) if keep]
 
     def _check_history(self, pair: Tuple[int, int], lhs_pool: FramesInfo, rhs_pool: FramesInfo, cutoff: float) -> bool:
-        lhs_three = self._three_before(lhs_pool, pair[0])
-        rhs_three = self._three_before(rhs_pool, pair[1])
+        lhs_three = self._three_before(list(lhs_pool.keys()), pair[0])
+        rhs_three = self._three_before(list(rhs_pool.keys()), pair[1])
 
         if len(lhs_three) < 3 and len(rhs_three) < 3:
             return True
@@ -420,15 +420,12 @@ class PairMatcher:
         for l in lhs_free:
             expected_rhs = first_known_pair[1] + (l - first_known_pair[0]) / median_ratio
             nearest_rhs_candidates = self._nearest_three(rhs_keys, int(expected_rhs))
-            lhs_surrounding = self._nearest_three(lhs_pool, l)
 
             for rhs_candidate in nearest_rhs_candidates:
                 ratio = (l - first_known_pair[0]) / (rhs_candidate - first_known_pair[1]) if (rhs_candidate - first_known_pair[1]) != 0 else None
                 if ratio and PairMatcher.is_ratio_acceptable(ratio, median_ratio):
                     if rhs_candidate not in rhs_used:
-                        # make sure lhs and rhs_candidate are matching #and previous lhs and previous to rhs_candidate also match
-                        rhs_candidate_surrounding = self._nearest_three(rhs_pool, rhs_candidate)
-
+                        # make sure lhs and rhs_candidate are matching
                         lhs_path = lhs_pool[l]["path"]
                         rhs_path = rhs_pool[rhs_candidate]["path"]
 
@@ -450,8 +447,7 @@ class PairMatcher:
         lhs_frames: FramesInfo,
         rhs_frames: FramesInfo,
         lhs_cropped_dir: str,
-        rhs_cropped_dir: str,
-        final_crop_percent: float = 0.02
+        rhs_cropped_dir: str
     ) -> Tuple[FramesInfo, FramesInfo]:
         # Step 1: Get interpolated crop functions for both sets
         lhs_crop_fn, rhs_crop_fn = PairMatcher._find_interpolated_crop(pairs_with_timestamps, lhs_frames, rhs_frames)

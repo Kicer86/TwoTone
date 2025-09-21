@@ -19,6 +19,29 @@ class UtilsTests(TwoToneTestCase):
             self.assertFalse(subtitles_utils.is_subtitle(subtitle_path))
 
 
+    def assertDictSubset(self, expected: dict, actual: dict, context: str) -> None:
+        for key, value in expected.items():
+            self.assertIn(key, actual, f"{context}: missing key '{key}'")
+            self.assertEqual(value, actual[key], f"{context}: expected {key}={value!r}, got {actual[key]!r}")
+
+
+    def assertStreamsSubset(self, expected_streams: dict, actual_streams: dict) -> None:
+        actual_streams = dict(actual_streams)
+
+        for stream_type, expected_stream_list in expected_streams.items():
+            self.assertIn(stream_type, actual_streams, f"missing stream type '{stream_type}'")
+
+            actual_stream_list = actual_streams[stream_type]
+            self.assertEqual(
+                len(expected_stream_list),
+                len(actual_stream_list),
+                f"stream type '{stream_type}': expected {len(expected_stream_list)} streams, got {len(actual_stream_list)}",
+            )
+
+            for idx, expected_stream in enumerate(expected_stream_list):
+                self.assertDictSubset(expected_stream, actual_stream_list[idx], f"{stream_type}[{idx}]")
+
+
     def test_subtitle_detection(self):
         self._test_content("12:34:56:test", True)
         self._test_content("{1}{2}test", True)
@@ -39,11 +62,13 @@ class UtilsTests(TwoToneTestCase):
             {
                 'video':
                 [{
-                    'fps': '30000/1001', 'length': 3403, 'width': 3840, 'height': 2160, 'bitrate': None, 'codec': 'hevc', 'tid': 0
+                    'fps': '30000/1001', 'length': 3403, 'width': 3840, 'height': 2160, 'bitrate': None, 'codec': 'hevc', 'tid': 0,
+                    'default': True, 'forced': False
                 }],
                 'audio':
                 [{
-                    'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1
+                    'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1,
+                    'default': True, 'forced': False
                 }]
             }
         ),
@@ -55,11 +80,13 @@ class UtilsTests(TwoToneTestCase):
             {
                 'video':
                 [{
-                    'fps': '29999/500', 'length': 1000, 'width': 2160, 'height': 3840, 'bitrate': None, 'codec': 'hevc','tid': 0
+                    'fps': '29999/500', 'length': 1000, 'width': 2160, 'height': 3840, 'bitrate': None, 'codec': 'hevc','tid': 0,
+                    'default': True, 'forced': False
                 }],
                 'audio':
                 [{
-                    'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1
+                    'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1,
+                    'default': True, 'forced': False
                 }]
             }
         ),
@@ -71,7 +98,8 @@ class UtilsTests(TwoToneTestCase):
             {
                 'video':
                 [{
-                    'fps': '25/1', 'length': 15600, 'width': 1920, 'height': 1080, 'bitrate': None, 'codec': 'hevc', 'tid': 0
+                    'fps': '25/1', 'length': 15600, 'width': 1920, 'height': 1080, 'bitrate': None, 'codec': 'hevc', 'tid': 0,
+                    'default': True, 'forced': False
                 }]
             }
         ),
@@ -82,7 +110,7 @@ class UtilsTests(TwoToneTestCase):
         input_file_name = get_video(input)
         file_info = video_utils.get_video_data(input_file_name)
 
-        self.assertEqual(expected_streams, file_info)
+        self.assertStreamsSubset(expected_streams, file_info)
 
     test_videos_mkv = [
         # case: merge all audio tracks
@@ -194,10 +222,12 @@ class UtilsTests(TwoToneTestCase):
                     'video':
                     [{
                         'fps': '30000/1001', 'length': 3403, 'width': 3840, 'height': 2160, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
+                        'default': True, 'forced': False,
                     }],
                     'audio':
                     [{
                         'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
+                        'default': True, 'forced': False,
                     }]
                 }
             }
@@ -214,10 +244,12 @@ class UtilsTests(TwoToneTestCase):
                     'video':
                     [{
                         'fps': '29999/500', 'length': 1000, 'width': 2160, 'height': 3840, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
+                        'default': True, 'forced': False,
                     }],
                     'audio':
                     [{
                         'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
+                        'default': True, 'forced': False,
                     }]
                 }
             }
@@ -234,6 +266,7 @@ class UtilsTests(TwoToneTestCase):
                     'video':
                     [{
                         'fps': '25/1', 'length': 15600, 'width': 1920, 'height': 1080, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
+                        'default': True, 'forced': False,
                     }]
                 }
             }
@@ -255,10 +288,12 @@ class UtilsTests(TwoToneTestCase):
                     'video':
                     [{
                         'fps': '60/1', 'length': 11583, 'width': 1080, 'height': 1112, 'bitrate': None, 'codec': 'VP9', 'tid': 0, 'uid': None,
+                        'default': True, 'forced': False,
                     }],
                     'audio':
                     [{
                         'language': 'und', 'channels': 2, 'sample_rate': 44100, 'tid': 1, 'uid': None,
+                        'default': True, 'forced': False,
                     }]
                 }
             }

@@ -20,11 +20,9 @@ from common import (
     add_test_media,
     add_to_test_dir,
     build_test_video,
-    current_path,
     get_audio,
     get_video,
     hashes,
-    list_files,
 )
 
 
@@ -46,6 +44,10 @@ def all_key_orders(d: Dict) -> Iterator[Dict]:
     keys = list(d.keys())
     for perm in permutations(keys):
         yield {k: d[k] for k in perm}
+
+
+def _build_path_to_id_map(input: Dict) -> Dict[str, int]:
+    return {path: idx for idx, path in enumerate(input.keys())}
 
 
 class MeltingTest(TwoToneTestCase):
@@ -421,11 +423,11 @@ class MeltingTest(TwoToneTestCase):
             self.assertEqual(output_file_data["video"][0]["width"], 3840)
 
             self.assertEqual(len(output_file_data["audio"]), 2)
-            self.assertEqual(output_file_data["audio"][0]["language"], "nor")
-            self.assertEqual(output_file_data["audio"][1]["language"], "deu")
+            self.assertEqual(output_file_data["audio"][0]["language"], "deu")
+            self.assertEqual(output_file_data["audio"][1]["language"], "nor")
 
 
-    def test_languages_prioritization(self):
+    def test_languages_ordering(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
         langs = ["pol", "en", "ger", "ja", "nor"]
@@ -438,18 +440,48 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir, languages_priority = ["de", "jpn", "eng", "no", "pl"])
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
         melter.melt()
 
-        # validate order
+        # validate alphabetical order
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
         output_file = list(output_file_hash)[0]
         output_file_data = video_utils.get_video_data(output_file)
         self.assertEqual(output_file_data["audio"][0]["language"], "deu")
-        self.assertEqual(output_file_data["audio"][1]["language"], "jpn")
-        self.assertEqual(output_file_data["audio"][2]["language"], "eng")
+        self.assertEqual(output_file_data["audio"][1]["language"], "eng")
+        self.assertEqual(output_file_data["audio"][2]["language"], "jpn")
+        self.assertEqual(output_file_data["audio"][3]["language"], "nor")
+        self.assertEqual(output_file_data["audio"][4]["language"], "pol")
+
+    def test_default_language(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        langs = ["pol", "en", "ger", "ja", "nor"]
+
+        for i in range(5):
+            file = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = [f"v{i}"])[0]
+            duplicates.add_entry("Grass", file)
+            duplicates.add_metadata(file, "audio_lang", langs[i])
+            duplicates.add_metadata(file, "audio_prod_lang", "ja")
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
+        melter.melt()
+
+        # validate alphabetical order
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
+
+        output_file = list(output_file_hash)[0]
+        output_file_data = video_utils.get_video_data(output_file)
+        self.assertEqual(output_file_data["audio"][0]["language"], "deu")
+        self.assertEqual(output_file_data["audio"][1]["language"], "eng")
+        self.assertEqual(output_file_data["audio"][2]["language"], "jpn")
+        self.assertEqual(output_file_data["audio"][2]["default"], True)
         self.assertEqual(output_file_data["audio"][3]["language"], "nor")
         self.assertEqual(output_file_data["audio"][4]["language"], "pol")
 
@@ -641,9 +673,11 @@ class MeltingTest(TwoToneTestCase):
         duplicates = StaticSource(interruption)
         streams_picker = StreamsPicker(self.logger.getChild("Melter"), duplicates)
 
+        ids = _build_path_to_id_map(input)
+
         # Test all possible combinations of order of input files. Output should be stable
         for video_info in all_key_orders(input):
-            picked_streams = streams_picker.pick_streams(video_info)
+            picked_streams = streams_picker.pick_streams(video_info, ids)
             picked_streams_normalized = normalize(picked_streams)
             expected_streams_normalized = normalize(expected_streams)
 

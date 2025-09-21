@@ -3,7 +3,6 @@ import pycountry
 
 
 def unify_lang(lang: str) -> str:
-
     lang_info = pycountry.languages.get(alpha_2 = lang) if len(lang) == 2 else pycountry.languages.get(alpha_3 = lang)
     if lang_info:
         return lang_info.alpha_3

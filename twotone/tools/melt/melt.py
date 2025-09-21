@@ -32,7 +32,7 @@ def _split_path_fix(value: str) -> List[str]:
 
 
 class Melter():
-    def __init__(self, logger: logging.Logger, interruption: generic_utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, languages_priority: List[str] = [], preferred_languages: List[str] = [], allow_length_mismatch: bool = False):
+    def __init__(self, logger: logging.Logger, interruption: generic_utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, allow_length_mismatch: bool = False):
         self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
@@ -40,8 +40,6 @@ class Melter():
         self.debug_it: int = 0
         self.wd = os.path.join(wd, str(os.getpid()))
         self.output = output
-        self.languages_priority = [language_utils.unify_lang(language) for language in languages_priority]
-        self.preferred_languages = [language_utils.unify_lang(language) for language in preferred_languages]
         self.allow_length_mismatch = allow_length_mismatch
 
         os.makedirs(self.wd, exist_ok=True)
@@ -222,7 +220,7 @@ class Melter():
             return fmt or ""
         return ""
 
-    def _print_file_details(self, file: str, details: Dict[str, Any], common_prefix: str):
+    def _print_file_details(self, file: str, details: Dict[str, Any], ids: Dict[str, int]):
         def formatter(key: str, value: Any) -> str:
             if key == "fps":
                 return eval(value)
@@ -237,13 +235,14 @@ class Melter():
             else:
                 return True
 
-        self.logger.info(f"File {files_utils.get_printable_path(file, common_prefix)} details:")
+        id = ids[file]
+        self.logger.info(f"File #{id} details:")
         tracks = details["tracks"]
         attachments = details["attachments"]
 
         for stream_type, streams in tracks.items():
             self.logger.info(f"  {stream_type}: {len(streams)} track(s)")
-            for i, stream in enumerate(streams):
+            for stream in streams:
                 lang_name = language_utils.language_name(stream.get("language"))
                 short = self._stream_short_details(stream_type, stream)
 
@@ -251,32 +250,32 @@ class Melter():
                 if short:
                     info += f" ({short})"
 
-                self.logger.info(f"    #{i + 1}: {info}")
+                id = stream.get("tid")
+                self.logger.info(f"    #{id}: {info}")
 
         for attachment in attachments:
             file_name = attachment["file_name"]
-            self.logger.info(f"attachment: {file_name}")
+            self.logger.info(f"  attachment: {file_name}")
 
         # more details for debug
         for stream_type, streams in tracks.items():
             self.logger.debug(f"\t{stream_type}:")
 
-            for i, stream in enumerate(streams):
-                self.logger.debug(f"\t#{i + 1}:")
+            for stream in streams:
+                id = stream.get("tid")
+                self.logger.debug(f"\t#{id}:")
                 for key, value in stream.items():
                     if show(key):
                         key_title = key + ":"
                         self.logger.debug(
                             f"\t\t{key_title:<16}{formatter(key, value)}")
 
-    def _print_streams_details(self, common_prefix, all_streams: List, tracks: Dict[str, Dict]):
+    def _print_streams_details(self, ids: Dict[str, int], all_streams: List, tracks: Dict[str, Dict]):
         for stype, type_stream in all_streams:
             for stream in type_stream:
                 path = stream[0]
                 tid = stream[1]
                 language = language_utils.language_name(stream[2])
-
-                printable_path = files_utils.get_printable_path(path, common_prefix)
 
                 stream_details = None
                 track_infos = tracks.get(path, {}).get(stype, [])
@@ -287,36 +286,31 @@ class Melter():
 
                 extra = f" ({stream_details})" if stream_details else ""
 
-                self.logger.info(f"{stype} track #{tid}: {language} from {printable_path}{extra}")
+                id = ids[path]
+                self.logger.info(f"{stype} track #{tid}: {language} from file #{id}{extra}")
 
-    def _print_attachements_details(self, common_prefix, all_attachments: List):
+    def _print_attachements_details(self, ids: Dict[str, int], all_attachments: List):
          for stream in all_attachments:
             path = stream[0]
             tid = stream[1]
 
-            printable_path = files_utils.get_printable_path(path, common_prefix)
-            self.logger.info(f"Attachment ID #{tid} from {printable_path}")
+            id = ids[path]
+            self.logger.info(f"Attachment ID #{tid} from file #{id}")
 
-    def _process_duplicates(self, duplicates: List[str]) -> Tuple[Dict, List] | None:
-        self.logger.info("------------------------------------")
-        self.logger.info("Processing group of duplicated files")
-        self.logger.info("------------------------------------")
-
+    def _process_duplicates(self, duplicates: List[str], ids: Dict[str, int]) -> Tuple[Dict, List] | None:
         # analyze files in terms of quality and available content
         # use mkvmerge-based probing enriched with ffprobe data
         details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True) for file in duplicates}
         attachments = {file: info["attachments"] for file, info in details_full.items()}
         tracks = {file: info["tracks"] for file, info in details_full.items()}
 
-        common_prefix = files_utils.get_common_prefix(duplicates)
-
         # print input file details
         for file, file_details in details_full.items():
-            self._print_file_details(file, file_details, common_prefix)
+            self._print_file_details(file, file_details, ids)
 
         streams_picker = StreamsPicker(self.logger, self.duplicates_source)
         try:
-            video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks)
+            video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks, ids)
         except RuntimeError as re:
             self.logger.error(re)
             return None
@@ -336,11 +330,11 @@ class Melter():
         # print proposed output file
         self.logger.info("Streams used to create output video file:")
         self._print_streams_details(
-            common_prefix,
+            ids,
             [(stype, streams) for stype, streams in zip(["video", "audio", "subtitle"], [video_streams, audio_streams, subtitle_streams])],
             tracks,
         )
-        self._print_attachements_details(common_prefix, picked_attachments)
+        self._print_attachements_details(ids, picked_attachments)
 
         # build streams mapping
         streams = defaultdict(list)
@@ -368,8 +362,8 @@ class Melter():
             length = tracks[path]["video"][0]["length"]
 
             if abs(base_length - length) > 100:
-                printable_path = files_utils.get_printable_path(path, common_prefix)
-                self.logger.warning(f"Audio stream from file {printable_path} has length different than length of video stream from file {video_stream_path}.")
+                id = ids[path]
+                self.logger.warning(f"Audio stream from file #{id} has length different than length of video stream from file {video_stream_path}.")
 
                 if self.live_run:
                     self.logger.info("Starting videos comparison to solve mismatching lengths.")
@@ -401,8 +395,8 @@ class Melter():
             length = tracks[path]["video"][0]["length"]
 
             if abs(base_length - length) > 100:
-                printable_path = files_utils.get_printable_path(path, common_prefix)
-                error = f"Subtitles stream from file {printable_path} has length different than length of video stream from file {video_stream_path}. This is not supported yet"
+                id = ids[path]
+                error = f"Subtitles stream from file #{id} has length different than length of video stream from file {video_stream_path}. This is not supported yet"
                 self.logger.error(error)
                 raise RuntimeError(f"Unsupported case: {error}")
 
@@ -475,23 +469,33 @@ class Melter():
             for files, output_name in tqdm(files_groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
                 self.interruption._check_for_stop()
 
-                result = self._process_duplicates(files)
+                if len(files_groups) > 1:
+                    self.logger.info("------------------------------------")
+                    self.logger.info("Processing group of duplicated files")
+                    self.logger.info("------------------------------------")
+
+                ids = {}
+                for i, file in enumerate(files):
+                    id = i + 1
+                    ids[file] = id
+                    self.logger.info(f"#{id}: {file}")
+
+                result = self._process_duplicates(files, ids)
                 if result is None:
                     self.logger.info("Skipping output generation")
                     continue
 
                 streams, attachments = result
-                if not self.live_run:
-                    self.logger.info("Dry run. Skipping output generation")
-                    continue
-
                 required_input_files = { file_path for file_path in streams }
                 required_input_files |= { info[0] for info in attachments }
 
                 output = os.path.join(self.output, title, output_name + ".mkv")
                 if os.path.exists(output):
-                    self.logger.debug(f"Output file {output} exists, removing it.")
-                    os.remove(output)
+                    if self.live_run:
+                        self.logger.info(f"Output file {output} exists, removing it.")
+                        os.remove(output)
+                    else:
+                        self.logger.info(f"Dry run, skipping step: output file {output} exists.")
 
                 output_dir = os.path.dirname(output)
                 os.makedirs(output_dir, exist_ok=True)
@@ -500,17 +504,19 @@ class Melter():
                     # only one file is being used, just copy it to the output dir
                     first_file_path = list(required_input_files)[0]
 
-                    self.logger.info(f"Using whole {first_file_path} file as an output.")
-                    shutil.copy2(first_file_path, output)
+                    if self.live_run:
+                        self.logger.info(f"File {first_file_path} is superior. Using it whole as an output.")
+                        shutil.copy2(first_file_path, output)
+                    else:
+                        self.logger.info(f"Dry run, skipping step: using whole {first_file_path} file as an output.")
                 else:
-                    self.logger.info("Starting output file generation from chosen streams.")
                     generation_args = ["-o", output]
                     files_opts = {
                         path: {"video": [], "audio": [], "subtitle": [], "attachments": [], "languages": {}, "defaults": set()}
                         for path in required_input_files
                     }
 
-                    # convert streams to list for later sorting by language
+                    # convert streams to list for later sorting
                     streams_list = []
                     for path, infos in streams.items():
                         for info in infos:
@@ -520,27 +526,34 @@ class Melter():
 
                             streams_list.append((stream_type, stream_index, path, language))
 
-                    # sort by language
-                    def get_index_for(l: List, value):
-                        try:
-                            return l.index(value)
-                        except ValueError:
-                            return len(l)
-
-                    priorities = self.languages_priority.copy()
-                    priorities.append(None)
-                    streams_list_sorted = sorted(streams_list, key=lambda stream: get_index_for(priorities, stream[3]))
+                    # sort streams by language alphabetically
+                    streams_list_sorted = sorted(streams_list, key=lambda stream: stream[3] if stream[3] else "")
 
                     # decide which track should be default
-                    def find_preferred(stype: str):
-                        for preferred in self.preferred_languages:
-                            for info in streams_list_sorted:
-                                if info[0] == "audio" and info[3] == preferred:
-                                    return info
+                    default_video_stream = next(filter(lambda stream: stream[0] == "video", streams_list))
+                    default_audio_stream = next(filter(lambda stream: stream[0] == "audio", streams_list), None)
+                    metadata = self.duplicates_source.get_metadata_for(default_video_stream[2])
+                    prod_lang = metadata.get("audio_prod_lang")
+                    if prod_lang:
+                        preferred_lang = language_utils.unify_lang(prod_lang)
+                    else:
+                        preferred_lang = default_audio_stream[3] if default_audio_stream else None
+
+                    def find_preferred_audio():
+                        for info in streams_list_sorted:
+                            if info[0] == "audio" and info[3] == preferred_lang:
+                                return info
+
                         return None
 
-                    preferred_audio = find_preferred("audio")
-                    preferred_subtitle = None if preferred_audio else find_preferred("subtitle")
+                    preferred_audio = find_preferred_audio()
+
+                    if prod_lang:
+                        language_name = language_utils.language_name(prod_lang)
+                        if preferred_audio:
+                            self.logger.info(f"Setting production audio language '{language_name}' as default.")
+                        else:
+                            self.logger.warning(f"Production audio language '{language_name}' not found among audio streams.")
 
                     # collect per-file options and track order
                     track_order = []
@@ -549,7 +562,7 @@ class Melter():
                         fo: Dict = files_opts[file_path]
                         fo[stream_type].append(tid)
                         fo["languages"][tid] = language or "und"
-                        if stream_type in ("audio", "subtitle") and (stream == preferred_audio or stream == preferred_subtitle):
+                        if stream_type in ("audio", "subtitle") and stream == preferred_audio:
                             fo["defaults"].add(tid)
                         file_index = generic_utils.get_key_position(files_opts, file_path)
                         track_order.append(f"{file_index}:{tid}")
@@ -591,11 +604,12 @@ class Melter():
                     if track_order:
                         generation_args.extend(["--track-order", ",".join(track_order)])
 
-                    process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args, show_progress = True))
-
-                    self.logger.info(f"{output} saved.")
-
-                # keep input files intact
+                    if self.live_run:
+                        self.logger.info("Starting output file generation from chosen streams.")
+                        process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args, show_progress = True))
+                        self.logger.info(f"{output} saved.")
+                    else:
+                        self.logger.info("Dry run, skipping output file generation")
 
     def melt(self):
         with files_utils.ScopedDirectory(self.wd) as wd, logging_redirect_tqdm():
@@ -652,18 +666,9 @@ class MeltTool(Tool):
 
         # global options
         parser.add_argument('-o', '--output-dir',
-                            help="Directory for output files")
+                            help="Directory for output files",
+                            required = True)
 
-        parser.add_argument('-p', '--languages-priority',
-                            help='Comma separated list of two/three letter language codes. Order on the list defines order of audio and subtitle streams.\n'
-                                 'For example, for --languages-priority pl,de,en,fr all used subtitles and audio tracks will be\n'
-                                 'ordered so polish goes as first, then german, english and french.\n'
-                                 'If there are subtitles in any other language, they will be append at the end in an undefined order')
-        parser.add_argument('-l', '--preferred-languages',
-                            help='Comma separated list of two/three letter language codes. `Melt` will force default tracks basing on the given order.\n'
-                                 'For example for value: jp,pl,de melt will set default audio track to japanese or polish or german in given order if audio track in given language exists.\n'
-                                 'If audio for given languages was not found, `melt` will look for subtitles in given languages and set the first one found to default.\n'
-                                 'If this parameter is not set, first audio track will be chosen, and none of the subtitles will be set as default.')
         parser.add_argument('--allow-length-mismatch', action='store_true',
                             help='[EXPERIMENTAL] Continue processing even if input video lengths differ.\n'
                                  'This may require additional processing that can consume significant time and disk space.')
@@ -683,7 +688,8 @@ class MeltTool(Tool):
             data_source = JellyfinSource(interruption=interruption,
                                          url=args.jellyfin_server,
                                          token=args.jellyfin_token,
-                                         path_fix=path_fix)
+                                         path_fix=path_fix,
+                                         logger=logger.getChild("JellyfinSource"))
         elif args.input_files:
             title = args.title
             input_entries = args.input_files
@@ -718,16 +724,12 @@ class MeltTool(Tool):
                 if audio_prod_lang:
                     data_source.add_metadata(path, "audio_prod_lang", audio_prod_lang)
 
-        languages_priority = args.languages_priority.split(",") if args.languages_priority else []
-        preferred_languages = args.preferred_languages.split(",") if args.preferred_languages else []
         melter = Melter(logger,
                         interruption,
                         data_source,
                         live_run = no_dry_run,
                         wd = working_dir,
                         output = args.output_dir,
-                        languages_priority = languages_priority,
-                        preferred_languages = preferred_languages,
                         allow_length_mismatch = args.allow_length_mismatch
         )
 

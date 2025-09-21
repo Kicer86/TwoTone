@@ -53,6 +53,7 @@ class StreamsPicker:
         self,
         files_details: Dict[str, Dict],
         best_file: str,
+        ids: Dict[str, int],
         stream_type: str,
         unique_keys: List[str],
         preference,
@@ -67,10 +68,8 @@ class StreamsPicker:
         ``0`` otherwise.
         """
 
-        paths_common_prefix = files_utils.get_common_prefix(files_details)
-
         def get_language(stream, path) -> Optional[str]:
-            printable_path = files_utils.get_printable_path(path, paths_common_prefix)
+            id = ids[path]
             lang = stream.get("language")
 
             if lang == "und":
@@ -82,18 +81,18 @@ class StreamsPicker:
                 tid = stream.get("tid")
                 if original_lang:
                     self.logger.info(
-                        f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file {printable_path}"
+                        f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file #{id}"
                     )
                 else:
                     self.logger.info(
-                        f"Setting {stream_type} stream #{tid} language to {lang} for file {printable_path}"
+                        f"Setting {stream_type} stream #{tid} language to {lang} for file #{id}"
                     )
             elif (not lang) and fallback_languages and path in fallback_languages:
                 original_lang = lang
                 lang = fallback_languages[path]
                 tid = stream.get("tid")
                 self.logger.info(
-                    f"Setting {stream_type} stream #{tid} language to {lang} for file {printable_path}"
+                    f"Setting {stream_type} stream #{tid} language to {lang} for file #{id}"
                 )
 
             return lang
@@ -172,7 +171,7 @@ class StreamsPicker:
         return result
 
 
-    def pick_streams(self, files_details: Dict):
+    def pick_streams(self, files_details: Dict, ids: Dict[str, int]):
         # video preference comparator
         def video_cmp(lhs: Dict, rhs: Dict) -> int:
             if lhs["width"] > rhs["width"] and lhs["height"] > rhs["height"]:
@@ -209,7 +208,7 @@ class StreamsPicker:
         attached_pics = [(file_path, index) for (file_path, details) in files_details.items() for index, vd in enumerate(details["video"]) if vd.get("attached_pic", False)]
 
         best_file_candidate = StreamsPicker._pick_best_file_candidate(files_details)
-        video_streams = self._pick_streams(files_details, best_file_candidate, "video", [], video_cmp)
+        video_streams = self._pick_streams(files_details, best_file_candidate, ids, "video", [], video_cmp)
         video_streams = [video_stream for video_stream in video_streams if (video_stream[0], video_stream[1]) not in attached_pics]
         video_stream = video_streams[0]
         video_stream_path = video_stream[0]
@@ -220,6 +219,7 @@ class StreamsPicker:
         audio_streams = self._pick_streams(
             files_details,
             video_stream_path,
+            ids,
             "audio",
             ["language", "channels"],
             cmp_by_keys(["sample_rate"]),
@@ -232,6 +232,7 @@ class StreamsPicker:
         subtitle_streams = self._pick_streams(
             files_details,
             video_stream_path,
+            ids,
             "subtitle",
             ["language"],
             lambda a, b: 0,
