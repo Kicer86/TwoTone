@@ -675,7 +675,11 @@ class MeltTool(Tool):
 
 
     @override
-    def run(self, args, no_dry_run: bool, logger: logging.Logger, working_dir: str):
+    def analyze(self, args, logger: logging.Logger, working_dir: str):
+        pass
+
+    @override
+    def perform(self, args, analysis, no_dry_run: bool, logger: logging.Logger, working_dir: str):
         interruption = generic_utils.InterruptibleProcess()
 
         data_source = None

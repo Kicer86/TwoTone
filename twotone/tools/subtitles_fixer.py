@@ -99,7 +99,6 @@ class Fixer(generic_utils.InterruptibleProcess):
         return result
 
     def _repair_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
-        self._print_broken_videos(broken_videos_info)
         self.logger.info("Fixing videos")
 
         with logging_redirect_tqdm():
@@ -198,10 +197,20 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         return broken_videos
 
-    def process_dir(self, path: str) -> None:
+    def analyze_videos(self, path: str) -> list[tuple[dict, list[int]]]:
         broken_videos = self._process_dir(path)
+        self._print_broken_videos(broken_videos)
+        return broken_videos
+
+    def apply_fixes(self, broken_videos: list[tuple[dict, list[int]]]) -> None:
+        if not broken_videos:
+            return
 
         self._repair_videos(broken_videos)
+
+    def process_dir(self, path: str) -> None:
+        broken_videos = self.analyze_videos(path)
+        self.apply_fixes(broken_videos)
 
 
 class FixerTool(Tool):
@@ -212,10 +221,21 @@ class FixerTool(Tool):
                             help='Path with videos to analyze.')
 
     @override
-    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
-        process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
-
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> list[tuple[dict, list[int]]]:
         logger.info("Searching for broken files")
+        fixer = Fixer(logger, False, working_dir)
+        return fixer.analyze_videos(args.videos_path[0])
+
+    @override
+    def perform(self, args: argparse.Namespace, analysis, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
+        process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
+        broken_videos = analysis
+        if broken_videos is None:
+            logger.info("Searching for broken files")
+            fixer = Fixer(logger, False, working_dir)
+            broken_videos = fixer.analyze_videos(args.videos_path[0])
+
         fixer = Fixer(logger, no_dry_run, working_dir)
-        fixer.process_dir(args.videos_path[0])
+        fixer.apply_fixes(broken_videos or [])
+
         logger.info("Done")

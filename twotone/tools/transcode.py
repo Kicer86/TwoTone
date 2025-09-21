@@ -413,6 +413,10 @@ class TranscodeTool(Tool):
 
 
     @override
-    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+        pass
+
+    @override
+    def perform(self, args: argparse.Namespace, analysis, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
         transcoder = Transcoder(working_dir = working_dir, logger = logger, live_run = no_dry_run, target_ssim = args.ssim)
         transcoder.transcode(args.videos_path[0])

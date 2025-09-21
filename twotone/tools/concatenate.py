@@ -20,7 +20,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
         self.live_run = live_run
         self.working_dir = working_dir
 
-    def run(self, path: str):
+    def analyze_inputs(self, path: str) -> dict[str, list[tuple[str, int]]] | None:
         self.logger.info(f"Collecting video files from path {path}")
         video_files = video_utils.collect_video_files(path, self)
 
@@ -62,7 +62,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
 
         self.logger.info("Processing groups")
         warnings = False
-        sorted_videos = {}
+        sorted_videos: dict[str, list[tuple[str, int]]] = {}
         for common_name, details in matched_videos.items():
 
             # sort parts by part number [1]
@@ -86,7 +86,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
 
         if warnings:
             self.logger.error("Fix above warnings and try again")
-            return
+            return None
 
         self.logger.info("Files to be concatenated (in given order):")
         for common_name, details in sorted_videos.items():
@@ -99,6 +99,12 @@ class Concatenate(generic_utils.InterruptibleProcess):
                 self.logger.info(f"\t{path[cl:]}")
 
             self.logger.info(f"\t->{common_name}")
+
+        return sorted_videos
+
+    def perform_concatenation(self, sorted_videos: dict[str, list[tuple[str, int]]] | None) -> None:
+        if sorted_videos is None:
+            return
 
         self.logger.info("Starting concatenation")
         with logging_redirect_tqdm():
@@ -129,6 +135,10 @@ class Concatenate(generic_utils.InterruptibleProcess):
                     else:
                         self.logger.info("Dry run, skipping concatenation")
 
+    def run(self, path: str):
+        sorted_videos = self.analyze_inputs(path)
+        self.perform_concatenation(sorted_videos)
+
 
 class ConcatenateTool(Tool):
     @override
@@ -146,6 +156,16 @@ class ConcatenateTool(Tool):
                             help='Path with videos to concatenate.')
 
     @override
-    def run(self, args, no_dry_run, logger: logging.Logger, working_dir: str):
+    def analyze(self, args, logger: logging.Logger, working_dir: str) -> dict[str, list[tuple[str, int]]] | None:
+        concatenate = Concatenate(logger, False, working_dir)
+        return concatenate.analyze_inputs(args.videos_path[0])
+
+    @override
+    def perform(self, args, analysis, no_dry_run, logger: logging.Logger, working_dir: str):
+        sorted_videos = analysis
+        if sorted_videos is None:
+            concatenate = Concatenate(logger, False, working_dir)
+            sorted_videos = concatenate.analyze_inputs(args.videos_path[0])
+
         concatenate = Concatenate(logger, no_dry_run, working_dir)
-        concatenate.run(args.videos_path[0])
+        concatenate.perform_concatenation(sorted_videos)

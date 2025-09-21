@@ -279,7 +279,7 @@ class Merge(generic_utils.InterruptibleProcess):
         return videos_and_subtitles
 
 
-    def process_dir(self, path: str) -> None:
+    def analyze(self, path: str) -> dict[str, list[subtitles_utils.SubtitleFile]]:
         self.logger.info(f"Looking for video and subtitle files in {path}")
         vas = self._process_dir(path)
 
@@ -287,11 +287,21 @@ class Merge(generic_utils.InterruptibleProcess):
         for video in vas:
             self.logger.debug(video)
 
+        return vas
+
+    def perform_merge(self, videos_with_subtitles: dict[str, list[subtitles_utils.SubtitleFile]] | None) -> None:
+        if not videos_with_subtitles:
+            return
+
         self.logger.info("Starting merge")
         with logging_redirect_tqdm():
-            for video, subtitles in tqdm(vas.items(), desc="Merging", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+            for video, subtitles in tqdm(videos_with_subtitles.items(), desc="Merging", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
                 self._check_for_stop()
                 self._merge(video, subtitles)
+
+    def process_dir(self, path: str) -> None:
+        videos_with_subtitles = self.analyze(path)
+        self.perform_merge(videos_with_subtitles)
 
 
 class MergeTool(Tool):
@@ -311,13 +321,31 @@ class MergeTool(Tool):
                                 'the end in undefined order')
 
     @override
-    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
-        process_utils.ensure_tools_exist(["mkvmerge", "ffmpeg", "ffprobe"], logger)
-
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> dict[str, list[subtitles_utils.SubtitleFile]]:
         logger.info("Searching for movie and subtitle files to be merged")
-        two_tone = Merge(logger,
-                         dry_run=not no_dry_run,
-                         language=args.language,
-                         lang_priority=args.languages_priority,
-                         working_dir=working_dir)
-        two_tone.process_dir(args.videos_path[0])
+        merge = Merge(logger,
+                      dry_run=True,
+                      language=args.language,
+                      lang_priority=args.languages_priority,
+                      working_dir=working_dir)
+        return merge.analyze(args.videos_path[0])
+
+    @override
+    def perform(self, args: argparse.Namespace, analysis, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
+        process_utils.ensure_tools_exist(["mkvmerge", "ffmpeg", "ffprobe"], logger)
+        videos_with_subtitles = analysis
+        if videos_with_subtitles is None:
+            logger.info("Searching for movie and subtitle files to be merged")
+            merge = Merge(logger,
+                          dry_run=True,
+                          language=args.language,
+                          lang_priority=args.languages_priority,
+                          working_dir=working_dir)
+            videos_with_subtitles = merge.analyze(args.videos_path[0])
+
+        merge = Merge(logger,
+                      dry_run=not no_dry_run,
+                      language=args.language,
+                      lang_priority=args.languages_priority,
+                      working_dir=working_dir)
+        merge.perform_merge(videos_with_subtitles)
