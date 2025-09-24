@@ -53,7 +53,7 @@ class StreamsPicker:
         self,
         files_details: Dict[str, Dict],
         best_file: str,
-        ids: Dict[str, int],
+        files_ids: Dict[str, int],
         stream_type: str,
         unique_keys: List[str],
         preference,
@@ -69,7 +69,7 @@ class StreamsPicker:
         """
 
         def get_language(stream, path) -> Optional[str]:
-            id = ids[path]
+            id = files_ids[path]
             lang = stream.get("language")
 
             if lang == "und":
