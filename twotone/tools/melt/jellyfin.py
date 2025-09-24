@@ -104,7 +104,33 @@ class JellyfinSource(DuplicatesSource):
                                 self.logger.warning(f"\t{path}")
                             self.logger.warning("Skipping title")
                         else:
-                            duplicates[name] = fixed_paths
+                            # Check if all files come from different directories.
+                            # If there are multiple files in the same directory,
+                            # then it is impossible to decide which one to pick at this stage.
+                            # (Please mind that it could be a normal use case to keep multiple
+                            # files in the same directory, e.g. different versions of the same movie.
+                            # See https://jellyfin.org/docs/general/server/media/movies/#multiple-versions)
+                            # As of now just warn about it and skip those files.
+                            # To fix this, move this logic to the merger stage, where
+                            # we can pick the best file from each directory.
+                            # But that solution is debatable as well.
+
+                            dirs = set()
+                            for path in fixed_paths:
+                                dir = os.path.dirname(path)
+                                dirs.add(dir)
+
+                            if len(dirs) < len(fixed_paths):
+                                if len(dirs) == 1:
+                                    first_dir = e = next(iter(dirs))
+                                    self.logger.info(f"All files for title {name} are in the same directory: {first_dir}.\nAssuming these all variants of the same movie and skipping.")
+                                else:
+                                    self.logger.warning(f"Some files for title {name} are in the same directory:")
+                                    for path in fixed_paths:
+                                        self.logger.warning(f"\t{path}")
+                                    self.logger.warning("Skipping title, as this is not supported.")
+                            else:
+                                duplicates[name] = fixed_paths
                     else:
                         names_str = '\n'.join(names)
                         paths_str = '\n'.join(fixed_paths)
