@@ -77,7 +77,7 @@ class StreamsPicker:
                 stream_view = stream.copy()
 
                 # Determine language if available
-                lang = get_language(stream, path)
+                lang = get_language(stream, stream_type, path)
                 stream_view["language"] = lang
 
                 # Build unique key based on stream view
@@ -177,8 +177,8 @@ class StreamsPicker:
 
         def get_language(
                 stream,
-                path,
                 stream_type,
+                path,
                 override_languages : Optional[Dict[str, str]] = None,
                 fallback_languages : Optional[Dict[str, str]] = None) -> Optional[str]:
             id = ids[path]
@@ -221,7 +221,7 @@ class StreamsPicker:
             "video",
             [],
             video_cmp,
-            get_language = lambda stream, file: get_language(stream, file, "video")
+            get_language = lambda stream, stream_type, file: get_language(stream, stream_type, file)
         )
         video_streams = [video_stream for video_stream in video_streams if (video_stream[0], video_stream[1]) not in attached_pics]
         video_stream = video_streams[0]
@@ -237,7 +237,7 @@ class StreamsPicker:
             "audio",
             ["language", "channels"],
             cmp_by_keys(["sample_rate"]),
-            get_language = lambda stream, file: get_language(stream, file, "audio", override_languages = forced_audio_language)
+            get_language = lambda stream, stream_type, file: get_language(stream, stream_type, file, override_languages = forced_audio_language)
         )
 
         # pick subtitle streams
@@ -250,7 +250,7 @@ class StreamsPicker:
             "subtitle",
             ["language"],
             lambda a, b: 0,
-            get_language = lambda stream, file: get_language(stream, file, "audio", override_languages = forced_subtitle_language)
+            get_language = lambda stream, stream_type, file: get_language(stream, stream_type, file, override_languages = forced_subtitle_language)
         )
 
         # results
