@@ -31,3 +31,12 @@ def language_name(lang: str | None) -> str:
 
     lang_info = pycountry.languages.get(alpha_3=lang_code)
     return lang_info.name if lang_info else lang
+
+
+def is_valid_lang_code(lang: str) -> bool:
+    if len(lang) == 3:
+        return pycountry.languages.get(alpha_3 = lang) is not None
+    elif len(lang) == 2:
+        return pycountry.languages.get(alpha_2 = lang) is not None
+    else:
+        return False
