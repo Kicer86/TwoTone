@@ -1,5 +1,6 @@
 
 import logging
+import re
 
 from collections import defaultdict
 from functools import cmp_to_key
@@ -8,10 +9,14 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 from ..utils import files_utils, language_utils
 from .duplicates_source import DuplicatesSource
 
+# precompiled regex for fast language guessing
+_RE_LANG_ALL = re.compile(r"(?i)(?:([a-z]{2,3})(?=dub))|(?<![a-z])([a-z]{2,3})(?![a-z])")
+
 class StreamsPicker:
-    def __init__(self, logger: logging.Logger, duplicates_source: DuplicatesSource):
+    def __init__(self, logger: logging.Logger, duplicates_source: DuplicatesSource, allow_language_guessing: bool = False):
         self.logger = logger
         self.duplicates_source = duplicates_source
+        self.allow_language_guessing = allow_language_guessing
 
 
     @staticmethod
@@ -90,7 +95,8 @@ class StreamsPicker:
                     missing_properties = [name for name, value in zip(unique_keys, unique_key) if value is None]
                     missing_properties_str = ", ".join(missing_properties)
 
-                    raise RuntimeError(f"Could not properly build stream information of type {stream_type} for file {path}. "
+                    id = files_ids[path]
+                    raise RuntimeError(f"Could not properly build stream information of type {stream_type} for file #{id}. "
                                        f"Missing properties: {missing_properties_str}")
 
                 # put tid into top layer for easier access
@@ -192,20 +198,38 @@ class StreamsPicker:
                 lang = override_languages[path]
                 tid = stream.get("tid")
                 if original_lang:
-                    self.logger.info(
-                        f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file #{id}"
-                    )
+                    self.logger.info(f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file #{id}")
                 else:
-                    self.logger.info(
-                        f"Setting {stream_type} stream #{tid} language to {lang} for file #{id}"
-                    )
+                    self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file #{id}")
             elif (not lang) and fallback_languages and path in fallback_languages:
                 original_lang = lang
                 lang = fallback_languages[path]
                 tid = stream.get("tid")
-                self.logger.info(
-                    f"Setting {stream_type} stream #{tid} language to {lang} for file #{id}"
-                )
+                self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file #{id}")
+            elif self.allow_language_guessing and lang is None and stream_type == "audio":
+                _, stem, _ = files_utils.split_path(path)
+                file_name_low = stem.lower()
+
+                best = None
+                best_rank = 99
+                for m in _RE_LANG_ALL.finditer(file_name_low):
+                    for gi, val in enumerate(m.groups(), start=1):
+                        if val and language_utils.is_valid_lang_code(val):
+                            rank = gi
+                            cand = val
+                            if rank < best_rank:
+                                best_rank = rank
+                                best = cand
+                            break
+
+                if best:
+                    try:
+                        lang = language_utils.unify_lang(best)
+                        lang_name = language_utils.language_name(lang)
+                        self.logger.warning(f"Guessed language: {lang_name} for file #{id}")
+                        return lang
+                    except Exception:
+                        pass
 
             return lang
 

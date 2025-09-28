@@ -666,7 +666,6 @@ class MeltingTest(TwoToneTestCase):
         ),
     ]
 
-
     @parameterized.expand(sample_streams)
     def test_streams_pick_decision(self, name, input, expected_streams):
         interruption = generic_utils.InterruptibleProcess()
@@ -682,6 +681,37 @@ class MeltingTest(TwoToneTestCase):
             expected_streams_normalized = normalize(expected_streams)
 
             self.assertEqual(picked_streams_normalized, expected_streams_normalized)
+
+
+    def test_language_guessing(self):
+        filenames = ["file_pl.mp4", "file_endub.mp4", "file_frdub.mp4", "file_dubbing_deu.mp4", "file_jpndub.mp4", "file_fin_dubbing.mp4"]
+
+        streams_info = {
+            filename: {
+                "video": [{"height": "1024", "width": "1024", "fps": "24", "tid": id * 5}],
+                "audio": [{"language": None, "channels": 2, "sample_rate": 32000, "tid": id * 5 + 1}]
+            }
+
+            for id, filename in enumerate(filenames)
+        }
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        streams_picker = StreamsPicker(self.logger.getChild("Melter"), duplicates, allow_language_guessing = True)
+
+        ids = _build_path_to_id_map(streams_info)
+        _, audio_streams, _ = streams_picker.pick_streams(streams_info, ids)
+
+        expected_audio_streams = [
+            ('file_pl.mp4', 1, 'pol'),
+            ('file_endub.mp4', 6, 'eng'),
+            ('file_frdub.mp4', 11, 'fra'),
+            ('file_dubbing_deu.mp4', 16, 'deu'),
+            ('file_jpndub.mp4', 21, 'jpn'),
+            ('file_fin_dubbing.mp4', 26, 'fin')
+        ]
+
+        self.assertEqual(audio_streams, expected_audio_streams)
 
 
 if __name__ == '__main__':
