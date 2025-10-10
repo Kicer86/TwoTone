@@ -289,11 +289,13 @@ def get_video_data(path: str) -> Dict:
             language = get_language(stream)
             channels = stream["channels"]
             sample_rate = int(stream["sample_rate"])
+            codec = stream["codec_name"]
 
             stream_data.update({
                 "language": language,
                 "channels": channels,
                 "sample_rate": sample_rate,
+                "codec": codec,
                 "tid": tid,
             })
 
