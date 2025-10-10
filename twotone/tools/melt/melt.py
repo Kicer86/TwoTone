@@ -325,7 +325,8 @@ class Melter():
         for file, file_details in details_full.items():
             self._print_file_details(file, file_details, ids)
 
-        streams_picker = StreamsPicker(self.logger, self.duplicates_source, allow_language_guessing = self.allow_language_guessing)
+        picker_wd = os.path.join(self.wd, "stream_picker")
+        streams_picker = StreamsPicker(self.logger, self.duplicates_source, picker_wd, allow_language_guessing = self.allow_language_guessing)
         try:
             video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks, ids)
         except RuntimeError as re:

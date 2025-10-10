@@ -1,5 +1,6 @@
 
 import logging
+import os
 import re
 
 from collections import defaultdict
@@ -7,16 +8,18 @@ from functools import cmp_to_key
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from ..utils import files_utils, language_utils
+from ..utils import subtitles_utils
 from .duplicates_source import DuplicatesSource
 
 # precompiled regex for fast language guessing
 _RE_LANG_ALL = re.compile(r"(?i)(?:([a-z]{2,3})(?=dub))|(?<![a-z])([a-z]{2,3})(?![a-z])")
 
 class StreamsPicker:
-    def __init__(self, logger: logging.Logger, duplicates_source: DuplicatesSource, allow_language_guessing: bool = False):
+    def __init__(self, logger: logging.Logger, duplicates_source: DuplicatesSource, wd: str, allow_language_guessing: bool = False):
         self.logger = logger
         self.duplicates_source = duplicates_source
         self.allow_language_guessing = allow_language_guessing
+        self.wd = wd
 
 
     @staticmethod
@@ -226,13 +229,35 @@ class StreamsPicker:
                     try:
                         lang = language_utils.unify_lang(best)
                         lang_name = language_utils.language_name(lang)
-                        self.logger.warning(f"Guessed language: {lang_name} for file #{id}")
-                        return lang
+                        self.logger.warning(f"Guessed audio language: {lang_name} for file #{id}")
                     except Exception:
                         pass
+            elif lang is None and stream_type == "subtitle":
+                # Extract subtitle stream to a temporary file via subtitles_utils
+                # and guess language using its utilities.
+                fmt = (stream.get("format") or "").lower()
+                tid = stream.get("tid")
+                base_tmp = None
+                tmp_path = None
+
+                base_tmp = os.path.join(self.wd, "tmp_subtitle")
+                tmp_path = subtitles_utils.extract_subtitle_to_temp(path, tid, fmt, base_tmp, logger=self.logger)
+
+                if tmp_path:
+                    try:
+                        encoding = subtitles_utils.file_encoding(tmp_path)
+                        detected_lang = subtitles_utils.guess_language(tmp_path, encoding)
+                        if detected_lang:
+                            try:
+                                lang = language_utils.unify_lang(detected_lang)
+                                lang_name = language_utils.language_name(lang)
+                                self.logger.warning(f"Guessed subtitle language: {lang_name} for file #{id}")
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        self.logger.debug(f"Subtitle language detection failed for file #{id}, tid {tid}: {e}")
 
             return lang
-
 
         #collect video streams (path and index) which are attached_pics so we can drop them later as not handled now
         attached_pics = [(file_path, index) for (file_path, details) in files_details.items() for index, vd in enumerate(details["video"]) if vd.get("attached_pic", False)]

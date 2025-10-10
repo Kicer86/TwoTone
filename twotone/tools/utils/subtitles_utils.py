@@ -3,10 +3,11 @@ import logging
 import math
 import os
 import re
+import tempfile
 
 from dataclasses import dataclass
 from itertools import islice
-from typing import Dict
+from typing import Dict, Optional
 
 import py3langid as langid
 
@@ -97,6 +98,51 @@ def guess_language(path: str, encoding: str) -> str:
         result = langid.classify(content_joined)[0]
 
     return result
+
+
+def extract_subtitle_to_temp(video_path: str, tid: int, stream_format: str, output_base_path: str, logger: Optional[logging.Logger] = None) -> Optional[str]:
+    """Extract a subtitle track from a container to a file.
+
+    - ``output_base_path`` should be a path without extension; the proper
+      extension will be appended depending on ``stream_format``.
+    - Returns full output path on success, or ``None`` if unsupported or failed.
+    """
+    fmt = (stream_format or "").lower()
+    ext_map = {
+        "subrip": ".srt",
+        "srt": ".srt",
+        "ass": ".ass",
+        "ssa": ".ssa",
+        "webvtt": ".vtt",
+        "mov_text": ".srt",
+        "text": ".srt",
+    }
+
+    suffix = ext_map.get(fmt)
+    if not suffix:
+        return None
+
+    try:
+        output_path = f"{output_base_path}{suffix}"
+        # Local import to avoid circular dependency: process_utils -> video_utils -> subtitles_utils
+        from . import process_utils
+        status = process_utils.start_process("mkvextract", ["tracks", video_path, f"{tid}:{output_path}"])
+        if status.returncode != 0:
+            if logger:
+                logger.debug(f"mkvextract failed (tid={tid}): {status.stderr}")
+            # Ensure we don't leave partially created files
+            try:
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+            except Exception:
+                pass
+            return None
+
+        return output_path
+    except Exception as e:
+        if logger:
+            logger.debug(f"Subtitle extraction failed (tid={tid}): {e}")
+        return None
 
 
 def build_subtitle_from_path(path: str, language: str | None = "") -> SubtitleFile:
