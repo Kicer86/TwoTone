@@ -50,11 +50,10 @@ class Concatenate(generic_utils.InterruptibleProcess):
                 # remove last char before CDXXX as it is most likely space or hyphen and use it as a base for output video file
                 name_without_part_number = path[:-1] + match.group(3)
 
-            #
-            _, _, extn = files_utils.split_path(name_without_part_number)
-            if extn == "rmvb":
-                self.logger.error(f"RMVB files are not supported. Consider 'transcode' subtool to convert {video} file.")
-                continue
+            # ffmpeg does not support rmvb container, use mp4
+            dir, name, extn = files_utils.split_path(name_without_part_number)
+            if extn.lower() == "rmvb":
+                name_without_part_number = os.path.join(dir, name + ".mkv")
 
             part = match.group(2)
             partNo = int(part[2:])                                                                              # drop 'CD'
@@ -107,12 +106,22 @@ class Concatenate(generic_utils.InterruptibleProcess):
 
                 input_files = [video for video, _ in details]
 
+                audio_codec = "copy"
+                for input_file in input_files:
+                    file_details = video_utils.get_video_data(input_file)
+                    audio_streams = file_details.get("audio", [])
+                    for audio_stream in audio_streams:
+                        codec = audio_stream.get("codec")
+                        if codec.lower() == "cook":
+                            audio_codec = "aac"
+                            break
+
                 def escape_path(path: str) -> str:
                     return path.replace("'", "'\\''")
 
                 input_file_content = [f"file '{escape_path(input_file)}'" for input_file in input_files]
                 with files_utils.TempFileManager("\n".join(input_file_content), "txt", directory=self.working_dir) as input_file:
-                    ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c", "copy", output]
+                    ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c:v", "copy", "-c:a", audio_codec, output]
 
                     self.logger.info(f"Concatenating files into {output} file")
                     if self.live_run:
