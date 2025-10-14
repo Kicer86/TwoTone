@@ -3,15 +3,15 @@ import logging
 import math
 import os
 import re
-import tempfile
 
 from dataclasses import dataclass
 from itertools import islice
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 import py3langid as langid
 
 from .generic_utils import ms_to_time, time_to_ms
+from . import process_utils, video_utils
 
 
 @dataclass
@@ -100,14 +100,17 @@ def guess_language(path: str, encoding: str) -> str:
     return result
 
 
-def extract_subtitle_to_temp(video_path: str, tid: int, stream_format: str, output_base_path: str, logger: Optional[logging.Logger] = None) -> Optional[str]:
-    """Extract a subtitle track from a container to a file.
+def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path: str, logger: Optional[logging.Logger] = None) -> Dict[int, str]:
+    """Extract subtitle tracks to temporary files.
 
-    - ``output_base_path`` should be a path without extension; the proper
-      extension will be appended depending on ``stream_format``.
-    - Returns full output path on success, or ``None`` if unsupported or failed.
+    - Determines stream formats internally using video metadata.
+    - Appends the track id to the output path: f"{output_base_path}.{tid}.{ext}".
+    - Returns a mapping {tid: output_path} for all requested tids.
     """
-    fmt = (stream_format or "").lower()
+
+    tids_list: List[int] = list(tids)
+
+    # Map formats to file extensions
     ext_map = {
         "subrip": ".srt",
         "srt": ".srt",
@@ -118,31 +121,34 @@ def extract_subtitle_to_temp(video_path: str, tid: int, stream_format: str, outp
         "text": ".srt",
     }
 
-    suffix = ext_map.get(fmt)
-    if not suffix:
-        return None
+    # Discover formats using video_utils
+    try:
+        info = video_utils.get_video_data(video_path)
+        stream_fmt = {s.get("tid"): (s.get("format") or "").lower() for s in info.get("subtitle", [])}
+    except Exception as e:
+        stream_fmt = {}
+        if logger:
+            logger.debug(f"Failed to get stream info for '{video_path}': {e}")
+
+    # Build mkvextract options
+    tid_to_path: Dict[int, str] = {}
+    options = ["tracks", video_path]
+    for tid in tids_list:
+        fmt = stream_fmt.get(tid, "")
+        suffix = ext_map.get(fmt, ".srt")
+        out_path = f"{output_base_path}.{tid}{suffix}"
+        tid_to_path[tid] = out_path
+        options.append(f"{tid}:{out_path}")
 
     try:
-        output_path = f"{output_base_path}{suffix}"
-        # Local import to avoid circular dependency: process_utils -> video_utils -> subtitles_utils
-        from . import process_utils
-        status = process_utils.start_process("mkvextract", ["tracks", video_path, f"{tid}:{output_path}"])
-        if status.returncode != 0:
-            if logger:
-                logger.debug(f"mkvextract failed (tid={tid}): {status.stderr}")
-            # Ensure we don't leave partially created files
-            try:
-                if os.path.exists(output_path):
-                    os.remove(output_path)
-            except Exception:
-                pass
-            return None
-
-        return output_path
+        status = process_utils.start_process("mkvextract", options)
+        if status.returncode != 0 and logger:
+            logger.debug(f"mkvextract failed for {video_path}: {status.stderr}")
     except Exception as e:
         if logger:
-            logger.debug(f"Subtitle extraction failed (tid={tid}): {e}")
-        return None
+            logger.debug(f"Subtitle extraction failed for {video_path}: {e}")
+
+    return tid_to_path
 
 
 def build_subtitle_from_path(path: str, language: str | None = "") -> SubtitleFile:

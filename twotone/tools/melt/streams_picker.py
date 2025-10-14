@@ -235,13 +235,10 @@ class StreamsPicker:
             elif lang is None and stream_type == "subtitle":
                 # Extract subtitle stream to a temporary file via subtitles_utils
                 # and guess language using its utilities.
-                fmt = (stream.get("format") or "").lower()
                 tid = stream.get("tid")
-                base_tmp = None
-                tmp_path = None
-
                 base_tmp = os.path.join(self.wd, "tmp_subtitle")
-                tmp_path = subtitles_utils.extract_subtitle_to_temp(path, tid, fmt, base_tmp, logger=self.logger)
+                tid_to_path = subtitles_utils.extract_subtitle_to_temp(path, [tid], base_tmp, logger=self.logger)
+                tmp_path = tid_to_path.get(tid)
 
                 if tmp_path:
                     try:
