@@ -271,12 +271,15 @@ class MeltingTest(TwoToneTestCase):
         self.assertIsNone(tracks["subtitle"][0].get("language"))
 
         # Patch extraction and language guess
-        def fake_extract(video_path, tid, stream_format, output_base_path, logger=None):
-            ext = {"subrip": ".srt", "srt": ".srt", "ass": ".ass", "ssa": ".ssa", "webvtt": ".vtt", "mov_text": ".srt", "text": ".srt"}.get(stream_format, ".srt")
-            out = f"{output_base_path}{ext}"
-            with open(out, "w", encoding="utf-8") as f:
-                f.write("1\n00:00:00,000 --> 00:00:00,500\nThis is an English test line.\n\n")
-            return out
+        def fake_extract(video_path, tids, output_base_path, logger=None):
+            # Create minimal SRT content for each requested tid
+            result = {}
+            for tid in tids:
+                out = f"{output_base_path}.{tid}.srt"
+                with open(out, "w", encoding="utf-8") as f:
+                    f.write("1\n00:00:00,000 --> 00:00:00,500\nThis is an English test line.\n\n")
+                result[tid] = out
+            return result
 
         with patch("twotone.tools.utils.subtitles_utils.extract_subtitle_to_temp", side_effect=fake_extract), \
              patch("twotone.tools.utils.subtitles_utils.file_encoding", return_value="utf-8"), \

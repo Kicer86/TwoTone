@@ -84,17 +84,27 @@ class Fixer(generic_utils.InterruptibleProcess):
             return True
 
     def _extract_all_subtitles(self, video_file: str, subtitles: list[dict], wd: str) -> list[subtitles_utils.SubtitleFile]:
-        result = []
-        options = ["tracks", video_file]
+        """Extract all subtitle tracks using subtitles_utils.extract_subtitle_to_temp.
 
-        for subtitle in subtitles:
-            outputfile = f"{wd}/{subtitle['tid']}.srt"
-            subtitleFile = subtitles_utils.SubtitleFile(path=outputfile, language=subtitle['language'], encoding="utf8")
+        Builds a stable list of SubtitleFile objects matching the order of
+        the provided `subtitles` metadata. The underlying extractor appends
+        the tid to the filename and auto-detects proper extension.
+        """
+        if not subtitles:
+            return []
 
-            result.append(subtitleFile)
-            options.append(f"{subtitle['tid']}:{outputfile}")
+        tids = [s["tid"] for s in subtitles]
+        base_tmp = os.path.join(wd, "subtitle")
 
-        process_utils.start_process("mkvextract", options)
+        tid_to_path = subtitles_utils.extract_subtitle_to_temp(video_file, tids, base_tmp, logger=self.logger)
+
+        result: list[subtitles_utils.SubtitleFile] = []
+        for s in subtitles:
+            tid = s["tid"]
+            path = tid_to_path.get(tid)
+            # Keep language as reported by container (may be None)
+            lang = s.get("language")
+            result.append(subtitles_utils.SubtitleFile(path = path, language = lang, encoding = "utf8"))
 
         return result
 
@@ -113,7 +123,8 @@ class Fixer(generic_utils.InterruptibleProcess):
                 video_file = video_info["path"]
                 self.logger.info(f"Fixing subtitles in file {video_file}")
                 self.logger.debug("Extracting subtitles from file")
-                subtitles = self._extract_all_subtitles(video_file, video_info.get("subtitle", []), wd_dir)
+                subs_info = video_info.get("subtitle", [])
+                subtitles = self._extract_all_subtitles(video_file, subs_info, wd_dir)
                 broken_subtitles_paths = [subtitles[i] for i in broken_subtitiles]
 
                 status = all(self._fix_subtitle(broken_subtitile.path, video_info) for broken_subtitile in broken_subtitles_paths)
