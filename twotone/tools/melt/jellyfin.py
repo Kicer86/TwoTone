@@ -6,7 +6,7 @@ import requests
 
 from collections import defaultdict
 from overrides import override
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 from ..utils import generic_utils, language_utils
 from ..utils.tmdb_cache import TmdbCache
@@ -43,13 +43,13 @@ class JellyfinSource(DuplicatesSource):
 
 
     @override
-    def collect_duplicates(self) -> Dict[str, List[str]]:
+    def collect_duplicates(self) -> Dict[str, Tuple]:
         endpoint = f"{self.url}"
         headers = {
             "X-Emby-Token": self.token
         }
 
-        paths_by_id = defaultdict(lambda: defaultdict(list))
+        paths_by_id: Dict = defaultdict(lambda: defaultdict(list))
 
         def fetchItems(params: Dict[str, str] = {}) -> None:
             self.interruption._check_for_stop()
@@ -84,7 +84,7 @@ class JellyfinSource(DuplicatesSource):
                             paths_by_id[provider][id].append((name, fixed_path))
 
         fetchItems()
-        duplicates = {}
+        duplicates: Dict[str, Tuple] = {}
 
         for provider, ids in paths_by_id.items():
             for id, data in ids.items():
@@ -139,7 +139,7 @@ class JellyfinSource(DuplicatesSource):
         return duplicates
 
     @override
-    def get_metadata_for(self, path: str) -> Dict[str, str]:
+    def get_metadata_for(self, path: str) -> Dict[str, Union[str, None]]:
         tmdb_id = self.tmdb_id_by_path.get(path)
 
         if not tmdb_id:

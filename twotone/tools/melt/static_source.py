@@ -2,7 +2,7 @@
 from collections import defaultdict
 from overrides import override
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Tuple, Union
 
 from .duplicates_source import DuplicatesSource
 
@@ -20,11 +20,11 @@ class StaticSource(DuplicatesSource):
         self._metadata[path][key] = value
 
     @override
-    def collect_duplicates(self) -> Dict[str, List[str]]:
+    def collect_duplicates(self) -> Dict[str, Tuple]:
         return self._entries
 
     @override
-    def get_metadata_for(self, path: str) -> Dict[str, str]:
+    def get_metadata_for(self, path: str) -> Dict[str, Union[str, None]]:
         path_obj = Path(path)
 
         while path_obj != path_obj.parent:
