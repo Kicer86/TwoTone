@@ -223,7 +223,11 @@ class FixerTool(Tool):
                             help='Path with videos to analyze.')
 
     @override
-    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+        pass
+
+    @override
+    def perform(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
         process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
 
         logger.info("Searching for broken files")

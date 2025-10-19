@@ -99,10 +99,16 @@ def execute(argv: list[str]) -> None:
         tool_wd = os.path.join(pid_wd, args.tool)
         os.makedirs(tool_wd, exist_ok=True)
         try:
-            tool.run(
+            tool_logger = logger.getChild(args.tool)
+            tool.analyze(
+                args,
+                logger=tool_logger,
+                working_dir=tool_wd,
+            )
+            tool.perform(
                 args,
                 no_dry_run=args.no_dry_run,
-                logger=logger.getChild(args.tool),
+                logger=tool_logger,
                 working_dir=tool_wd,
             )
         finally:

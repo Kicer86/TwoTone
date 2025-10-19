@@ -311,7 +311,11 @@ class MergeTool(Tool):
                                 'the end in undefined order')
 
     @override
-    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+        pass
+
+    @override
+    def perform(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
         process_utils.ensure_tools_exist(["mkvmerge", "ffmpeg", "ffprobe"], logger)
 
         logger.info("Searching for movie and subtitle files to be merged")
