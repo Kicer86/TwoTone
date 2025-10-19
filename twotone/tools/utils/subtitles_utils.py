@@ -6,11 +6,12 @@ import re
 
 from dataclasses import dataclass
 from itertools import islice
-from typing import Dict
+from typing import Dict, Optional, List
 
 import py3langid as langid
 
 from .generic_utils import ms_to_time, time_to_ms
+from . import process_utils, video_utils
 
 
 @dataclass
@@ -97,6 +98,57 @@ def guess_language(path: str, encoding: str) -> str:
         result = langid.classify(content_joined)[0]
 
     return result
+
+
+def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path: str, logger: Optional[logging.Logger] = None) -> Dict[int, str]:
+    """Extract subtitle tracks to temporary files.
+
+    - Determines stream formats internally using video metadata.
+    - Appends the track id to the output path: f"{output_base_path}.{tid}.{ext}".
+    - Returns a mapping {tid: output_path} for all requested tids.
+    """
+
+    tids_list: List[int] = list(tids)
+
+    # Map formats to file extensions
+    ext_map = {
+        "subrip": ".srt",
+        "srt": ".srt",
+        "ass": ".ass",
+        "ssa": ".ssa",
+        "webvtt": ".vtt",
+        "mov_text": ".srt",
+        "text": ".srt",
+    }
+
+    # Discover formats using video_utils
+    try:
+        info = video_utils.get_video_data(video_path)
+        stream_fmt = {s.get("tid"): (s.get("format") or "").lower() for s in info.get("subtitle", [])}
+    except Exception as e:
+        stream_fmt = {}
+        if logger:
+            logger.debug(f"Failed to get stream info for '{video_path}': {e}")
+
+    # Build mkvextract options
+    tid_to_path: Dict[int, str] = {}
+    options = ["tracks", video_path]
+    for tid in tids_list:
+        fmt = stream_fmt.get(tid, "")
+        suffix = ext_map.get(fmt, ".srt")
+        out_path = f"{output_base_path}.{tid}{suffix}"
+        tid_to_path[tid] = out_path
+        options.append(f"{tid}:{out_path}")
+
+    try:
+        status = process_utils.start_process("mkvextract", options)
+        if status.returncode != 0 and logger:
+            logger.debug(f"mkvextract failed for {video_path}: {status.stderr}")
+    except Exception as e:
+        if logger:
+            logger.debug(f"Subtitle extraction failed for {video_path}: {e}")
+
+    return tid_to_path
 
 
 def build_subtitle_from_path(path: str, language: str | None = "") -> SubtitleFile:

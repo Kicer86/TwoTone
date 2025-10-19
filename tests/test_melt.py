@@ -10,10 +10,11 @@ from parameterized import parameterized
 from pathlib import Path
 from typing import Dict, Iterator
 
-from twotone.tools.utils import generic_utils, process_utils, video_utils
+from twotone.tools.utils import generic_utils, process_utils, video_utils, subtitles_utils
 from twotone.tools.melt import Melter
 from twotone.tools.melt.melt import StaticSource, StreamsPicker
 from twotone.tools.utils.files_utils import ScopedDirectory
+from unittest.mock import patch
 from common import (
     TwoToneTestCase,
     FileCache,
@@ -252,6 +253,48 @@ class MeltingTest(TwoToneTestCase):
         output_file = list(output_file_hash.keys())[0]
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_file_data["tracks"]["audio"]), 2)
+
+    def test_streams_picker_guesses_subtitle_language(self):
+        # Build a video with a subtitle track without language tag
+        output_mkv = os.path.join(self.wd.path, "with_sub_no_lang.mkv")
+        build_test_video(
+            output_mkv,
+            self.wd.path,
+            video_name="Grass - 66810.mp4",
+            audio_name=None,
+            subtitle=[("Grass - 66810.srt", "")],
+        )
+
+        # Assert container has no language set for subtitle
+        tracks = video_utils.get_video_data(output_mkv)
+        self.assertGreaterEqual(len(tracks["subtitle"]), 1)
+        self.assertIsNone(tracks["subtitle"][0].get("language"))
+
+        # Patch extraction and language guess
+        def fake_extract(video_path, tids, output_base_path, logger=None):
+            # Create minimal SRT content for each requested tid
+            result = {}
+            for tid in tids:
+                out = f"{output_base_path}.{tid}.srt"
+                with open(out, "w", encoding="utf-8") as f:
+                    f.write("1\n00:00:00,000 --> 00:00:00,500\nThis is an English test line.\n\n")
+                result[tid] = out
+            return result
+
+        with patch("twotone.tools.utils.subtitles_utils.extract_subtitle_to_temp", side_effect=fake_extract), \
+             patch("twotone.tools.utils.subtitles_utils.file_encoding", return_value="utf-8"), \
+             patch("twotone.tools.utils.subtitles_utils.guess_language", return_value="en"):
+            interruption = generic_utils.InterruptibleProcess()
+            duplicates = StaticSource(interruption)
+            sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path, allow_language_guessing=False)
+
+            files_details = {output_mkv: video_utils.get_video_data(output_mkv)}
+            ids = {output_mkv: 1}
+
+            _, _, subtitle_streams = sp.pick_streams(files_details, ids)
+
+            self.assertTrue(len(subtitle_streams) >= 1)
+            self.assertEqual(subtitle_streams[0][2], "eng")
 
 
     def test_mismatch_unused_file_ignored(self):
@@ -666,12 +709,11 @@ class MeltingTest(TwoToneTestCase):
         ),
     ]
 
-
     @parameterized.expand(sample_streams)
     def test_streams_pick_decision(self, name, input, expected_streams):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        streams_picker = StreamsPicker(self.logger.getChild("Melter"), duplicates)
+        streams_picker = StreamsPicker(self.logger.getChild("Melter"), duplicates, self.wd.path)
 
         ids = _build_path_to_id_map(input)
 
@@ -682,6 +724,37 @@ class MeltingTest(TwoToneTestCase):
             expected_streams_normalized = normalize(expected_streams)
 
             self.assertEqual(picked_streams_normalized, expected_streams_normalized)
+
+
+    def test_language_guessing(self):
+        filenames = ["file_pl.mp4", "file_endub.mp4", "file_frdub.mp4", "file_dubbing_deu.mp4", "file_jpndub.mp4", "file_fin_dubbing.mp4"]
+
+        streams_info = {
+            filename: {
+                "video": [{"height": "1024", "width": "1024", "fps": "24", "tid": id * 5}],
+                "audio": [{"language": None, "channels": 2, "sample_rate": 32000, "tid": id * 5 + 1}]
+            }
+
+            for id, filename in enumerate(filenames)
+        }
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        streams_picker = StreamsPicker(self.logger.getChild("Melter"), duplicates, self.wd.path, allow_language_guessing = True)
+
+        ids = _build_path_to_id_map(streams_info)
+        _, audio_streams, _ = streams_picker.pick_streams(streams_info, ids)
+
+        expected_audio_streams = [
+            ('file_pl.mp4', 1, 'pol'),
+            ('file_endub.mp4', 6, 'eng'),
+            ('file_frdub.mp4', 11, 'fra'),
+            ('file_dubbing_deu.mp4', 16, 'deu'),
+            ('file_jpndub.mp4', 21, 'jpn'),
+            ('file_fin_dubbing.mp4', 26, 'fin')
+        ]
+
+        self.assertEqual(audio_streams, expected_audio_streams)
 
 
 if __name__ == '__main__':

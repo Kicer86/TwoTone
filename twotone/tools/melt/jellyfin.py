@@ -6,7 +6,7 @@ import requests
 
 from collections import defaultdict
 from overrides import override
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 from ..utils import generic_utils, language_utils
 from ..utils.tmdb_cache import TmdbCache
@@ -43,13 +43,13 @@ class JellyfinSource(DuplicatesSource):
 
 
     @override
-    def collect_duplicates(self) -> Dict[str, List[str]]:
+    def collect_duplicates(self) -> Dict[str, Tuple]:
         endpoint = f"{self.url}"
         headers = {
             "X-Emby-Token": self.token
         }
 
-        paths_by_id = defaultdict(lambda: defaultdict(list))
+        paths_by_id: Dict = defaultdict(lambda: defaultdict(list))
 
         def fetchItems(params: Dict[str, str] = {}) -> None:
             self.interruption._check_for_stop()
@@ -84,7 +84,7 @@ class JellyfinSource(DuplicatesSource):
                             paths_by_id[provider][id].append((name, fixed_path))
 
         fetchItems()
-        duplicates = {}
+        duplicates: Dict[str, Tuple] = {}
 
         for provider, ids in paths_by_id.items():
             for id, data in ids.items():
@@ -104,7 +104,33 @@ class JellyfinSource(DuplicatesSource):
                                 self.logger.warning(f"\t{path}")
                             self.logger.warning("Skipping title")
                         else:
-                            duplicates[name] = fixed_paths
+                            # Check if all files come from different directories.
+                            # If there are multiple files in the same directory,
+                            # then it is impossible to decide which one to pick at this stage.
+                            # (Please mind that it could be a normal use case to keep multiple
+                            # files in the same directory, e.g. different versions of the same movie.
+                            # See https://jellyfin.org/docs/general/server/media/movies/#multiple-versions)
+                            # As of now just warn about it and skip those files.
+                            # To fix this, move this logic to the merger stage, where
+                            # we can pick the best file from each directory.
+                            # But that solution is debatable as well.
+
+                            dirs = set()
+                            for path in fixed_paths:
+                                dir = os.path.dirname(path)
+                                dirs.add(dir)
+
+                            if len(dirs) < len(fixed_paths):
+                                if len(dirs) == 1:
+                                    first_dir = e = next(iter(dirs))
+                                    self.logger.info(f"All files for title {name} are in the same directory: {first_dir}.\nAssuming these all variants of the same movie and skipping.")
+                                else:
+                                    self.logger.warning(f"Some files for title {name} are in the same directory:")
+                                    for path in fixed_paths:
+                                        self.logger.warning(f"\t{path}")
+                                    self.logger.warning("Skipping title, as this is not supported.")
+                            else:
+                                duplicates[name] = fixed_paths
                     else:
                         names_str = '\n'.join(names)
                         paths_str = '\n'.join(fixed_paths)
@@ -113,7 +139,7 @@ class JellyfinSource(DuplicatesSource):
         return duplicates
 
     @override
-    def get_metadata_for(self, path: str) -> Dict[str, str]:
+    def get_metadata_for(self, path: str) -> Dict[str, Union[str, None]]:
         tmdb_id = self.tmdb_id_by_path.get(path)
 
         if not tmdb_id:

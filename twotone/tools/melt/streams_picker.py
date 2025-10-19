@@ -1,17 +1,25 @@
 
 import logging
+import os
+import re
 
 from collections import defaultdict
 from functools import cmp_to_key
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from ..utils import files_utils, language_utils
+from ..utils import subtitles_utils
 from .duplicates_source import DuplicatesSource
 
+# precompiled regex for fast language guessing
+_RE_LANG_ALL = re.compile(r"(?i)(?:([a-z]{2,3})(?=dub))|(?<![a-z])([a-z]{2,3})(?![a-z])")
+
 class StreamsPicker:
-    def __init__(self, logger: logging.Logger, duplicates_source: DuplicatesSource):
+    def __init__(self, logger: logging.Logger, duplicates_source: DuplicatesSource, wd: str, allow_language_guessing: bool = False):
         self.logger = logger
         self.duplicates_source = duplicates_source
+        self.allow_language_guessing = allow_language_guessing
+        self.wd = wd
 
 
     @staticmethod
@@ -53,12 +61,11 @@ class StreamsPicker:
         self,
         files_details: Dict[str, Dict],
         best_file: str,
-        ids: Dict[str, int],
+        files_ids: Dict[str, int],
         stream_type: str,
         unique_keys: List[str],
         preference,
-        fallback_languages: Optional[Dict[str, str]] = None,
-        override_languages: Optional[Dict[str, str]] = None,
+        get_language
     ) -> List[Tuple[str, int, Optional[str]]]:
         """Pick best streams of ``stream_type`` from ``files_details``.
 
@@ -66,36 +73,8 @@ class StreamsPicker:
         a callable accepting two stream dictionaries and returning ``-1`` if the
         first argument should be preferred, ``1`` if the second is better and
         ``0`` otherwise.
+        ``get_language`` is a functor returning language for given stream and path.
         """
-
-        def get_language(stream, path) -> Optional[str]:
-            id = ids[path]
-            lang = stream.get("language")
-
-            if lang == "und":
-                lang = None
-
-            if override_languages and path in override_languages:
-                original_lang = lang
-                lang = override_languages[path]
-                tid = stream.get("tid")
-                if original_lang:
-                    self.logger.info(
-                        f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file #{id}"
-                    )
-                else:
-                    self.logger.info(
-                        f"Setting {stream_type} stream #{tid} language to {lang} for file #{id}"
-                    )
-            elif (not lang) and fallback_languages and path in fallback_languages:
-                original_lang = lang
-                lang = fallback_languages[path]
-                tid = stream.get("tid")
-                self.logger.info(
-                    f"Setting {stream_type} stream #{tid} language to {lang} for file #{id}"
-                )
-
-            return lang
 
         stream_index = defaultdict(lambda: defaultdict(list))
 
@@ -106,7 +85,7 @@ class StreamsPicker:
                 stream_view = stream.copy()
 
                 # Determine language if available
-                lang = get_language(stream, path)
+                lang = get_language(stream, stream_type, path)
                 stream_view["language"] = lang
 
                 # Build unique key based on stream view
@@ -119,7 +98,8 @@ class StreamsPicker:
                     missing_properties = [name for name, value in zip(unique_keys, unique_key) if value is None]
                     missing_properties_str = ", ".join(missing_properties)
 
-                    raise RuntimeError(f"Could not properly build stream information of type {stream_type} for file {path}. "
+                    id = files_ids[path]
+                    raise RuntimeError(f"Could not properly build stream information of type {stream_type} for file #{id}. "
                                        f"Missing properties: {missing_properties_str}")
 
                 # put tid into top layer for easier access
@@ -204,11 +184,91 @@ class StreamsPicker:
                 return 0
             return _cmp
 
+        def get_language(
+                stream,
+                stream_type,
+                path,
+                override_languages : Optional[Dict[str, str]] = None,
+                fallback_languages : Optional[Dict[str, str]] = None) -> Optional[str]:
+            id = ids[path]
+            lang = stream.get("language")
+
+            if lang == "und":
+                lang = None
+
+            if override_languages and path in override_languages:
+                original_lang = lang
+                lang = override_languages[path]
+                tid = stream.get("tid")
+                if original_lang:
+                    self.logger.info(f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file #{id}")
+                else:
+                    self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file #{id}")
+            elif (not lang) and fallback_languages and path in fallback_languages:
+                original_lang = lang
+                lang = fallback_languages[path]
+                tid = stream.get("tid")
+                self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file #{id}")
+            elif self.allow_language_guessing and lang is None and stream_type == "audio":
+                _, stem, _ = files_utils.split_path(path)
+                file_name_low = stem.lower()
+
+                best = None
+                best_rank = 99
+                for m in _RE_LANG_ALL.finditer(file_name_low):
+                    for gi, val in enumerate(m.groups(), start=1):
+                        if val and language_utils.is_valid_lang_code(val):
+                            rank = gi
+                            cand = val
+                            if rank < best_rank:
+                                best_rank = rank
+                                best = cand
+                            break
+
+                if best:
+                    try:
+                        lang = language_utils.unify_lang(best)
+                        lang_name = language_utils.language_name(lang)
+                        self.logger.warning(f"Guessed audio language: {lang_name} for file #{id}")
+                    except Exception:
+                        pass
+            elif lang is None and stream_type == "subtitle":
+                # Extract subtitle stream to a temporary file via subtitles_utils
+                # and guess language using its utilities.
+                tid = stream.get("tid")
+                base_tmp = os.path.join(self.wd, "tmp_subtitle")
+                tid_to_path = subtitles_utils.extract_subtitle_to_temp(path, [tid], base_tmp, logger=self.logger)
+                tmp_path = tid_to_path.get(tid)
+
+                if tmp_path:
+                    try:
+                        encoding = subtitles_utils.file_encoding(tmp_path)
+                        detected_lang = subtitles_utils.guess_language(tmp_path, encoding)
+                        if detected_lang:
+                            try:
+                                lang = language_utils.unify_lang(detected_lang)
+                                lang_name = language_utils.language_name(lang)
+                                self.logger.warning(f"Guessed subtitle language: {lang_name} for file #{id}")
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        self.logger.debug(f"Subtitle language detection failed for file #{id}, tid {tid}: {e}")
+
+            return lang
+
         #collect video streams (path and index) which are attached_pics so we can drop them later as not handled now
         attached_pics = [(file_path, index) for (file_path, details) in files_details.items() for index, vd in enumerate(details["video"]) if vd.get("attached_pic", False)]
 
         best_file_candidate = StreamsPicker._pick_best_file_candidate(files_details)
-        video_streams = self._pick_streams(files_details, best_file_candidate, ids, "video", [], video_cmp)
+        video_streams = self._pick_streams(
+            files_details,
+            best_file_candidate,
+            ids,
+            "video",
+            [],
+            video_cmp,
+            get_language = lambda stream, stream_type, file: get_language(stream, stream_type, file)
+        )
         video_streams = [video_stream for video_stream in video_streams if (video_stream[0], video_stream[1]) not in attached_pics]
         video_stream = video_streams[0]
         video_stream_path = video_stream[0]
@@ -223,7 +283,7 @@ class StreamsPicker:
             "audio",
             ["language", "channels"],
             cmp_by_keys(["sample_rate"]),
-            override_languages=forced_audio_language,
+            get_language = lambda stream, stream_type, file: get_language(stream, stream_type, file, override_languages = forced_audio_language)
         )
 
         # pick subtitle streams
@@ -236,7 +296,7 @@ class StreamsPicker:
             "subtitle",
             ["language"],
             lambda a, b: 0,
-            override_languages=forced_subtitle_language,
+            get_language = lambda stream, stream_type, file: get_language(stream, stream_type, file, override_languages = forced_subtitle_language)
         )
 
         # results

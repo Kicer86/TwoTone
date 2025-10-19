@@ -32,7 +32,17 @@ def _split_path_fix(value: str) -> List[str]:
 
 
 class Melter():
-    def __init__(self, logger: logging.Logger, interruption: generic_utils.InterruptibleProcess, duplicates_source: DuplicatesSource, live_run: bool, wd: str, output: str, allow_length_mismatch: bool = False):
+    def __init__(
+            self,
+            logger: logging.Logger,
+            interruption: generic_utils.InterruptibleProcess,
+            duplicates_source: DuplicatesSource,
+            live_run: bool,
+            wd: str,
+            output: str,
+            allow_length_mismatch: bool = False,
+            allow_language_guessing: bool = False,
+        ):
         self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
@@ -41,6 +51,7 @@ class Melter():
         self.wd = os.path.join(wd, str(os.getpid()))
         self.output = output
         self.allow_length_mismatch = allow_length_mismatch
+        self.allow_language_guessing = allow_language_guessing
 
         os.makedirs(self.wd, exist_ok=True)
 
@@ -192,6 +203,8 @@ class Melter():
             height = stream.get("height")
             fps = stream.get("fps")
             codec = stream.get("codec")
+            length = stream.get("length")
+            length_formatted = generic_utils.ms_to_time(length) if length else None
             details = []
             if width and height:
                 fps_val = fmt_fps(fps) if fps else None
@@ -205,6 +218,10 @@ class Melter():
                     details.append(f"{fps_val}fps")
             if codec:
                 details.append(codec)
+
+            if length_formatted:
+                details.append(f"duration: {length_formatted}")
+
             return ", ".join(details)
         if stype == "audio":
             channels = stream.get("channels")
@@ -308,7 +325,8 @@ class Melter():
         for file, file_details in details_full.items():
             self._print_file_details(file, file_details, ids)
 
-        streams_picker = StreamsPicker(self.logger, self.duplicates_source)
+        picker_wd = os.path.join(self.wd, "stream_picker")
+        streams_picker = StreamsPicker(self.logger, self.duplicates_source, picker_wd, allow_language_guessing = self.allow_language_guessing)
         try:
             video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks, ids)
         except RuntimeError as re:
@@ -673,6 +691,9 @@ class MeltTool(Tool):
                             help='[EXPERIMENTAL] Continue processing even if input video lengths differ.\n'
                                  'This may require additional processing that can consume significant time and disk space.')
 
+        parser.add_argument('--allow-language-guessing', action='store_true',
+                            help='If audio language is not provided in file metadata, try find language codes (like EN or DE) in file names')
+
 
     @override
     def run(self, args, no_dry_run: bool, logger: logging.Logger, working_dir: str):
@@ -730,7 +751,8 @@ class MeltTool(Tool):
                         live_run = no_dry_run,
                         wd = working_dir,
                         output = args.output_dir,
-                        allow_length_mismatch = args.allow_length_mismatch
+                        allow_length_mismatch = args.allow_length_mismatch,
+                        allow_language_guessing = args.allow_language_guessing,
         )
 
         melter.melt()
