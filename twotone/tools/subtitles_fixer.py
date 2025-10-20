@@ -108,7 +108,7 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         return result
 
-    def _repair_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
+    def repair_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
         self._print_broken_videos(broken_videos_info)
         self.logger.info("Fixing videos")
 
@@ -186,7 +186,7 @@ class Fixer(generic_utils.InterruptibleProcess):
         self.logger.debug(f"Issues found in {video_file}")
         return (video_info, broken_subtitiles)
 
-    def _process_dir(self, path: str) -> list[tuple[dict, list[int]]]:
+    def scan_directory(self, path: str) -> list[tuple[dict, list[int]]]:
         broken_videos = []
         video_files = []
 
@@ -210,9 +210,9 @@ class Fixer(generic_utils.InterruptibleProcess):
         return broken_videos
 
     def process_dir(self, path: str) -> None:
-        broken_videos = self._process_dir(path)
+        broken_videos = self.scan_directory(path)
 
-        self._repair_videos(broken_videos)
+        self.repair_videos(broken_videos)
 
 
 class FixerTool(Tool):
@@ -234,7 +234,7 @@ class FixerTool(Tool):
         logger.info("Searching for broken files")
 
         fixer = Fixer(logger, really_fix=False, working_dir=working_dir)
-        self._analysis_results = fixer._process_dir(args.videos_path[0])
+        self._analysis_results = fixer.scan_directory(args.videos_path[0])
 
     @override
     def perform(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
@@ -244,9 +244,9 @@ class FixerTool(Tool):
         if broken_videos is None:
             process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
             logger.info("Searching for broken files")
-            broken_videos = fixer._process_dir(args.videos_path[0])
+            broken_videos = fixer.scan_directory(args.videos_path[0])
 
-        fixer._repair_videos(broken_videos)
+        fixer.repair_videos(broken_videos)
         logger.info("Done")
 
         self._analysis_results = None
