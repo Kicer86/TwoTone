@@ -209,12 +209,6 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         return broken_videos
 
-    def process_dir(self, path: str) -> None:
-        broken_videos = self.scan_directory(path)
-
-        self.repair_videos(broken_videos)
-
-
 class FixerTool(Tool):
     def __init__(self) -> None:
         super().__init__()
