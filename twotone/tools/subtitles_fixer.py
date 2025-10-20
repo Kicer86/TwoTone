@@ -216,6 +216,10 @@ class Fixer(generic_utils.InterruptibleProcess):
 
 
 class FixerTool(Tool):
+    def __init__(self) -> None:
+        super().__init__()
+        self._analysis_results: list[tuple[dict, list[int]]] | None = None
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument('videos_path',
@@ -224,13 +228,25 @@ class FixerTool(Tool):
 
     @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
-        pass
-
-    @override
-    def perform(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
+        self._analysis_results = None
         process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
 
         logger.info("Searching for broken files")
+
+        fixer = Fixer(logger, really_fix=False, working_dir=working_dir)
+        self._analysis_results = fixer._process_dir(args.videos_path[0])
+
+    @override
+    def perform(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
         fixer = Fixer(logger, no_dry_run, working_dir)
-        fixer.process_dir(args.videos_path[0])
+
+        broken_videos = self._analysis_results
+        if broken_videos is None:
+            process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
+            logger.info("Searching for broken files")
+            broken_videos = fixer._process_dir(args.videos_path[0])
+
+        fixer._repair_videos(broken_videos)
         logger.info("Done")
+
+        self._analysis_results = None
