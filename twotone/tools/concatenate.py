@@ -152,7 +152,6 @@ class ConcatenateTool(Tool):
     def __init__(self) -> None:
         super().__init__()
         self._analysis_results: dict[str, list[tuple[str, int]]] | None = None
-        self._analysis_executed = False
 
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
@@ -170,25 +169,16 @@ class ConcatenateTool(Tool):
 
     @override
     def analyze(self, args, logger: logging.Logger, working_dir: str):
-        self._analysis_executed = True
         self._analysis_results = None
         concatenator = Concatenate(logger, live_run=False, working_dir=working_dir)
         self._analysis_results = concatenator.analyze(args.videos_path[0])
 
     @override
     def perform(self, args, no_dry_run, logger: logging.Logger, working_dir: str):
-        concatenator = Concatenate(logger, no_dry_run, working_dir)
-
-        if not self._analysis_executed:
-            analysis = concatenator.analyze(args.videos_path[0])
-        else:
-            analysis = self._analysis_results
-
+        analysis = self._analysis_results
+        self._analysis_results = None
         if analysis is None:
-            self._analysis_results = None
-            self._analysis_executed = False
             return
 
+        concatenator = Concatenate(logger, no_dry_run, working_dir)
         concatenator.perform(analysis)
-        self._analysis_results = None
-        self._analysis_executed = False
