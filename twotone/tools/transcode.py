@@ -389,8 +389,42 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
         self.logger.info("Video processing completed")
 
+    def analyze_directory(self, directory: str) -> dict[str, int]:
+        """Analyze a directory and compute optimal CRF per file."""
+        self.logger.info(f"Analyzing videos under {directory} to compute optimal CRF (target SSIM: {self.target_ssim})")
+        plan: dict[str, int] = {}
+
+        video_files = self._find_video_files(directory)
+        for file in video_files:
+            self._check_for_stop()
+            self.logger.info(f"Analyzing {file}")
+            best_crf = self.find_optimal_crf(file)
+            if best_crf is not None:
+                plan[file] = best_crf
+            else:
+                self.logger.warning(f"Skipping {file}: could not determine optimal CRF")
+
+        self.logger.info(f"Analysis complete. Files to transcode: {len(plan)}")
+        return plan
+
+    def perform_transcodes(self, plan: dict[str, int]) -> None:
+        """Perform final transcodes using a precomputed CRF plan."""
+        self.logger.info(f"Starting final transcodes with {self.codec}")
+        for file, crf in plan.items():
+            self._check_for_stop()
+            self.logger.info(f"Transcoding {file} with CRF: {crf}")
+            if self.live_run:
+                # increase crf by one as veryslow preset will be used
+                self._final_transcode(file, crf + 1)
+            else:
+                self.logger.info("Dry run. Skipping final transcoding step.")
+
 
 class TranscodeTool(Tool):
+    def __init__(self) -> None:
+        super().__init__()
+        self._analysis_results: dict[str, int] | None = None
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         def valid_ssim_value(value):
@@ -414,9 +448,14 @@ class TranscodeTool(Tool):
 
     @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
-        pass
+        self._analysis_results = None
+        process_utils.ensure_tools_exist(["ffmpeg", "ffprobe", "exiftool"], logger)
+
+        transcoder = Transcoder(working_dir = working_dir, logger = logger, live_run = False, target_ssim = args.ssim)
+        self._analysis_results = transcoder.analyze_directory(args.videos_path[0])
 
     @override
     def perform(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
         transcoder = Transcoder(working_dir = working_dir, logger = logger, live_run = no_dry_run, target_ssim = args.ssim)
-        transcoder.transcode(args.videos_path[0])
+        transcoder.perform_transcodes(self._analysis_results)
+        self._analysis_results = None
