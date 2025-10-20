@@ -279,7 +279,7 @@ class Merge(generic_utils.InterruptibleProcess):
         return videos_and_subtitles
 
 
-    def process_dir(self, path: str) -> None:
+    def analyze_directory(self, path: str) -> dict[str, list[subtitles_utils.SubtitleFile]]:
         self.logger.info(f"Looking for video and subtitle files in {path}")
         vas = self._process_dir(path)
 
@@ -287,14 +287,26 @@ class Merge(generic_utils.InterruptibleProcess):
         for video in vas:
             self.logger.debug(video)
 
+        return vas
+
+    def perform_merges(self, videos_and_subtitles: dict[str, list[subtitles_utils.SubtitleFile]]) -> None:
         self.logger.info("Starting merge")
         with logging_redirect_tqdm():
-            for video, subtitles in tqdm(vas.items(), desc="Merging", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+            for video, subtitles in tqdm(videos_and_subtitles.items(), desc="Merging", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
                 self._check_for_stop()
                 self._merge(video, subtitles)
 
+    def process_dir(self, path: str) -> None:
+        vas = self.analyze_directory(path)
+        self.perform_merges(vas)
+
 
 class MergeTool(Tool):
+    def __init__(self) -> None:
+        super().__init__()
+        self._analysis_results: dict[str, list[subtitles_utils.SubtitleFile]] | None = None
+        self._analysis_executed = False
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument('videos_path',
@@ -312,16 +324,36 @@ class MergeTool(Tool):
 
     @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
-        pass
-
-    @override
-    def perform(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
+        self._analysis_executed = True
+        self._analysis_results = None
         process_utils.ensure_tools_exist(["mkvmerge", "ffmpeg", "ffprobe"], logger)
 
         logger.info("Searching for movie and subtitle files to be merged")
-        two_tone = Merge(logger,
-                         dry_run=not no_dry_run,
-                         language=args.language,
-                         lang_priority=args.languages_priority,
-                         working_dir=working_dir)
-        two_tone.process_dir(args.videos_path[0])
+
+        merger = Merge(logger,
+                       dry_run=True,
+                       language=args.language,
+                       lang_priority=args.languages_priority,
+                       working_dir=working_dir)
+        self._analysis_results = merger.analyze_directory(args.videos_path[0])
+
+    @override
+    def perform(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
+        if not self._analysis_executed:
+            process_utils.ensure_tools_exist(["mkvmerge", "ffmpeg", "ffprobe"], logger)
+            logger.info("Searching for movie and subtitle files to be merged")
+
+        merger = Merge(logger,
+                       dry_run=not no_dry_run,
+                       language=args.language,
+                       lang_priority=args.languages_priority,
+                       working_dir=working_dir)
+
+        if not self._analysis_executed:
+            analysis = merger.analyze_directory(args.videos_path[0])
+        else:
+            analysis = self._analysis_results or {}
+
+        merger.perform_merges(analysis)
+        self._analysis_results = None
+        self._analysis_executed = False
