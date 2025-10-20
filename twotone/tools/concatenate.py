@@ -175,10 +175,6 @@ class ConcatenateTool(Tool):
 
     @override
     def perform(self, args, no_dry_run, logger: logging.Logger, working_dir: str):
-        analysis = self._analysis_results
-        self._analysis_results = None
-        if analysis is None:
-            return
-
         concatenator = Concatenate(logger, no_dry_run, working_dir)
-        concatenator.perform(analysis)
+        concatenator.perform(self._analysis_results)
+        self._analysis_results = None

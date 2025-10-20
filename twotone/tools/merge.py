@@ -342,7 +342,5 @@ class MergeTool(Tool):
                        language=args.language,
                        lang_priority=args.languages_priority,
                        working_dir=working_dir)
-        analysis = self._analysis_results or {}
+        merger.perform_merges(self._analysis_results)
         self._analysis_results = None
-
-        merger.perform_merges(analysis)
