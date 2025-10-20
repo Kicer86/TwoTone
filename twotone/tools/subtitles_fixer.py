@@ -232,7 +232,12 @@ class FixerTool(Tool):
 
     @override
     def perform(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
-        fixer = Fixer(logger, no_dry_run, working_dir)
-        fixer.repair_videos(self._analysis_results)
+        broken_videos = self._analysis_results
         self._analysis_results = None
+        if broken_videos is None:
+            logger.info("No analysis results, nothing to fix.")
+            return
+
+        fixer = Fixer(logger, no_dry_run, working_dir)
+        fixer.repair_videos(broken_videos)
         logger.info("Done")

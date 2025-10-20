@@ -456,6 +456,11 @@ class TranscodeTool(Tool):
 
     @override
     def perform(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
-        transcoder = Transcoder(working_dir = working_dir, logger = logger, live_run = no_dry_run, target_ssim = args.ssim)
-        transcoder.perform_transcodes(self._analysis_results)
+        plan = self._analysis_results
         self._analysis_results = None
+        if plan is None:
+            logger.info("No analysis results, nothing to transcode.")
+            return
+
+        transcoder = Transcoder(working_dir = working_dir, logger = logger, live_run = no_dry_run, target_ssim = args.ssim)
+        transcoder.perform_transcodes(plan)
