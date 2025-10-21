@@ -645,6 +645,12 @@ class RequireJellyfinServer(argparse.Action):
 
 
 class MeltTool(Tool):
+    def __init__(self) -> None:
+        super().__init__()
+        self._analysis_results: Dict[str, List[str]] | None = None
+        self._data_source: DuplicatesSource | None = None
+        self._interruption: generic_utils.InterruptibleProcess | None = None
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
         self.parser = parser
@@ -697,24 +703,23 @@ class MeltTool(Tool):
 
     @override
     def analyze(self, args, logger: logging.Logger, working_dir: str):
-        pass
+        # Reset cached state
+        self._analysis_results = None
+        self._data_source = None
+        self._interruption = generic_utils.InterruptibleProcess()
 
-    @override
-    def perform(self, args, no_dry_run: bool, logger: logging.Logger, working_dir: str):
-        interruption = generic_utils.InterruptibleProcess()
-
-        data_source = None
+        # Build data source based on arguments
         if args.jellyfin_server:
             path_fix = _split_path_fix(args.jellyfin_path_fix) if args.jellyfin_path_fix else None
 
             if path_fix and len(path_fix) != 2:
                 self.parser.error(f"Invalid content for --jellyfin-path-fix argument. Got: {path_fix}")
 
-            data_source = JellyfinSource(interruption=interruption,
-                                         url=args.jellyfin_server,
-                                         token=args.jellyfin_token,
-                                         path_fix=path_fix,
-                                         logger=logger.getChild("JellyfinSource"))
+            self._data_source = JellyfinSource(interruption=self._interruption,
+                                               url=args.jellyfin_server,
+                                               token=args.jellyfin_token,
+                                               path_fix=path_fix,
+                                               logger=logger.getChild("JellyfinSource"))
         elif args.input_files:
             title = args.title
             input_entries = args.input_files
@@ -722,7 +727,7 @@ class MeltTool(Tool):
             if not title:
                 self.parser.error(f"Missing required option: --title")
 
-            data_source = StaticSource(interruption=interruption)
+            src = StaticSource(interruption=self._interruption)
 
             for input in input_entries:
                 # split by ',' but respect ""
@@ -742,12 +747,34 @@ class MeltTool(Tool):
                         if extra_arg[:15] == "audio_prod_lang:":
                             audio_prod_lang = extra_arg[15:]
 
-                data_source.add_entry(title, path)
+                src.add_entry(title, path)
 
                 if audio_lang:
-                    data_source.add_metadata(path, "audio_lang", audio_lang)
+                    src.add_metadata(path, "audio_lang", audio_lang)
                 if audio_prod_lang:
-                    data_source.add_metadata(path, "audio_prod_lang", audio_prod_lang)
+                    src.add_metadata(path, "audio_prod_lang", audio_prod_lang)
+
+            self._data_source = src
+
+        # If no source, nothing to analyze
+        if not self._data_source:
+            logger.info("No input source specified. Nothing to analyze.")
+            return
+
+        logger.info("Collecting duplicates for analysis")
+        self._analysis_results = self._data_source.collect_duplicates()
+
+    @override
+    def perform(self, args, no_dry_run: bool, logger: logging.Logger, working_dir: str):
+        duplicates = self._analysis_results
+        data_source = self._data_source
+        interruption = self._interruption or generic_utils.InterruptibleProcess()
+        # clear cached results early to free memory
+        self._analysis_results = None
+        # Quick exit if no analysis was done
+        if not duplicates or not data_source:
+            logger.info("No analysis results, nothing to melt.")
+            return
 
         melter = Melter(logger,
                         interruption,
@@ -759,4 +786,5 @@ class MeltTool(Tool):
                         allow_language_guessing = args.allow_language_guessing,
         )
 
-        melter.melt()
+        # Use precomputed duplicates set to skip re-collection
+        melter._process_duplicates_set(duplicates)
