@@ -88,6 +88,10 @@ def extract_scenes(video_path, output_dir, format: str, scale: float):
 
 
 class UtilitiesTool(Tool):
+    def __init__(self) -> None:
+        super().__init__()
+        self._analysis_results: dict | None = None
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
         subparsers = parser.add_subparsers(dest="subtool", help="Available subtools:")
@@ -111,11 +115,37 @@ class UtilitiesTool(Tool):
 
     @override
     def analyze(self, args, logger: logging.Logger, working_dir: str):
-        pass
+        self._analysis_results = None
+
+        if args.subtool == "scenes":
+            process_utils.ensure_tools_exist(["ffmpeg", "ffprobe"], logger)
+
+            # Build a simple plan payload; heavy work happens in perform
+            try:
+                scale = float(args.scale)
+            except Exception:
+                raise ValueError(f"Invalid scale value: {args.scale}")
+
+            self._analysis_results = {
+                "subtool": "scenes",
+                "video_path": args.video_path[0],
+                "output": args.output,
+                "format": args.format,
+                "scale": scale,
+            }
+        else:
+            logger.error(f"Error: Unknown subtool {args.subtool}")
 
     @override
     def perform(self, args, no_dry_run: bool, logger: logging.Logger, working_dir: str):
-        if args.subtool == "scenes":
-            extract_scenes(video_path = args.video_path[0], output_dir = args.output, format = args.format, scale = float(args.scale))
+        plan = self._analysis_results
+        self._analysis_results = None
+
+        if plan is None:
+            logger.info("No analysis results, nothing to perform.")
+            return
+
+        if plan.get("subtool") == "scenes":
+            extract_scenes(video_path = plan["video_path"], output_dir = plan["output"], format = plan["format"], scale = float(plan["scale"]))
         else:
-            logging.error(f"Error: Unknown subtool {args.subtool}")
+            logger.error(f"Error: Unknown subtool {plan.get('subtool')}")
