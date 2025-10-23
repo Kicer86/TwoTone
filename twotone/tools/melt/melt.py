@@ -426,11 +426,17 @@ class Melter():
 
         return streams, picked_attachments
 
-    def _process_duplicates_set(self, duplicates: Dict[str, List[str]]):
+    def prepare_duplicates_set(self, duplicates: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+        """Prepare groups of duplicate files and output names per title.
+
+        Returns a plan in the form:
+        [
+          {"title": str, "groups": [{"files": [str,...], "output_name": str}, ...]},
+          ...
+        ]
+        """
         def process_entries(entries: List[str]) -> List[Tuple[List[str], str]]:
-            # function returns list of: group of duplicates and name for final output file.
-            # when dirs are provided as entries, files from each dir are collected and sorted
-            # and files on the same position are grouped
+            # Returns list of: (group of duplicates, output base name)
 
             def file_without_ext(path: str) -> str:
                 dir, name, _ = files_utils.split_path(path)
@@ -476,18 +482,33 @@ class Melter():
                 first_file_name = Path(first_file_fullname).stem
                 return [(entries, first_file_name)]
 
+        plan: List[Dict[str, Any]] = []
         for title, entries in tqdm(duplicates.items(), desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
-
-            self.logger.info( "-------------------------" + "-" * len(title))
-            self.logger.info(f"Analyzing duplicates for {title}")
-            self.logger.info( "-------------------------" + "-" * len(title))
-
             files_groups = process_entries(entries)
+            item = {
+                "title": title,
+                "groups": [{"files": files, "output_name": output_name} for files, output_name in files_groups]
+            }
+            plan.append(item)
 
-            for files, output_name in tqdm(files_groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
+        return plan
+
+    def process_duplicates_set(self, plan: List[Dict[str, Any]]):
+        for item in tqdm(plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
+            title = item["title"]
+            groups = item["groups"]
+
+            self.logger.info("-------------------------" + "-" * len(title))
+            self.logger.info(f"Analyzing duplicates for {title}")
+            self.logger.info("-------------------------" + "-" * len(title))
+
+            for group in tqdm(groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
                 self.interruption._check_for_stop()
 
-                if len(files_groups) > 1:
+                files = group["files"]
+                output_name = group["output_name"]
+
+                if len(groups) > 1:
                     self.logger.info("------------------------------------")
                     self.logger.info("Processing group of duplicated files")
                     self.logger.info("------------------------------------")
@@ -634,7 +655,8 @@ class Melter():
             self.logger.debug(f"Starting `melt` with live run: {self.live_run} and working dir: {self.wd}")
             self.logger.info("Finding duplicates")
             duplicates = self.duplicates_source.collect_duplicates()
-            self._process_duplicates_set(duplicates)
+            plan = self.prepare_duplicates_set(duplicates)
+            self.process_duplicates_set(plan)
 
 
 class RequireJellyfinServer(argparse.Action):
@@ -647,7 +669,7 @@ class RequireJellyfinServer(argparse.Action):
 class MeltTool(Tool):
     def __init__(self) -> None:
         super().__init__()
-        self._analysis_results: Dict[str, List[str]] | None = None
+        self._analysis_results: List[Dict[str, Any]] | None = None
         self._data_source: DuplicatesSource | None = None
         self._interruption: generic_utils.InterruptibleProcess | None = None
 
@@ -762,17 +784,28 @@ class MeltTool(Tool):
             return
 
         logger.info("Collecting duplicates for analysis")
-        self._analysis_results = self._data_source.collect_duplicates()
+        duplicates = self._data_source.collect_duplicates()
+
+        melter = Melter(logger,
+                        self._interruption,
+                        self._data_source,
+                        live_run = False,
+                        wd = working_dir,
+                        output = args.output_dir,
+                        allow_length_mismatch = args.allow_length_mismatch,
+                        allow_language_guessing = args.allow_language_guessing,
+        )
+        self._analysis_results = melter.prepare_duplicates_set(duplicates)
 
     @override
     def perform(self, args, no_dry_run: bool, logger: logging.Logger, working_dir: str):
-        duplicates = self._analysis_results
+        plan = self._analysis_results
         data_source = self._data_source
         interruption = self._interruption or generic_utils.InterruptibleProcess()
         # clear cached results early to free memory
         self._analysis_results = None
         # Quick exit if no analysis was done
-        if not duplicates or not data_source:
+        if not plan or not data_source:
             logger.info("No analysis results, nothing to melt.")
             return
 
@@ -786,5 +819,5 @@ class MeltTool(Tool):
                         allow_language_guessing = args.allow_language_guessing,
         )
 
-        # Use precomputed duplicates set to skip re-collection
-        melter._process_duplicates_set(duplicates)
+        # Use precomputed plan to skip re-grouping
+        melter.process_duplicates_set(plan)
