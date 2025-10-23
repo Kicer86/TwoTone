@@ -10,6 +10,6 @@ class Tool:
                 working_dir: str):
         pass
 
-    def perform(self, args: argparse.Namespace, no_dry_run: bool,
+    def perform(self, args: argparse.Namespace,
                 logger: logging.Logger, working_dir: str):
         pass

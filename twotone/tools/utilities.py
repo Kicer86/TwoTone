@@ -137,7 +137,7 @@ class UtilitiesTool(Tool):
             logger.error(f"Error: Unknown subtool {args.subtool}")
 
     @override
-    def perform(self, args, no_dry_run: bool, logger: logging.Logger, working_dir: str):
+    def perform(self, args, logger: logging.Logger, working_dir: str):
         plan = self._analysis_results
         self._analysis_results = None
 

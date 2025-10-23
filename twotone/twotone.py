@@ -105,12 +105,14 @@ def execute(argv: list[str]) -> None:
                 logger=tool_logger,
                 working_dir=tool_wd,
             )
-            tool.perform(
-                args,
-                no_dry_run=args.no_dry_run,
-                logger=tool_logger,
-                working_dir=tool_wd,
-            )
+            if args.no_dry_run:
+                tool.perform(
+                    args,
+                    logger=tool_logger,
+                    working_dir=tool_wd,
+                )
+            else:
+                tool_logger.info("Dry run mode: analyze completed, skipping perform.")
         finally:
             shutil.rmtree(pid_wd, ignore_errors=True)
     else:

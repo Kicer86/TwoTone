@@ -14,10 +14,9 @@ from twotone.tools.utils import generic_utils, process_utils, subtitles_utils, v
 
 
 class Fixer(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, really_fix: bool, working_dir: str) -> None:
+    def __init__(self, logger: logging.Logger, working_dir: str) -> None:
         super().__init__()
         self.logger = logger
-        self._do_fix = really_fix
         self.working_dir = working_dir
 
     def _print_broken_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
@@ -130,24 +129,21 @@ class Fixer(generic_utils.InterruptibleProcess):
                 status = all(self._fix_subtitle(broken_subtitile.path, video_info) for broken_subtitile in broken_subtitles_paths)
 
                 if status:
-                    if self._do_fix:
-                        # remove all subtitles from video
-                        self.logger.debug("Removing existing subtitles from file")
-                        video_without_subtitles = video_file + ".nosubtitles.mkv"
-                        process_utils.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file])
+                    # remove all subtitles from video
+                    self.logger.debug("Removing existing subtitles from file")
+                    video_without_subtitles = video_file + ".nosubtitles.mkv"
+                    process_utils.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file])
 
-                        # add fixed subtitles to video
-                        self.logger.debug("Adding fixed subtitles to file")
-                        temporaryVideoPath = video_file + ".fixed.mkv"
-                        video_utils.generate_mkv(input_video=video_without_subtitles, output_path=temporaryVideoPath, subtitles=subtitles)
+                    # add fixed subtitles to video
+                    self.logger.debug("Adding fixed subtitles to file")
+                    temporaryVideoPath = video_file + ".fixed.mkv"
+                    video_utils.generate_mkv(input_video=video_without_subtitles, output_path=temporaryVideoPath, subtitles=subtitles)
 
-                        # overwrite broken video with fixed one
-                        os.replace(temporaryVideoPath, video_file)
+                    # overwrite broken video with fixed one
+                    os.replace(temporaryVideoPath, video_file)
 
-                        # remove temporary file
-                        os.remove(video_without_subtitles)
-                    else:
-                        self.logger.info("Not applying fixes - dry run mode.")
+                    # remove temporary file
+                    os.remove(video_without_subtitles)
                 else:
                     self.logger.debug("Skipping video due to errors")
 
@@ -227,17 +223,17 @@ class FixerTool(Tool):
 
         logger.info("Searching for broken files")
 
-        fixer = Fixer(logger, really_fix=False, working_dir=working_dir)
+        fixer = Fixer(logger, working_dir=working_dir)
         self._analysis_results = fixer.scan_directory(args.videos_path[0])
 
     @override
-    def perform(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
         broken_videos = self._analysis_results
         self._analysis_results = None
         if broken_videos is None:
             logger.info("No analysis results, nothing to fix.")
             return
 
-        fixer = Fixer(logger, no_dry_run, working_dir)
+        fixer = Fixer(logger, working_dir)
         fixer.repair_videos(broken_videos)
         logger.info("Done")

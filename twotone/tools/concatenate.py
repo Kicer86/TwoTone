@@ -13,11 +13,10 @@ from twotone.tools.utils import generic_utils, process_utils, video_utils, files
 
 
 class Concatenate(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, live_run: bool, working_dir: str):
+    def __init__(self, logger: logging.Logger, working_dir: str):
         super().__init__()
 
         self.logger = logger
-        self.live_run = live_run
         self.working_dir = working_dir
 
     def analyze(self, path: str) -> dict[str, list[tuple[str, int]]] | None:
@@ -127,25 +126,16 @@ class Concatenate(generic_utils.InterruptibleProcess):
                     ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c:v", "copy", "-c:a", audio_codec, output]
 
                     self.logger.info(f"Concatenating files into {output} file")
-                    if self.live_run:
-                        status = process_utils.start_process("ffmpeg", ffmpeg_args)
-                        if status.returncode == 0:
-                            for input_file in input_files:
-                                os.remove(input_file)
-                        else:
-                            self.logger.error(f"Problems with concatenation, skipping file {output}")
-                            self.logger.debug(status.stdout)
-                            self.logger.debug(status.stderr)
-                            if os.path.exists(output):
-                                os.remove(output)
+                    status = process_utils.start_process("ffmpeg", ffmpeg_args)
+                    if status.returncode == 0:
+                        for input_file in input_files:
+                            os.remove(input_file)
                     else:
-                        self.logger.info("Dry run, skipping concatenation")
-
-    def run(self, path: str):
-        sorted_videos = self.analyze(path)
-        if sorted_videos is None:
-            return
-        self.perform(sorted_videos)
+                        self.logger.error(f"Problems with concatenation, skipping file {output}")
+                        self.logger.debug(status.stdout)
+                        self.logger.debug(status.stderr)
+                        if os.path.exists(output):
+                            os.remove(output)
 
 
 class ConcatenateTool(Tool):
@@ -170,16 +160,16 @@ class ConcatenateTool(Tool):
     @override
     def analyze(self, args, logger: logging.Logger, working_dir: str):
         self._analysis_results = None
-        concatenator = Concatenate(logger, live_run=False, working_dir=working_dir)
+        concatenator = Concatenate(logger, working_dir=working_dir)
         self._analysis_results = concatenator.analyze(args.videos_path[0])
 
     @override
-    def perform(self, args, no_dry_run, logger: logging.Logger, working_dir: str):
+    def perform(self, args, logger: logging.Logger, working_dir: str):
         analysis = self._analysis_results
         self._analysis_results = None
         if analysis is None:
             logger.info("No analysis results, skipping concatenation.")
             return
 
-        concatenator = Concatenate(logger, no_dry_run, working_dir)
+        concatenator = Concatenate(logger, working_dir)
         concatenator.perform(analysis)

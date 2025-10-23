@@ -37,7 +37,6 @@ class Melter():
             logger: logging.Logger,
             interruption: generic_utils.InterruptibleProcess,
             duplicates_source: DuplicatesSource,
-            live_run: bool,
             wd: str,
             output: str,
             allow_length_mismatch: bool = False,
@@ -46,7 +45,6 @@ class Melter():
         self.logger = logger
         self.interruption = interruption
         self.duplicates_source = duplicates_source
-        self.live_run = live_run
         self.debug_it: int = 0
         self.wd = os.path.join(wd, str(os.getpid()))
         self.output = output
@@ -383,24 +381,21 @@ class Melter():
                 id = ids[path]
                 self.logger.warning(f"Audio stream from file #{id} has length different than length of video stream from file {video_stream_path}.")
 
-                if self.live_run:
-                    self.logger.info("Starting videos comparison to solve mismatching lengths.")
-                    # more than 100ms difference in length, perform content matching
+                self.logger.info("Starting videos comparison to solve mismatching lengths.")
+                # more than 100ms difference in length, perform content matching
 
-                    with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
-                         generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
+                with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
+                        generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
 
-                        pairMatcher = PairMatcher(self.interruption, mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
+                    pairMatcher = PairMatcher(self.interruption, mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
 
-                        mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
-                        output_file = os.path.join(self.wd, f"tmp_{file_name}.m4a")
-                        self._patch_audio_segment(mwd, video_stream_path, path, output_file, mapping, 20, lhs_all_frames, rhs_all_frames)
+                    mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
+                    output_file = os.path.join(self.wd, f"tmp_{file_name}.m4a")
+                    self._patch_audio_segment(mwd, video_stream_path, path, output_file, mapping, 20, lhs_all_frames, rhs_all_frames)
 
-                        file_name += 1
-                        path = output_file
-                        tid = 0
-                else:
-                    self.logger.info("Skipping videos comparison to solve mismatching lengths due to dry run.")
+                    file_name += 1
+                    path = output_file
+                    tid = 0
 
             streams[path].append({
                 "tid": tid,
@@ -530,11 +525,8 @@ class Melter():
 
                 output = os.path.join(self.output, title, output_name + ".mkv")
                 if os.path.exists(output):
-                    if self.live_run:
-                        self.logger.info(f"Output file {output} exists, removing it.")
-                        os.remove(output)
-                    else:
-                        self.logger.info(f"Dry run, skipping step: output file {output} exists.")
+                    self.logger.info(f"Output file {output} exists, removing it.")
+                    os.remove(output)
 
                 output_dir = os.path.dirname(output)
                 os.makedirs(output_dir, exist_ok=True)
@@ -543,11 +535,8 @@ class Melter():
                     # only one file is being used, just copy it to the output dir
                     first_file_path = list(required_input_files)[0]
 
-                    if self.live_run:
-                        self.logger.info(f"File {first_file_path} is superior. Using it whole as an output.")
-                        shutil.copy2(first_file_path, output)
-                    else:
-                        self.logger.info(f"Dry run, skipping step: using whole {first_file_path} file as an output.")
+                    self.logger.info(f"File {first_file_path} is superior. Using it whole as an output.")
+                    shutil.copy2(first_file_path, output)
                 else:
                     generation_args = ["-o", output]
                     files_opts = {
@@ -643,20 +632,9 @@ class Melter():
                     if track_order:
                         generation_args.extend(["--track-order", ",".join(track_order)])
 
-                    if self.live_run:
-                        self.logger.info("Starting output file generation from chosen streams.")
-                        process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args, show_progress = True))
-                        self.logger.info(f"{output} saved.")
-                    else:
-                        self.logger.info("Dry run, skipping output file generation")
-
-    def melt(self):
-        with files_utils.ScopedDirectory(self.wd) as wd, logging_redirect_tqdm():
-            self.logger.debug(f"Starting `melt` with live run: {self.live_run} and working dir: {self.wd}")
-            self.logger.info("Finding duplicates")
-            duplicates = self.duplicates_source.collect_duplicates()
-            plan = self.prepare_duplicates_set(duplicates)
-            self.process_duplicates_set(plan)
+                    self.logger.info("Starting output file generation from chosen streams.")
+                    process_utils.raise_on_error(process_utils.start_process("mkvmerge", generation_args, show_progress = True))
+                    self.logger.info(f"{output} saved.")
 
 
 class RequireJellyfinServer(argparse.Action):
@@ -789,7 +767,6 @@ class MeltTool(Tool):
         melter = Melter(logger,
                         self._interruption,
                         self._data_source,
-                        live_run = False,
                         wd = working_dir,
                         output = args.output_dir,
                         allow_length_mismatch = args.allow_length_mismatch,
@@ -798,7 +775,7 @@ class MeltTool(Tool):
         self._analysis_results = melter.prepare_duplicates_set(duplicates)
 
     @override
-    def perform(self, args, no_dry_run: bool, logger: logging.Logger, working_dir: str):
+    def perform(self, args, logger: logging.Logger, working_dir: str):
         plan = self._analysis_results
         data_source = self._data_source
         interruption = self._interruption or generic_utils.InterruptibleProcess()
@@ -812,7 +789,6 @@ class MeltTool(Tool):
         melter = Melter(logger,
                         interruption,
                         data_source,
-                        live_run = no_dry_run,
                         wd = working_dir,
                         output = args.output_dir,
                         allow_length_mismatch = args.allow_length_mismatch,
