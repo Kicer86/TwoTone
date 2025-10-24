@@ -98,6 +98,7 @@ def execute(argv: list[str]) -> None:
         pid_wd = os.path.join(base_wd, str(os.getpid()))
         tool_wd = os.path.join(pid_wd, args.tool)
         os.makedirs(tool_wd, exist_ok=True)
+
         try:
             tool_logger = logger.getChild(args.tool)
             tool.analyze(
@@ -105,6 +106,7 @@ def execute(argv: list[str]) -> None:
                 logger=tool_logger,
                 working_dir=tool_wd,
             )
+
             if args.no_dry_run:
                 tool.perform(
                     args,
