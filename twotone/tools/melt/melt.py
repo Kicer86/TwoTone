@@ -792,8 +792,10 @@ class MeltTool(Tool):
                         "output_name": output_name,
                         **plan_details,
                     })
+
+                    logger.info("Title suitable for melting")
                 else:
-                    logger.info("Skipping output generation")
+                    logger.info("Title not suitable for melting")
 
             if analyzed_groups:
                 analysis_plan.append({
