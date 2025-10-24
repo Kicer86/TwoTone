@@ -6,7 +6,6 @@ import shutil
 from collections import defaultdict
 from overrides import override
 from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 from pathlib import Path
 from typing import List, Union, Sequence
 
@@ -16,10 +15,9 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, subti
 
 class Merge(generic_utils.InterruptibleProcess):
 
-    def __init__(self, logger: logging.Logger, dry_run: bool, language: str, lang_priority: str, working_dir: str) -> None:
+    def __init__(self, logger: logging.Logger, language: str, lang_priority: str, working_dir: str) -> None:
         super().__init__()
         self.logger = logger
-        self.dry_run = dry_run
         self.language = language
         self.lang_priority = lang_priority.split(",") if lang_priority else []
         self.working_dir = working_dir
@@ -133,37 +131,33 @@ class Merge(generic_utils.InterruptibleProcess):
         return subtitles_sorted
 
     def _convert_subtitle(self, video_fps: str, subtitle: subtitles_utils.SubtitleFile, temporary_dir: str) -> subtitles_utils.SubtitleFile:
-        converted_subtitle = subtitle
+        input_file = subtitle.path
+        output_file = files_utils.get_unique_file_name(temporary_dir, "srt")
+        encoding = subtitle.encoding if subtitle.encoding != "UTF-8-SIG" else "utf-8"
 
-        if not self.dry_run:
-            input_file = subtitle.path
-            output_file = files_utils.get_unique_file_name(temporary_dir, "srt")
-            encoding = subtitle.encoding if subtitle.encoding != "UTF-8-SIG" else "utf-8"
+        status = process_utils.start_process(
+            "ffmpeg",
+            ["-y", "-sub_charenc", encoding, "-i", input_file, output_file]
+        )
 
-            status = process_utils.start_process(
-                "ffmpeg",
-                ["-y", "-sub_charenc", encoding, "-i", input_file, output_file]
-            )
+        if status.returncode == 0:
+            # there is no way (as of now) to tell ffmpeg to convert subtitles with proper frame rate in mind.
+            # so here some naive conversion is being done
+            # see: https://trac.ffmpeg.org/ticket/10929
+            #      https://trac.ffmpeg.org/ticket/3287
+            if subtitles_utils.is_subtitle_microdvd(subtitle):
+                fps = eval(video_fps)
 
-            if status.returncode == 0:
-                # there is no way (as of now) to tell ffmpeg to convert subtitles with proper frame rate in mind.
-                # so here some naive conversion is being done
-                # see: https://trac.ffmpeg.org/ticket/10929
-                #      https://trac.ffmpeg.org/ticket/3287
-                if subtitles_utils.is_subtitle_microdvd(subtitle):
-                    fps = eval(video_fps)
+                # prepare new output file, and use previous one as new input
+                input_file = output_file
+                output_file = files_utils.get_unique_file_name(temporary_dir, "srt")
 
-                    # prepare new output file, and use previous one as new input
-                    input_file = output_file
-                    output_file = files_utils.get_unique_file_name(temporary_dir, "srt")
+                subtitles_utils.fix_subtitles_fps(input_file, output_file, fps)
 
-                    subtitles_utils.fix_subtitles_fps(input_file, output_file, fps)
+        else:
+            raise RuntimeError(f"ffmpeg exited with unexpected error:\n{status.stderr}")
 
-            else:
-                raise RuntimeError(f"ffmpeg exited with unexpected error:\n{status.stderr}")
-
-            converted_subtitle = subtitles_utils.SubtitleFile(output_file, subtitle.language, "utf-8", subtitle.comment)
-
+        converted_subtitle = subtitles_utils.SubtitleFile(output_file, subtitle.language, "utf-8", subtitle.comment)
         return converted_subtitle
 
     def _merge(self, input_video: str, subtitles: list[subtitles_utils.SubtitleFile]) -> None:
@@ -214,15 +208,14 @@ class Merge(generic_utils.InterruptibleProcess):
 
         # perform
         self.logger.debug("\tMerge in progress...")
-        if not self.dry_run:
-            video_utils.generate_mkv(input_video=input_video, output_path=temporary_output_video, subtitles=prepared_subtitles)
+        video_utils.generate_mkv(input_video=input_video, output_path=temporary_output_video, subtitles=prepared_subtitles)
 
-            # Remove all inputs
-            for input in input_files:
-                os.remove(input)
+        # Remove all inputs
+        for input in input_files:
+            os.remove(input)
 
-            # rename final file to a proper one
-            shutil.move(temporary_output_video, output_video)
+        # rename final file to a proper one
+        shutil.move(temporary_output_video, output_video)
 
         self.logger.debug("\tDone")
 
@@ -279,7 +272,7 @@ class Merge(generic_utils.InterruptibleProcess):
         return videos_and_subtitles
 
 
-    def process_dir(self, path: str) -> None:
+    def analyze_directory(self, path: str) -> dict[str, list[subtitles_utils.SubtitleFile]]:
         self.logger.info(f"Looking for video and subtitle files in {path}")
         vas = self._process_dir(path)
 
@@ -287,14 +280,20 @@ class Merge(generic_utils.InterruptibleProcess):
         for video in vas:
             self.logger.debug(video)
 
+        return vas
+
+    def perform_merges(self, videos_and_subtitles: dict[str, list[subtitles_utils.SubtitleFile]]) -> None:
         self.logger.info("Starting merge")
-        with logging_redirect_tqdm():
-            for video, subtitles in tqdm(vas.items(), desc="Merging", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
-                self._check_for_stop()
-                self._merge(video, subtitles)
+        for video, subtitles in tqdm(videos_and_subtitles.items(), desc="Merging", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+            self._check_for_stop()
+            self._merge(video, subtitles)
 
 
 class MergeTool(Tool):
+    def __init__(self) -> None:
+        super().__init__()
+        self._analysis_results: dict[str, list[subtitles_utils.SubtitleFile]] | None = None
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument('videos_path',
@@ -311,13 +310,28 @@ class MergeTool(Tool):
                                 'the end in undefined order')
 
     @override
-    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+        self._analysis_results = None
         process_utils.ensure_tools_exist(["mkvmerge", "ffmpeg", "ffprobe"], logger)
 
         logger.info("Searching for movie and subtitle files to be merged")
-        two_tone = Merge(logger,
-                         dry_run=not no_dry_run,
-                         language=args.language,
-                         lang_priority=args.languages_priority,
-                         working_dir=working_dir)
-        two_tone.process_dir(args.videos_path[0])
+
+        merger = Merge(logger,
+                       language=args.language,
+                       lang_priority=args.languages_priority,
+                       working_dir=working_dir)
+        self._analysis_results = merger.analyze_directory(args.videos_path[0])
+
+    @override
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+        merger = Merge(logger,
+                       language=args.language,
+                       lang_priority=args.languages_priority,
+                       working_dir=working_dir)
+        analysis = self._analysis_results
+        self._analysis_results = None
+        if analysis is None:
+            logger.info("No analysis results, nothing to merge.")
+            return
+
+        merger.perform_merges(analysis)

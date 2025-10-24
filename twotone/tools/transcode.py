@@ -8,7 +8,6 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from overrides import override
 from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 from typing import Callable, List
 
 from .tool import Tool
@@ -16,10 +15,9 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, video
 
 
 class Transcoder(generic_utils.InterruptibleProcess):
-    def __init__(self, working_dir: str, logger: logging.Logger, live_run: bool = False, target_ssim: float = 0.98, codec: str = "libx265") -> None:
+    def __init__(self, working_dir: str, logger: logging.Logger, target_ssim: float = 0.98, codec: str = "libx265") -> None:
         super().__init__()
         self.logger = logger
-        self.live_run = live_run
         self.target_ssim = target_ssim
         self.codec = codec
         self.working_dir = working_dir
@@ -107,13 +105,12 @@ class Transcoder(generic_utils.InterruptibleProcess):
         _, filename, ext = files_utils.split_path(video_file)
 
         i = 0
-        with logging_redirect_tqdm():
-            for (start, end) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
-                self._check_for_stop()
-                output_file = os.path.join(output_dir, f"{filename}.frag{i}.mp4")
-                self._extract_segment(video_file, start, end, output_file)
-                output_files.append(output_file)
-                i += 1
+        for (start, end) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+            self._check_for_stop()
+            output_file = os.path.join(output_dir, f"{filename}.frag{i}.mp4")
+            self._extract_segment(video_file, start, end, output_file)
+            output_files.append(output_file)
+            i += 1
 
         return output_files
 
@@ -225,8 +222,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         return quality
 
     def _for_segments(self, segments: list[str], op: Callable[[str, str], None], title: str, unit: str) -> None:
-        with logging_redirect_tqdm(), \
-             tqdm(desc=title, unit=unit, total=len(segments), **generic_utils.get_tqdm_defaults()) as pbar, \
+        with tqdm(desc=title, unit=unit, total=len(segments), **generic_utils.get_tqdm_defaults()) as pbar, \
              files_utils.ScopedDirectory(os.path.join(self.working_dir, "segments")) as wd_dir, \
              ThreadPoolExecutor() as executor:
             def worker(file_path):
@@ -371,26 +367,39 @@ class Transcoder(generic_utils.InterruptibleProcess):
             return best_crf
 
 
-    def transcode(self, directory: str) -> None:
-        self.logger.info(f"Starting video transcoding with {self.codec}. Target SSIM: {self.target_ssim}")
-        video_files = self._find_video_files(directory)
+    def analyze_directory(self, directory: str) -> dict[str, int]:
+        """Analyze a directory and compute optimal CRF per file."""
+        self.logger.info(f"Analyzing videos under {directory} to compute optimal CRF (target SSIM: {self.target_ssim})")
+        plan: dict[str, int] = {}
 
+        video_files = self._find_video_files(directory)
         for file in video_files:
             self._check_for_stop()
-            self.logger.info(f"Processing {file}")
+            self.logger.info(f"Analyzing {file}")
             best_crf = self.find_optimal_crf(file)
-            if best_crf is not None and self.live_run:
-                # increase crf by one as veryslow preset will be used, so result should be above requested quality anyway
-                self._final_transcode(file, best_crf + 1)
-            elif not self.live_run:
-                self.logger.info(f"Dry run. Skipping final transcoding step.")
+            if best_crf is not None:
+                plan[file] = best_crf
+            else:
+                self.logger.warning(f"Skipping {file}: could not determine optimal CRF")
 
-            self.logger.info(f"Finished processing {file}")
+        self.logger.info(f"Analysis complete. Files to transcode: {len(plan)}")
+        return plan
 
-        self.logger.info("Video processing completed")
+    def perform_transcodes(self, plan: dict[str, int]) -> None:
+        """Perform final transcodes using a precomputed CRF plan."""
+        self.logger.info(f"Starting final transcodes with {self.codec}")
+        for file, crf in plan.items():
+            self._check_for_stop()
+            self.logger.info(f"Transcoding {file} with CRF: {crf}")
+            # increase crf by one as veryslow preset will be used
+            self._final_transcode(file, crf + 1)
 
 
 class TranscodeTool(Tool):
+    def __init__(self) -> None:
+        super().__init__()
+        self._analysis_results: dict[str, int] | None = None
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         def valid_ssim_value(value):
@@ -413,6 +422,20 @@ class TranscodeTool(Tool):
 
 
     @override
-    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
-        transcoder = Transcoder(working_dir = working_dir, logger = logger, live_run = no_dry_run, target_ssim = args.ssim)
-        transcoder.transcode(args.videos_path[0])
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+        self._analysis_results = None
+        process_utils.ensure_tools_exist(["ffmpeg", "ffprobe", "exiftool"], logger)
+
+        transcoder = Transcoder(working_dir = working_dir, logger = logger, target_ssim = args.ssim)
+        self._analysis_results = transcoder.analyze_directory(args.videos_path[0])
+
+    @override
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+        plan = self._analysis_results
+        self._analysis_results = None
+        if plan is None:
+            logger.info("No analysis results, nothing to transcode.")
+            return
+
+        transcoder = Transcoder(working_dir = working_dir, logger = logger, target_ssim = args.ssim)
+        transcoder.perform_transcodes(plan)

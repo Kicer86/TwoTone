@@ -6,21 +6,19 @@ import re
 from collections import defaultdict
 from overrides import override
 from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .tool import Tool
 from twotone.tools.utils import generic_utils, process_utils, video_utils, files_utils
 
 
 class Concatenate(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, live_run: bool, working_dir: str):
+    def __init__(self, logger: logging.Logger, working_dir: str):
         super().__init__()
 
         self.logger = logger
-        self.live_run = live_run
         self.working_dir = working_dir
 
-    def run(self, path: str):
+    def analyze(self, path: str) -> dict[str, list[tuple[str, int]]] | None:
         self.logger.info(f"Collecting video files from path {path}")
         video_files = video_utils.collect_video_files(path, self)
 
@@ -35,7 +33,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
                 self.logger.debug(f"File {video_file} does not match pattern")
 
         self.logger.info("Matching videos")
-        matched_videos = defaultdict(list)
+        matched_videos: dict[str, list[tuple[str, int]]] = defaultdict(list)
         for video in splitted:
             match = parts_regex.search(video)
 
@@ -61,7 +59,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
 
         self.logger.info("Processing groups")
         warnings = False
-        sorted_videos = {}
+        sorted_videos: dict[str, list[tuple[str, int]]] = {}
         for common_name, details in matched_videos.items():
 
             # sort parts by part number [1]
@@ -85,7 +83,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
 
         if warnings:
             self.logger.error("Fix above warnings and try again")
-            return
+            return None
 
         self.logger.info("Files to be concatenated (in given order):")
         for common_name, details in sorted_videos.items():
@@ -99,47 +97,50 @@ class Concatenate(generic_utils.InterruptibleProcess):
 
             self.logger.info(f"\t->{common_name}")
 
+        return sorted_videos
+
+    def perform(self, sorted_videos: dict[str, list[tuple[str, int]]]) -> None:
         self.logger.info("Starting concatenation")
-        with logging_redirect_tqdm():
-            for output, details in tqdm(sorted_videos.items(), desc="Concatenating", unit="movie", **generic_utils.get_tqdm_defaults()):
-                self._check_for_stop()
+        for output, details in tqdm(sorted_videos.items(), desc="Concatenating", unit="movie", **generic_utils.get_tqdm_defaults()):
+            self._check_for_stop()
 
-                input_files = [video for video, _ in details]
+            input_files = [video for video, _ in details]
 
-                audio_codec = "copy"
-                for input_file in input_files:
-                    file_details = video_utils.get_video_data(input_file)
-                    audio_streams = file_details.get("audio", [])
-                    for audio_stream in audio_streams:
-                        codec = audio_stream.get("codec")
-                        if codec.lower() == "cook":
-                            audio_codec = "aac"
-                            break
+            audio_codec = "copy"
+            for input_file in input_files:
+                file_details = video_utils.get_video_data(input_file)
+                audio_streams = file_details.get("audio", [])
+                for audio_stream in audio_streams:
+                    codec = audio_stream.get("codec")
+                    if codec.lower() == "cook":
+                        audio_codec = "aac"
+                        break
 
-                def escape_path(path: str) -> str:
-                    return path.replace("'", "'\\''")
+            def escape_path(path: str) -> str:
+                return path.replace("'", "'\\''")
 
-                input_file_content = [f"file '{escape_path(input_file)}'" for input_file in input_files]
-                with files_utils.TempFileManager("\n".join(input_file_content), "txt", directory=self.working_dir) as input_file:
-                    ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c:v", "copy", "-c:a", audio_codec, output]
+            input_file_content = [f"file '{escape_path(input_file)}'" for input_file in input_files]
+            with files_utils.TempFileManager("\n".join(input_file_content), "txt", directory=self.working_dir) as input_file:
+                ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c:v", "copy", "-c:a", audio_codec, output]
 
-                    self.logger.info(f"Concatenating files into {output} file")
-                    if self.live_run:
-                        status = process_utils.start_process("ffmpeg", ffmpeg_args)
-                        if status.returncode == 0:
-                            for input_file in input_files:
-                                os.remove(input_file)
-                        else:
-                            self.logger.error(f"Problems with concatenation, skipping file {output}")
-                            self.logger.debug(status.stdout)
-                            self.logger.debug(status.stderr)
-                            if os.path.exists(output):
-                                os.remove(output)
-                    else:
-                        self.logger.info("Dry run, skipping concatenation")
+                self.logger.info(f"Concatenating files into {output} file")
+                status = process_utils.start_process("ffmpeg", ffmpeg_args)
+                if status.returncode == 0:
+                    for input_file in input_files:
+                        os.remove(input_file)
+                else:
+                    self.logger.error(f"Problems with concatenation, skipping file {output}")
+                    self.logger.debug(status.stdout)
+                    self.logger.debug(status.stderr)
+                    if os.path.exists(output):
+                        os.remove(output)
 
 
 class ConcatenateTool(Tool):
+    def __init__(self) -> None:
+        super().__init__()
+        self._analysis_results: dict[str, list[tuple[str, int]]] | None = None
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
         parser.description = (
@@ -155,6 +156,18 @@ class ConcatenateTool(Tool):
                             help='Path with videos to concatenate.')
 
     @override
-    def run(self, args, no_dry_run, logger: logging.Logger, working_dir: str):
-        concatenate = Concatenate(logger, no_dry_run, working_dir)
-        concatenate.run(args.videos_path[0])
+    def analyze(self, args, logger: logging.Logger, working_dir: str):
+        self._analysis_results = None
+        concatenator = Concatenate(logger, working_dir=working_dir)
+        self._analysis_results = concatenator.analyze(args.videos_path[0])
+
+    @override
+    def perform(self, args, logger: logging.Logger, working_dir: str):
+        analysis = self._analysis_results
+        self._analysis_results = None
+        if analysis is None:
+            logger.info("No analysis results, skipping concatenation.")
+            return
+
+        concatenator = Concatenate(logger, working_dir)
+        concatenator.perform(analysis)
