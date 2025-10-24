@@ -301,7 +301,7 @@ class Melter():
                 extra = f" ({stream_details})" if stream_details else ""
 
                 id = ids[path]
-        self.logger.info(f"{stype} track #{tid}: {language} from file #{id}{extra}")
+                self.logger.info(f"{stype} track #{tid}: {language} from file #{id}{extra}")
 
     def _print_attachements_details(self, ids: Dict[str, int], all_attachments: List):
          for stream in all_attachments:
