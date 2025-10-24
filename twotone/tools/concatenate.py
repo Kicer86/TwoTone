@@ -6,7 +6,6 @@ import re
 from collections import defaultdict
 from overrides import override
 from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .tool import Tool
 from twotone.tools.utils import generic_utils, process_utils, video_utils, files_utils
@@ -102,40 +101,39 @@ class Concatenate(generic_utils.InterruptibleProcess):
 
     def perform(self, sorted_videos: dict[str, list[tuple[str, int]]]) -> None:
         self.logger.info("Starting concatenation")
-        with logging_redirect_tqdm():
-            for output, details in tqdm(sorted_videos.items(), desc="Concatenating", unit="movie", **generic_utils.get_tqdm_defaults()):
-                self._check_for_stop()
+        for output, details in tqdm(sorted_videos.items(), desc="Concatenating", unit="movie", **generic_utils.get_tqdm_defaults()):
+            self._check_for_stop()
 
-                input_files = [video for video, _ in details]
+            input_files = [video for video, _ in details]
 
-                audio_codec = "copy"
-                for input_file in input_files:
-                    file_details = video_utils.get_video_data(input_file)
-                    audio_streams = file_details.get("audio", [])
-                    for audio_stream in audio_streams:
-                        codec = audio_stream.get("codec")
-                        if codec.lower() == "cook":
-                            audio_codec = "aac"
-                            break
+            audio_codec = "copy"
+            for input_file in input_files:
+                file_details = video_utils.get_video_data(input_file)
+                audio_streams = file_details.get("audio", [])
+                for audio_stream in audio_streams:
+                    codec = audio_stream.get("codec")
+                    if codec.lower() == "cook":
+                        audio_codec = "aac"
+                        break
 
-                def escape_path(path: str) -> str:
-                    return path.replace("'", "'\\''")
+            def escape_path(path: str) -> str:
+                return path.replace("'", "'\\''")
 
-                input_file_content = [f"file '{escape_path(input_file)}'" for input_file in input_files]
-                with files_utils.TempFileManager("\n".join(input_file_content), "txt", directory=self.working_dir) as input_file:
-                    ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c:v", "copy", "-c:a", audio_codec, output]
+            input_file_content = [f"file '{escape_path(input_file)}'" for input_file in input_files]
+            with files_utils.TempFileManager("\n".join(input_file_content), "txt", directory=self.working_dir) as input_file:
+                ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c:v", "copy", "-c:a", audio_codec, output]
 
-                    self.logger.info(f"Concatenating files into {output} file")
-                    status = process_utils.start_process("ffmpeg", ffmpeg_args)
-                    if status.returncode == 0:
-                        for input_file in input_files:
-                            os.remove(input_file)
-                    else:
-                        self.logger.error(f"Problems with concatenation, skipping file {output}")
-                        self.logger.debug(status.stdout)
-                        self.logger.debug(status.stderr)
-                        if os.path.exists(output):
-                            os.remove(output)
+                self.logger.info(f"Concatenating files into {output} file")
+                status = process_utils.start_process("ffmpeg", ffmpeg_args)
+                if status.returncode == 0:
+                    for input_file in input_files:
+                        os.remove(input_file)
+                else:
+                    self.logger.error(f"Problems with concatenation, skipping file {output}")
+                    self.logger.debug(status.stdout)
+                    self.logger.debug(status.stderr)
+                    if os.path.exists(output):
+                        os.remove(output)
 
 
 class ConcatenateTool(Tool):

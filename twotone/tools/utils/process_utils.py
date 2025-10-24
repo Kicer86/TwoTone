@@ -7,7 +7,6 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 from typing import Any, Dict, List
 
 from . import generic_utils
@@ -46,10 +45,10 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
     }
 
     if platform.system() == "Windows":
-        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)        
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
         popen_kwargs["preexec_fn"] = os.setsid
-        
+
     sub_process = subprocess.Popen(command, **popen_kwargs)
 
     if show_progress:
@@ -60,8 +59,7 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
             if video_utils.is_video(input_file) and sub_process.stderr:
                 progress_pattern = re.compile(r"frame= *(\d+)")
                 frames = video_utils.get_video_frames_count(input_file)
-                with logging_redirect_tqdm(), \
-                     tqdm(desc="Processing video", unit="frame", total=frames, **generic_utils.get_tqdm_defaults()) as pbar:
+                with tqdm(desc="Processing video", unit="frame", total=frames, **generic_utils.get_tqdm_defaults()) as pbar:
                     last_frame = 0
                     for line in sub_process.stderr:
                         line = line.strip()
@@ -74,8 +72,7 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
                                 last_frame = current_frame
         elif process == "mkvmerge" and sub_process.stdout:
             progress_pattern = re.compile(r"\w:\s*(\d+)%")
-            with logging_redirect_tqdm(), \
-                 tqdm(desc="Muxing", unit="%", total=100, **generic_utils.get_tqdm_defaults()) as pbar:
+            with tqdm(desc="Muxing", unit="%", total=100, **generic_utils.get_tqdm_defaults()) as pbar:
                 last_progress = 0
                 for line in sub_process.stdout:
                     line = line.strip()

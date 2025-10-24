@@ -10,7 +10,6 @@ from overrides import override
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 
 from ..tool import Tool
 from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils

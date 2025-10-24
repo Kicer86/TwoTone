@@ -6,7 +6,6 @@ import shutil
 from collections import defaultdict
 from overrides import override
 from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 from pathlib import Path
 from typing import List, Union, Sequence
 
@@ -285,10 +284,9 @@ class Merge(generic_utils.InterruptibleProcess):
 
     def perform_merges(self, videos_and_subtitles: dict[str, list[subtitles_utils.SubtitleFile]]) -> None:
         self.logger.info("Starting merge")
-        with logging_redirect_tqdm():
-            for video, subtitles in tqdm(videos_and_subtitles.items(), desc="Merging", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
-                self._check_for_stop()
-                self._merge(video, subtitles)
+        for video, subtitles in tqdm(videos_and_subtitles.items(), desc="Merging", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+            self._check_for_stop()
+            self._merge(video, subtitles)
 
 
 class MergeTool(Tool):

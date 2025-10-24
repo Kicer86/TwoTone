@@ -6,6 +6,7 @@ import sys
 import shutil
 
 from overrides import override
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .tools import          \
     concatenate,            \
@@ -99,24 +100,25 @@ def execute(argv: list[str]) -> None:
         tool_wd = os.path.join(pid_wd, args.tool)
         os.makedirs(tool_wd, exist_ok=True)
 
-        try:
-            tool_logger = logger.getChild(args.tool)
-            tool.analyze(
-                args,
-                logger=tool_logger,
-                working_dir=tool_wd,
-            )
-
-            if args.no_dry_run:
-                tool.perform(
+        with logging_redirect_tqdm():
+            try:
+                tool_logger = logger.getChild(args.tool)
+                tool.analyze(
                     args,
                     logger=tool_logger,
                     working_dir=tool_wd,
                 )
-            else:
-                tool_logger.info("Dry run mode: analyze completed, skipping perform.")
-        finally:
-            shutil.rmtree(pid_wd, ignore_errors=True)
+
+                if args.no_dry_run:
+                    tool.perform(
+                        args,
+                        logger=tool_logger,
+                        working_dir=tool_wd,
+                    )
+                else:
+                    tool_logger.info("Dry run mode: analyze completed, skipping perform.")
+            finally:
+                shutil.rmtree(pid_wd, ignore_errors=True)
     else:
         logging.error(f"Error: Unknown tool {args.tool}")
         sys.exit(1)

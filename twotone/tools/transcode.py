@@ -8,7 +8,6 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from overrides import override
 from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 from typing import Callable, List
 
 from .tool import Tool
@@ -106,13 +105,12 @@ class Transcoder(generic_utils.InterruptibleProcess):
         _, filename, ext = files_utils.split_path(video_file)
 
         i = 0
-        with logging_redirect_tqdm():
-            for (start, end) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
-                self._check_for_stop()
-                output_file = os.path.join(output_dir, f"{filename}.frag{i}.mp4")
-                self._extract_segment(video_file, start, end, output_file)
-                output_files.append(output_file)
-                i += 1
+        for (start, end) in tqdm(segments, desc="Extracting scenes", unit="scene", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+            self._check_for_stop()
+            output_file = os.path.join(output_dir, f"{filename}.frag{i}.mp4")
+            self._extract_segment(video_file, start, end, output_file)
+            output_files.append(output_file)
+            i += 1
 
         return output_files
 
@@ -224,8 +222,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         return quality
 
     def _for_segments(self, segments: list[str], op: Callable[[str, str], None], title: str, unit: str) -> None:
-        with logging_redirect_tqdm(), \
-             tqdm(desc=title, unit=unit, total=len(segments), **generic_utils.get_tqdm_defaults()) as pbar, \
+        with tqdm(desc=title, unit=unit, total=len(segments), **generic_utils.get_tqdm_defaults()) as pbar, \
              files_utils.ScopedDirectory(os.path.join(self.working_dir, "segments")) as wd_dir, \
              ThreadPoolExecutor() as executor:
             def worker(file_path):
