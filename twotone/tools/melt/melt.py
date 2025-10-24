@@ -302,7 +302,7 @@ class Melter():
                 extra = f" ({stream_details})" if stream_details else ""
 
                 id = ids[path]
-                self.logger.info(f"{stype} track #{tid}: {language} from file #{id}{extra}")
+        self.logger.info(f"{stype} track #{tid}: {language} from file #{id}{extra}")
 
     def _print_attachements_details(self, ids: Dict[str, int], all_attachments: List):
          for stream in all_attachments:
@@ -312,38 +312,75 @@ class Melter():
             id = ids[path]
             self.logger.info(f"Attachment ID #{tid} from file #{id}")
 
-    def _process_duplicates(self, duplicates: List[str], ids: Dict[str, int]) -> Tuple[Dict, List] | None:
-        # analyze files in terms of quality and available content
-        # use mkvmerge-based probing enriched with ffprobe data
-        details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True) for file in duplicates}
+    def _is_length_mismatch(self, base_ms: int | None, other_ms: int | None, tolerance_ms: int = 100) -> bool:
+        if base_ms is None or other_ms is None:
+            return False
+        return abs(base_ms - other_ms) > tolerance_ms
+
+    def _pick_streams(self, tracks: Dict[str, Any], ids: Dict[str, int]) -> Tuple[List[Tuple[str, int, str | None]], List[Tuple[str, int, str | None]], List[Tuple[str, int, str | None]]]:
+        picker_wd = os.path.join(self.wd, "stream_picker")
+        streams_picker = StreamsPicker(self.logger, self.duplicates_source, picker_wd, allow_language_guessing=self.allow_language_guessing)
+        video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks, ids)
+        return video_streams, audio_streams, subtitle_streams
+
+    def _analyze_group(self, files: List[str], ids: Dict[str, int]) -> Dict[str, Any] | None:
+        # probe inputs
+        details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True) for file in files}
         attachments = {file: info["attachments"] for file, info in details_full.items()}
         tracks = {file: info["tracks"] for file, info in details_full.items()}
 
-        # print input file details
+        # print file details
         for file, file_details in details_full.items():
             self._print_file_details(file, file_details, ids)
 
-        picker_wd = os.path.join(self.wd, "stream_picker")
-        streams_picker = StreamsPicker(self.logger, self.duplicates_source, picker_wd, allow_language_guessing = self.allow_language_guessing)
+        # pick streams
         try:
-            video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks, ids)
+            video_streams, audio_streams, subtitle_streams = self._pick_streams(tracks, ids)
         except RuntimeError as re:
             self.logger.error(re)
             return None
 
-        # verify if all chosen streams come from inputs of similar length
+        # validate lengths
         used_paths = {path for path, _, _ in (video_streams + audio_streams + subtitle_streams)}
         lengths = [tracks[path]["video"][0]["length"] for path in used_paths]
         if len(lengths) > 1:
             base = lengths[0]
-            if any(abs(base - l) > 100 for l in lengths[1:]):
+            if any(self._is_length_mismatch(base, l) for l in lengths[1:]):
                 self.logger.warning("Input video lengths differ. Check for --allow-length-mismatch option.")
                 if not self.allow_length_mismatch:
                     return None
 
+        # base length for streams checks
+        v_path, v_tid, _ = video_streams[0]
+        base_length = tracks[v_path]["video"][v_tid]["length"]
+
+        # subtitle mismatch is not supported
+        for path, tid, _ in subtitle_streams:
+            length = tracks[path]["video"][0]["length"]
+            if self._is_length_mismatch(base_length, length):
+                id = ids[path]
+                error = f"Subtitles stream from file #{id} has length different than length of video stream from file {v_path}. This is not supported yet"
+                self.logger.error(error)
+                return None
+
+        # compute audio patch requirements
+        audio_patch_targets: List[Tuple[str, int]] = []
+        for path, tid, _ in audio_streams:
+            length = tracks[path]["video"][0]["length"]
+            if self._is_length_mismatch(base_length, length):
+                id = ids[path]
+                self.logger.warning(f"Audio stream from file #{id} has length different than length of video stream from file {v_path}.")
+                if self.allow_length_mismatch:
+                    self.logger.info("Audio length mismatch detected; audio will be time-adjusted during processing.")
+                    audio_patch_targets.append((path, tid))
+                else:
+                    # guarded above, but keep safety
+                    return None
+
+        # attachments
         picked_attachments = AttachmentsPicker(self.logger).pick_attachments(attachments)
 
-        # print proposed output file
+        # print proposed output
         self.logger.info("Streams used to create output video file:")
         self._print_streams_details(
             ids,
@@ -352,74 +389,16 @@ class Melter():
         )
         self._print_attachements_details(ids, picked_attachments)
 
-        # build streams mapping
-        streams = defaultdict(list)
-
-        #   process video streams
-        for path, tid, language in video_streams:
-            streams[path].append({
-                "tid": tid,
-                "language": language,
-                "type": "video",
-            })
-
-        #   process audio streams
-
-        #       check if input files are of the same length
-        video_stream = video_streams[0]
-        video_stream_path = video_stream[0]
-        video_stream_index = video_stream[1]
-
-        base_length = tracks[video_stream_path]["video"][video_stream_index]["length"]
-        file_name = 0
-        self.logger.debug(f"Using video file {video_stream_path}:{video_stream_index} as a base")
-
-        for path, tid, language in audio_streams:
-            length = tracks[path]["video"][0]["length"]
-
-            if abs(base_length - length) > 100:
-                id = ids[path]
-                self.logger.warning(f"Audio stream from file #{id} has length different than length of video stream from file {video_stream_path}.")
-
-                self.logger.info("Starting videos comparison to solve mismatching lengths.")
-                # more than 100ms difference in length, perform content matching
-
-                with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
-                        generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
-
-                    pairMatcher = PairMatcher(self.interruption, mwd, video_stream_path, path, self.logger.getChild("PairMatcher"))
-
-                    mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
-                    output_file = os.path.join(self.wd, f"tmp_{file_name}.m4a")
-                    self._patch_audio_segment(mwd, video_stream_path, path, output_file, mapping, 20, lhs_all_frames, rhs_all_frames)
-
-                    file_name += 1
-                    path = output_file
-                    tid = 0
-
-            streams[path].append({
-                "tid": tid,
-                "language": language,
-                "type": "audio",
-            })
-
-        # process subtitle streams
-        for path, tid, language in subtitle_streams:
-            length = tracks[path]["video"][0]["length"]
-
-            if abs(base_length - length) > 100:
-                id = ids[path]
-                error = f"Subtitles stream from file #{id} has length different than length of video stream from file {video_stream_path}. This is not supported yet"
-                self.logger.error(error)
-                raise RuntimeError(f"Unsupported case: {error}")
-
-            streams[path].append({
-                "tid": tid,
-                "language": language,
-                "type": "subtitle",
-            })
-
-        return streams, picked_attachments
+        # prepare plan entity
+        return {
+            "streams": {
+                "video": video_streams,
+                "audio": audio_streams,
+                "subtitle": subtitle_streams,
+            },
+            "attachments": picked_attachments,
+            "audio_patch_targets": audio_patch_targets,
+        }
 
     def prepare_duplicates_set(self, duplicates: Dict[str, List[str]]) -> List[Dict[str, Any]]:
         """Prepare groups of duplicate files and output names per title.
@@ -478,7 +457,7 @@ class Melter():
                 return [(entries, first_file_name)]
 
         plan: List[Dict[str, Any]] = []
-        for title, entries in tqdm(duplicates.items(), desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
+        for title, entries in duplicates.items():
             files_groups = process_entries(entries)
             item = {
                 "title": title,
@@ -493,34 +472,29 @@ class Melter():
             title = item["title"]
             groups = item["groups"]
 
-            self.logger.info("-------------------------" + "-" * len(title))
-            self.logger.info(f"Analyzing duplicates for {title}")
-            self.logger.info("-------------------------" + "-" * len(title))
-
             for group in tqdm(groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
                 self.interruption._check_for_stop()
 
                 files = group["files"]
                 output_name = group["output_name"]
+                processable = group.get("processable", True)
 
-                if len(groups) > 1:
-                    self.logger.info("------------------------------------")
-                    self.logger.info("Processing group of duplicated files")
-                    self.logger.info("------------------------------------")
-
-                ids = {}
-                for i, file in enumerate(files):
-                    id = i + 1
-                    ids[file] = id
-                    self.logger.info(f"#{id}: {file}")
-
-                result = self._process_duplicates(files, ids)
-                if result is None:
-                    self.logger.info("Skipping output generation")
+                if not processable:
+                    # Skip groups marked as not processable at analysis time
                     continue
 
-                streams, attachments = result
-                required_input_files = { file_path for file_path in streams }
+                # Use analysis results
+                streams_info = group.get("streams", {})
+                attachments = group.get("attachments", [])
+                video_streams: List[Tuple[str, int, str | None]] = streams_info.get("video", [])
+                audio_streams: List[Tuple[str, int, str | None]] = streams_info.get("audio", [])
+                subtitle_streams: List[Tuple[str, int, str | None]] = streams_info.get("subtitle", [])
+                patch_targets = set(tuple(t) for t in group.get("audio_patch_targets", []))
+
+                required_input_files: set[str] = set()
+                required_input_files |= { p for (p, _, _) in video_streams }
+                required_input_files |= { p for (p, _, _) in audio_streams }
+                required_input_files |= { p for (p, _, _) in subtitle_streams }
                 required_input_files |= { info[0] for info in attachments }
 
                 output = os.path.join(self.output, title, output_name + ".mkv")
@@ -545,14 +519,25 @@ class Melter():
                     }
 
                     # convert streams to list for later sorting
-                    streams_list = []
-                    for path, infos in streams.items():
-                        for info in infos:
-                            stream_type = info["type"]
-                            stream_index = info["tid"]
-                            language = info.get("language", None)
-
-                            streams_list.append((stream_type, stream_index, path, language))
+                    streams_list: List[Tuple[str, int, str, str | None]] = []
+                    # base video path for potential audio patching
+                    video_path_base, video_tid, _ = video_streams[0]
+                    for (path, stream_index, language) in video_streams:
+                        streams_list.append(("video", stream_index, path, language))
+                    for (path, stream_index, language) in audio_streams:
+                        if (path, stream_index) in patch_targets:
+                            with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
+                                 generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
+                                pairMatcher = PairMatcher(self.interruption, mwd, video_path_base, path, self.logger.getChild("PairMatcher"))
+                                mapping, lhs_all_frames, rhs_all_frames = pairMatcher.create_segments_mapping()
+                                patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.m4a")
+                                self._patch_audio_segment(mwd, video_path_base, path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames)
+                                path = patched_audio
+                                stream_index = 0
+                                required_input_files.add(path)
+                        streams_list.append(("audio", stream_index, path, language))
+                    for (path, stream_index, language) in subtitle_streams:
+                        streams_list.append(("subtitle", stream_index, path, language))
 
                     # sort streams by language alphabetically
                     streams_list_sorted = sorted(streams_list, key=lambda stream: stream[3] if stream[3] else "")
@@ -772,7 +757,53 @@ class MeltTool(Tool):
                         allow_length_mismatch = args.allow_length_mismatch,
                         allow_language_guessing = args.allow_language_guessing,
         )
-        self._analysis_results = melter.prepare_duplicates_set(duplicates)
+
+        base_plan = melter.prepare_duplicates_set(duplicates)
+
+        # Print detailed analysis and mark processable groups
+        analysis_plan: List[Dict[str, Any]] = []
+        for item in tqdm(base_plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
+            title = item["title"]
+            groups = item["groups"]
+
+            # Title header
+            logger.info("-------------------------" + "-" * len(title))
+            logger.info(f"Analyzing duplicates for {title}")
+            logger.info("-------------------------" + "-" * len(title))
+
+            analyzed_groups: List[Dict[str, Any]] = []
+            for group in groups:
+                files = group["files"]
+                output_name = group["output_name"]
+
+                if len(groups) > 1:
+                    logger.info("------------------------------------")
+                    logger.info("Processing group of duplicated files")
+                    logger.info("------------------------------------")
+
+                ids = {file: i + 1 for i, file in enumerate(files)}
+                for file, id in ids.items():
+                    logger.info(f"#{id}: {file}")
+
+                # Perform analysis and build group plan
+                plan_details = melter._analyze_group(files, ids)
+                if plan_details is not None:
+                    analyzed_groups.append({
+                        "files": files,
+                        "output_name": output_name,
+                        **plan_details,
+                    })
+                else:
+                    logger.info("Skipping output generation")
+
+            if analyzed_groups:
+                analysis_plan.append({
+                    "title": title,
+                    "groups": analyzed_groups,
+                })
+
+        logger.info(f"Got {len(analysis_plan)} titles suitable for melting.")
+        self._analysis_results = analysis_plan
 
     @override
     def perform(self, args, logger: logging.Logger, working_dir: str):
