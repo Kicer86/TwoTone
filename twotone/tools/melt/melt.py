@@ -512,17 +512,16 @@ class Melter():
                     shutil.copy2(first_file_path, output)
                 else:
                     generation_args = ["-o", output]
-                    files_opts = {
-                        path: {"video": [], "audio": [], "subtitle": [], "attachments": [], "languages": {}, "defaults": set()}
-                        for path in required_input_files
-                    }
 
                     # convert streams to list for later sorting
                     streams_list: List[Tuple[str, int, str, str | None]] = []
+
                     # base video path for potential audio patching
                     video_path_base, video_tid, _ = video_streams[0]
+
                     for (path, stream_index, language) in video_streams:
                         streams_list.append(("video", stream_index, path, language))
+
                     for (path, stream_index, language) in audio_streams:
                         if (path, stream_index) in patch_targets:
                             with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
@@ -535,6 +534,7 @@ class Melter():
                                 stream_index = 0
                                 required_input_files.add(path)
                         streams_list.append(("audio", stream_index, path, language))
+
                     for (path, stream_index, language) in subtitle_streams:
                         streams_list.append(("subtitle", stream_index, path, language))
 
@@ -566,6 +566,11 @@ class Melter():
                             self.logger.info(f"Setting production audio language '{language_name}' as default.")
                         else:
                             self.logger.warning(f"Production audio language '{language_name}' not found among audio streams.")
+
+                    files_opts = {
+                        path: {"video": [], "audio": [], "subtitle": [], "attachments": [], "languages": {}, "defaults": set()}
+                        for path in required_input_files
+                    }
 
                     # collect per-file options and track order
                     track_order = []
