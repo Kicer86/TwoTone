@@ -466,6 +466,53 @@ class Melter():
 
         return plan
 
+    def analyze_duplicates(self, duplicates: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+        base_plan = self.prepare_duplicates_set(duplicates)
+
+        analysis_plan: List[Dict[str, Any]] = []
+        for item in base_plan:
+            title = item["title"]
+            groups = item["groups"]
+
+            # Title header
+            self.logger.info("-------------------------" + "-" * len(title))
+            self.logger.info(f"Analyzing duplicates for {title}")
+            self.logger.info("-------------------------" + "-" * len(title))
+
+            analyzed_groups: List[Dict[str, Any]] = []
+            for group in groups:
+                files = group["files"]
+                output_name = group["output_name"]
+
+                if len(groups) > 1:
+                    self.logger.info("------------------------------------")
+                    self.logger.info("Processing group of duplicated files")
+                    self.logger.info("------------------------------------")
+
+                ids = {file: i + 1 for i, file in enumerate(files)}
+                for file, id in ids.items():
+                    self.logger.info(f"#{id}: {file}")
+
+                # analysis for group
+                plan_details = self._analyze_group(files, ids)
+                processable = plan_details is not None
+                if not processable:
+                    self.logger.info("Skipping output generation")
+
+                analyzed_groups.append({
+                    "files": files,
+                    "output_name": output_name,
+                    "processable": processable,
+                    **({} if plan_details is None else plan_details),
+                })
+
+            analysis_plan.append({
+                "title": title,
+                "groups": analyzed_groups,
+            })
+
+        return analysis_plan
+
     def process_duplicates_set(self, plan: List[Dict[str, Any]]):
         for item in tqdm(plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
             title = item["title"]
@@ -762,54 +809,7 @@ class MeltTool(Tool):
                         allow_language_guessing = args.allow_language_guessing,
         )
 
-        base_plan = melter.prepare_duplicates_set(duplicates)
-
-        # Print detailed analysis and mark processable groups
-        analysis_plan: List[Dict[str, Any]] = []
-        for item in tqdm(base_plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
-            title = item["title"]
-            groups = item["groups"]
-
-            # Title header
-            logger.info("-------------------------" + "-" * len(title))
-            logger.info(f"Analyzing duplicates for {title}")
-            logger.info("-------------------------" + "-" * len(title))
-
-            analyzed_groups: List[Dict[str, Any]] = []
-            for group in groups:
-                files = group["files"]
-                output_name = group["output_name"]
-
-                if len(groups) > 1:
-                    logger.info("------------------------------------")
-                    logger.info("Processing group of duplicated files")
-                    logger.info("------------------------------------")
-
-                ids = {file: i + 1 for i, file in enumerate(files)}
-                for file, id in ids.items():
-                    logger.info(f"#{id}: {file}")
-
-                # Perform analysis and build group plan
-                plan_details = melter._analyze_group(files, ids)
-                if plan_details is not None:
-                    analyzed_groups.append({
-                        "files": files,
-                        "output_name": output_name,
-                        **plan_details,
-                    })
-
-                    logger.info("Title suitable for melting")
-                else:
-                    logger.info("Title not suitable for melting")
-
-            if analyzed_groups:
-                analysis_plan.append({
-                    "title": title,
-                    "groups": analyzed_groups,
-                })
-
-        logger.info(f"Got {len(analysis_plan)} titles suitable for melting.")
-        self._analysis_results = analysis_plan
+        self._analysis_results = melter.analyze_duplicates(duplicates)
 
     @override
     def perform(self, args, logger: logging.Logger, working_dir: str):
