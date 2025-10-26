@@ -185,7 +185,7 @@ class MeltingTest(TwoToneTestCase):
 
         melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, wd = self.wd.path, output = output_dir)
         # Dry run: only prepare plan, do not execute
-        _ = melter.prepare_duplicates_set(duplicates.collect_duplicates())
+        _ = melter.analyze_duplicates(duplicates.collect_duplicates())
 
         # expect output to be empty
         output_file_hash = hashes(output_dir)
