@@ -140,8 +140,9 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
-        melter.melt()
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, wd = self.wd.path, output = output_dir)
+        plan = melter.analyze_duplicates(duplicates.collect_duplicates())
+        melter.process_duplicates_set(plan)
 
         # expect output to be equal to the first of files
         output_file_hash = hashes(output_dir)
@@ -182,8 +183,9 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = False, wd = self.wd.path, output = output_dir)
-        melter.melt()
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, wd = self.wd.path, output = output_dir)
+        # Dry run: only prepare plan, do not execute
+        _ = melter.analyze_duplicates(duplicates.collect_duplicates())
 
         # expect output to be empty
         output_file_hash = hashes(output_dir)
@@ -202,8 +204,9 @@ class MeltingTest(TwoToneTestCase):
         os.makedirs(output_dir)
 
         melter = Melter(self.logger.getChild("Melter"), interruption, duplicates,
-                        live_run=True, wd=self.wd.path, output=output_dir)
-        melter.melt()
+                        wd=self.wd.path, output=output_dir)
+        plan = melter.analyze_duplicates(duplicates.collect_duplicates())
+        melter.process_duplicates_set(plan)
 
         self.assertTrue(os.path.exists(file1))
         self.assertTrue(os.path.exists(file2))
@@ -224,8 +227,9 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
-        melter.melt()
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, wd = self.wd.path, output = output_dir)
+        plan = melter.analyze_duplicates(duplicates.collect_duplicates())
+        melter.process_duplicates_set(plan)
 
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 0)
@@ -244,8 +248,9 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir, allow_length_mismatch = True)
-        melter.melt()
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, wd = self.wd.path, output = output_dir, allow_length_mismatch = True)
+        plan = melter.analyze_duplicates(duplicates.collect_duplicates())
+        melter.process_duplicates_set(plan)
 
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
@@ -325,8 +330,9 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run=True, wd=self.wd.path, output=output_dir)
-        melter.melt()
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, wd=self.wd.path, output=output_dir)
+        plan = melter.analyze_duplicates(duplicates.collect_duplicates())
+        melter.process_duplicates_set(plan)
 
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
@@ -375,8 +381,9 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run=True, wd=self.wd.path, output=output_dir)
-        melter.melt()
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, wd=self.wd.path, output=output_dir)
+        plan = melter.analyze_duplicates(duplicates.collect_duplicates())
+        melter.process_duplicates_set(plan)
 
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
@@ -406,8 +413,9 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir, allow_length_mismatch = True)
-        melter.melt()
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, wd = self.wd.path, output = output_dir, allow_length_mismatch = True)
+        plan = melter.analyze_duplicates(duplicates.collect_duplicates())
+        melter.process_duplicates_set(plan)
 
         # validate output
         output_file_hash = hashes(output_dir)
@@ -449,8 +457,9 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
-        melter.melt()
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, wd = self.wd.path, output = output_dir)
+        plan = melter.analyze_duplicates(duplicates.collect_duplicates())
+        melter.process_duplicates_set(plan)
 
         # validate output
         output_file_hash = hashes(output_dir)
@@ -483,8 +492,9 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
-        melter.melt()
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, wd = self.wd.path, output = output_dir)
+        plan = melter.analyze_duplicates(duplicates.collect_duplicates())
+        melter.process_duplicates_set(plan)
 
         # validate alphabetical order
         output_file_hash = hashes(output_dir)
@@ -512,8 +522,9 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
-        melter.melt()
+        melter = Melter(self.logger.getChild("Melter"), interruption, duplicates, wd = self.wd.path, output = output_dir)
+        plan = melter.analyze_duplicates(duplicates.collect_duplicates())
+        melter.process_duplicates_set(plan)
 
         # validate alphabetical order
         output_file_hash = hashes(output_dir)
@@ -548,8 +559,9 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
-        melter.melt()
+        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, wd = self.wd.path, output = output_dir)
+        plan = melter.analyze_duplicates(duplicates.collect_duplicates())
+        melter.process_duplicates_set(plan)
 
         # validate output
         output_file_hash = hashes(output_dir)
@@ -583,8 +595,9 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
-        melter.melt()
+        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, wd = self.wd.path, output = output_dir)
+        plan = melter.analyze_duplicates(duplicates.collect_duplicates())
+        melter.process_duplicates_set(plan)
 
         # validate output
         output_file_hash = hashes(output_dir)
@@ -612,8 +625,9 @@ class MeltingTest(TwoToneTestCase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, live_run = True, wd = self.wd.path, output = output_dir)
-        melter.melt()
+        melter = Melter(logging.getLogger("Melter"), interruption, duplicates, wd = self.wd.path, output = output_dir)
+        plan = melter.analyze_duplicates(duplicates.collect_duplicates())
+        melter.process_duplicates_set(plan)
 
         # validate output
         output_file_hash = hashes(output_dir)

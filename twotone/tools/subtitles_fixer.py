@@ -6,7 +6,6 @@ import shutil
 import tempfile
 from overrides import override
 from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 from typing import Callable
 
 from .tool import Tool
@@ -14,10 +13,9 @@ from twotone.tools.utils import generic_utils, process_utils, subtitles_utils, v
 
 
 class Fixer(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, really_fix: bool, working_dir: str) -> None:
+    def __init__(self, logger: logging.Logger, working_dir: str) -> None:
         super().__init__()
         self.logger = logger
-        self._do_fix = really_fix
         self.working_dir = working_dir
 
     def _print_broken_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
@@ -108,48 +106,44 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         return result
 
-    def _repair_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
+    def repair_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
         self._print_broken_videos(broken_videos_info)
         self.logger.info("Fixing videos")
 
-        with logging_redirect_tqdm():
-            for broken_video in tqdm(broken_videos_info, desc="Fixing", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
-                self._check_for_stop()
+        for broken_video in tqdm(broken_videos_info, desc="Fixing", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+            self._check_for_stop()
 
-                video_info = broken_video[0]
-                broken_subtitiles = broken_video[1]
+            video_info = broken_video[0]
+            broken_subtitiles = broken_video[1]
 
-                wd_dir = self.working_dir
-                video_file = video_info["path"]
-                self.logger.info(f"Fixing subtitles in file {video_file}")
-                self.logger.debug("Extracting subtitles from file")
-                subs_info = video_info.get("subtitle", [])
-                subtitles = self._extract_all_subtitles(video_file, subs_info, wd_dir)
-                broken_subtitles_paths = [subtitles[i] for i in broken_subtitiles]
+            wd_dir = self.working_dir
+            video_file = video_info["path"]
+            self.logger.info(f"Fixing subtitles in file {video_file}")
+            self.logger.debug("Extracting subtitles from file")
+            subs_info = video_info.get("subtitle", [])
+            subtitles = self._extract_all_subtitles(video_file, subs_info, wd_dir)
+            broken_subtitles_paths = [subtitles[i] for i in broken_subtitiles]
 
-                status = all(self._fix_subtitle(broken_subtitile.path, video_info) for broken_subtitile in broken_subtitles_paths)
+            status = all(self._fix_subtitle(broken_subtitile.path, video_info) for broken_subtitile in broken_subtitles_paths)
 
-                if status:
-                    if self._do_fix:
-                        # remove all subtitles from video
-                        self.logger.debug("Removing existing subtitles from file")
-                        video_without_subtitles = video_file + ".nosubtitles.mkv"
-                        process_utils.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file])
+            if status:
+                # remove all subtitles from video
+                self.logger.debug("Removing existing subtitles from file")
+                video_without_subtitles = video_file + ".nosubtitles.mkv"
+                process_utils.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file])
 
-                        # add fixed subtitles to video
-                        self.logger.debug("Adding fixed subtitles to file")
-                        temporaryVideoPath = video_file + ".fixed.mkv"
-                        video_utils.generate_mkv(input_video=video_without_subtitles, output_path=temporaryVideoPath, subtitles=subtitles)
+                # add fixed subtitles to video
+                self.logger.debug("Adding fixed subtitles to file")
+                temporaryVideoPath = video_file + ".fixed.mkv"
+                video_utils.generate_mkv(input_video=video_without_subtitles, output_path=temporaryVideoPath, subtitles=subtitles)
 
-                        # overwrite broken video with fixed one
-                        os.replace(temporaryVideoPath, video_file)
+                # overwrite broken video with fixed one
+                os.replace(temporaryVideoPath, video_file)
 
-                        # remove temporary file
-                        os.remove(video_without_subtitles)
-                    else:
-                        self.logger.info("Not applying fixes - dry run mode.")
-                else:
-                    self.logger.debug("Skipping video due to errors")
+                # remove temporary file
+                os.remove(video_without_subtitles)
+            else:
+                self.logger.debug("Skipping video due to errors")
 
     def _check_if_broken(self, video_file: str) -> tuple[dict, list[int]] | None:
         self.logger.debug(f"Processing file {video_file}")
@@ -186,7 +180,7 @@ class Fixer(generic_utils.InterruptibleProcess):
         self.logger.debug(f"Issues found in {video_file}")
         return (video_info, broken_subtitiles)
 
-    def _process_dir(self, path: str) -> list[tuple[dict, list[int]]]:
+    def scan_directory(self, path: str) -> list[tuple[dict, list[int]]]:
         broken_videos = []
         video_files = []
 
@@ -200,22 +194,19 @@ class Fixer(generic_utils.InterruptibleProcess):
                     video_files.append(file_path)
 
         self.logger.debug("Analysing videos")
-        with logging_redirect_tqdm():
-            for video in tqdm(video_files, desc="Analysing videos", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
-                self._check_for_stop()
-                broken_video = self._check_if_broken(video)
-                if broken_video is not None:
-                    broken_videos.append(broken_video)
+        for video in tqdm(video_files, desc="Analysing videos", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+            self._check_for_stop()
+            broken_video = self._check_if_broken(video)
+            if broken_video is not None:
+                broken_videos.append(broken_video)
 
         return broken_videos
 
-    def process_dir(self, path: str) -> None:
-        broken_videos = self._process_dir(path)
-
-        self._repair_videos(broken_videos)
-
-
 class FixerTool(Tool):
+    def __init__(self) -> None:
+        super().__init__()
+        self._analysis_results: list[tuple[dict, list[int]]] | None = None
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument('videos_path',
@@ -223,10 +214,23 @@ class FixerTool(Tool):
                             help='Path with videos to analyze.')
 
     @override
-    def run(self, args: argparse.Namespace, no_dry_run: bool, logger: logging.Logger, working_dir: str) -> None:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+        self._analysis_results = None
         process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
 
         logger.info("Searching for broken files")
-        fixer = Fixer(logger, no_dry_run, working_dir)
-        fixer.process_dir(args.videos_path[0])
+
+        fixer = Fixer(logger, working_dir=working_dir)
+        self._analysis_results = fixer.scan_directory(args.videos_path[0])
+
+    @override
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+        broken_videos = self._analysis_results
+        self._analysis_results = None
+        if broken_videos is None:
+            logger.info("No analysis results, nothing to fix.")
+            return
+
+        fixer = Fixer(logger, working_dir)
+        fixer.repair_videos(broken_videos)
         logger.info("Done")
