@@ -339,7 +339,7 @@ class Melter:
         tracks = {file: info["tracks"] for file, info in details_full.items()}
         return details_full, attachments, tracks
 
-    def _validate_and_prepare_patch_targets(
+    def _validate_input_files(
         self,
         tracks: Dict[str, Any],
         ids: Dict[str, int],
@@ -348,14 +348,6 @@ class Melter:
         subtitle_streams: List[Tuple[str, int, str | None]],
     ) -> Tuple[bool, List[Tuple[str, int]]]:
         # Validate lengths across used files
-        used_paths = {path for path, _, _ in (video_streams + audio_streams + subtitle_streams)}
-        lengths = [tracks[path]["video"][0]["length"] for path in used_paths]
-        if len(lengths) > 1:
-            base = lengths[0]
-            if any(self._is_length_mismatch(base, l) for l in lengths[1:]):
-                self.logger.warning("Input video lengths differ. Check for --allow-length-mismatch option.")
-                if not self.allow_length_mismatch:
-                    return False, []
 
         # Base length for detailed checks
         v_path, v_tid, _ = video_streams[0]
@@ -371,24 +363,21 @@ class Melter:
                 )
                 return False, []
 
-        # Audio patch targets
-        audio_patch_targets: List[Tuple[str, int]] = []
+        # Audio lengths valdiation
         for path, tid, _ in audio_streams:
             length = tracks[path]["video"][0]["length"]
             if self._is_length_mismatch(base_length, length):
                 file_id = ids[path]
-                self.logger.warning(
-                    f"Audio stream from file #{file_id} has length different than length of video stream from file {v_path}."
-                )
-                if self.allow_length_mismatch:
-                    self.logger.info(
-                        "Audio length mismatch detected; audio will be time-adjusted during processing."
-                    )
-                    audio_patch_targets.append((path, tid))
-                else:
-                    return False, []
+                base_file_id = ids[v_path]
+                self.logger.warning(f"Audio stream from file #{file_id} has length different than length of video stream from file #{base_file_id}. Check for --allow-length-mismatch option to allow this.")
 
-        return True, audio_patch_targets
+                if self.allow_length_mismatch:
+                    self.logger.info("Audio length mismatch detected; audio will be time-adjusted during processing.")
+
+                else:
+                    return False
+
+        return True
 
     def _analyze_group(self, files: List[str], ids: Dict[str, int]) -> Dict[str, Any] | None:
         # Probe inputs and print details
@@ -404,9 +393,7 @@ class Melter:
             return None
 
         # Validate and compute audio patch requirements
-        ok, audio_patch_targets = self._validate_and_prepare_patch_targets(
-            tracks, ids, video_streams, audio_streams, subtitle_streams
-        )
+        ok = self._validate_input_files(tracks, ids, video_streams, audio_streams, subtitle_streams)
         if not ok:
             return None
 
@@ -434,7 +421,6 @@ class Melter:
                 "subtitle": subtitle_streams,
             },
             "attachments": picked_attachments,
-            "audio_patch_targets": audio_patch_targets,
         }
 
     def _prepare_duplicates_set(self, duplicates: Dict[str, List[str]]) -> List[Dict[str, Any]]:
@@ -575,18 +561,20 @@ class Melter:
         video_streams: Sequence[Tuple[str, int, str | None]],
         audio_streams: Sequence[Tuple[str, int, str | None]],
         subtitle_streams: Sequence[Tuple[str, int, str | None]],
-        patch_targets: set[Tuple[str, int]],
         video_path_base: str,
         video_tid: int,
         required_input_files: set[str],
     ) -> List[Tuple[str, int, str, str | None]]:
         streams_list: List[Tuple[str, int, str, str | None]] = []
 
+        base_duration = video_utils.get_video_duration(video_path_base)
+
         for (path, stream_index, language) in video_streams:
             streams_list.append(("video", stream_index, path, language))
 
         for (path, stream_index, language) in audio_streams:
-            if (path, stream_index) in patch_targets:
+            duration = video_utils.get_video_duration(path)
+            if self._is_length_mismatch(base_duration, duration):
                 with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
                      generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
                     matcher = PairMatcher(self.interruption, mwd, video_path_base, path, self.logger.getChild("PairMatcher"))
@@ -707,8 +695,6 @@ class Melter:
                 video_streams: List[Tuple[str, int, str | None]] = streams_info.get("video", [])
                 audio_streams: List[Tuple[str, int, str | None]] = streams_info.get("audio", [])
                 subtitle_streams: List[Tuple[str, int, str | None]] = streams_info.get("subtitle", [])
-                patch_targets = set(tuple(t) for t in group.get("audio_patch_targets", []))
-
                 required_input_files = self._collect_required_input_files(video_streams, audio_streams, subtitle_streams, attachments)
 
                 output = self._build_output_path(title, output_name)
@@ -727,7 +713,12 @@ class Melter:
                     # Convert streams to unified list (and patch audios if needed)
                     video_path_base, video_tid, _ = video_streams[0]
                     streams_list = self._prepare_stream_entries(
-                        video_streams, audio_streams, subtitle_streams, patch_targets, video_path_base, video_tid, required_input_files
+                        video_streams,
+                        audio_streams,
+                        subtitle_streams,
+                        video_path_base,
+                        video_tid,
+                        required_input_files
                     )
 
                     # Sort streams by language alphabetically
