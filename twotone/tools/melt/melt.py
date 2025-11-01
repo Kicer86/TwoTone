@@ -561,12 +561,10 @@ class Melter:
         video_streams: Sequence[Tuple[str, int, str | None]],
         audio_streams: Sequence[Tuple[str, int, str | None]],
         subtitle_streams: Sequence[Tuple[str, int, str | None]],
-        video_path_base: str,
-        video_tid: int,
         required_input_files: set[str],
     ) -> List[Tuple[str, int, str, str | None]]:
         streams_list: List[Tuple[str, int, str, str | None]] = []
-
+        video_path_base, video_tid, _ = video_streams[0]
         base_duration = video_utils.get_video_duration(video_path_base)
 
         for (path, stream_index, language) in video_streams:
@@ -711,13 +709,10 @@ class Melter:
                     self._copy_single_input(first_file_path, output)
                 else:
                     # Convert streams to unified list (and patch audios if needed)
-                    video_path_base, video_tid, _ = video_streams[0]
                     streams_list = self._prepare_stream_entries(
                         video_streams,
                         audio_streams,
                         subtitle_streams,
-                        video_path_base,
-                        video_tid,
                         required_input_files
                     )
 
