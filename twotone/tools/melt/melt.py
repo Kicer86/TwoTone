@@ -48,6 +48,7 @@ class Melter:
         self.output = output
         self.allow_length_mismatch = allow_length_mismatch
         self.allow_language_guessing = allow_language_guessing
+        self.tolerance_ms = 100
 
         os.makedirs(self.wd, exist_ok=True)
 
@@ -321,10 +322,10 @@ class Melter:
             file_id = ids[path]
             self.logger.info(f"Attachment ID #{tid} from file #{file_id}")
 
-    def _is_length_mismatch(self, base_ms: int | None, other_ms: int | None, tolerance_ms: int = 100) -> bool:
+    def _is_length_mismatch(self, base_ms: int | None, other_ms: int | None) -> bool:
         if base_ms is None or other_ms is None:
             return False
-        return abs(base_ms - other_ms) > tolerance_ms
+        return abs(base_ms - other_ms) > self.tolerance_ms
 
     def _pick_streams(self, tracks: Dict[str, Any], ids: Dict[str, int]) -> Tuple[List[Tuple[str, int, str | None]], List[Tuple[str, int, str | None]], List[Tuple[str, int, str | None]]]:
         picker_wd = os.path.join(self.wd, "stream_picker")
