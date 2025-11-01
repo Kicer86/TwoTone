@@ -358,10 +358,9 @@ class Melter:
             length = tracks[path]["video"][0]["length"]
             if self._is_length_mismatch(base_length, length):
                 file_id = ids[path]
-                self.logger.error(
-                    f"Subtitles stream from file #{file_id} has length different than length of video stream from file {v_path}. This is not supported yet"
-                )
-                return False, []
+                self.logger.error(f"Subtitles stream from file #{file_id} has length different than length of video stream from file {v_path}. This is not supported yet"
+                                  )
+                return False
 
         # Audio lengths valdiation
         for path, tid, _ in audio_streams:
