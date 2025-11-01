@@ -520,13 +520,15 @@ class Melter:
                 # analysis for group
                 plan_details = self._analyze_group(files, ids)
                 if plan_details is None:
-                    self.logger.info("Skipping output generation")
+                    self.logger.info("Title not suitable for melting")
                 else:
                     analyzed_groups.append({
                         "files": files,
                         "output_name": output_name,
                         **plan_details,
                     })
+
+                    self.logger.info("Title suitable for melting")
 
             analysis_plan.append({
                 "title": title,
