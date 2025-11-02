@@ -678,7 +678,7 @@ class Melter:
 
         return generation_args
 
-    def process_duplicates_set(self, plan: List[Dict[str, Any]]):
+    def process_duplicates(self, plan: List[Dict[str, Any]]):
         for item in tqdm(plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
             title = item["title"]
             groups = item["groups"]
@@ -899,4 +899,4 @@ class MeltTool(Tool):
         )
 
         # Use precomputed plan to skip re-grouping
-        melter.process_duplicates_set(plan)
+        melter.process_duplicates(plan)
