@@ -248,7 +248,7 @@ class StreamsPicker:
                             try:
                                 lang = language_utils.unify_lang(detected_lang)
                                 lang_name = language_utils.language_name(lang)
-                                self.logger.warning(f"Guessed subtitle language: {lang_name} for file #{id}")
+                                self.logger.warning(f"Detected subtitle language: {lang_name} for file #{id}, track #{tid}")
                             except Exception:
                                 pass
                     except Exception as e:
