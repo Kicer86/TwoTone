@@ -858,7 +858,6 @@ class MeltTool(Tool):
 
             self._data_source = src
 
-        # If no source, nothing to analyze
         if not self._data_source:
             logger.info("No input source specified. Nothing to analyze.")
             return
@@ -898,5 +897,4 @@ class MeltTool(Tool):
                         allow_language_guessing = args.allow_language_guessing,
         )
 
-        # Use precomputed plan to skip re-grouping
         melter.process_duplicates(plan)
