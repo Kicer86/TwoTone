@@ -655,7 +655,7 @@ class PairMatcher:
         matching_pairs = self._make_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
         debug.dump_matches(matching_pairs, "secondary matching")
 
-        prev_first, prev_last = None, None
+        prev_first, prev_last = matching_pairs[0], matching_pairs[-1]
         while True:
             self.interruption._check_for_stop()
 
@@ -676,7 +676,13 @@ class PairMatcher:
             cutoff = self._calculate_cutoff(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
 
             # try to locate first and last common frames
-            first, last = self._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff)
+            first, last = self._look_for_boundaries(
+                lhs_normalized_cropped_frames,
+                rhs_normalized_cropped_frames,
+                matching_pairs[0],
+                matching_pairs[-1],
+                cutoff,
+            )
 
             if first == prev_first and last == prev_last:
                 break
