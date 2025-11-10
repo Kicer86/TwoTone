@@ -1,8 +1,9 @@
 
 import argparse
 import logging
+import numpy as np
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from tqdm import tqdm
 from .tool import Tool
 from ..tools.utils import process_utils, video_utils
@@ -17,6 +18,8 @@ class VideoFixerTool(Tool):
     def __init__(self) -> None:
         super().__init__()
         self.analysis_results = {}
+
+    LENGTH_TOLERANCE: float = 0.10  # 10% relative difference
 
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("input", nargs='+', help="Input MKV file(s) or directories to fix")
@@ -63,22 +66,70 @@ class VideoFixerTool(Tool):
                 continue
 
             video_duration: Optional[int] = video_streams[0].get('length')
-            logger.info(f"File: {video_path}, Video duration: {video_duration/1000:.2f}s")
+            if video_duration is not None:
+                logger.info(f"File: {video_path}, Video duration: {video_duration/1000:.2f}s")
+            else:
+                logger.info(f"File: {video_path}, Video duration: unknown")
+
             flagged: List[Dict[str, Any]] = []
 
+            def fmt_ms(ms: Optional[int]) -> str:
+                if ms is None:
+                    return "n/a"
+                return f"{ms/1000:.2f}s"
+
+            def pick_reference_length(stype: str, track_list: List[Dict[str, Any]]) -> Tuple[Optional[int], str]:
+                durations = [t.get('length') for t in track_list if isinstance(t.get('length'), int) and t.get('length') > 0]
+                n = len(durations)
+                if n == 0:
+                    return None, "none"
+                if n == 1:
+                    # Not enough data to detect outliers within type
+                    return None, "insufficient"
+                if n >= 3:
+                    return int(np.median(durations)), "median"
+                # n == 2
+                if video_duration is not None:
+                    # Tie-break: choose the one closer to the main video duration as reference
+                    closest = min(durations, key=lambda d: abs(d - video_duration))
+                    return int(closest), "closest-to-video"
+                else:
+                    # Ambiguous without a video reference
+                    return None, "ambiguous"
+
             for stype in ('audio', 'subtitle'):
-                for s in streams_by_type.get(stype, []):
+                tracks_of_type = streams_by_type.get(stype, [])
+                durations = [t.get('length') for t in tracks_of_type if isinstance(t.get('length'), int) and t.get('length') > 0]
+                n = len(durations)
+
+                if n > 0:
+                    med = float(np.median(durations))
+                    avg = float(np.mean(durations))
+                    logger.info(f"{stype.capitalize()} streams: {n}, median: {med/1000:.2f}s, mean: {avg/1000:.2f}s")
+                else:
+                    logger.info(f"{stype.capitalize()} streams: {n}")
+
+                ref_len, ref_mode = pick_reference_length(stype, tracks_of_type)
+                if ref_len is None:
+                    if n > 1:
+                        logger.info(f"{stype.capitalize()}: reference length not determined ({ref_mode}); skipping outlier detection.")
+                    continue
+
+                logger.info(f"{stype.capitalize()} reference length: {fmt_ms(ref_len)} (by {ref_mode}, tol={int(self.LENGTH_TOLERANCE*100)}%)")
+
+                for s in tracks_of_type:
                     s_duration: Optional[int] = s.get('length')
-                    if s_duration is None or video_duration is None:
+                    if s_duration is None or ref_len <= 0:
                         continue
 
-                    logger.info(f"  Checking {stype} stream #{s.get('tid')} \'{s.get('language') or '-'}\' duration: {s_duration/1000:.2f}s")
-
-                    diff: float = abs(s_duration - video_duration)
-                    rel_diff: float = diff / video_duration if video_duration else 0
-                    if rel_diff > 0.1:
+                    diff: float = abs(s_duration - ref_len)
+                    rel_diff: float = diff / ref_len if ref_len else 0
+                    if rel_diff > self.LENGTH_TOLERANCE:
                         flagged.append({'type': stype, 'tid': s.get('tid'), 'duration': s_duration})
-                        logger.warning(f"{stype} stream #{s.get('tid')} \'{s.get('language') or '-'}\' has abnormal duration. Will be removed. (duration: {s_duration/1000:.2f}s, diff: {rel_diff*100:.1f}%)")
+                        logger.warning(
+                            f"{stype} stream #{s.get('tid')} '{s.get('language') or '-'}' outlier vs {ref_mode}. "
+                            f"Will be removed. (duration: {s_duration/1000:.2f}s, diff: {rel_diff*100:.1f}%)"
+                        )
 
             self.analysis_results[video_path] = flagged
 
