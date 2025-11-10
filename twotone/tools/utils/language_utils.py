@@ -7,7 +7,7 @@ def unify_lang(lang: str) -> str:
     if lang_info:
         return lang_info.alpha_3
     else:
-        # try to look for in biliographic set
+        # try to look for in bibliographic set
         lang_info = pycountry.languages.get(bibliographic = lang)
         if lang_info:
             return lang_info.alpha_3
