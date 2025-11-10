@@ -386,6 +386,12 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
 
         track_initial_data = find_ffprobe_track(tid, ffprobe_info)
 
+        # Prepare common data for all stream types first
+        stream_data = {
+            "tid": tid,
+            "uid": uid,
+        }
+
         if track_type == "video":
             dims = props.get("pixel_dimensions") or props.get("display_dimensions")
             width = height = None
@@ -408,43 +414,39 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
 
             fps_str = str(fps) if fps else track_initial_data.get("fps", "0") if track_initial_data else "0"
 
-            streams["video"].append(
-                merge_properties(track_initial_data, {
-                    "fps": fps_str,
-                    "length": duration_ms,
-                    "width": width,
-                    "height": height,
-                    "bitrate": None,
-                    "codec": track.get("codec"),
-                    "tid": tid,
-                    "uid": uid,
-                })
-            )
+            stream_data.update({
+                "fps": fps_str,
+                "length": duration_ms,
+                "width": width,
+                "height": height,
+                "bitrate": None,
+                "codec": track.get("codec"),
+            })
+
+            streams["video"].append(merge_properties(track_initial_data, stream_data))
+
         elif track_type == "audio":
             channels = props.get("audio_channels")
             sample_rate = props.get("audio_sampling_frequency")
 
-            streams["audio"].append(
-                merge_properties(track_initial_data, {
-                    "language": language,
-                    "channels": channels,
-                    "sample_rate": sample_rate,
-                    "tid": tid,
-                    "uid": uid,
-                })
-            )
+            stream_data.update({
+                "language": language,
+                "channels": channels,
+                "sample_rate": sample_rate,
+            })
+
+            streams["audio"].append(merge_properties(track_initial_data, stream_data))
+
         elif track_type in ("subtitles", "subtitle"):
-            streams["subtitle"].append(
-                merge_properties(track_initial_data, {
-                    "language": language,
-                    "default": props.get("default_track", False),
-                    "length": duration_ms,
-                    "tid": tid,
-                    "uid": uid,
-                    "format": track.get("codec"),
-                    "name": props.get("track_name"),
-                })
-            )
+            stream_data.update({
+                "language": language,
+                "default": props.get("default_track", False),
+                "length": duration_ms,
+                "format": track.get("codec"),
+                "name": props.get("track_name"),
+            })
+
+            streams["subtitle"].append(merge_properties(track_initial_data, stream_data))
 
     # attachments
     attachments = []
