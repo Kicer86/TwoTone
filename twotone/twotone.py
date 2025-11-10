@@ -14,7 +14,8 @@ from .tools import          \
     merge,                  \
     subtitles_fixer,        \
     transcode,              \
-    utilities
+    utilities,              \
+    video_fixer
 
 from .tools.utils import generic_utils
 
@@ -25,6 +26,7 @@ TOOLS = {
     "subtitles_fix": (subtitles_fixer.FixerTool(), "Fixes some specific issues with subtitles. Do not use until you are sure it will help for your problems."),
     "transcode": (transcode.TranscodeTool(), "Transcode videos from provided directory preserving quality."),
     "utilities": (utilities.UtilitiesTool(), "Various smaller tools"),
+    "video_fix": (video_fixer.VideoFixerTool(), "Fix MKV files by removing streams with abnormal length."),
 }
 
 
