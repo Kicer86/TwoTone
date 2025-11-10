@@ -235,7 +235,13 @@ def get_video_data(path: str) -> Dict:
         else:
             language = None
 
-        return language_utils.unify_lang(language) if language else None
+        try:
+            if language:
+                language = language_utils.unify_lang(language)
+        except Exception:
+            language = None
+
+        return language
 
     output_json = get_video_full_info(path)
 
@@ -372,7 +378,11 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
         uid = props.get("uid", None)
 
         language = props.get("language")
-        language = language_utils.unify_lang(language) if language else None
+        try:
+            if language:
+                language = language_utils.unify_lang(language)
+        except Exception:
+            language = None
 
         track_initial_data = find_ffprobe_track(tid, ffprobe_info)
 
