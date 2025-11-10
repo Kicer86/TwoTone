@@ -358,15 +358,6 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
 
     info = get_video_full_info_mkvmerge(path)
 
-    container_props = info.get("container", {}).get("properties", {})
-    duration_ms = None
-    if "duration" in container_props:
-        try:
-            timestamp_scale = container_props.get("timestamp_scale", 1)
-            duration_ms = int(float(container_props["duration"]) / timestamp_scale)
-        except (TypeError, ValueError):
-            duration_ms = None
-
     # process streams/tracks
     streams = defaultdict(list)
     ffprobe_info = get_video_data(path) if enrich else None
@@ -376,6 +367,11 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
         tid = track.get("id")
         props = track.get("properties", {})
         uid = props.get("uid", None)
+
+        length_ms = None
+        tag_duration = props.get("tag_duration")
+        if tag_duration is not None:
+            length_ms = time_to_ms(tag_duration)
 
         language = props.get("language")
         try:
@@ -390,6 +386,7 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
         stream_data = {
             "tid": tid,
             "uid": uid,
+            "length": length_ms,
         }
 
         if track_type == "video":
@@ -416,7 +413,6 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
 
             stream_data.update({
                 "fps": fps_str,
-                "length": duration_ms,
                 "width": width,
                 "height": height,
                 "bitrate": None,
@@ -438,10 +434,17 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
             streams["audio"].append(merge_properties(track_initial_data, stream_data))
 
         elif track_type in ("subtitles", "subtitle"):
+            # Per-track duration for subtitles as well
+            length_ms = None
+            tag_duration = props.get("tag_duration")
+            if tag_duration is not None:
+                try:
+                    length_ms = int(round(float(tag_duration) / 1_000_000))
+                except (TypeError, ValueError):
+                    length_ms = None
             stream_data.update({
                 "language": language,
                 "default": props.get("default_track", False),
-                "length": duration_ms,
                 "format": track.get("codec"),
                 "name": props.get("track_name"),
             })
