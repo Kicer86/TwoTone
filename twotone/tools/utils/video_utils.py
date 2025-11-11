@@ -6,13 +6,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Union, Tuple
 
-
-
 from . import language_utils, process_utils
 from .generic_utils import fps_str_to_float, time_to_ms
 from .subtitles_utils import SubtitleFile
-
-
 
 
 def is_video(file: str) -> bool:
