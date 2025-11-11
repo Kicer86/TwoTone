@@ -9,6 +9,7 @@ from itertools import islice
 from typing import Dict, Optional, List
 
 import py3langid as langid
+import pysubs2
 
 from .generic_utils import ms_to_time, time_to_ms
 from . import process_utils, video_utils
@@ -194,3 +195,74 @@ def fix_subtitles_fps(input_path: str, output_path: str, subtitles_fps: float):
         content = infile.read()
         content = alter_subrip_subtitles_times(content, multiplier)
         outfile.write(content)
+
+
+# === pysubs2-based utilities (multi-format safe) ===
+
+def load_subtitles(path: str, encoding: Optional[str] = None) -> pysubs2.SSAFile:
+    """Load subtitles using pysubs2, respecting file extension and encoding.
+
+    If encoding is not provided, detect using file_encoding().
+    """
+    enc = encoding or file_encoding(path)
+    return pysubs2.load(path, encoding=enc)
+
+
+def save_subtitles(subs: pysubs2.SSAFile, path: str, encoding: str = "utf-8") -> None:
+    """Save subtitles to the given path using format inferred from extension."""
+    subs.save(path, encoding=encoding)
+
+
+def get_first_event_start_ms(subs: pysubs2.SSAFile) -> Optional[int]:
+    """Return start time (ms) of earliest event, or None if empty."""
+    if not subs.events:
+        return None
+    return min(e.start for e in subs.events)
+
+
+def get_last_event_end_ms(subs: pysubs2.SSAFile) -> Optional[int]:
+    """Return end time (ms) of last event, or None if empty."""
+    if not subs.events:
+        return None
+    return max(e.end for e in subs.events)
+
+
+def scale_times_inplace(subs: pysubs2.SSAFile, multiplier: float) -> None:
+    """Scale all event times by multiplier (in place)."""
+    if multiplier == 1.0:
+        return
+    for ev in subs.events:
+        ev.start = int(round(ev.start * multiplier))
+        ev.end = int(round(ev.end * multiplier))
+
+
+def clamp_last_event_end_inplace(subs: pysubs2.SSAFile, video_length_ms: int, max_tail_ms: int = 5000) -> None:
+    """Clamp the final event duration so it ends no later than min(start+max_tail_ms, video_length_ms)."""
+    if not subs.events:
+        return
+    # Identify event with maximal end; if ties, pick the one with maximal start
+    last = max(subs.events, key=lambda e: (e.end, e.start))
+    target_end = min(last.start + max_tail_ms, int(video_length_ms))
+    if last.end > target_end:
+        last.end = target_end
+
+
+def rebase_times_by_offset_inplace(subs: pysubs2.SSAFile, offset_ms: int) -> None:
+    """Subtract offset_ms from all events; clamp to >= 0. Does not reorder events."""
+    if offset_ms <= 0:
+        return
+    for ev in subs.events:
+        new_start = ev.start - offset_ms
+        new_end = ev.end - offset_ms
+        ev.start = max(0, new_start)
+        ev.end = max(0, new_end)
+
+
+def detect_first_event_offset_ms(subs: pysubs2.SSAFile) -> Optional[int]:
+    """Return earliest event start (ms), or None if empty. Alias for get_first_event_start_ms."""
+    return get_first_event_start_ms(subs)
+
+
+def copy_with_encoding(subs: pysubs2.SSAFile) -> pysubs2.SSAFile:
+    """Return a shallow copy suitable for modifications while preserving metadata/scripts."""
+    return subs.copy()
