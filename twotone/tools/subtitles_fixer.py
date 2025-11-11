@@ -13,10 +13,12 @@ from twotone.tools.utils import generic_utils, process_utils, subtitles_utils, v
 
 
 class Fixer(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, working_dir: str) -> None:
+    def __init__(self, logger: logging.Logger, working_dir: str, fix_offset_hours: int | None = None) -> None:
         super().__init__()
         self.logger = logger
         self.working_dir = working_dir
+        # Optional setting controlling offset-rebasing logic (analysis/repair stages)
+        self.fix_offset_hours = fix_offset_hours
 
     def _print_broken_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
         self.logger.info(f"Found {len(broken_videos_info)} broken videos:")
@@ -212,6 +214,11 @@ class FixerTool(Tool):
         parser.add_argument('videos_path',
                             nargs=1,
                             help='Path with videos to analyze.')
+        parser.add_argument('--fix-offset',
+                            type=int,
+                            default=None,
+                            metavar='HOURS',
+                            help='If set, detect subtitles starting near HOURS:00:00 and rebase times during fixing.')
 
     @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
@@ -220,7 +227,7 @@ class FixerTool(Tool):
 
         logger.info("Searching for broken files")
 
-        fixer = Fixer(logger, working_dir=working_dir)
+        fixer = Fixer(logger, working_dir=working_dir, fix_offset_hours=args.fix_offset)
         self._analysis_results = fixer.scan_directory(args.videos_path[0])
 
     @override
@@ -231,6 +238,6 @@ class FixerTool(Tool):
             logger.info("No analysis results, nothing to fix.")
             return
 
-        fixer = Fixer(logger, working_dir)
+        fixer = Fixer(logger, working_dir, fix_offset_hours=args.fix_offset)
         fixer.repair_videos(broken_videos)
         logger.info("Done")
