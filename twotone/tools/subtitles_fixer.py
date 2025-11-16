@@ -99,7 +99,7 @@ class Fixer(generic_utils.InterruptibleProcess):
         result: list[subtitles_utils.SubtitleFile] = []
         for s in subtitles:
             tid = s["tid"]
-            path = tid_to_path.get(tid)
+            path = tid_to_path[tid]
             # Keep language as reported by container (may be None)
             lang = s.get("language")
             result.append(subtitles_utils.SubtitleFile(path = path, language = lang, encoding = "utf8"))

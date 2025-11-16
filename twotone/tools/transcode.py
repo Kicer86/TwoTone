@@ -286,7 +286,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
                     logging.debug(f"Replacing {input_file} with {temp_file} (second attempt)")
                     shutil.move(temp_file, input_file)
             else:
-                final_output_file = os.path.join(dir, f"{basename}.{ext}")
+                final_output_file = os.path.join(self.working_dir, f"{basename}.{ext}")
                 logging.debug(f"Renaming {temp_file} to {final_output_file}")
                 shutil.move(temp_file, final_output_file)
                 logging.debug(f"Removing {input_file}")
