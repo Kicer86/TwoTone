@@ -17,7 +17,7 @@ from . import process_utils, video_utils
 @dataclass
 class SubtitleFile:
     path: str
-    language: str
+    language: str | None
     encoding: str
     comment: str | None = None
 

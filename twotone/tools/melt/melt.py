@@ -48,6 +48,7 @@ class Melter:
         self.output = output
         self.allow_length_mismatch = allow_length_mismatch
         self.allow_language_guessing = allow_language_guessing
+        self.tolerance_ms = 100
 
         os.makedirs(self.wd, exist_ok=True)
 
@@ -95,7 +96,7 @@ class Melter:
 
         # 3. Generate subsegment split points from provided mapping pairs
         total_left_duration = seg1_end - seg1_start
-        left_targets = [seg1_start + i * total_left_duration / segment_count for i in range(segment_count + 1)]
+        left_targets = [seg1_start + i * total_left_duration // segment_count for i in range(segment_count + 1)]
 
         def closest_pair(value: int, pairs: Sequence[tuple[int, int]]) -> tuple[int, int]:
             return min(pairs, key=lambda p: abs(p[0] - value))
@@ -321,10 +322,10 @@ class Melter:
             file_id = ids[path]
             self.logger.info(f"Attachment ID #{tid} from file #{file_id}")
 
-    def _is_length_mismatch(self, base_ms: int | None, other_ms: int | None, tolerance_ms: int = 100) -> bool:
+    def _is_length_mismatch(self, base_ms: int | None, other_ms: int | None) -> bool:
         if base_ms is None or other_ms is None:
             return False
-        return abs(base_ms - other_ms) > tolerance_ms
+        return abs(base_ms - other_ms) > self.tolerance_ms
 
     def _pick_streams(self, tracks: Dict[str, Any], ids: Dict[str, int]) -> Tuple[List[Tuple[str, int, str | None]], List[Tuple[str, int, str | None]], List[Tuple[str, int, str | None]]]:
         picker_wd = os.path.join(self.wd, "stream_picker")
@@ -338,23 +339,15 @@ class Melter:
         tracks = {file: info["tracks"] for file, info in details_full.items()}
         return details_full, attachments, tracks
 
-    def _validate_and_prepare_patch_targets(
+    def _validate_input_files(
         self,
         tracks: Dict[str, Any],
         ids: Dict[str, int],
         video_streams: List[Tuple[str, int, str | None]],
         audio_streams: List[Tuple[str, int, str | None]],
         subtitle_streams: List[Tuple[str, int, str | None]],
-    ) -> Tuple[bool, List[Tuple[str, int]]]:
+    ) -> bool:
         # Validate lengths across used files
-        used_paths = {path for path, _, _ in (video_streams + audio_streams + subtitle_streams)}
-        lengths = [tracks[path]["video"][0]["length"] for path in used_paths]
-        if len(lengths) > 1:
-            base = lengths[0]
-            if any(self._is_length_mismatch(base, l) for l in lengths[1:]):
-                self.logger.warning("Input video lengths differ. Check for --allow-length-mismatch option.")
-                if not self.allow_length_mismatch:
-                    return False, []
 
         # Base length for detailed checks
         v_path, v_tid, _ = video_streams[0]
@@ -365,29 +358,25 @@ class Melter:
             length = tracks[path]["video"][0]["length"]
             if self._is_length_mismatch(base_length, length):
                 file_id = ids[path]
-                self.logger.error(
-                    f"Subtitles stream from file #{file_id} has length different than length of video stream from file {v_path}. This is not supported yet"
-                )
-                return False, []
+                self.logger.error(f"Subtitles stream from file #{file_id} has length different than length of video stream from file {v_path}. This is not supported yet"
+                                  )
+                return False
 
-        # Audio patch targets
-        audio_patch_targets: List[Tuple[str, int]] = []
+        # Audio lengths valdiation
         for path, tid, _ in audio_streams:
             length = tracks[path]["video"][0]["length"]
             if self._is_length_mismatch(base_length, length):
                 file_id = ids[path]
-                self.logger.warning(
-                    f"Audio stream from file #{file_id} has length different than length of video stream from file {v_path}."
-                )
-                if self.allow_length_mismatch:
-                    self.logger.info(
-                        "Audio length mismatch detected; audio will be time-adjusted during processing."
-                    )
-                    audio_patch_targets.append((path, tid))
-                else:
-                    return False, []
+                base_file_id = ids[v_path]
+                self.logger.warning(f"Audio stream from file #{file_id} has length different than length of video stream from file #{base_file_id}. Check for --allow-length-mismatch option to allow this.")
 
-        return True, audio_patch_targets
+                if self.allow_length_mismatch:
+                    self.logger.info("Audio length mismatch detected; audio will be time-adjusted during processing.")
+
+                else:
+                    return False
+
+        return True
 
     def _analyze_group(self, files: List[str], ids: Dict[str, int]) -> Dict[str, Any] | None:
         # Probe inputs and print details
@@ -403,9 +392,7 @@ class Melter:
             return None
 
         # Validate and compute audio patch requirements
-        ok, audio_patch_targets = self._validate_and_prepare_patch_targets(
-            tracks, ids, video_streams, audio_streams, subtitle_streams
-        )
+        ok = self._validate_input_files(tracks, ids, video_streams, audio_streams, subtitle_streams)
         if not ok:
             return None
 
@@ -433,7 +420,6 @@ class Melter:
                 "subtitle": subtitle_streams,
             },
             "attachments": picked_attachments,
-            "audio_patch_targets": audio_patch_targets,
         }
 
     def _prepare_duplicates_set(self, duplicates: Dict[str, List[str]]) -> List[Dict[str, Any]]:
@@ -533,13 +519,15 @@ class Melter:
                 # analysis for group
                 plan_details = self._analyze_group(files, ids)
                 if plan_details is None:
-                    self.logger.info("Skipping output generation")
+                    self.logger.info("Title not suitable for melting")
                 else:
                     analyzed_groups.append({
                         "files": files,
                         "output_name": output_name,
                         **plan_details,
                     })
+
+                    self.logger.info("Title suitable for melting")
 
             analysis_plan.append({
                 "title": title,
@@ -574,18 +562,18 @@ class Melter:
         video_streams: Sequence[Tuple[str, int, str | None]],
         audio_streams: Sequence[Tuple[str, int, str | None]],
         subtitle_streams: Sequence[Tuple[str, int, str | None]],
-        patch_targets: set[Tuple[str, int]],
-        video_path_base: str,
-        video_tid: int,
         required_input_files: set[str],
     ) -> List[Tuple[str, int, str, str | None]]:
         streams_list: List[Tuple[str, int, str, str | None]] = []
+        video_path_base, video_tid, _ = video_streams[0]
+        base_duration = video_utils.get_video_duration(video_path_base)
 
         for (path, stream_index, language) in video_streams:
             streams_list.append(("video", stream_index, path, language))
 
         for (path, stream_index, language) in audio_streams:
-            if (path, stream_index) in patch_targets:
+            duration = video_utils.get_video_duration(path)
+            if self._is_length_mismatch(base_duration, duration):
                 with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
                      generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
                     matcher = PairMatcher(self.interruption, mwd, video_path_base, path, self.logger.getChild("PairMatcher"))
@@ -690,7 +678,7 @@ class Melter:
 
         return generation_args
 
-    def process_duplicates_set(self, plan: List[Dict[str, Any]]):
+    def process_duplicates(self, plan: List[Dict[str, Any]]):
         for item in tqdm(plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
             title = item["title"]
             groups = item["groups"]
@@ -706,8 +694,6 @@ class Melter:
                 video_streams: List[Tuple[str, int, str | None]] = streams_info.get("video", [])
                 audio_streams: List[Tuple[str, int, str | None]] = streams_info.get("audio", [])
                 subtitle_streams: List[Tuple[str, int, str | None]] = streams_info.get("subtitle", [])
-                patch_targets = set(tuple(t) for t in group.get("audio_patch_targets", []))
-
                 required_input_files = self._collect_required_input_files(video_streams, audio_streams, subtitle_streams, attachments)
 
                 output = self._build_output_path(title, output_name)
@@ -724,9 +710,11 @@ class Melter:
                     self._copy_single_input(first_file_path, output)
                 else:
                     # Convert streams to unified list (and patch audios if needed)
-                    video_path_base, video_tid, _ = video_streams[0]
                     streams_list = self._prepare_stream_entries(
-                        video_streams, audio_streams, subtitle_streams, patch_targets, video_path_base, video_tid, required_input_files
+                        video_streams,
+                        audio_streams,
+                        subtitle_streams,
+                        required_input_files
                     )
 
                     # Sort streams by language alphabetically
@@ -829,11 +817,11 @@ class MeltTool(Tool):
             if path_fix and len(path_fix) != 2:
                 self.parser.error(f"Invalid content for --jellyfin-path-fix argument. Got: {path_fix}")
 
-            self._data_source = JellyfinSource(interruption=self._interruption,
-                                               url=args.jellyfin_server,
-                                               token=args.jellyfin_token,
-                                               path_fix=path_fix,
-                                               logger=logger.getChild("JellyfinSource"))
+            self._data_source = JellyfinSource(interruption = self._interruption,
+                                               url = args.jellyfin_server,
+                                               token = args.jellyfin_token,
+                                               path_fix = path_fix,
+                                               logger = logger.getChild("JellyfinSource"))
         elif args.input_files:
             title = args.title
             input_entries = args.input_files
@@ -870,7 +858,6 @@ class MeltTool(Tool):
 
             self._data_source = src
 
-        # If no source, nothing to analyze
         if not self._data_source:
             logger.info("No input source specified. Nothing to analyze.")
             return
@@ -910,5 +897,4 @@ class MeltTool(Tool):
                         allow_language_guessing = args.allow_language_guessing,
         )
 
-        # Use precomputed plan to skip re-grouping
-        melter.process_duplicates_set(plan)
+        melter.process_duplicates(plan)
