@@ -96,7 +96,7 @@ class Melter:
 
         # 3. Generate subsegment split points from provided mapping pairs
         total_left_duration = seg1_end - seg1_start
-        left_targets = [seg1_start + i * total_left_duration / segment_count for i in range(segment_count + 1)]
+        left_targets = [seg1_start + i * total_left_duration // segment_count for i in range(segment_count + 1)]
 
         def closest_pair(value: int, pairs: Sequence[tuple[int, int]]) -> tuple[int, int]:
             return min(pairs, key=lambda p: abs(p[0] - value))
@@ -346,7 +346,7 @@ class Melter:
         video_streams: List[Tuple[str, int, str | None]],
         audio_streams: List[Tuple[str, int, str | None]],
         subtitle_streams: List[Tuple[str, int, str | None]],
-    ) -> Tuple[bool, List[Tuple[str, int]]]:
+    ) -> bool:
         # Validate lengths across used files
 
         # Base length for detailed checks
@@ -817,11 +817,11 @@ class MeltTool(Tool):
             if path_fix and len(path_fix) != 2:
                 self.parser.error(f"Invalid content for --jellyfin-path-fix argument. Got: {path_fix}")
 
-            self._data_source = JellyfinSource(interruption=self._interruption,
-                                               url=args.jellyfin_server,
-                                               token=args.jellyfin_token,
-                                               path_fix=path_fix,
-                                               logger=logger.getChild("JellyfinSource"))
+            self._data_source = JellyfinSource(interruption = self._interruption,
+                                               url = args.jellyfin_server,
+                                               token = args.jellyfin_token,
+                                               path_fix = path_fix,
+                                               logger = logger.getChild("JellyfinSource"))
         elif args.input_files:
             title = args.title
             input_entries = args.input_files
