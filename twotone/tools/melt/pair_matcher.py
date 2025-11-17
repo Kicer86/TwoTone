@@ -521,7 +521,7 @@ class PairMatcher:
 
     def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: Tuple[int, int], last: Tuple[int, int], cutoff: float, lookahead_seconds: float = 3.0):
         self.logger.debug("Improving boundaries")
-        self.logger.debug("Current first: {first} and last: {last} pairs")
+        self.logger.debug(f"Current first: {first} and last: {last} pairs")
         phash = PhashCache()
         ratio = PairMatcher.calculate_ratio([first, last])
 
@@ -603,14 +603,18 @@ class PairMatcher:
 
     def create_segments_mapping(self) -> Tuple[List[Tuple[int, int]], FramesInfo, FramesInfo]:
         lhs_scene_changes = video_utils.detect_scene_changes(self.lhs_path, threshold = 0.3)
+        self.interruption._check_for_stop()
         rhs_scene_changes = video_utils.detect_scene_changes(self.rhs_path, threshold = 0.3)
+        self.interruption._check_for_stop()
 
         if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
             raise RuntimeError("Not enought scene changes detected")
 
         # extract all scenes
         self.lhs_all_frames = video_utils.extract_all_frames(self.lhs_path, self.lhs_all_wd, scale = 0.5, format = "png")
+        self.interruption._check_for_stop()
         self.rhs_all_frames = video_utils.extract_all_frames(self.rhs_path, self.rhs_all_wd, scale = 0.5, format = "png")
+        self.interruption._check_for_stop()
 
         lhs_key_frames_str = [str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes]
         rhs_key_frames_str = [str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes]
@@ -637,18 +641,25 @@ class PairMatcher:
         self.logger.debug("Pairs summary after initial matching:")
         self.logger.debug(PairMatcher.summarize_pairs(self.phash, matching_pairs, self.lhs_all_frames, self.rhs_all_frames, verbose = True))
 
-        prev_first, prev_last = None, None
+        # adjust images and rerun matching
+        lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self._crop_both_sets(
+            pairs_with_timestamps = matching_pairs,
+            lhs_frames = lhs_normalized_frames,
+            rhs_frames = rhs_normalized_frames,
+            lhs_cropped_dir = self.lhs_normalized_cropped_wd,
+            rhs_cropped_dir = self.rhs_normalized_cropped_wd
+        )
+
+        lhs_key_frames = PairMatcher._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_cropped_frames)
+        rhs_key_frames = PairMatcher._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_cropped_frames)
+        matching_pairs = self._make_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
+        debug.dump_matches(matching_pairs, "secondary matching")
+
+        prev_first, prev_last = matching_pairs[0], matching_pairs[-1]
         while True:
             self.interruption._check_for_stop()
-            # crop frames basing on matching ones
-            lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self._crop_both_sets(
-                pairs_with_timestamps = matching_pairs,
-                lhs_frames = lhs_normalized_frames,
-                rhs_frames = rhs_normalized_frames,
-                lhs_cropped_dir = self.lhs_normalized_cropped_wd,
-                rhs_cropped_dir = self.rhs_normalized_cropped_wd
-            )
 
+            # try to find better first and last pairs
             first_lhs, first_rhs = matching_pairs[0]
             last_lhs, last_rhs = matching_pairs[-1]
             first_lhs_path = lhs_normalized_cropped_frames[first_lhs]["path"]
@@ -665,7 +676,13 @@ class PairMatcher:
             cutoff = self._calculate_cutoff(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
 
             # try to locate first and last common frames
-            first, last = self._look_for_boundaries(lhs_normalized_cropped_frames, rhs_normalized_cropped_frames, matching_pairs[0], matching_pairs[-1], cutoff)
+            first, last = self._look_for_boundaries(
+                lhs_normalized_cropped_frames,
+                rhs_normalized_cropped_frames,
+                matching_pairs[0],
+                matching_pairs[-1],
+                cutoff,
+            )
 
             if first == prev_first and last == prev_last:
                 break
@@ -677,7 +694,16 @@ class PairMatcher:
                     matching_pairs = [*matching_pairs, last]
                     prev_last = last
 
-            debug.dump_matches(matching_pairs, f"improving boundaries")
+                # improve frames set basing on new data
+                lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self._crop_both_sets(
+                    pairs_with_timestamps = matching_pairs,
+                    lhs_frames = lhs_normalized_frames,
+                    rhs_frames = rhs_normalized_frames,
+                    lhs_cropped_dir = self.lhs_normalized_cropped_wd,
+                    rhs_cropped_dir = self.rhs_normalized_cropped_wd
+                )
+
+            debug.dump_matches(matching_pairs, "improving boundaries")
 
         self.logger.debug("Status after boundaries lookup:\n")
         self.logger.debug(PairMatcher.summarize_segments(matching_pairs, self.lhs_fps, self.rhs_fps))

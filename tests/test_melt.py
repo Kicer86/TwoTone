@@ -13,6 +13,7 @@ from typing import Dict, Iterator
 from twotone.tools.utils import generic_utils, process_utils, video_utils, subtitles_utils
 from twotone.tools.melt import Melter
 from twotone.tools.melt.melt import StaticSource, StreamsPicker
+from twotone.tools.melt.pair_matcher import PairMatcher
 from twotone.tools.utils.files_utils import ScopedDirectory
 from unittest.mock import patch
 from common import (
@@ -395,8 +396,8 @@ class MeltingTest(TwoToneTestCase):
 
 
     def test_same_multiscene_video_duplicate_detection(self):
-        file1 = add_to_test_dir(self.wd.path, str(self.sample_video_file))
-        file2 = add_to_test_dir(self.wd.path, str(self.sample_vhs_video_file))
+        file1 = add_to_test_dir(self.wd.path, self.sample_video_file)
+        file2 = add_to_test_dir(self.wd.path, self.sample_vhs_video_file)
 
         files = [file1, file2]
 
@@ -477,6 +478,24 @@ class MeltingTest(TwoToneTestCase):
             self.assertEqual(len(output_file_data["audio"]), 2)
             self.assertEqual(output_file_data["audio"][0]["language"], "deu")
             self.assertEqual(output_file_data["audio"][1]["language"], "nor")
+
+
+    def test_pair_matcher_precision(self):
+        file1 = add_to_test_dir(self.wd.path, self.sample_video_file)
+        file2 = add_to_test_dir(self.wd.path, self.sample_vhs_video_file)
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1, file2, logging.getLogger("PM"))
+        mappings, _, _ = pair_matcher.create_segments_mapping()
+
+        self.assertTrue(len(mappings) >= 2)
+        first_pair = mappings[0]
+        last_pair = mappings[-1]
+
+        self.assertTrue(first_pair[0] <= 16162)
+        self.assertTrue(first_pair[1] <= 15245)
+        self.assertTrue(last_pair[0] >= 46722)
+        self.assertTrue(last_pair[1] >= 44491)
 
 
     def test_languages_ordering(self):

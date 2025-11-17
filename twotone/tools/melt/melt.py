@@ -139,7 +139,7 @@ class Melter:
             ratio = right_duration / left_duration if left_duration else 1.0
 
             if abs(ratio - 1.0) > 0.10:
-                self.logger.error(f"Segment {idx} duration mismatch exceeds 10%")
+                raise ValueError(f"Segment {idx} duration mismatch exceeds 10%")
 
             raw_cut = os.path.join(wd, f"cut_{idx}.flac")
             scaled_cut = os.path.join(wd, f"scaled_{idx}.flac")
