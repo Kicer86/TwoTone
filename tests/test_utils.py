@@ -30,7 +30,6 @@ class UtilsTests(TwoToneTestCase):
 
         for stream_type, expected_stream_list in expected_streams.items():
             self.assertIn(stream_type, actual_streams, f"missing stream type '{stream_type}'")
-
             actual_stream_list = actual_streams[stream_type]
             self.assertEqual(
                 len(expected_stream_list),
@@ -42,14 +41,32 @@ class UtilsTests(TwoToneTestCase):
                 self.assertDictSubset(expected_stream, actual_stream_list[idx], f"{stream_type}[{idx}]")
 
 
-    def test_subtitle_detection(self):
-        self._test_content("12:34:56:test", True)
-        self._test_content("{1}{2}test", True)
-        self._test_content("12:34:56:test\n21:01:45:test2", True)
-        self._test_content("12:34:5:test", False)
-        self._test_content("12:test", False)
-        self._test_content("{12}:test", False)
-        self._test_content("{a}{b}:test", False)
+    subtitle_samples = [
+        (
+            "SubRip (SRT)",
+            "1\n00:00:01,000 --> 00:00:03,000\nHello world\n\n",
+            True,
+        ),
+        (
+            "MicroDVD",
+            "{0}{72}Hello world",
+            True,
+        ),
+        (
+            "WebVTT",
+            "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello world\n",
+            True,
+        ),
+        (
+            "Plain text file",
+            "This is just a plain text file, not subtitles.",
+            False,
+        ),
+    ]
+
+    @parameterized.expand(subtitle_samples)
+    def test_subtitle_detection(self, name, content, valid):
+        self._test_content(content, valid)
 
 
     test_videos = [
@@ -310,6 +327,7 @@ class UtilsTests(TwoToneTestCase):
         expected_streams = remove_key(expected_streams, "uid")
 
         self.assertEqual(expected_streams, file_info)
+
 
 if __name__ == '__main__':
     unittest.main()

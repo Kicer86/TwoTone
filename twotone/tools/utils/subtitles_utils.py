@@ -2,6 +2,7 @@ import cchardet
 import logging
 import math
 import os
+import pysubs2
 import re
 
 from dataclasses import dataclass
@@ -56,37 +57,35 @@ def file_encoding(file: str) -> str:
     return encoding
 
 
+def _open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> Optional[pysubs2.SSAFile]:
+    try:
+        encoding = file_encoding(file)
+        subs = pysubs2.load(file, encoding = encoding, fps = fps)
+        return subs
+
+    except Exception as e:
+        logging.debug(f"Error opening subtitle file {file}: {e}")
+        return None
+
+
 def is_subtitle(file: str) -> bool:
     logging.debug(f"Checking file {file} for being subtitle")
-    ext = file[-4:]
 
-    if ext == ".srt" or ext == ".sub" or ext == ".txt":
-        file = os.path.realpath(file)
-        encoding = file_encoding(file)
-
-        if encoding:
-            logging.debug(f"\tOpening file with encoding {encoding}")
-
-            with open(file, 'r', encoding=encoding) as text_file:
-                head = "".join(islice(text_file, 5)).strip()
-
-                for subtitle_format in [subtitle_format1, microdvd_time_pattern, weird_microdvd_time_pattern, subtitle_format2]:
-                    if subtitle_format.match(head):
-                        logging.debug("\tSubtitle format detected")
-                        return True
-
-    logging.debug("\tNot a subtitle file")
-    return False
+    subs = _open_subtitle_file(file)
+    if subs:
+        logging.debug("\tSubtitle format detected")
+        return True
+    else:
+        logging.debug("\tNot a subtitle file")
+        return False
 
 
 def is_subtitle_microdvd(subtitle: SubtitleFile) -> bool:
-    with open(subtitle.path, 'r', encoding=subtitle.encoding) as text_file:
-        head = "".join(islice(text_file, 5)).strip()
-
-        if microdvd_time_pattern.match(head):
-            return True
-
-    return False
+    subs = _open_subtitle_file(subtitle.path)
+    if subs and subs.format_name.lower() == "microdvd":
+        return True
+    else:
+        return False
 
 
 def guess_language(path: str, encoding: str) -> str:
