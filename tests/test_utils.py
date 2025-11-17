@@ -129,7 +129,7 @@ class UtilsTests(TwoToneTestCase):
                     }],
                     'audio':
                     [{
-                        'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
+                        'language': 'eng', 'length': None, 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
                     }]
                 }
             }
@@ -149,7 +149,7 @@ class UtilsTests(TwoToneTestCase):
                     }],
                     'audio':
                     [{
-                        'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
+                        'language': 'eng', 'length': None, 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
                     }]
                 }
             }
@@ -190,7 +190,7 @@ class UtilsTests(TwoToneTestCase):
                     }],
                     'audio':
                     [{
-                        'language': 'und', 'channels': 2, 'sample_rate': 44100, 'tid': 1, 'uid': None,
+                        'language': 'und', 'length': None, 'channels': 2, 'sample_rate': 44100, 'tid': 1, 'uid': None,
                     }]
                 }
             }
@@ -226,7 +226,7 @@ class UtilsTests(TwoToneTestCase):
                     }],
                     'audio':
                     [{
-                        'codec': 'aac', 'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
+                        'codec': 'aac', 'language': 'eng', 'length': None, 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
                         'default': True, 'forced': False,
                     }]
                 }
@@ -248,7 +248,7 @@ class UtilsTests(TwoToneTestCase):
                     }],
                     'audio':
                     [{
-                        'codec': 'aac', 'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
+                        'codec': 'aac', 'language': 'eng', 'length': None, 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
                         'default': True, 'forced': False,
                     }]
                 }
@@ -292,7 +292,7 @@ class UtilsTests(TwoToneTestCase):
                     }],
                     'audio':
                     [{
-                        'codec': 'aac', 'language': 'und', 'channels': 2, 'sample_rate': 44100, 'tid': 1, 'uid': None,
+                        'codec': 'aac', 'language': 'und', 'length': None, 'channels': 2, 'sample_rate': 44100, 'tid': 1, 'uid': None,
                         'default': True, 'forced': False,
                     }]
                 }
