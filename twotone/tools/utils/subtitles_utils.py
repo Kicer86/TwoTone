@@ -2,14 +2,13 @@ import cchardet
 import logging
 import math
 import os
+import py3langid as langid
 import pysubs2
 import re
 
 from dataclasses import dataclass
 from itertools import islice
 from typing import Dict, Optional, List
-
-import py3langid as langid
 
 from .generic_utils import ms_to_time, time_to_ms
 from . import process_utils, video_utils
