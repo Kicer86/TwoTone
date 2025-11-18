@@ -1,12 +1,11 @@
 
 import os
-import re
 import unittest
 
-from twotone.tools.utils import process_utils, subtitles_utils, generic_utils
-from common import TwoToneTestCase, list_files, add_test_media, generate_microdvd_subtitles, run_twotone, extract_subtitles
+import pysubs2
 
-subrip_time_pattern = re.compile(r'(\d+:\d{2}:\d{2},\d{3}) --> (\d+:\d{2}:\d{2},\d{3})')
+from twotone.tools.utils import subtitles_utils
+from common import TwoToneTestCase, list_files, add_test_media, generate_microdvd_subtitles, run_twotone, extract_subtitles
 
 class SubtitlesConversion(TwoToneTestCase):
     def test_microdvd_subtitles_with_nondefault_fps(self):
@@ -23,23 +22,15 @@ class SubtitlesConversion(TwoToneTestCase):
         subtitles_path = os.path.join(self.wd.path, "subtitles.srt")
         extract_subtitles(video, subtitles_path)
 
-        lines = 0
-        with open(subtitles_path, mode='r') as subtitles_file:
-            ms_time = 0
-            for line in subtitles_file:
-                match = subrip_time_pattern.match(line.strip())
-                if match:
-                    lines += 1
-                    start_time, end_time = match.groups()
-                    start_ms = generic_utils.time_to_ms(start_time)
-                    end_ms = generic_utils.time_to_ms(end_time)
+        subs = pysubs2.load(subtitles_path)
+        self.assertEqual(len(subs), 25)
 
-                    # one millisecond difference is acceptable (hence delta = 1)
-                    self.assertAlmostEqual(start_ms, ms_time, delta = 1)
-                    self.assertAlmostEqual(end_ms, ms_time + 500, delta = 1)
-                    ms_time += 1000
-
-            self.assertEqual(lines, 25)
+        ms_time = 0
+        for event in subs:
+            # one millisecond difference is acceptable (hence delta = 1)
+            self.assertAlmostEqual(event.start, ms_time, delta=1)
+            self.assertAlmostEqual(event.end, ms_time + 500, delta=1)
+            ms_time += 1000
 
 
     def test_microdvd_subtitles_with_default_fps(self):
@@ -56,23 +47,15 @@ class SubtitlesConversion(TwoToneTestCase):
         subtitles_path = os.path.join(self.wd.path, "subtitles.srt")
         extract_subtitles(video, subtitles_path)
 
-        lines = 0
-        with open(subtitles_path, mode='r') as subtitles_file:
-            ms_time = 0
-            for line in subtitles_file:
-                match = subrip_time_pattern.match(line.strip())
-                if match:
-                    lines += 1
-                    start_time, end_time = match.groups()
-                    start_ms = generic_utils.time_to_ms(start_time)
-                    end_ms = generic_utils.time_to_ms(end_time)
+        subs = pysubs2.load(subtitles_path)
+        self.assertEqual(len(subs), 1)
 
-                    # one millisecond difference is acceptable (hence delta = 1)
-                    self.assertAlmostEqual(start_ms, ms_time, delta = 1)
-                    self.assertAlmostEqual(end_ms, ms_time + 500, delta = 1)
-                    ms_time += 1000
-
-            self.assertEqual(lines, 1)
+        ms_time = 0
+        for event in subs:
+            # one millisecond difference is acceptable (hence delta = 1)
+            self.assertAlmostEqual(event.start, ms_time, delta=1)
+            self.assertAlmostEqual(event.end, ms_time + 500, delta=1)
+            ms_time += 1000
 
 
 if __name__ == '__main__':
