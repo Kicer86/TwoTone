@@ -77,7 +77,7 @@ def is_subtitle(file: str) -> bool:
 
 def is_subtitle_microdvd(subtitle: SubtitleFile) -> bool:
     subs = open_subtitle_file(subtitle.path)
-    if subs and subs.format.lower() == "microdvd":
+    if subs and subs.format and subs.format.lower() == "microdvd":
         return True
     else:
         return False
@@ -164,6 +164,7 @@ def build_audio_from_path(path: str, language: str | None = "") -> Dict:
 def fix_subtitles_fps(input_path: str, output_path: str, subtitles_fps: float):
     """fix subtitle's fps"""
     subs = open_subtitle_file(input_path)
-    subs.transform_framerate(ffmpeg_default_fps, subtitles_fps)
 
-    subs.save(output_path)
+    if subs:
+        subs.transform_framerate(ffmpeg_default_fps, subtitles_fps)
+        subs.save(output_path)

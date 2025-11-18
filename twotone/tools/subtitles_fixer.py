@@ -27,7 +27,7 @@ class Fixer(generic_utils.InterruptibleProcess):
         self.logger.error("Cannot fix the file, no idea how to do it.")
         return None
 
-    def _long_tail_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> str:
+    def _long_tail_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> pysubs2.SSAFile:
         last_timestamp = content[-1]
         time_from = last_timestamp.start
         time_to = last_timestamp.end
@@ -38,13 +38,13 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         return content
 
-    def _fps_scale_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> str:
+    def _fps_scale_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> pysubs2.SSAFile:
         target_fps = generic_utils.fps_str_to_float(video_track["fps"])
         content.transform_framerate(subtitles_utils.ffmpeg_default_fps, target_fps)
 
         return content
 
-    def _get_resolver(self, content: pysubs2.SSAFile, video_length: int) -> Callable[[dict, str], str | None]:
+    def _get_resolver(self, content: pysubs2.SSAFile, video_length: int) -> Callable[[dict, pysubs2.SSAFile], pysubs2.SSAFile | None]:
         if len(content) == 0:
             return self._no_resolver
 
@@ -65,6 +65,9 @@ class Fixer(generic_utils.InterruptibleProcess):
         video_track = video_info["video"][0]
 
         subs = subtitles_utils.open_subtitle_file(broken_subtitle, fps = video_track["fps"])
+        if not subs:
+            self.logger.error(f"Failed to open subtitles file: {broken_subtitle}")
+            return False
 
         # figure out what is broken
         resolver = self._get_resolver(subs, video_track["length"])
