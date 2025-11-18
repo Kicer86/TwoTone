@@ -30,7 +30,6 @@ class Fixer(generic_utils.InterruptibleProcess):
     def _long_tail_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> pysubs2.SSAFile:
         last_timestamp = content[-1]
         time_from = last_timestamp.start
-        time_to = last_timestamp.end
         length = video_track["length"]
         new_time_to = min(time_from + 5000, length)
 
@@ -146,9 +145,6 @@ class Fixer(generic_utils.InterruptibleProcess):
 
     def _check_if_broken(self, video_file: str) -> tuple[dict, list[int]] | None:
         self.logger.debug(f"Processing file {video_file}")
-
-        def diff(a, b):
-            return abs(a - b) / max(a, b)
 
         video_info = video_utils.get_video_data(video_file)
         video_info["path"] = video_file

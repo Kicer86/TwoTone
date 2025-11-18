@@ -2,7 +2,6 @@ import cchardet
 import logging
 import py3langid as langid
 import pysubs2
-import re
 
 from dataclasses import dataclass
 from typing import Dict, Optional, List
@@ -25,14 +24,6 @@ class Subtitle:
     length: int | None
     tid: int
     format: str
-
-
-subtitle_format1 = re.compile("[0-9]{1,2}:[0-9]{2}:[0-9]{2}:.*")
-subtitle_format2 = re.compile("(?:0|1)\n[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> "
-                              "[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}\n", flags=re.MULTILINE)
-microdvd_time_pattern = re.compile("\\{[0-9]+\\}\\{[0-9]+\\}.*")
-weird_microdvd_time_pattern = re.compile("\\[[0-9]+\\]\\[[0-9]+\\].*")                          # [] instead of {}
-subrip_time_pattern = re.compile(r'(\d+:\d{2}:\d{2},\d{3}) --> (\d+:\d{2}:\d{2},\d{3})')
 
 ffmpeg_default_fps = 23.976  # constant taken from https://trac.ffmpeg.org/ticket/3287
 

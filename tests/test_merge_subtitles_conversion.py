@@ -1,10 +1,12 @@
 
 import os
+import re
 import unittest
 
 from twotone.tools.utils import process_utils, subtitles_utils, generic_utils
 from common import TwoToneTestCase, list_files, add_test_media, generate_microdvd_subtitles, run_twotone, extract_subtitles
 
+subrip_time_pattern = re.compile(r'(\d+:\d{2}:\d{2},\d{3}) --> (\d+:\d{2}:\d{2},\d{3})')
 
 class SubtitlesConversion(TwoToneTestCase):
     def test_microdvd_subtitles_with_nondefault_fps(self):
@@ -25,7 +27,7 @@ class SubtitlesConversion(TwoToneTestCase):
         with open(subtitles_path, mode='r') as subtitles_file:
             ms_time = 0
             for line in subtitles_file:
-                match = subtitles_utils.subrip_time_pattern.match(line.strip())
+                match = subrip_time_pattern.match(line.strip())
                 if match:
                     lines += 1
                     start_time, end_time = match.groups()
@@ -58,7 +60,7 @@ class SubtitlesConversion(TwoToneTestCase):
         with open(subtitles_path, mode='r') as subtitles_file:
             ms_time = 0
             for line in subtitles_file:
-                match = subtitles_utils.subrip_time_pattern.match(line.strip())
+                match = subrip_time_pattern.match(line.strip())
                 if match:
                     lines += 1
                     start_time, end_time = match.groups()
