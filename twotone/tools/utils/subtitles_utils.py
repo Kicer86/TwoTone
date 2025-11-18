@@ -81,7 +81,7 @@ def is_subtitle(file: str) -> bool:
 
 def is_subtitle_microdvd(subtitle: SubtitleFile) -> bool:
     subs = _open_subtitle_file(subtitle.path)
-    if subs and subs.format_name.lower() == "microdvd":
+    if subs and subs.format.lower() == "microdvd":
         return True
     else:
         return False
