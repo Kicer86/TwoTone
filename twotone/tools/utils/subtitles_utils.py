@@ -1,16 +1,12 @@
 import cchardet
 import logging
-import math
-import os
 import py3langid as langid
 import pysubs2
 import re
 
 from dataclasses import dataclass
-from itertools import islice
 from typing import Dict, Optional, List
 
-from .generic_utils import ms_to_time, time_to_ms
 from . import process_utils, video_utils
 
 
@@ -56,7 +52,7 @@ def file_encoding(file: str) -> str:
     return encoding
 
 
-def _open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> Optional[pysubs2.SSAFile]:
+def open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> Optional[pysubs2.SSAFile]:
     try:
         encoding = file_encoding(file)
         subs = pysubs2.load(file, encoding = encoding, fps = fps)
@@ -70,7 +66,7 @@ def _open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> Optional[
 def is_subtitle(file: str) -> bool:
     logging.debug(f"Checking file {file} for being subtitle")
 
-    subs = _open_subtitle_file(file)
+    subs = open_subtitle_file(file)
     if subs:
         logging.debug("\tSubtitle format detected")
         return True
@@ -80,7 +76,7 @@ def is_subtitle(file: str) -> bool:
 
 
 def is_subtitle_microdvd(subtitle: SubtitleFile) -> bool:
-    subs = _open_subtitle_file(subtitle.path)
+    subs = open_subtitle_file(subtitle.path)
     if subs and subs.format.lower() == "microdvd":
         return True
     else:
@@ -165,30 +161,9 @@ def build_audio_from_path(path: str, language: str | None = "") -> Dict:
     return {"path": path, "language": language}
 
 
-def alter_subrip_subtitles_times(content: str, multiplier: float) -> str:
-    def multiply_time(match):
-        time_from, time_to = map(time_to_ms, match.groups())
-        time_from = int(time_from * multiplier)
-        time_to = int(time_to * multiplier)
-
-        time_from_srt = ms_to_time(time_from)
-        time_to_srt = ms_to_time(time_to)
-
-        return f"{time_from_srt} --> {time_to_srt}"
-
-    content = subrip_time_pattern.sub(multiply_time, content)
-
-    return content
-
-
 def fix_subtitles_fps(input_path: str, output_path: str, subtitles_fps: float):
     """fix subtitle's fps"""
-    multiplier = ffmpeg_default_fps / subtitles_fps
+    subs = open_subtitle_file(input_path)
+    subs.transform_framerate(ffmpeg_default_fps, subtitles_fps)
 
-    if math.isclose(multiplier, 1, rel_tol=0.001):
-        multiplier = 1
-
-    with open(input_path, 'r', encoding='utf-8') as infile, open(output_path, 'w', encoding='utf-8') as outfile:
-        content = infile.read()
-        content = alter_subrip_subtitles_times(content, multiplier)
-        outfile.write(content)
+    subs.save(output_path)

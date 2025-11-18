@@ -2,8 +2,8 @@
 import argparse
 import logging
 import os
-import shutil
-import tempfile
+import pysubs2
+
 from overrides import override
 from tqdm import tqdm
 from typing import Callable
@@ -23,37 +23,35 @@ class Fixer(generic_utils.InterruptibleProcess):
         for broken_video in broken_videos_info:
             self.logger.info(f"{len(broken_video[1])} broken subtitle(s) in {broken_video[0]['path']} found")
 
-    def _no_resolver(self, video_track: dict, content: str) -> None:
+    def _no_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> None:
         self.logger.error("Cannot fix the file, no idea how to do it.")
         return None
 
-    def _long_tail_resolver(self, video_track: dict, content: str) -> str:
-        timestamps = list(subtitles_utils.subrip_time_pattern.finditer(content))
-        last_timestamp = timestamps[-1]
-        time_from, time_to = map(generic_utils.time_to_ms, last_timestamp.groups())
+    def _long_tail_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> str:
+        last_timestamp = content[-1]
+        time_from = last_timestamp.start
+        time_to = last_timestamp.end
         length = video_track["length"]
         new_time_to = min(time_from + 5000, length)
 
-        begin_pos = last_timestamp.start(1)
-        end_pos = last_timestamp.end(2)
+        content[-1].end = new_time_to
 
-        content = content[:begin_pos] + f"{generic_utils.ms_to_time(time_from)} --> {generic_utils.ms_to_time(new_time_to)}" + content[end_pos:]
         return content
 
-    def _fps_scale_resolver(self, video_track: dict, content: str) -> str:
+    def _fps_scale_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> str:
         target_fps = generic_utils.fps_str_to_float(video_track["fps"])
-        multiplier = subtitles_utils.ffmpeg_default_fps / target_fps
+        content.transform_framerate(subtitles_utils.ffmpeg_default_fps, target_fps)
 
-        return subtitles_utils.alter_subrip_subtitles_times(content, multiplier)
+        return content
 
-    def _get_resolver(self, content: str, video_length: int) -> Callable[[dict, str], str | None]:
-        timestamps = list(subtitles_utils.subrip_time_pattern.finditer(content))
-        if len(timestamps) == 0:
+    def _get_resolver(self, content: pysubs2.SSAFile, video_length: int) -> Callable[[dict, str], str | None]:
+        if len(content) == 0:
             return self._no_resolver
 
         # check if last subtitle is beyond limit
-        last_timestamp = timestamps[-1]
-        time_from, time_to = map(generic_utils.time_to_ms, last_timestamp.groups())
+        last_timestamp = content[-1]
+        time_from = last_timestamp.start
+        time_to = last_timestamp.end
 
         if time_from < video_length and time_to > video_length:
             return self._long_tail_resolver
@@ -66,19 +64,17 @@ class Fixer(generic_utils.InterruptibleProcess):
     def _fix_subtitle(self, broken_subtitle: str, video_info: dict) -> bool:
         video_track = video_info["video"][0]
 
-        with open(broken_subtitle, 'r', encoding='utf-8') as file:
-            content = file.read()
+        subs = subtitles_utils.open_subtitle_file(broken_subtitle, fps = video_track["fps"])
 
         # figure out what is broken
-        resolver = self._get_resolver(content, video_track["length"])
-        new_content = resolver(video_track, content)
+        resolver = self._get_resolver(subs, video_track["length"])
+        new_content = resolver(video_track, subs)
 
         if new_content is None:
             self.logger.warning("Subtitles not fixed")
             return False
         else:
-            with open(broken_subtitle, 'w', encoding='utf-8') as file:
-                file.write(new_content)
+            new_content.save(broken_subtitle)
             return True
 
     def _extract_all_subtitles(self, video_file: str, subtitles: list[dict], wd: str) -> list[subtitles_utils.SubtitleFile]:
