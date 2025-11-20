@@ -6,13 +6,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Union, Tuple
 
-
-
 from . import language_utils, process_utils
 from .generic_utils import fps_str_to_float, time_to_ms
 from .subtitles_utils import SubtitleFile
-
-
 
 
 def is_video(file: str) -> bool:
@@ -235,7 +231,13 @@ def get_video_data(path: str) -> Dict:
         else:
             language = None
 
-        return language_utils.unify_lang(language) if language else None
+        try:
+            if language:
+                language = language_utils.unify_lang(language)
+        except Exception:
+            language = None
+
+        return language
 
     output_json = get_video_full_info(path)
 
@@ -352,15 +354,6 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
 
     info = get_video_full_info_mkvmerge(path)
 
-    container_props = info.get("container", {}).get("properties", {})
-    duration_ms = None
-    if "duration" in container_props:
-        try:
-            timestamp_scale = container_props.get("timestamp_scale", 1)
-            duration_ms = int(float(container_props["duration"]) / timestamp_scale)
-        except (TypeError, ValueError):
-            duration_ms = None
-
     # process streams/tracks
     streams = defaultdict(list)
     ffprobe_info = get_video_data(path) if enrich else None
@@ -371,10 +364,26 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
         props = track.get("properties", {})
         uid = props.get("uid", None)
 
+        length_ms = None
+        tag_duration = props.get("tag_duration")
+        if tag_duration is not None:
+            length_ms = time_to_ms(tag_duration)
+
         language = props.get("language")
-        language = language_utils.unify_lang(language) if language else None
+        try:
+            if language:
+                language = language_utils.unify_lang(language)
+        except Exception:
+            language = None
 
         track_initial_data = find_ffprobe_track(tid, ffprobe_info)
+
+        # Prepare common data for all stream types first
+        stream_data = {
+            "tid": tid,
+            "uid": uid,
+            "length": length_ms,
+        }
 
         if track_type == "video":
             dims = props.get("pixel_dimensions") or props.get("display_dimensions")
@@ -398,43 +407,45 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
 
             fps_str = str(fps) if fps else track_initial_data.get("fps", "0") if track_initial_data else "0"
 
-            streams["video"].append(
-                merge_properties(track_initial_data, {
-                    "fps": fps_str,
-                    "length": duration_ms,
-                    "width": width,
-                    "height": height,
-                    "bitrate": None,
-                    "codec": track.get("codec"),
-                    "tid": tid,
-                    "uid": uid,
-                })
-            )
+            stream_data.update({
+                "fps": fps_str,
+                "width": width,
+                "height": height,
+                "bitrate": None,
+                "codec": track.get("codec"),
+            })
+
+            streams["video"].append(merge_properties(track_initial_data, stream_data))
+
         elif track_type == "audio":
             channels = props.get("audio_channels")
             sample_rate = props.get("audio_sampling_frequency")
 
-            streams["audio"].append(
-                merge_properties(track_initial_data, {
-                    "language": language,
-                    "channels": channels,
-                    "sample_rate": sample_rate,
-                    "tid": tid,
-                    "uid": uid,
-                })
-            )
+            stream_data.update({
+                "language": language,
+                "channels": channels,
+                "sample_rate": sample_rate,
+            })
+
+            streams["audio"].append(merge_properties(track_initial_data, stream_data))
+
         elif track_type in ("subtitles", "subtitle"):
-            streams["subtitle"].append(
-                merge_properties(track_initial_data, {
-                    "language": language,
-                    "default": props.get("default_track", False),
-                    "length": duration_ms,
-                    "tid": tid,
-                    "uid": uid,
-                    "format": track.get("codec"),
-                    "name": props.get("track_name"),
-                })
-            )
+            # Per-track duration for subtitles as well
+            length_ms = None
+            tag_duration = props.get("tag_duration")
+            if tag_duration is not None:
+                try:
+                    length_ms = int(round(float(tag_duration) / 1_000_000))
+                except (TypeError, ValueError):
+                    length_ms = None
+            stream_data.update({
+                "language": language,
+                "default": props.get("default_track", False),
+                "format": track.get("codec"),
+                "name": props.get("track_name"),
+            })
+
+            streams["subtitle"].append(merge_properties(track_initial_data, stream_data))
 
     # attachments
     attachments = []
