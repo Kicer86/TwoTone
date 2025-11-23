@@ -1,5 +1,4 @@
 
-import logging
 import unittest
 import tempfile
 
@@ -7,7 +6,6 @@ from twotone.tools.utils import subtitles_utils, video_utils
 
 from common import (
     TwoToneTestCase,
-    add_test_media,
     hashes,
     current_path,
     generate_microdvd_subtitles,
