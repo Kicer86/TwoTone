@@ -9,21 +9,25 @@ from typing import Dict, Optional, List
 from . import process_utils, video_utils
 
 
-@dataclass
-class SubtitleFile:
-    path: str
-    language: str | None
-    encoding: str
-    comment: str | None = None
+@dataclass(kw_only=True)
+class SubtitleCommonData:
+    name: str | None = None
+    language: str | None = None
+    default: int | bool = False
+    format: str | None = None
 
+# for subtitle tracks in files
+@dataclass(kw_only=True)
+class Subtitle(SubtitleCommonData):
+    length: int | None = None
+    tid: int | None = None
+    format: str | None = None
 
-@dataclass
-class Subtitle:
-    language: str
-    default: int | bool
-    length: int | None
-    tid: int
-    format: str
+# for files
+@dataclass(kw_only=True)
+class SubtitleFile(SubtitleCommonData):
+    path: str | None = None
+    encoding: str | None = None
 
 ffmpeg_default_fps = 23.976  # constant taken from https://trac.ffmpeg.org/ticket/3287
 
@@ -145,7 +149,7 @@ def build_subtitle_from_path(path: str, language: str | None = "") -> SubtitleFi
     encoding = file_encoding(path)
     language = guess_language(path, encoding) if language is None else language
 
-    return SubtitleFile(path, language, encoding)
+    return SubtitleFile(path = path, language = language, encoding = encoding)
 
 
 def build_audio_from_path(path: str, language: str | None = "") -> Dict:

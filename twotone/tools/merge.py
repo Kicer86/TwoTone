@@ -157,7 +157,7 @@ class Merge(generic_utils.InterruptibleProcess):
         else:
             raise RuntimeError(f"ffmpeg exited with unexpected error:\n{status.stderr}")
 
-        converted_subtitle = subtitles_utils.SubtitleFile(output_file, subtitle.language, "utf-8", subtitle.comment)
+        converted_subtitle = subtitles_utils.SubtitleFile(path = output_file, language = subtitle.language, encoding = "utf-8", name = subtitle.name)
         return converted_subtitle
 
     def _merge(self, input_video: str, subtitles: list[subtitles_utils.SubtitleFile]) -> None:
@@ -188,13 +188,13 @@ class Merge(generic_utils.InterruptibleProcess):
                 for s in subs:
                     subtitle_name = Path(s.path).stem
                     if not subtitle_name.lower().startswith(video_name.lower()):
-                        s.comment = subtitle_name
+                        s.name = subtitle_name
 
         temporary_subtitles_dir = self.working_dir
         prepared_subtitles = []
         for subtitle in sorted_subtitles:
-            if subtitle.comment:
-                self.logger.info(f"\t[{subtitle.language}][{subtitle.comment}]: {subtitle.path}")
+            if subtitle.name:
+                self.logger.info(f"\t[{subtitle.language}][{subtitle.name}]: {subtitle.path}")
             else:
                 self.logger.info(f"\t[{subtitle.language}]: {subtitle.path}")
             input_files.append(subtitle.path)

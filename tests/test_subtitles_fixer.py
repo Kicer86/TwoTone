@@ -33,7 +33,7 @@ def create_broken_video_with_scaled_subtitle_timings(output_video_path: str, inp
         srt_subtitle_path = f"{subtitle_dir}/sub.srt"
         status = process_utils.start_process("ffmpeg", ["-y", "-i", subtitle_path, srt_subtitle_path])
 
-        video_utils.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [subtitles_utils.SubtitleFile(srt_subtitle_path, "eng", "utf8")])
+        video_utils.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [subtitles_utils.SubtitleFile(path = srt_subtitle_path, language = "eng", encoding = "utf8")])
 
 
 def create_broken_video_with_too_long_last_subtitle(output_video_path: str, input_video: str):
@@ -56,7 +56,7 @@ def create_broken_video_with_too_long_last_subtitle(output_video_path: str, inpu
             ],
         )
 
-        video_utils.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [subtitles_utils.SubtitleFile(subtitle_path, "eng", "utf8")])
+        video_utils.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [subtitles_utils.SubtitleFile(path = subtitle_path, language = "eng", encoding = "utf8")])
 
 
 def create_broken_video_with_incompatible_subtitles(output_video_path: str, input_video: str):
