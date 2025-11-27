@@ -123,14 +123,8 @@ class SubtitlesFixer(TwoToneTestCase):
             info = video_utils.get_video_data(video_path)
             subtitles = info.get("subtitle", [])
             video_length = info["video"][0]["length"]
-            metadata = [
-                {
-                    "language": s.get("language"),
-                    "title": s.get("title"),
-                    "default": s.get("default"),
-                }
-                for s in subtitles
-            ]
+            metadata = [{k: v for k, v in subtitle.items() if k not in ["length"]} for subtitle in subtitles]
+
             return metadata, video_length
 
         metadata_before, video_length = collect_subtitle_metadata(output_video_path)
