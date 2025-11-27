@@ -1,5 +1,6 @@
 import cchardet
 import logging
+import mimetypes
 import py3langid as langid
 import pysubs2
 
@@ -49,9 +50,13 @@ def file_encoding(file: str) -> str:
 
 def open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> Optional[pysubs2.SSAFile]:
     try:
-        encoding = file_encoding(file)
-        subs = pysubs2.load(file, encoding = encoding, fps = fps)
-        return subs
+        mime = mimetypes.guess_type(file)
+        if mime and mime[0].startswith("text/"):
+            encoding = file_encoding(file)
+            subs = pysubs2.load(file, encoding = encoding, fps = fps)
+            return subs
+        else:
+            return None
 
     except Exception as e:
         logging.debug(f"Error opening subtitle file {file}: {e}")
