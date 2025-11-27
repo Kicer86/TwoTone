@@ -94,13 +94,11 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         tid_to_path = subtitles_utils.extract_subtitle_to_temp(video_file, tids, base_tmp, logger=self.logger)
 
-        result: list[subtitles_utils.SubtitleFile] = []
-        for s in subtitles:
-            tid = s["tid"]
+        result: dict[str, subtitles_utils.Subtitle] = {}
+        for subtitle in subtitles:
+            tid = subtitle["tid"]
             path = tid_to_path[tid]
-            # Keep language as reported by container (may be None)
-            lang = s.get("language")
-            result.append(subtitles_utils.SubtitleFile(path = path, language = lang, encoding = "utf8"))
+            result[path] = subtitle
 
         return result
 
@@ -120,9 +118,9 @@ class Fixer(generic_utils.InterruptibleProcess):
             self.logger.debug("Extracting subtitles from file")
             subs_info = video_info.get("subtitle", [])
             subtitles = self._extract_all_subtitles(video_file, subs_info, wd_dir)
-            broken_subtitles_paths = [subtitles[i] for i in broken_subtitiles]
+            broken_subtitles_path = [path for path, subtitle in subtitles.items() if subtitle["tid"] in broken_subtitiles]
 
-            status = all(self._fix_subtitle(broken_subtitile.path, video_info) for broken_subtitile in broken_subtitles_paths)
+            status = all(self._fix_subtitle(path, video_info) for path in broken_subtitles_path)
 
             if status:
                 # remove all subtitles from video
@@ -133,7 +131,9 @@ class Fixer(generic_utils.InterruptibleProcess):
                 # add fixed subtitles to video
                 self.logger.debug("Adding fixed subtitles to file")
                 temporaryVideoPath = video_file + ".fixed.mkv"
-                video_utils.generate_mkv(input_video=video_without_subtitles, output_path=temporaryVideoPath, subtitles=subtitles)
+
+                subtitle_files = [subtitles_utils.build_subtitle_from_dict(path, info) for path, info in subtitles.items()]
+                video_utils.generate_mkv(input_video = video_without_subtitles, output_path = temporaryVideoPath, subtitles = subtitle_files)
 
                 # overwrite broken video with fixed one
                 os.replace(temporaryVideoPath, video_file)
@@ -156,17 +156,18 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         broken_subtitiles = []
 
-        for i in range(len(video_info.get("subtitle", []))):
-            subtitle = video_info["subtitle"][i]
+        for subtitle in video_info.get("subtitle", []):
+            tid = subtitle["tid"]
 
             if not subtitle["format"] == "subrip":
                 subtitle_format = subtitle["format"]
-                self.logger.warning(f"Cannot analyse subtitle #{i} of {video_file}: unsupported format '{subtitle_format}'")
+                self.logger.warning(f"Cannot analyse subtitle #{tid} of {video_file}: unsupported format '{subtitle_format}'")
                 continue
 
             length = subtitle["length"]
             if length is not None and length > video_length * 1.001:                 # use 0.1% error margin as for some reason valid subtitles may appear longer than video
-                broken_subtitiles.append(i)
+
+                broken_subtitiles.append(tid)
 
         if len(broken_subtitiles) == 0:
             self.logger.debug("No issues found")
