@@ -157,6 +157,17 @@ def build_subtitle_from_path(path: str, language: str | None = "") -> SubtitleFi
     return SubtitleFile(path = path, language = language, encoding = encoding)
 
 
+def build_subtitle_from_dict(path: str, data: dict) -> SubtitleFile:
+    return SubtitleFile(
+        path = path,
+        language = data["language"],
+        encoding = data.get("encoding", None),
+        name = data["title"],
+        default = data["default"],
+        format = data["format"],
+    )
+
+
 def build_audio_from_path(path: str, language: str | None = "") -> Dict:
     return {"path": path, "language": language}
 
