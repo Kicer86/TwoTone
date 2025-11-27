@@ -1,6 +1,9 @@
 
+import os
 import unittest
 import tempfile
+
+import pysubs2
 
 from twotone.tools.utils import subtitles_utils, video_utils
 
@@ -76,6 +79,31 @@ def create_broken_video_with_incompatible_subtitles(output_video_path: str, inpu
         process_utils.start_process("ffmpeg", ["-i", input_video, "-i", subtitle_path, "-map", "0", "-map", "1", "-c:v", "copy", "-c:a", "copy", output_video_path])
 
 
+def create_broken_video_with_metadata_rich_subtitles(output_video_path: str, input_video: str):
+    with tempfile.TemporaryDirectory() as subtitle_dir:
+        input_video_info = video_utils.get_video_data(input_video)
+        video_length = input_video_info["video"][0]["length"]
+
+        last_start = max(0, video_length - 2000)
+        last_end = video_length * 2
+
+        def _write(idx: int, lang: str | None, title: str, default: bool) -> subtitles_utils.SubtitleFile:
+            path = os.path.join(subtitle_dir, f"sub_{idx}.srt")
+            subs = pysubs2.SSAFile()
+            subs.append(pysubs2.SSAEvent(start = 0, end = 1000, text = f"Intro {idx}"))
+            subs.append(pysubs2.SSAEvent(start = last_start, end = last_end, text = f"Tail {idx}"))
+            subs.save(path, format = "srt")
+            return subtitles_utils.SubtitleFile(path = path, language = lang, encoding = "utf8", name = title, default = default)
+
+        subtitles = [
+            _write(1, "eng", "English commentary", False),
+            _write(2, "pol", "Polish closed captions", True),
+            _write(3, None, "No language track", False),
+        ]
+
+        video_utils.generate_mkv(input_video=input_video, output_path=output_video_path, subtitles=subtitles)
+
+
 class SubtitlesFixer(TwoToneTestCase):
     def test_dry_run_is_respected(self):
         output_video_path = f"{self.wd.path}/test_video.mkv"
@@ -86,6 +114,41 @@ class SubtitlesFixer(TwoToneTestCase):
         hashes_after = hashes(self.wd.path)
 
         self.assertEqual(hashes_before, hashes_after)
+
+    def test_metadata_preserved(self):
+        output_video_path = f"{self.wd.path}/test_video.mkv"
+        create_broken_video_with_metadata_rich_subtitles(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
+
+        def collect_subtitle_metadata(video_path: str):
+            info = video_utils.get_video_data(video_path)
+            subtitles = info.get("subtitle", [])
+            video_length = info["video"][0]["length"]
+            metadata = [
+                {
+                    "language": s.get("language"),
+                    "title": s.get("title"),
+                    "default": s.get("default"),
+                }
+                for s in subtitles
+            ]
+            return metadata, video_length
+
+        metadata_before, video_length = collect_subtitle_metadata(output_video_path)
+
+        run_twotone("subtitles_fix", [self.wd.path], ["-r"])
+
+        metadata_after, _ = collect_subtitle_metadata(output_video_path)
+
+        self.assertEqual(len(metadata_before), len(metadata_after))
+        for before, after in zip(metadata_before, metadata_after):
+            self.assertEqual(before, after)
+
+        # Ensure subtitles are no longer longer than the video itself
+        fixed_info = video_utils.get_video_data(output_video_path)
+        for track in fixed_info.get("subtitle", []):
+            length = track.get("length")
+            if length is not None:
+                self.assertLessEqual(length, video_length * 1.001)
 
     def test_video_with_scaled_subtitle_timings_fixing(self):
         output_video_path = f"{self.wd.path}/test_video.mkv"
