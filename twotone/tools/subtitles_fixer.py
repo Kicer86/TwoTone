@@ -132,8 +132,7 @@ class Fixer(generic_utils.InterruptibleProcess):
                 self.logger.debug("Adding fixed subtitles to file")
                 temporaryVideoPath = video_file + ".fixed.mkv"
 
-                subtitle_files = [subtitles_utils.build_subtitle_from_dict(path, info) for path, info in subtitles.items()]
-                video_utils.generate_mkv(input_video = video_without_subtitles, output_path = temporaryVideoPath, subtitles = subtitle_files)
+                video_utils.generate_mkv(input_video = video_without_subtitles, output_path = temporaryVideoPath, subtitles = subtitles)
 
                 # overwrite broken video with fixed one
                 os.replace(temporaryVideoPath, video_file)
