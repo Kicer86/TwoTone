@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Union, Tuple
 
 from . import language_utils, process_utils, subtitles_utils
 from .generic_utils import fps_str_to_float, time_to_ms
-from .data_structs import SubtitleFile
+from .subtitles_utils import SubtitleFile
 
 
 def is_video(file: str) -> bool:

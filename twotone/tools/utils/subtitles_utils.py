@@ -1,14 +1,32 @@
-
 import cchardet
 import logging
 import mimetypes
 import py3langid as langid
 import pysubs2
 
+from dataclasses import dataclass
 from typing import Dict, Optional
 
-from .data_structs import SubtitleFile
 
+@dataclass(kw_only=True)
+class SubtitleCommonData:
+    name: str | None = None
+    language: str | None = None
+    default: int | bool = False
+    format: str | None = None
+
+# for subtitle tracks in files
+@dataclass(kw_only=True)
+class Subtitle(SubtitleCommonData):
+    length: int | None = None
+    tid: int | None = None
+    format: str | None = None
+
+# for files
+@dataclass(kw_only=True)
+class SubtitleFile(SubtitleCommonData):
+    path: str | None = None
+    encoding: str | None = None
 
 ffmpeg_default_fps = 23.976  # constant taken from https://trac.ffmpeg.org/ticket/3287
 
