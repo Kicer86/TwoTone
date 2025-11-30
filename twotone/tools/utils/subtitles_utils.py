@@ -5,9 +5,8 @@ import mimetypes
 import py3langid as langid
 import pysubs2
 
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 
-from . import process_utils
 from .data_structs import SubtitleFile
 
 
