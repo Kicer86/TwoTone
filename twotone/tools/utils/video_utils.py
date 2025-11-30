@@ -6,7 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Tuple
 
-from . import language_utils, process_utils
+from . import language_utils, process_utils, subtitles_utils
 from .generic_utils import fps_str_to_float, time_to_ms
 from .data_structs import SubtitleFile
 
@@ -551,7 +551,7 @@ def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path:
     return tid_to_path
 
 
-def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | None = None, audios: List[Dict] | None = None, thumbnail: Union[str, None] = None):
+def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | Dict | None = None, audios: List[Dict] | None = None, thumbnail: Union[str, None] = None):
     subtitles = subtitles or []
     audios = audios or []
 
@@ -568,6 +568,9 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
             options.extend(["--default-track", "0:no"])
 
         options.append(audio["path"])
+
+    if isinstance(subtitles, dict):
+        subtitles = [subtitles_utils.build_subtitle_from_dict(path, info) for path, info in subtitles.items()]
 
     for subtitle in subtitles:
         lang = subtitle.language
