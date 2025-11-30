@@ -286,7 +286,7 @@ class MeltingTest(TwoToneTestCase):
                 result[tid] = out
             return result
 
-        with patch("twotone.tools.utils.subtitles_utils.extract_subtitle_to_temp", side_effect=fake_extract), \
+        with patch("twotone.tools.utils.video_utils.extract_subtitle_to_temp", side_effect=fake_extract), \
              patch("twotone.tools.utils.subtitles_utils.file_encoding", return_value="utf-8"), \
              patch("twotone.tools.utils.subtitles_utils.guess_language", return_value="en"):
             interruption = generic_utils.InterruptibleProcess()

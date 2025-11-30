@@ -4,7 +4,7 @@ import os
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Union, Tuple
+from typing import Dict, List, Optional, Union, Tuple
 
 from . import language_utils, process_utils
 from .generic_utils import fps_str_to_float, time_to_ms
@@ -498,6 +498,57 @@ def collect_video_files(path: str, interruptible) -> List[str]:
                 video_files.append(file_path)
 
     return video_files
+
+
+def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path: str, logger: Optional[logging.Logger] = None) -> Dict[int, str]:
+    """Extract subtitle tracks to temporary files.
+
+    - Determines stream formats internally using video metadata.
+    - Appends the track id to the output path: f"{output_base_path}.{tid}.{ext}".
+    - Returns a mapping {tid: output_path} for all requested tids.
+    """
+
+    tids_list: List[int] = list(tids)
+
+    # Map formats to file extensions
+    ext_map = {
+        "subrip": ".srt",
+        "srt": ".srt",
+        "ass": ".ass",
+        "ssa": ".ssa",
+        "webvtt": ".vtt",
+        "mov_text": ".srt",
+        "text": ".srt",
+    }
+
+    # Discover formats using video_utils
+    try:
+        info = get_video_data(video_path)
+        stream_fmt = {s.get("tid"): (s.get("format") or "").lower() for s in info.get("subtitle", [])}
+    except Exception as e:
+        stream_fmt = {}
+        if logger:
+            logger.debug(f"Failed to get stream info for '{video_path}': {e}")
+
+    # Build mkvextract options
+    tid_to_path: Dict[int, str] = {}
+    options = ["tracks", video_path]
+    for tid in tids_list:
+        fmt = stream_fmt.get(tid, "")
+        suffix = ext_map.get(fmt, ".srt")
+        out_path = f"{output_base_path}.{tid}{suffix}"
+        tid_to_path[tid] = out_path
+        options.append(f"{tid}:{out_path}")
+
+    try:
+        status = process_utils.start_process("mkvextract", options)
+        if status.returncode != 0 and logger:
+            logger.debug(f"mkvextract failed for {video_path}: {status.stderr}")
+    except Exception as e:
+        if logger:
+            logger.debug(f"Subtitle extraction failed for {video_path}: {e}")
+
+    return tid_to_path
 
 
 def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | None = None, audios: List[Dict] | None = None, thumbnail: Union[str, None] = None):
