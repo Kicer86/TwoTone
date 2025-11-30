@@ -2,7 +2,7 @@
 import shutil
 
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Tuple
 import os
 import tempfile
 import uuid
