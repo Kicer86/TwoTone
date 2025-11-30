@@ -92,7 +92,7 @@ class Fixer(generic_utils.InterruptibleProcess):
         tids = [s["tid"] for s in subtitles]
         base_tmp = os.path.join(wd, "subtitle")
 
-        tid_to_path = subtitles_utils.extract_subtitle_to_temp(video_file, tids, base_tmp, logger=self.logger)
+        tid_to_path = video_utils.extract_subtitle_to_temp(video_file, tids, base_tmp, logger=self.logger)
 
         result: dict[str, subtitles_utils.Subtitle] = {}
         for subtitle in subtitles:
