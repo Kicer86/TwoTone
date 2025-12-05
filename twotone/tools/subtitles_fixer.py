@@ -158,14 +158,8 @@ class Fixer(generic_utils.InterruptibleProcess):
         for subtitle in video_info.get("subtitle", []):
             tid = subtitle["tid"]
 
-            if not subtitle["format"] == "subrip":
-                subtitle_format = subtitle["format"]
-                self.logger.warning(f"Cannot analyse subtitle #{tid} of {video_file}: unsupported format '{subtitle_format}'")
-                continue
-
             length = subtitle["length"]
             if length is not None and length > video_length * 1.001:                 # use 0.1% error margin as for some reason valid subtitles may appear longer than video
-
                 broken_subtitiles.append(tid)
 
         if len(broken_subtitiles) == 0:
