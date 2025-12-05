@@ -245,20 +245,21 @@ def get_video_data(path: str) -> Dict:
     for stream in output_json["streams"]:
         stream_type = stream["codec_type"]
         tid = stream["index"]
+        codec = stream.get("codec_name", None)
         disposition = stream.get("disposition", {})
         is_default = disposition.get("default", 0)
-        if_forced = disposition.get("forced", 0)
+        is_forced = disposition.get("forced", 0)
 
         stream_data = {
             "default": bool(is_default),
-            "forced": bool(if_forced),
-            "tid": tid
+            "forced": bool(is_forced),
+            "tid": tid,
+            "codec": codec,
         }
 
         if stream_type == "subtitle":
             language = get_language(stream)
             length = get_length(stream)
-            format = stream["codec_name"]
             title = stream.get("tags", {}).get("title", None)
 
             stream_data.update({
@@ -266,7 +267,7 @@ def get_video_data(path: str) -> Dict:
                 "length": length,
                 "tid": tid,
                 "title": title,
-                "format": format})
+                "format": codec})                   # for backward compatibility. TODO: remove when all tools are switched to "codec" for subtitles
         elif stream_type == "video":
             fps = stream["r_frame_rate"]
             length = get_length(stream)
@@ -276,7 +277,6 @@ def get_video_data(path: str) -> Dict:
             width = stream["width"]
             height = stream["height"]
             bitrate = stream["bitrate"] if "bitrate" in stream else None
-            codec = stream["codec_name"]
 
             stream_data.update({
                 "fps": fps,
@@ -284,20 +284,17 @@ def get_video_data(path: str) -> Dict:
                 "width": width,
                 "height": height,
                 "bitrate": bitrate,
-                "codec": codec,
                 "tid": tid,
             })
         elif stream_type == "audio":
             language = get_language(stream)
             channels = stream["channels"]
             sample_rate = int(stream["sample_rate"])
-            codec = stream["codec_name"]
 
             stream_data.update({
                 "language": language,
                 "channels": channels,
                 "sample_rate": sample_rate,
-                "codec": codec,
                 "tid": tid,
             })
 
@@ -324,13 +321,13 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
         Set 'enrich' to True to enrich mkvmerge's outpput with data from ffprobe.
     """
 
-    def find_ffprobe_track(track_id: int, ffprobe_info: Dict | None) -> Dict | None:
+    def find_ffprobe_track(track_id: int, ffprobe_info: Dict | None) -> Dict:
         for streams in (ffprobe_info or {}).values():
             for stream in streams:
                 if stream.get("tid", None) == track_id:
                     return stream
 
-        return None
+        return {}
 
     def merge_properties(initial: Dict | None, update: Dict) -> Dict:
         if initial is None:
@@ -370,6 +367,8 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
             length_ms = time_to_ms(tag_duration)
 
         language = props.get("language")
+        if language == "und":
+            language = None
         try:
             if language:
                 language = language_utils.unify_lang(language)
@@ -382,7 +381,12 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
         stream_data = {
             "tid": tid,
             "uid": uid,
+            "language": language,
             "length": length_ms,
+            "codec": track.get("codec"),
+            "default": props.get("default_track", track_initial_data.get("default", False)),
+            "enabled": props.get("enabled_track", track_initial_data.get("enabled", True)),
+            "forced": props.get("forced_track", track_initial_data.get("forced", False)),
         }
 
         if track_type == "video":
@@ -405,14 +409,13 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
                     except (TypeError, ValueError):
                         fps = None
 
-            fps_str = str(fps) if fps else track_initial_data.get("fps", "0") if track_initial_data else "0"
+            fps_str = str(fps) if fps else track_initial_data.get("fps", "0")
 
             stream_data.update({
                 "fps": fps_str,
                 "width": width,
                 "height": height,
                 "bitrate": None,
-                "codec": track.get("codec"),
             })
 
             streams["video"].append(merge_properties(track_initial_data, stream_data))
@@ -422,7 +425,6 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
             sample_rate = props.get("audio_sampling_frequency")
 
             stream_data.update({
-                "language": language,
                 "channels": channels,
                 "sample_rate": sample_rate,
             })
@@ -439,9 +441,7 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
                 except (TypeError, ValueError):
                     length_ms = None
             stream_data.update({
-                "language": language,
-                "default": props.get("default_track", False),
-                "format": track.get("codec"),
+                "format": track.get("codec"),                               # for backward compatibility. TODO: remove when all tools are switched to "codec" for subtitles
                 "name": props.get("track_name"),
             })
 

@@ -13,6 +13,8 @@ class SubtitleCommonData:
     name: str | None = None
     language: str | None = None
     default: int | bool = False
+    forced: int | bool = False
+    enabled: int | bool = True
     format: str | None = None
 
 # for subtitle tracks in files
@@ -111,6 +113,8 @@ def build_subtitle_from_dict(path: str, data: dict) -> SubtitleFile:
         encoding = data.get("encoding", None),
         name = data["title"],
         default = data["default"],
+        enabled = data.get("enabled", True),
+        forced = data["forced"],
         format = data["format"],
     )
 
