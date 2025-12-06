@@ -573,6 +573,8 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
         subtitles = [subtitles_utils.build_subtitle_from_dict(path, info) for path, info in subtitles.items()]
 
     for subtitle in subtitles:
+        assert subtitle.path
+
         lang = subtitle.language
         if lang:
             options.extend(["--language", f"0:{lang}"])

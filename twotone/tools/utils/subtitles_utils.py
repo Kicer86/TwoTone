@@ -51,7 +51,7 @@ def file_encoding(file: str) -> str:
 def open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> Optional[pysubs2.SSAFile]:
     try:
         mime = mimetypes.guess_type(file)
-        if mime and mime[0].startswith("text/"):
+        if mime and mime[0] and mime[0].startswith("text/"):
             encoding = file_encoding(file)
             subs = pysubs2.load(file, encoding = encoding, fps = fps)
             return subs
@@ -76,6 +76,8 @@ def is_subtitle(file: str) -> bool:
 
 
 def is_subtitle_microdvd(subtitle: SubtitleFile) -> bool:
+    assert subtitle.path
+
     subs = open_subtitle_file(subtitle.path)
     if subs and subs.format and subs.format.lower() == "microdvd":
         return True

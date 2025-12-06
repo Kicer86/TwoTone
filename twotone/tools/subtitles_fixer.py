@@ -79,7 +79,7 @@ class Fixer(generic_utils.InterruptibleProcess):
             new_content.save(broken_subtitle)
             return True
 
-    def _extract_all_subtitles(self, video_file: str, subtitles: list[dict], wd: str) -> list[subtitles_utils.SubtitleFile]:
+    def _extract_all_subtitles(self, video_file: str, subtitles: list[dict], wd: str) -> dict[str, dict]:
         """Extract all subtitle tracks using subtitles_utils.extract_subtitle_to_temp.
 
         Builds a stable list of SubtitleFile objects matching the order of
@@ -87,14 +87,14 @@ class Fixer(generic_utils.InterruptibleProcess):
         the tid to the filename and auto-detects proper extension.
         """
         if not subtitles:
-            return []
+            return {}
 
         tids = [s["tid"] for s in subtitles]
         base_tmp = os.path.join(wd, "subtitle")
 
         tid_to_path = video_utils.extract_subtitle_to_temp(video_file, tids, base_tmp, logger=self.logger)
 
-        result: dict[str, subtitles_utils.Subtitle] = {}
+        result: dict[str, dict] = {}
         for subtitle in subtitles:
             tid = subtitle["tid"]
             path = tid_to_path[tid]
