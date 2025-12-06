@@ -2,8 +2,9 @@
 import argparse
 import logging
 import os
-import shutil
-import tempfile
+import pysubs2
+
+from functools import partial
 from overrides import override
 from tqdm import tqdm
 from typing import Callable
@@ -23,65 +24,65 @@ class Fixer(generic_utils.InterruptibleProcess):
         for broken_video in broken_videos_info:
             self.logger.info(f"{len(broken_video[1])} broken subtitle(s) in {broken_video[0]['path']} found")
 
-    def _no_resolver(self, video_track: dict, content: str) -> None:
+    def _no_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> None:
         self.logger.error("Cannot fix the file, no idea how to do it.")
         return None
 
-    def _long_tail_resolver(self, video_track: dict, content: str) -> str:
-        timestamps = list(subtitles_utils.subrip_time_pattern.finditer(content))
-        last_timestamp = timestamps[-1]
-        time_from, time_to = map(generic_utils.time_to_ms, last_timestamp.groups())
+    def _long_tail_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> pysubs2.SSAFile:
+        last_timestamp = content[-1]
+        time_from = last_timestamp.start
         length = video_track["length"]
         new_time_to = min(time_from + 5000, length)
 
-        begin_pos = last_timestamp.start(1)
-        end_pos = last_timestamp.end(2)
+        content[-1].end = new_time_to
 
-        content = content[:begin_pos] + f"{generic_utils.ms_to_time(time_from)} --> {generic_utils.ms_to_time(new_time_to)}" + content[end_pos:]
         return content
 
-    def _fps_scale_resolver(self, video_track: dict, content: str) -> str:
-        target_fps = generic_utils.fps_str_to_float(video_track["fps"])
-        multiplier = subtitles_utils.ffmpeg_default_fps / target_fps
+    def _fps_scale_resolver(self, video_track: dict, content: pysubs2.SSAFile, target_fps: float) -> pysubs2.SSAFile:
+        content.transform_framerate(subtitles_utils.ffmpeg_default_fps, target_fps)
 
-        return subtitles_utils.alter_subrip_subtitles_times(content, multiplier)
+        return content
 
-    def _get_resolver(self, content: str, video_length: int) -> Callable[[dict, str], str | None]:
-        timestamps = list(subtitles_utils.subrip_time_pattern.finditer(content))
-        if len(timestamps) == 0:
+    def _get_resolver(self, content: pysubs2.SSAFile, video_track: dict) -> Callable[[dict, pysubs2.SSAFile], pysubs2.SSAFile | None]:
+        if len(content) == 0:
             return self._no_resolver
 
+        video_length = video_track["length"]
+        video_fps = generic_utils.fps_str_to_float(video_track["fps"])
+
         # check if last subtitle is beyond limit
-        last_timestamp = timestamps[-1]
-        time_from, time_to = map(generic_utils.time_to_ms, last_timestamp.groups())
+        last_timestamp = content[-1]
+        time_from = last_timestamp.start
+        time_to = last_timestamp.end
 
         if time_from < video_length and time_to > video_length:
             return self._long_tail_resolver
 
-        if time_from > video_length and time_to > video_length:
-            return self._fps_scale_resolver
+        if time_from > video_length and time_to > video_length and time_to * subtitles_utils.ffmpeg_default_fps / video_fps < video_length:
+            return partial(self._fps_scale_resolver, target_fps = video_fps)
 
         return self._no_resolver
 
     def _fix_subtitle(self, broken_subtitle: str, video_info: dict) -> bool:
         video_track = video_info["video"][0]
 
-        with open(broken_subtitle, 'r', encoding='utf-8') as file:
-            content = file.read()
+        subs = subtitles_utils.open_subtitle_file(broken_subtitle, fps = video_track["fps"])
+        if not subs:
+            self.logger.error(f"Failed to open subtitles file: {broken_subtitle}")
+            return False
 
         # figure out what is broken
-        resolver = self._get_resolver(content, video_track["length"])
-        new_content = resolver(video_track, content)
+        resolver = self._get_resolver(subs, video_track)
+        new_content = resolver(video_track, subs)
 
         if new_content is None:
             self.logger.warning("Subtitles not fixed")
             return False
         else:
-            with open(broken_subtitle, 'w', encoding='utf-8') as file:
-                file.write(new_content)
+            new_content.save(broken_subtitle)
             return True
 
-    def _extract_all_subtitles(self, video_file: str, subtitles: list[dict], wd: str) -> list[subtitles_utils.SubtitleFile]:
+    def _extract_all_subtitles(self, video_file: str, subtitles: list[dict], wd: str) -> dict[str, dict]:
         """Extract all subtitle tracks using subtitles_utils.extract_subtitle_to_temp.
 
         Builds a stable list of SubtitleFile objects matching the order of
@@ -89,20 +90,18 @@ class Fixer(generic_utils.InterruptibleProcess):
         the tid to the filename and auto-detects proper extension.
         """
         if not subtitles:
-            return []
+            return {}
 
         tids = [s["tid"] for s in subtitles]
         base_tmp = os.path.join(wd, "subtitle")
 
-        tid_to_path = subtitles_utils.extract_subtitle_to_temp(video_file, tids, base_tmp, logger=self.logger)
+        tid_to_path = video_utils.extract_subtitle_to_temp(video_file, tids, base_tmp, logger=self.logger)
 
-        result: list[subtitles_utils.SubtitleFile] = []
-        for s in subtitles:
-            tid = s["tid"]
+        result: dict[str, dict] = {}
+        for subtitle in subtitles:
+            tid = subtitle["tid"]
             path = tid_to_path[tid]
-            # Keep language as reported by container (may be None)
-            lang = s.get("language")
-            result.append(subtitles_utils.SubtitleFile(path = path, language = lang, encoding = "utf8"))
+            result[path] = subtitle
 
         return result
 
@@ -122,9 +121,9 @@ class Fixer(generic_utils.InterruptibleProcess):
             self.logger.debug("Extracting subtitles from file")
             subs_info = video_info.get("subtitle", [])
             subtitles = self._extract_all_subtitles(video_file, subs_info, wd_dir)
-            broken_subtitles_paths = [subtitles[i] for i in broken_subtitiles]
+            broken_subtitles_path = [path for path, subtitle in subtitles.items() if subtitle["tid"] in broken_subtitiles]
 
-            status = all(self._fix_subtitle(broken_subtitile.path, video_info) for broken_subtitile in broken_subtitles_paths)
+            status = all(self._fix_subtitle(path, video_info) for path in broken_subtitles_path)
 
             if status:
                 # remove all subtitles from video
@@ -135,7 +134,8 @@ class Fixer(generic_utils.InterruptibleProcess):
                 # add fixed subtitles to video
                 self.logger.debug("Adding fixed subtitles to file")
                 temporaryVideoPath = video_file + ".fixed.mkv"
-                video_utils.generate_mkv(input_video=video_without_subtitles, output_path=temporaryVideoPath, subtitles=subtitles)
+
+                video_utils.generate_mkv(input_video = video_without_subtitles, output_path = temporaryVideoPath, subtitles = subtitles)
 
                 # overwrite broken video with fixed one
                 os.replace(temporaryVideoPath, video_file)
@@ -148,9 +148,6 @@ class Fixer(generic_utils.InterruptibleProcess):
     def _check_if_broken(self, video_file: str) -> tuple[dict, list[int]] | None:
         self.logger.debug(f"Processing file {video_file}")
 
-        def diff(a, b):
-            return abs(a - b) / max(a, b)
-
         video_info = video_utils.get_video_data(video_file)
         video_info["path"] = video_file
         video_length = video_info["video"][0]["length"]
@@ -161,17 +158,12 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         broken_subtitiles = []
 
-        for i in range(len(video_info.get("subtitle", []))):
-            subtitle = video_info["subtitle"][i]
-
-            if not subtitle["format"] == "subrip":
-                subtitle_format = subtitle["format"]
-                self.logger.warning(f"Cannot analyse subtitle #{i} of {video_file}: unsupported format '{subtitle_format}'")
-                continue
+        for subtitle in video_info.get("subtitle", []):
+            tid = subtitle["tid"]
 
             length = subtitle["length"]
             if length is not None and length > video_length * 1.001:                 # use 0.1% error margin as for some reason valid subtitles may appear longer than video
-                broken_subtitiles.append(i)
+                broken_subtitiles.append(tid)
 
         if len(broken_subtitiles) == 0:
             self.logger.debug("No issues found")

@@ -124,7 +124,7 @@ class Merge(generic_utils.InterruptibleProcess):
             return len(l)
 
     def _sort_subtitles(self, subtitles: list[subtitles_utils.SubtitleFile]) -> list[subtitles_utils.SubtitleFile]:
-        priorities = self.lang_priority.copy()
+        priorities: List[str | None] = list(self.lang_priority)
         priorities.append(None)
         subtitles_sorted = sorted(subtitles, key=lambda s: self._get_index_for(priorities, s.language))
 
@@ -132,8 +132,11 @@ class Merge(generic_utils.InterruptibleProcess):
 
     def _convert_subtitle(self, video_fps: str, subtitle: subtitles_utils.SubtitleFile, temporary_dir: str) -> subtitles_utils.SubtitleFile:
         input_file = subtitle.path
+        assert input_file
+
         output_file = files_utils.get_unique_file_name(temporary_dir, "srt")
         encoding = subtitle.encoding if subtitle.encoding != "UTF-8-SIG" else "utf-8"
+        assert encoding
 
         status = process_utils.start_process(
             "ffmpeg",
@@ -157,7 +160,7 @@ class Merge(generic_utils.InterruptibleProcess):
         else:
             raise RuntimeError(f"ffmpeg exited with unexpected error:\n{status.stderr}")
 
-        converted_subtitle = subtitles_utils.SubtitleFile(output_file, subtitle.language, "utf-8", subtitle.comment)
+        converted_subtitle = subtitles_utils.SubtitleFile(path = output_file, language = subtitle.language, encoding = "utf-8", name = subtitle.name)
         return converted_subtitle
 
     def _merge(self, input_video: str, subtitles: list[subtitles_utils.SubtitleFile]) -> None:
@@ -186,15 +189,19 @@ class Merge(generic_utils.InterruptibleProcess):
         for _, subs in subtitles_by_lang.items():
             if len(subs) > 1:
                 for s in subs:
+                    assert s.path
+
                     subtitle_name = Path(s.path).stem
                     if not subtitle_name.lower().startswith(video_name.lower()):
-                        s.comment = subtitle_name
+                        s.name = subtitle_name
 
         temporary_subtitles_dir = self.working_dir
         prepared_subtitles = []
         for subtitle in sorted_subtitles:
-            if subtitle.comment:
-                self.logger.info(f"\t[{subtitle.language}][{subtitle.comment}]: {subtitle.path}")
+            assert subtitle.path
+
+            if subtitle.name:
+                self.logger.info(f"\t[{subtitle.language}][{subtitle.name}]: {subtitle.path}")
             else:
                 self.logger.info(f"\t[{subtitle.language}]: {subtitle.path}")
             input_files.append(subtitle.path)
