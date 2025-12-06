@@ -4,6 +4,7 @@ import logging
 import os
 import pysubs2
 
+from functools import partial
 from overrides import override
 from tqdm import tqdm
 from typing import Callable
@@ -37,15 +38,17 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         return content
 
-    def _fps_scale_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> pysubs2.SSAFile:
-        target_fps = generic_utils.fps_str_to_float(video_track["fps"])
+    def _fps_scale_resolver(self, video_track: dict, content: pysubs2.SSAFile, target_fps: float) -> pysubs2.SSAFile:
         content.transform_framerate(subtitles_utils.ffmpeg_default_fps, target_fps)
 
         return content
 
-    def _get_resolver(self, content: pysubs2.SSAFile, video_length: int) -> Callable[[dict, pysubs2.SSAFile], pysubs2.SSAFile | None]:
+    def _get_resolver(self, content: pysubs2.SSAFile, video_track: dict) -> Callable[[dict, pysubs2.SSAFile], pysubs2.SSAFile | None]:
         if len(content) == 0:
             return self._no_resolver
+
+        video_length = video_track["length"]
+        video_fps = generic_utils.fps_str_to_float(video_track["fps"])
 
         # check if last subtitle is beyond limit
         last_timestamp = content[-1]
@@ -55,8 +58,8 @@ class Fixer(generic_utils.InterruptibleProcess):
         if time_from < video_length and time_to > video_length:
             return self._long_tail_resolver
 
-        if time_from > video_length and time_to > video_length:
-            return self._fps_scale_resolver
+        if time_from > video_length and time_to > video_length and time_to * subtitles_utils.ffmpeg_default_fps / video_fps < video_length:
+            return partial(self._fps_scale_resolver, target_fps = video_fps)
 
         return self._no_resolver
 
@@ -69,7 +72,7 @@ class Fixer(generic_utils.InterruptibleProcess):
             return False
 
         # figure out what is broken
-        resolver = self._get_resolver(subs, video_track["length"])
+        resolver = self._get_resolver(subs, video_track)
         new_content = resolver(video_track, subs)
 
         if new_content is None:
