@@ -124,7 +124,7 @@ class Merge(generic_utils.InterruptibleProcess):
             return len(l)
 
     def _sort_subtitles(self, subtitles: list[subtitles_utils.SubtitleFile]) -> list[subtitles_utils.SubtitleFile]:
-        priorities = self.lang_priority.copy()
+        priorities: List[str | None] = list(self.lang_priority)
         priorities.append(None)
         subtitles_sorted = sorted(subtitles, key=lambda s: self._get_index_for(priorities, s.language))
 
@@ -132,8 +132,11 @@ class Merge(generic_utils.InterruptibleProcess):
 
     def _convert_subtitle(self, video_fps: str, subtitle: subtitles_utils.SubtitleFile, temporary_dir: str) -> subtitles_utils.SubtitleFile:
         input_file = subtitle.path
+        assert input_file
+
         output_file = files_utils.get_unique_file_name(temporary_dir, "srt")
         encoding = subtitle.encoding if subtitle.encoding != "UTF-8-SIG" else "utf-8"
+        assert encoding
 
         status = process_utils.start_process(
             "ffmpeg",
@@ -186,6 +189,8 @@ class Merge(generic_utils.InterruptibleProcess):
         for _, subs in subtitles_by_lang.items():
             if len(subs) > 1:
                 for s in subs:
+                    assert s.path
+
                     subtitle_name = Path(s.path).stem
                     if not subtitle_name.lower().startswith(video_name.lower()):
                         s.name = subtitle_name
@@ -193,6 +198,8 @@ class Merge(generic_utils.InterruptibleProcess):
         temporary_subtitles_dir = self.working_dir
         prepared_subtitles = []
         for subtitle in sorted_subtitles:
+            assert subtitle.path
+
             if subtitle.name:
                 self.logger.info(f"\t[{subtitle.language}][{subtitle.name}]: {subtitle.path}")
             else:
