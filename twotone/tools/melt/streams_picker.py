@@ -8,7 +8,7 @@ from functools import cmp_to_key
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from ..utils import files_utils, language_utils
-from ..utils import subtitles_utils
+from ..utils import subtitles_utils, video_utils
 from .duplicates_source import DuplicatesSource
 
 # precompiled regex for fast language guessing
@@ -237,7 +237,7 @@ class StreamsPicker:
                 # and guess language using its utilities.
                 tid = stream.get("tid")
                 base_tmp = os.path.join(self.wd, "tmp_subtitle")
-                tid_to_path = subtitles_utils.extract_subtitle_to_temp(path, [tid], base_tmp, logger=self.logger)
+                tid_to_path = video_utils.extract_subtitle_to_temp(path, [tid], base_tmp, logger=self.logger)
                 tmp_path = tid_to_path.get(tid)
 
                 if tmp_path:
