@@ -201,6 +201,8 @@ class FixerTool(Tool):
 
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--skip-unfixable", "-s",
+                            help='Skip (remove) subtitles that cannot be fixed.')
         parser.add_argument('videos_path',
                             nargs=1,
                             help='Path with videos to analyze.')
