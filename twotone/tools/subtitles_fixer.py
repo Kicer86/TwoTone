@@ -28,6 +28,10 @@ class Fixer(generic_utils.InterruptibleProcess):
         self.logger.error("Cannot fix the file, no idea how to do it.")
         return None
 
+    def _drop_subtitle_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> pysubs2.SSAFile:
+        self.logger.warning("No idea how to fix subtitle, removing it")
+        return None
+
     def _long_tail_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> pysubs2.SSAFile:
         last_timestamp = content[-1]
         time_from = last_timestamp.start
@@ -43,9 +47,9 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         return content
 
-    def _get_resolver(self, content: pysubs2.SSAFile, video_track: dict) -> Callable[[dict, pysubs2.SSAFile], pysubs2.SSAFile | None]:
+    def _get_resolver(self, content: pysubs2.SSAFile, video_track: dict, drop_broken: bool) -> Callable[[dict, pysubs2.SSAFile], pysubs2.SSAFile | None]:
         if len(content) == 0:
-            return self._no_resolver
+            return self._drop_subtitle_resolver if drop_broken else self._no_resolver
 
         video_length = video_track["length"]
         video_fps = generic_utils.fps_str_to_float(video_track["fps"])
@@ -61,22 +65,22 @@ class Fixer(generic_utils.InterruptibleProcess):
         if time_from > video_length and time_to > video_length and time_to * subtitles_utils.ffmpeg_default_fps / video_fps < video_length:
             return partial(self._fps_scale_resolver, target_fps = video_fps)
 
-        return self._no_resolver
+        return self._drop_subtitle_resolver if drop_broken else self._no_resolver
 
-    def _fix_subtitle(self, broken_subtitle: str, video_info: dict) -> bool:
+    def _fix_subtitle(self, broken_subtitle: str, video_info: dict, drop_broken: bool) -> bool:
         video_track = video_info["video"][0]
 
         subs = subtitles_utils.open_subtitle_file(broken_subtitle, fps = video_track["fps"])
         if not subs:
-            self.logger.error(f"Failed to open subtitles file: {broken_subtitle}")
-            return False
+            msg = f"Failed to open subtitles file: {broken_subtitle}"
+            raise OSError(msg)
 
         # figure out what is broken
-        resolver = self._get_resolver(subs, video_track)
+        resolver = self._get_resolver(subs, video_track, drop_broken)
         new_content = resolver(video_track, subs)
 
         if new_content is None:
-            self.logger.warning("Subtitles not fixed")
+            self.logger.warning("Subtitle not fixed")
             return False
         else:
             new_content.save(broken_subtitle)
@@ -105,7 +109,7 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         return result
 
-    def repair_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
+    def repair_videos(self, broken_videos_info: list[tuple[dict, list[int]]], drop_broken: bool = False) -> None:
         self._print_broken_videos(broken_videos_info)
         self.logger.info("Fixing videos")
 
@@ -121,29 +125,45 @@ class Fixer(generic_utils.InterruptibleProcess):
             self.logger.debug("Extracting subtitles from file")
             subs_info = video_info.get("subtitle", [])
             subtitles = self._extract_all_subtitles(video_file, subs_info, wd_dir)
-            broken_subtitles_path = [path for path, subtitle in subtitles.items() if subtitle["tid"] in broken_subtitiles]
+            broken_subtitles_paths = [path for path, subtitle in subtitles.items() if subtitle["tid"] in broken_subtitiles]
 
-            status = all(self._fix_subtitle(path, video_info) for path in broken_subtitles_path)
+            try:
+                new_subtitles = {}
 
-            if status:
-                # remove all subtitles from video
-                self.logger.debug("Removing existing subtitles from file")
-                video_without_subtitles = video_file + ".nosubtitles.mkv"
-                process_utils.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file])
+                for path, subtitle in subtitles.items():
+                    tid = subtitle["tid"]
+                    include = self._fix_subtitle(path, video_info, drop_broken) if tid in broken_subtitiles else True
 
-                # add fixed subtitles to video
-                self.logger.debug("Adding fixed subtitles to file")
-                temporaryVideoPath = video_file + ".fixed.mkv"
+                    if include:
+                        new_subtitles[path] = subtitle
+                    else:
+                        if drop_broken:
+                            self.logger.warning(f"Skipping subtitle #{tid} as it could not be fixed")
+                        else:
+                            raise Exception("Unfixable subtitle found")
 
-                video_utils.generate_mkv(input_video = video_without_subtitles, output_path = temporaryVideoPath, subtitles = subtitles)
-
-                # overwrite broken video with fixed one
-                os.replace(temporaryVideoPath, video_file)
-
-                # remove temporary file
-                os.remove(video_without_subtitles)
-            else:
+            except Exception as e:
+                self.logger.error(e)
                 self.logger.debug("Skipping video due to errors")
+                return
+
+            # remove all subtitles from video
+            self.logger.debug("Removing existing subtitles from file")
+            video_without_subtitles = video_file + ".nosubtitles.mkv"
+            process_utils.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file])
+
+            # add fixed subtitles to video
+            self.logger.debug("Adding fixed subtitles to file")
+            temporaryVideoPath = video_file + ".fixed.mkv"
+
+            video_utils.generate_mkv(input_video = video_without_subtitles, output_path = temporaryVideoPath, subtitles = new_subtitles)
+
+            # overwrite broken video with fixed one
+            os.replace(temporaryVideoPath, video_file)
+
+            # remove temporary file
+            os.remove(video_without_subtitles)
+
 
     def _check_if_broken(self, video_file: str) -> tuple[dict, list[int]] | None:
         self.logger.debug(f"Processing file {video_file}")
@@ -201,8 +221,8 @@ class FixerTool(Tool):
 
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--skip-unfixable", "-s",
-                            help='Skip (remove) subtitles that cannot be fixed.')
+        parser.add_argument("--drop-unfixable", "-s",
+                            help='Drop (remove) subtitles that cannot be fixed.')
         parser.add_argument('videos_path',
                             nargs=1,
                             help='Path with videos to analyze.')
