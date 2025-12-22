@@ -28,7 +28,7 @@ class Fixer(generic_utils.InterruptibleProcess):
         self.logger.error("Cannot fix the file, no idea how to do it.")
         return None
 
-    def _drop_subtitle_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> pysubs2.SSAFile:
+    def _drop_subtitle_resolver(self, video_track: dict, content: pysubs2.SSAFile) -> pysubs2.SSAFile | None:
         self.logger.warning("No idea how to fix subtitle, removing it")
         return None
 

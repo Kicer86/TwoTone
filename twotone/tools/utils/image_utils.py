@@ -10,7 +10,7 @@ def are_images_similar(lhs_path: str, rhs_path: str, threshold = 10) -> bool:
     img1 = cv.imread(lhs_path, cv.IMREAD_GRAYSCALE)
     img2 = cv.imread(rhs_path, cv.IMREAD_GRAYSCALE)
 
-    orb = cv.ORB_create()
+    orb = cv.ORB_create()  # type: ignore[attr-defined]
     kp1, des1 = orb.detectAndCompute(img1, None)
     kp2, des2 = orb.detectAndCompute(img2, None)
 
@@ -29,4 +29,4 @@ def image_entropy(path: str) -> float:
     histogram, _ = np.histogram(image, bins = 256, range=(0, 256))
     histogram = histogram / float(np.sum(histogram))
     e = entropy(histogram)
-    return e
+    return float(e)

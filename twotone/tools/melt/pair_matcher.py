@@ -7,7 +7,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from sklearn.linear_model import RANSACRegressor, LinearRegression
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple, Optional
 
 from .debug_routines import DebugRoutines
 from .phash_cache import PhashCache
@@ -51,7 +51,7 @@ class PairMatcher:
             os.makedirs(d)
 
     def _normalize_frames(self, frames_info: FramesInfo, wd: str) -> FramesInfo:
-        def crop_5_percent(image: cv.Mat) -> cv.Mat:
+        def crop_5_percent(image: cv.typing.MatLike) -> cv.typing.MatLike:
             height, width = image.shape
             dx = int(width * 0.05)
             dy = int(height * 0.05)
@@ -65,6 +65,8 @@ class PairMatcher:
             self.interruption._check_for_stop()
             path = info["path"]
             img = cv.imread(path, cv.IMREAD_GRAYSCALE)
+            if img is None:
+                raise RuntimeError(f"Failed to read frame from {path}")
             img = crop_5_percent(img)
             img = cv.resize(img, (256, 256), interpolation=cv.INTER_AREA)
             _, file, ext = files_utils.split_path(path)
@@ -112,11 +114,11 @@ class PairMatcher:
 
     @staticmethod
     def filter_phash_outliers(phash: PhashCache, pairs: List[Tuple[int, int]], lhs_set: FramesInfo, rhs_set: FramesInfo) -> List[Tuple[int, int]]:
-        dists = [abs(phash.get(lhs_set[l]["path"]) - phash.get(rhs_set[r]["path"])) for l, r in pairs]
-        med = np.median(dists)
-        mad = np.median(np.abs(dists - med))
+        dists_array = np.array([abs(phash.get(lhs_set[l]["path"]) - phash.get(rhs_set[r]["path"])) for l, r in pairs], dtype=float)
+        med = float(np.median(dists_array))
+        mad = float(np.median(np.abs(dists_array - med)))
         threshold = med + 1.5 * mad
-        return [pair for pair, dist in zip(pairs, dists) if dist <= threshold]
+        return [pair for pair, dist in zip(pairs, dists_array) if dist <= threshold]
 
     @staticmethod
     def summarize_pairs(phash: PhashCache, pairs: List[Tuple[int, int]], lhs: FramesInfo, rhs: FramesInfo, verbose: bool = False) -> str:
@@ -264,8 +266,10 @@ class PairMatcher:
             rhs_info = rhs_frames[rhs_t]
             lhs_img = cv.imread(lhs_info["path"], cv.IMREAD_GRAYSCALE)
             rhs_img = cv.imread(rhs_info["path"], cv.IMREAD_GRAYSCALE)
+            if lhs_img is None or rhs_img is None:
+                continue
 
-            orb = cv.ORB_create(1000)
+            orb = cv.ORB_create(1000)  # type: ignore[attr-defined]
             kp1, des1 = orb.detectAndCompute(lhs_img, None)
             kp2, des2 = orb.detectAndCompute(rhs_img, None)
             if des1 is None or des2 is None:
@@ -277,10 +281,10 @@ class PairMatcher:
                 continue
 
             matches = sorted(matches, key=lambda x: x.distance)
-            pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
-            pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
+            pts1 = np.array([kp1[m.queryIdx].pt for m in matches], dtype=np.float32)
+            pts2 = np.array([kp2[m.trainIdx].pt for m in matches], dtype=np.float32)
 
-            h_matrix, inliers = cv.estimateAffinePartial2D(pts2, pts1, cv.RANSAC)
+            h_matrix, inliers = cv.estimateAffinePartial2D(pts2, pts1, method=cv.RANSAC)
             if h_matrix is None:
                 continue
 
@@ -496,7 +500,11 @@ class PairMatcher:
         extrapolated = self._extrapolate_matches(stable, lhs, rhs, self.phash)
         self.logger.debug(f"Extrapolation:             {PairMatcher.summarize_pairs(self.phash, extrapolated, lhs_all, rhs_all)}")
 
-        extrapolated_refined = [self._best_phash_match(l, r, lhs_all, rhs_all) for l, r in extrapolated]
+        extrapolated_refined: list[tuple[int, int]] = []
+        for l, r in extrapolated:
+            best_match = self._best_phash_match(l, r, lhs_all, rhs_all)
+            if best_match is not None:
+                extrapolated_refined.append(best_match)
         self.logger.debug(f"Frame adjustment:          {PairMatcher.summarize_pairs(self.phash, extrapolated_refined, lhs_all, rhs_all)}")
 
         outliers_eliminated = PairMatcher.filter_phash_outliers(self.phash, extrapolated_refined, lhs_all, rhs_all)
@@ -525,9 +533,9 @@ class PairMatcher:
         phash = PhashCache()
         ratio = PairMatcher.calculate_ratio([first, last])
 
-        def find_best_pair(lhs: FramesInfo, rhs: FramesInfo) -> Tuple[Tuple[int, int], int]:
+        def find_best_pair(lhs: FramesInfo, rhs: FramesInfo) -> Tuple[Optional[Tuple[int, int]], int]:
             best_score = 1000
-            best_pair = ()
+            best_pair: Optional[Tuple[int, int]] = None
 
             for lhs_ts, lhs_info in lhs.items():
                 lhs_hash = phash.get(lhs_info["path"])

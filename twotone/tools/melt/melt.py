@@ -812,10 +812,14 @@ class MeltTool(Tool):
 
         # Build data source based on arguments
         if args.jellyfin_server:
-            path_fix = _split_path_fix(args.jellyfin_path_fix) if args.jellyfin_path_fix else None
+            path_fix_list = _split_path_fix(args.jellyfin_path_fix) if args.jellyfin_path_fix else None
 
-            if path_fix and len(path_fix) != 2:
-                self.parser.error(f"Invalid content for --jellyfin-path-fix argument. Got: {path_fix}")
+            if path_fix_list and len(path_fix_list) != 2:
+                self.parser.error(f"Invalid content for --jellyfin-path-fix argument. Got: {path_fix_list}")
+
+            path_fix: tuple[str, str] | None = None
+            if path_fix_list:
+                path_fix = (path_fix_list[0], path_fix_list[1])
 
             self._data_source = JellyfinSource(interruption = self._interruption,
                                                url = args.jellyfin_server,
@@ -863,7 +867,8 @@ class MeltTool(Tool):
             return
 
         logger.info("Collecting duplicates for analysis")
-        duplicates = self._data_source.collect_duplicates()
+        duplicates_raw = self._data_source.collect_duplicates()
+        duplicates = {title: list(files) for title, files in duplicates_raw.items()}
 
         melter = Melter(logger,
                         self._interruption,
