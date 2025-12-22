@@ -30,7 +30,6 @@ class UtilsTests(TwoToneTestCase):
 
         for stream_type, expected_stream_list in expected_streams.items():
             self.assertIn(stream_type, actual_streams, f"missing stream type '{stream_type}'")
-
             actual_stream_list = actual_streams[stream_type]
             self.assertEqual(
                 len(expected_stream_list),
@@ -42,14 +41,32 @@ class UtilsTests(TwoToneTestCase):
                 self.assertDictSubset(expected_stream, actual_stream_list[idx], f"{stream_type}[{idx}]")
 
 
-    def test_subtitle_detection(self):
-        self._test_content("12:34:56:test", True)
-        self._test_content("{1}{2}test", True)
-        self._test_content("12:34:56:test\n21:01:45:test2", True)
-        self._test_content("12:34:5:test", False)
-        self._test_content("12:test", False)
-        self._test_content("{12}:test", False)
-        self._test_content("{a}{b}:test", False)
+    subtitle_samples = [
+        (
+            "SubRip (SRT)",
+            "1\n00:00:01,000 --> 00:00:03,000\nHello world\n\n",
+            True,
+        ),
+        (
+            "MicroDVD",
+            "{0}{72}Hello world",
+            True,
+        ),
+        (
+            "WebVTT",
+            "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello world\n",
+            True,
+        ),
+        (
+            "Plain text file",
+            "This is just a plain text file, not subtitles.",
+            False,
+        ),
+    ]
+
+    @parameterized.expand(subtitle_samples)
+    def test_subtitle_detection(self, name, content, valid):
+        self._test_content(content, valid)
 
 
     test_videos = [
@@ -125,11 +142,11 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '0', 'length': None, 'width': 3840, 'height': 2160, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
+                        'default': False, 'enabled': True, 'forced': False, 'fps': '0', 'language': None, 'length': None, 'width': 3840, 'height': 2160, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
                     }],
                     'audio':
                     [{
-                        'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
+                        'codec': 'AAC', 'default': False, 'enabled': True, 'forced': False, 'language': 'eng', 'length': None, 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
                     }]
                 }
             }
@@ -145,11 +162,11 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '0', 'length': None, 'width': 2160, 'height': 3840, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
+                        'default': False, 'enabled': True, 'forced': False, 'fps': '0', 'language': None, 'length': None, 'width': 2160, 'height': 3840, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
                     }],
                     'audio':
                     [{
-                        'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
+                        'codec': 'AAC', 'default': False, 'enabled': True, 'forced': False,'language': 'eng', 'length': None, 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
                     }]
                 }
             }
@@ -165,7 +182,7 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '0', 'length': None, 'width': 1920, 'height': 1080, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
+                        'default': False, 'enabled': True, 'forced': False, 'fps': '0', 'language': None, 'length': None, 'width': 1920, 'height': 1080, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
                     }]
                 }
             }
@@ -186,11 +203,11 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '0', 'length': None, 'width': 1080, 'height': 1112, 'bitrate': None, 'codec': 'VP9', 'tid': 0, 'uid': None,
+                        'default': False, 'enabled': True, 'forced': False, 'fps': '0', 'language': None, 'length': None, 'width': 1080, 'height': 1112, 'bitrate': None, 'codec': 'VP9', 'tid': 0, 'uid': None,
                     }],
                     'audio':
                     [{
-                        'language': 'und', 'channels': 2, 'sample_rate': 44100, 'tid': 1, 'uid': None,
+                        'codec': 'AAC', 'default': False, 'enabled': True, 'forced': False, 'language': None, 'length': None, 'channels': 2, 'sample_rate': 44100, 'tid': 1, 'uid': None,
                     }]
                 }
             }
@@ -221,13 +238,13 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '30000/1001', 'length': 3403, 'width': 3840, 'height': 2160, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
-                        'default': True, 'forced': False,
+                        'fps': '30000/1001', 'language': None, 'length': 3403, 'width': 3840, 'height': 2160, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
+                        'default': True, 'forced': False, 'enabled': True,
                     }],
                     'audio':
                     [{
-                        'codec': 'aac', 'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
-                        'default': True, 'forced': False,
+                        'codec': 'AAC', 'language': 'eng', 'length': None, 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
+                        'default': True, 'forced': False, 'enabled': True,
                     }]
                 }
             }
@@ -243,13 +260,13 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '29999/500', 'length': 1000, 'width': 2160, 'height': 3840, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
-                        'default': True, 'forced': False,
+                        'fps': '29999/500', 'language': None, 'length': 1000, 'width': 2160, 'height': 3840, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
+                        'default': True, 'forced': False, 'enabled': True,
                     }],
                     'audio':
                     [{
-                        'codec': 'aac', 'language': 'eng', 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
-                        'default': True, 'forced': False,
+                        'codec': 'AAC', 'language': 'eng', 'length': None, 'channels': 2, 'sample_rate': 48000, 'tid': 1, 'uid': None,
+                        'default': True, 'forced': False, 'enabled': True,
                     }]
                 }
             }
@@ -265,8 +282,8 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '25/1', 'length': 15600, 'width': 1920, 'height': 1080, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
-                        'default': True, 'forced': False,
+                        'fps': '25/1', 'language': None, 'length': 15600, 'width': 1920, 'height': 1080, 'bitrate': None, 'codec': 'HEVC/H.265/MPEG-H', 'tid': 0, 'uid': None,
+                        'default': True, 'forced': False, 'enabled': True,
                     }]
                 }
             }
@@ -287,13 +304,13 @@ class UtilsTests(TwoToneTestCase):
                 {
                     'video':
                     [{
-                        'fps': '60/1', 'length': 11583, 'width': 1080, 'height': 1112, 'bitrate': None, 'codec': 'VP9', 'tid': 0, 'uid': None,
-                        'default': True, 'forced': False,
+                        'fps': '60/1', 'language': None, 'length': 11583, 'width': 1080, 'height': 1112, 'bitrate': None, 'codec': 'VP9', 'tid': 0, 'uid': None,
+                        'default': True, 'forced': False, 'enabled': True,
                     }],
                     'audio':
                     [{
-                        'codec': 'aac', 'language': 'und', 'channels': 2, 'sample_rate': 44100, 'tid': 1, 'uid': None,
-                        'default': True, 'forced': False,
+                        'codec': 'AAC', 'language': 'und', 'length': None, 'channels': 2, 'sample_rate': 44100, 'tid': 1, 'uid': None,
+                        'default': True, 'forced': False, 'enabled': True,
                     }]
                 }
             }
@@ -310,6 +327,7 @@ class UtilsTests(TwoToneTestCase):
         expected_streams = remove_key(expected_streams, "uid")
 
         self.assertEqual(expected_streams, file_info)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -147,7 +147,7 @@ def add_test_media(filter: str, test_case_path: str, suffixes: List[str] | None 
     filter_regex = re.compile(filter)
     output_files = []
 
-    suffixes = suffixes or [None]
+    suffixes = suffixes or [""]
 
     for media in ["subtitles", "subtitles_txt", "videos"]:
         for root, _, files in os.walk(os.path.join(current_path, media)):

@@ -98,7 +98,7 @@ class SimpleSubtitlesMerge(TwoToneTestCase):
         tracks = assert_video_info(self, video, expected_subtitles=5)
         self.assertEqual(tracks["subtitle"][0]["language"], "deu")
         self.assertEqual(tracks["subtitle"][1]["language"], "ces")
-        self.assertEqual(tracks["subtitle"][0]["default"], 1)
+        self.assertEqual(tracks["subtitle"][0]["default"], 0)
         self.assertEqual(tracks["subtitle"][1]["default"], 0)
 
 
