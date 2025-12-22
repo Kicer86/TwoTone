@@ -543,10 +543,11 @@ def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path:
     try:
         status = process_utils.start_process("mkvextract", options)
         if status.returncode != 0 and logger:
-            logger.debug(f"mkvextract failed for {video_path}: {status.stderr}")
+            logger.error(f"mkvextract failed for {video_path}: {status.stderr}")
+
     except Exception as e:
         if logger:
-            logger.debug(f"Subtitle extraction failed for {video_path}: {e}")
+            logger.error(f"Subtitle extraction failed for {video_path}: {e}")
 
     return tid_to_path
 

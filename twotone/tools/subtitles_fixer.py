@@ -189,7 +189,7 @@ class Fixer(generic_utils.InterruptibleProcess):
             self.logger.debug("No issues found")
             return None
 
-        self.logger.debug(f"Issues found in {video_file}")
+        self.logger.info(f"Issues found in {video_file}")
         return (video_info, broken_subtitiles)
 
     def scan_directory(self, path: str) -> list[tuple[dict, list[int]]]:
