@@ -221,7 +221,8 @@ class FixerTool(Tool):
 
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--drop-unfixable", "-s",
+        parser.add_argument("--drop-unfixable", "-d",
+                            action="store_true",
                             help='Drop (remove) subtitles that cannot be fixed.')
         parser.add_argument('videos_path',
                             nargs=1,
@@ -246,5 +247,5 @@ class FixerTool(Tool):
             return
 
         fixer = Fixer(logger, working_dir)
-        fixer.repair_videos(broken_videos)
+        fixer.repair_videos(broken_videos, drop_broken = args.drop_unfixable)
         logger.info("Done")

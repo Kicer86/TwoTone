@@ -62,7 +62,7 @@ def create_broken_video_with_too_long_last_subtitle(output_video_path: str, inpu
         video_utils.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [subtitles_utils.SubtitleFile(path = subtitle_path, language = "eng", encoding = "utf8")])
 
 
-def create_broken_video_with_incompatible_subtitles(output_video_path: str, input_video: str):
+def create_broken_video_with_some_incompatible_subtitles(output_video_path: str, input_video: str):
     with tempfile.TemporaryDirectory() as subtitle_dir:
         input_video_info = video_utils.get_video_data(input_video)
         default_video_track = input_video_info["video"][0]
@@ -73,10 +73,16 @@ def create_broken_video_with_incompatible_subtitles(output_video_path: str, inpu
 
         length = default_video_track["length"]
 
-        subtitle_path = f"{subtitle_dir}/sub.sub"
-        generate_microdvd_subtitles(subtitle_path, int(length), fps)
+        # Create 'broken' subtitles 10x longer than video lenght.
+        # Using subtitles_utils.ffmpeg_default_fps as fps no matter the original video's fps due to ffmpeg bug (https://trac.ffmpeg.org/ticket/10929)
+        subtitle_path1 = f"{subtitle_dir}/sub1.sub"
+        generate_microdvd_subtitles(subtitle_path1, int(length/1000 * 10), subtitles_utils.ffmpeg_default_fps)
 
-        process_utils.start_process("ffmpeg", ["-i", input_video, "-i", subtitle_path, "-map", "0", "-map", "1", "-c:v", "copy", "-c:a", "copy", output_video_path])
+        # generate another, valid subtitles
+        subtitle_path2 = f"{subtitle_dir}/sub2.sub"
+        generate_microdvd_subtitles(subtitle_path2, int(length/ 1000), subtitles_utils.ffmpeg_default_fps)
+
+        process_utils.start_process("ffmpeg", ["-i", input_video, "-i", subtitle_path1, "-i", subtitle_path2, "-map", "0", "-map", "1", "-map", "2", "-c:v", "copy", "-c:a", "copy", output_video_path])
 
 
 def create_broken_video_with_metadata_rich_subtitles(output_video_path: str, input_video: str):
@@ -174,15 +180,32 @@ class SubtitlesFixer(TwoToneTestCase):
         hashes_after_after = hashes(self.wd.path)
         self.assertEqual(hashes_after, hashes_after_after)
 
-    def test_deal_with_incompatible_videos(self):
+    def test_leave_unfixable_subtitles(self):
         output_video_path = f"{self.wd.path}/test_video.mkv"
-        create_broken_video_with_incompatible_subtitles(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
+        create_broken_video_with_some_incompatible_subtitles(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
 
         hashes_before = hashes(self.wd.path)
         run_twotone("subtitles_fix", [self.wd.path], ["-r"])
         hashes_after = hashes(self.wd.path)
 
+        # by default unfixable subtitle should leave source file untouched
         self.assertEqual(hashes_before, hashes_after)
+
+    def test_drop_unfixable_subtitles(self):
+        output_video_path = f"{self.wd.path}/test_video.mkv"
+        create_broken_video_with_some_incompatible_subtitles(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
+
+        hashes_before = hashes(self.wd.path)
+        run_twotone("subtitles_fix", ["-d", self.wd.path], ["-r"])
+        hashes_after = hashes(self.wd.path)
+
+        # -d option should drop unfixable subtitles
+        self.assertEqual(len(hashes_after), 1)
+
+        output_file = list(hashes_after.keys())[0]
+        output_file_data = video_utils.get_video_data_mkvmerge(output_file)
+        self.assertEqual(len(output_file_data["tracks"]["subtitle"]), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
