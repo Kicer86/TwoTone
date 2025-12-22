@@ -36,6 +36,8 @@ class Concatenate(generic_utils.InterruptibleProcess):
         matched_videos: dict[str, list[tuple[str, int]]] = defaultdict(list)
         for video in splitted:
             match = parts_regex.search(video)
+            if match is None:
+                continue
 
             path = match.group(1)
             if path[-1] == os.sep:

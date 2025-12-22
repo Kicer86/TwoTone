@@ -76,7 +76,7 @@ class StreamsPicker:
         ``get_language`` is a functor returning language for given stream and path.
         """
 
-        stream_index = defaultdict(lambda: defaultdict(list))
+        stream_index: defaultdict[Tuple[Any, ...], defaultdict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
 
         # organize all streams by unique_key and file
         for path, details in StreamsPicker._iter_starting_with(files_details, best_file):
@@ -110,7 +110,7 @@ class StreamsPicker:
                 stream_index[unique_key][path].append(current)
 
         # process collected streams
-        picked_streams = []
+        picked_streams: list[tuple[Tuple[Any, ...], dict[str, Any]]] = []
         for key, file_streams in stream_index.items():
 
             # from all files providing streams with given 'key' use those with most entries
@@ -125,23 +125,26 @@ class StreamsPicker:
                 continue
 
             # two or more files provide streams of the same uniqness. choose better ones
-            def preference_sorting(lhs, rhs):
+            def preference_sorting(lhs: Dict, rhs: Dict) -> int:
                 return preference(lhs["details"], rhs["details"])
 
             # sort lists of details for each file
-            file_streams = {k: sorted(v, key=cmp_to_key(preference_sorting)) for k, v in file_streams.items()}
+            sorted_file_streams = {k: sorted(v, key=cmp_to_key(preference_sorting)) for k, v in file_streams.items()}
+
+            def compare_items(lhs_item: tuple[str, list[dict[str, Any]]], rhs_item: tuple[str, list[dict[str, Any]]]) -> int:
+                return preference_sorting(lhs_item[1][0], rhs_item[1][0])
 
             # pick best details
             best_file_streams = max(
-                file_streams.items(),
-                key=cmp_to_key(lambda a, b: preference_sorting(a[1][0], b[1][0]))
+                sorted_file_streams.items(),
+                key=cmp_to_key(compare_items)
             )
 
             for stream in best_file_streams[1]:
                 picked_streams.append((key, stream))
 
         # Flatten result
-        result = []
+        result: list[tuple[str, int, Optional[str]]] = []
         for unique_key, entry in picked_streams:
             tid = entry["tid"]
             path = entry["file"]
@@ -274,8 +277,11 @@ class StreamsPicker:
         video_stream_path = video_stream[0]
 
         # pick audio streams
-        forced_audio_language = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in files_details}
-        forced_audio_language = {path: language_utils.unify_lang(lang) for path, lang in forced_audio_language.items() if lang}
+        forced_audio_language_raw = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in files_details}
+        forced_audio_language: dict[str, str] = {}
+        for path, lang in forced_audio_language_raw.items():
+            if lang:
+                forced_audio_language[path] = language_utils.unify_lang(lang)
         audio_streams = self._pick_streams(
             files_details,
             video_stream_path,
@@ -287,8 +293,11 @@ class StreamsPicker:
         )
 
         # pick subtitle streams
-        forced_subtitle_language = {path: self.duplicates_source.get_metadata_for(path).get("subtitle_lang") for path in files_details}
-        forced_subtitle_language = {path: lang for path, lang in forced_subtitle_language.items() if lang}
+        forced_subtitle_language_raw = {path: self.duplicates_source.get_metadata_for(path).get("subtitle_lang") for path in files_details}
+        forced_subtitle_language: dict[str, str] = {}
+        for path, lang in forced_subtitle_language_raw.items():
+            if lang:
+                forced_subtitle_language[path] = lang
         subtitle_streams = self._pick_streams(
             files_details,
             video_stream_path,
