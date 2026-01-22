@@ -7,7 +7,7 @@ import re
 
 from overrides import override
 
-from .tool import Tool
+from .tool import EmptyPlan, Plan, Tool
 from .utils import video_utils, process_utils, files_utils
 
 
@@ -114,7 +114,7 @@ class UtilitiesTool(Tool):
                                       help = "Frames scale in %%. Default is 100")
 
     @override
-    def analyze(self, args, logger: logging.Logger, working_dir: str):
+    def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
         self._analysis_results = None
 
         if args.subtool == "scenes":
@@ -135,17 +135,19 @@ class UtilitiesTool(Tool):
             }
         else:
             logger.error(f"Error: Unknown subtool {args.subtool}")
+        return EmptyPlan()
 
     @override
-    def perform(self, args, logger: logging.Logger, working_dir: str):
-        plan = self._analysis_results
+    def perform(self, args, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
+        _ = plan
+        analysis = self._analysis_results
         self._analysis_results = None
 
-        if plan is None:
+        if analysis is None:
             logger.info("No analysis results, nothing to perform.")
             return
 
-        if plan.get("subtool") == "scenes":
-            extract_scenes(video_path = plan["video_path"], output_dir = plan["output"], format = plan["format"], scale = float(plan["scale"]))
+        if analysis.get("subtool") == "scenes":
+            extract_scenes(video_path = analysis["video_path"], output_dir = analysis["output"], format = analysis["format"], scale = float(analysis["scale"]))
         else:
-            logger.error(f"Error: Unknown subtool {plan.get('subtool')}")
+            logger.error(f"Error: Unknown subtool {analysis.get('subtool')}")

@@ -5,11 +5,12 @@ import re
 import uuid
 
 import pycountry
+from dataclasses import dataclass
 
 from overrides import override
 from tqdm import tqdm
 
-from .tool import Tool
+from .tool import Plan, Tool
 from twotone.tools.utils import generic_utils, language_utils, process_utils, subtitles_utils, video_utils
 
 
@@ -46,12 +47,53 @@ _AUDIO_LABEL_STOPWORDS = {
 }
 
 
+@dataclass
+class LanguageFixPlan:
+    items: list[dict]
+    include_audio: bool
+
+    def is_empty(self) -> bool:
+        return len(self.items) == 0
+
+    def render(self, logger: logging.Logger) -> None:
+        if not self.items:
+            logger.info("No missing track languages found.")
+            return
+
+        subtitles_total = sum(len(item["missing_subtitles"]) for item in self.items)
+        audio_total = sum(len(item["missing_audio"]) for item in self.items)
+
+        logger.info(
+            "Planned updates for %d files (subtitles: %d, audio: %d).",
+            len(self.items),
+            subtitles_total,
+            audio_total,
+        )
+        for item in self.items:
+            subtitles_ids = item["missing_subtitles"]
+            audio_ids = item["missing_audio"]
+
+            parts = [
+                self._format_tracks("subtitles", subtitles_ids),
+            ]
+            if self.include_audio:
+                parts.append(self._format_tracks("audio", audio_ids))
+
+            logger.info("%s (%s)", item["path"], ", ".join(parts))
+
+    @staticmethod
+    def _format_tracks(label: str, tids: list[int]) -> str:
+        if not tids:
+            return f"{label}: -"
+        joined = ",".join(str(tid) for tid in tids)
+        return f"{label}: {len(tids)} [{joined}]"
+
+
 class LanguageFixerTool(Tool):
     def __init__(self) -> None:
         super().__init__()
         self.logger = logging.getLogger("TwoTone.language_fix")
         self.working_dir = ""
-        self._analysis_results: list[dict] | None = None
         self._include_audio = True
         self._interruption: generic_utils.InterruptibleProcess | None = None
 
@@ -69,27 +111,28 @@ class LanguageFixerTool(Tool):
         )
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
-        self._analysis_results = None
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
         self._include_audio = not args.no_audio
         self._set_context(logger, working_dir)
         process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
 
         self.logger.info("Searching for files with missing track languages")
-        self._analysis_results = self._scan_directory(args.videos_path[0], include_audio=self._include_audio)
+        items = self._scan_directory(args.videos_path[0], include_audio=self._include_audio)
+        return LanguageFixPlan(items=items, include_audio=self._include_audio)
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
         self._set_context(logger, working_dir)
 
-        items = self._analysis_results
-        self._analysis_results = None
-
-        if items is None or len(items) == 0:
+        if plan.is_empty():
             self.logger.info("No analysis results, nothing to fix.")
             return
 
-        self._fix_files(items, include_audio=self._include_audio)
+        if not isinstance(plan, LanguageFixPlan):
+            self.logger.info("Unsupported plan type, nothing to fix.")
+            return
+
+        self._fix_files(plan.items, include_audio=plan.include_audio)
         self.logger.info("Done")
 
     def _fix_files(self, items: list[dict], include_audio: bool) -> None:
