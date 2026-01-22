@@ -563,6 +563,10 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
         if "language" in audio and audio["language"]:
             options.extend(["--language", f"0:{audio['language']}"])
 
+        name = audio.get("name")
+        if name:
+            options.extend(["--track-name", f"0:{name}"])
+
         if audio.get("default", False):
             options.extend(["--default-track", "0:yes"])
         else:

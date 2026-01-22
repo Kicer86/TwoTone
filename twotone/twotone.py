@@ -10,6 +10,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .tools import          \
     concatenate,            \
+    language_fixer,         \
     melt,                   \
     merge,                  \
     subtitles_fixer,        \
@@ -20,6 +21,7 @@ from .tools.utils import generic_utils
 
 TOOLS = {
     "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file"),
+    "language_fix": (language_fixer.LanguageFixerTool(), "Detect missing track languages and update MKV metadata."),
     "melt": (melt.MeltTool(), "Find same video files and combine them into one containg best of all copies."),
     "merge": (merge.MergeTool(), "Merge video files with corresponding subtitles into one MKV file"),
     "subtitles_fix": (subtitles_fixer.FixerTool(), "Fixes some specific issues with subtitles. Do not use until you are sure it will help for your problems."),
