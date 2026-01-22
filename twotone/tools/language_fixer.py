@@ -46,11 +46,110 @@ _AUDIO_LABEL_STOPWORDS = {
 }
 
 
-class LanguageFixer(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, working_dir: str) -> None:
+class LanguageFixerTool(Tool):
+    def __init__(self) -> None:
         super().__init__()
+        self.logger = logging.getLogger("TwoTone.language_fix")
+        self.working_dir = ""
+        self._analysis_results: list[dict] | None = None
+        self._include_audio = True
+        self._interruption: generic_utils.InterruptibleProcess | None = None
+
+    @override
+    def setup_parser(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--no-audio",
+            action="store_true",
+            help="Do not attempt audio language detection.",
+        )
+        parser.add_argument(
+            "videos_path",
+            nargs=1,
+            help="Path with videos to analyze.",
+        )
+
+    @override
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+        self._analysis_results = None
+        self._include_audio = not args.no_audio
+        self._set_context(logger, working_dir)
+        process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
+
+        self.logger.info("Searching for files with missing track languages")
+        self._analysis_results = self._scan_directory(args.videos_path[0], include_audio=self._include_audio)
+
+    @override
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+        self._set_context(logger, working_dir)
+
+        items = self._analysis_results
+        self._analysis_results = None
+
+        if items is None or len(items) == 0:
+            self.logger.info("No analysis results, nothing to fix.")
+            return
+
+        self._fix_files(items, include_audio=self._include_audio)
+        self.logger.info("Done")
+
+    def _fix_files(self, items: list[dict], include_audio: bool) -> None:
+        self._print_missing(items)
+        self.logger.info("Fixing track languages")
+
+        for item in tqdm(items, desc="Fixing", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+            self._check_for_stop()
+
+            video_path = item["path"]
+            tracks = self._get_tracks(video_path)
+            current_langs = {track["tid"]: track["language"] for track in tracks}
+
+            missing_subtitles = [tid for tid in item["missing_subtitles"] if current_langs.get(tid) is None]
+            missing_audio: list[int] = []
+            if include_audio:
+                missing_audio = [tid for tid in item["missing_audio"] if current_langs.get(tid) is None]
+
+            self.logger.info(f"Processing {video_path}")
+
+            updates: dict[int, str] = {}
+            updates.update(self._detect_subtitle_languages(video_path, missing_subtitles))
+            if include_audio:
+                updates.update(self._detect_audio_languages(tracks, missing_audio))
+
+            if not updates:
+                self.logger.warning("No languages could be detected; skipping file.")
+                continue
+
+            if not self._apply_language_updates(video_path, updates):
+                self.logger.warning("Failed to update track languages.")
+
+    def _scan_directory(self, path: str, include_audio: bool) -> list[dict]:
+        self.logger.debug(f"Finding MKV files in {path}")
+        video_files = []
+
+        for cd, _, files in os.walk(path, followlinks=True):
+            for file in files:
+                self._check_for_stop()
+                if file.lower().endswith(".mkv"):
+                    video_files.append(os.path.join(cd, file))
+
+        results: list[dict] = []
+        self.logger.debug("Analysing files")
+        for video in tqdm(video_files, desc="Analysing videos", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+            self._check_for_stop()
+            missing = self._collect_missing_tracks(video, include_audio)
+            if missing is not None:
+                results.append(missing)
+
+        return results
+
+    def _set_context(self, logger: logging.Logger, working_dir: str) -> None:
         self.logger = logger
         self.working_dir = working_dir
+        self._interruption = generic_utils.InterruptibleProcess()
+
+    def _check_for_stop(self) -> None:
+        if self._interruption is not None:
+            self._interruption._check_for_stop()
 
     def _get_tracks(self, video_path: str) -> list[dict]:
         info = video_utils.get_video_full_info_mkvmerge(video_path)
@@ -226,97 +325,3 @@ class LanguageFixer(generic_utils.InterruptibleProcess):
 
         os.replace(output_path, video_path)
         return True
-
-    def fix_files(self, items: list[dict], include_audio: bool) -> None:
-        self._print_missing(items)
-        self.logger.info("Fixing track languages")
-
-        for item in tqdm(items, desc="Fixing", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
-            self._check_for_stop()
-
-            video_path = item["path"]
-            tracks = self._get_tracks(video_path)
-            current_langs = {track["tid"]: track["language"] for track in tracks}
-
-            missing_subtitles = [tid for tid in item["missing_subtitles"] if current_langs.get(tid) is None]
-            missing_audio: list[int] = []
-            if include_audio:
-                missing_audio = [tid for tid in item["missing_audio"] if current_langs.get(tid) is None]
-
-            self.logger.info(f"Processing {video_path}")
-
-            updates: dict[int, str] = {}
-            updates.update(self._detect_subtitle_languages(video_path, missing_subtitles))
-            if include_audio:
-                updates.update(self._detect_audio_languages(tracks, missing_audio))
-
-            if not updates:
-                self.logger.warning("No languages could be detected; skipping file.")
-                continue
-
-            if not self._apply_language_updates(video_path, updates):
-                self.logger.warning("Failed to update track languages.")
-
-    def scan_directory(self, path: str, include_audio: bool) -> list[dict]:
-        self.logger.debug(f"Finding MKV files in {path}")
-        video_files = []
-
-        for cd, _, files in os.walk(path, followlinks=True):
-            for file in files:
-                self._check_for_stop()
-                if file.lower().endswith(".mkv"):
-                    video_files.append(os.path.join(cd, file))
-
-        results: list[dict] = []
-        self.logger.debug("Analysing files")
-        for video in tqdm(video_files, desc="Analysing videos", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
-            self._check_for_stop()
-            missing = self._collect_missing_tracks(video, include_audio)
-            if missing is not None:
-                results.append(missing)
-
-        return results
-
-
-class LanguageFixerTool(Tool):
-    def __init__(self) -> None:
-        super().__init__()
-        self._analysis_results: list[dict] | None = None
-        self._include_audio = True
-
-    @override
-    def setup_parser(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "--no-audio",
-            action="store_true",
-            help="Do not attempt audio language detection.",
-        )
-        parser.add_argument(
-            "videos_path",
-            nargs=1,
-            help="Path with videos to analyze.",
-        )
-
-    @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
-        self._analysis_results = None
-        self._include_audio = not args.no_audio
-        process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
-
-        logger.info("Searching for files with missing track languages")
-
-        fixer = LanguageFixer(logger, working_dir=working_dir)
-        self._analysis_results = fixer.scan_directory(args.videos_path[0], include_audio=self._include_audio)
-
-    @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
-        items = self._analysis_results
-        self._analysis_results = None
-
-        if items is None or len(items) == 0:
-            logger.info("No analysis results, nothing to fix.")
-            return
-
-        fixer = LanguageFixer(logger, working_dir)
-        fixer.fix_files(items, include_audio=self._include_audio)
-        logger.info("Done")
