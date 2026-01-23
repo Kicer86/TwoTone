@@ -305,12 +305,16 @@ class LanguageFixerTool(Tool):
                     language = None
 
             name = props.get("track_name")
+            codec = track.get("codec")
+            codec_id = props.get("codec_id")
 
             tracks.append({
                 "type": track_type,
                 "tid": tid,
                 "language": language,
                 "name": name,
+                "codec": codec,
+                "codec_id": codec_id,
             })
 
         return tracks
@@ -318,11 +322,17 @@ class LanguageFixerTool(Tool):
     def _collect_missing_tracks(self, video_path: str, include_audio: bool) -> dict | None:
         tracks = self._get_tracks(video_path)
 
-        missing_subtitles = [
-            track["tid"]
-            for track in tracks
-            if track["type"] in ("subtitle", "subtitles") and track["language"] is None
-        ]
+        missing_subtitles: list[int] = []
+        webvtt_skipped = False
+        for track in tracks:
+            if track["type"] not in ("subtitle", "subtitles"):
+                continue
+            if track["language"] is not None:
+                continue
+            if self._is_webvtt_track(track):
+                webvtt_skipped = True
+                continue
+            missing_subtitles.append(track["tid"])
 
         missing_audio: list[int] = []
         if include_audio:
@@ -332,6 +342,9 @@ class LanguageFixerTool(Tool):
                 if track["type"] == "audio" and track["language"] is None
             ]
 
+        if webvtt_skipped:
+            self.logger.warning("WebVTT subtitles are not supported for language detection in %s", video_path)
+
         if not missing_subtitles and not missing_audio:
             return None
 
@@ -340,6 +353,13 @@ class LanguageFixerTool(Tool):
             "missing_subtitles": missing_subtitles,
             "missing_audio": missing_audio,
         }
+
+    @staticmethod
+    def _is_webvtt_track(track: dict) -> bool:
+        codec = str(track.get("codec") or "")
+        codec_id = str(track.get("codec_id") or "")
+        combined = f"{codec} {codec_id}".lower()
+        return "webvtt" in combined or combined.strip() == "vtt"
 
     def _guess_audio_language(self, label: str) -> str | None:
         if not label:
