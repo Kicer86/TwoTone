@@ -48,8 +48,17 @@ _AUDIO_LABEL_STOPWORDS = {
 
 
 @dataclass
+class LanguageFixPlanItem:
+    path: str
+    subtitles_missing: list[int]
+    audio_missing: list[int]
+    subtitle_updates: dict[int, str]
+    audio_updates: dict[int, str]
+
+
+@dataclass
 class LanguageFixPlan:
-    items: list[dict]
+    items: list[LanguageFixPlanItem]
     include_audio: bool
 
     def is_empty(self) -> bool:
@@ -60,33 +69,45 @@ class LanguageFixPlan:
             logger.info("No missing track languages found.")
             return
 
-        subtitles_total = sum(len(item["missing_subtitles"]) for item in self.items)
-        audio_total = sum(len(item["missing_audio"]) for item in self.items)
+        files_with_updates = sum(1 for item in self.items if item.subtitle_updates or item.audio_updates)
+        subtitles_updates_total = sum(len(item.subtitle_updates) for item in self.items)
+        audio_updates_total = sum(len(item.audio_updates) for item in self.items)
 
         logger.info(
             "Planned updates for %d files (subtitles: %d, audio: %d).",
-            len(self.items),
-            subtitles_total,
-            audio_total,
+            files_with_updates,
+            subtitles_updates_total,
+            audio_updates_total,
         )
+        if files_with_updates < len(self.items):
+            logger.info(
+                "Files with missing languages but no detections: %d.",
+                len(self.items) - files_with_updates,
+            )
         for item in self.items:
-            subtitles_ids = item["missing_subtitles"]
-            audio_ids = item["missing_audio"]
+            subtitles_ids = item.subtitles_missing
+            audio_ids = item.audio_missing
 
-            parts = [
-                self._format_tracks("subtitles", subtitles_ids),
-            ]
+            logger.info("File: %s", item.path)
+            for line in self._format_track_lines("subtitles", subtitles_ids, item.subtitle_updates, show_unknown=True):
+                logger.info(line)
             if self.include_audio:
-                parts.append(self._format_tracks("audio", audio_ids))
-
-            logger.info("%s (%s)", item["path"], ", ".join(parts))
+                for line in self._format_track_lines("audio", audio_ids, item.audio_updates, show_unknown=True):
+                    logger.info(line)
 
     @staticmethod
-    def _format_tracks(label: str, tids: list[int]) -> str:
+    def _format_track_lines(label: str, tids: list[int], updates: dict[int, str], show_unknown: bool) -> list[str]:
         if not tids:
-            return f"{label}: -"
-        joined = ",".join(str(tid) for tid in tids)
-        return f"{label}: {len(tids)} [{joined}]"
+            return [f"  {label}: -"]
+
+        lines = [f"  {label}:"]
+        for tid in tids:
+            lang = updates.get(tid)
+            if lang:
+                lines.append(f"    #{tid} -> {lang}")
+            elif show_unknown:
+                lines.append(f"    #{tid} -> unknown")
+        return lines
 
 
 class LanguageFixerTool(Tool):
@@ -117,8 +138,48 @@ class LanguageFixerTool(Tool):
         process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
 
         self.logger.info("Searching for files with missing track languages")
-        items = self._scan_directory(args.videos_path[0], include_audio=self._include_audio)
-        return LanguageFixPlan(items=items, include_audio=self._include_audio)
+        raw_items = self._scan_directory(args.videos_path[0], include_audio=self._include_audio)
+        plan_items: list[LanguageFixPlanItem] = []
+
+        for item in tqdm(
+            raw_items,
+            desc="Detecting languages",
+            unit="video",
+            leave=False,
+            smoothing=0.1,
+            mininterval=.2,
+            disable=generic_utils.hide_progressbar(),
+        ):
+            self._check_for_stop()
+            video_path = item["path"]
+            subtitles_missing = item["missing_subtitles"]
+            audio_missing = item["missing_audio"]
+
+            subtitle_updates = self._detect_subtitle_languages(
+                video_path,
+                subtitles_missing,
+                log_detection=False,
+            )
+            audio_updates: dict[int, str] = {}
+            if self._include_audio:
+                tracks = self._get_tracks(video_path)
+                audio_updates = self._detect_audio_languages(
+                    tracks,
+                    audio_missing,
+                    log_detection=False,
+                )
+
+            plan_items.append(
+                LanguageFixPlanItem(
+                    path=video_path,
+                    subtitles_missing=subtitles_missing,
+                    audio_missing=audio_missing,
+                    subtitle_updates=subtitle_updates,
+                    audio_updates=audio_updates,
+                )
+            )
+
+        return LanguageFixPlan(items=plan_items, include_audio=self._include_audio)
 
     @override
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
@@ -132,35 +193,51 @@ class LanguageFixerTool(Tool):
             self.logger.info("Unsupported plan type, nothing to fix.")
             return
 
-        self._fix_files(plan.items, include_audio=plan.include_audio)
+        self._apply_plan(plan.items)
         self.logger.info("Done")
 
-    def _fix_files(self, items: list[dict], include_audio: bool) -> None:
-        self._print_missing(items)
+    def _apply_plan(self, items: list[LanguageFixPlanItem]) -> None:
         self.logger.info("Fixing track languages")
 
         for item in tqdm(items, desc="Fixing", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
             self._check_for_stop()
 
-            video_path = item["path"]
+            video_path = item.path
             tracks = self._get_tracks(video_path)
             current_langs = {track["tid"]: track["language"] for track in tracks}
 
-            missing_subtitles = [tid for tid in item["missing_subtitles"] if current_langs.get(tid) is None]
-            missing_audio: list[int] = []
-            if include_audio:
-                missing_audio = [tid for tid in item["missing_audio"] if current_langs.get(tid) is None]
+            subtitle_updates = {
+                tid: lang for tid, lang in item.subtitle_updates.items() if current_langs.get(tid) is None
+            }
+            audio_updates = {
+                tid: lang for tid, lang in item.audio_updates.items() if current_langs.get(tid) is None
+            }
 
-            self.logger.info(f"Processing {video_path}")
-
-            updates: dict[int, str] = {}
-            updates.update(self._detect_subtitle_languages(video_path, missing_subtitles))
-            if include_audio:
-                updates.update(self._detect_audio_languages(tracks, missing_audio))
-
-            if not updates:
+            if not subtitle_updates and not audio_updates:
                 self.logger.warning("No languages could be detected; skipping file.")
                 continue
+
+            self.logger.info("Processing %s", video_path)
+            if subtitle_updates:
+                for line in LanguageFixPlan._format_track_lines(
+                    "subtitles",
+                    list(subtitle_updates.keys()),
+                    subtitle_updates,
+                    show_unknown=False,
+                ):
+                    self.logger.info(line)
+            if audio_updates:
+                for line in LanguageFixPlan._format_track_lines(
+                    "audio",
+                    list(audio_updates.keys()),
+                    audio_updates,
+                    show_unknown=False,
+                ):
+                    self.logger.info(line)
+
+            updates: dict[int, str] = {}
+            updates.update(subtitle_updates)
+            updates.update(audio_updates)
 
             if not self._apply_language_updates(video_path, updates):
                 self.logger.warning("Failed to update track languages.")
@@ -249,13 +326,6 @@ class LanguageFixerTool(Tool):
             "missing_audio": missing_audio,
         }
 
-    def _print_missing(self, items: list[dict]) -> None:
-        self.logger.info(f"Found {len(items)} files with missing track languages:")
-        for item in items:
-            subs_count = len(item["missing_subtitles"])
-            audio_count = len(item["missing_audio"])
-            self.logger.info(f"{item['path']} (subtitles: {subs_count}, audio: {audio_count})")
-
     def _guess_audio_language(self, label: str) -> str | None:
         if not label:
             return None
@@ -285,7 +355,7 @@ class LanguageFixerTool(Tool):
 
         return None
 
-    def _detect_subtitle_languages(self, video_path: str, missing_subtitles: list[int]) -> dict[int, str]:
+    def _detect_subtitle_languages(self, video_path: str, missing_subtitles: list[int], *, log_detection: bool = True) -> dict[int, str]:
         if not missing_subtitles:
             return {}
 
@@ -294,6 +364,7 @@ class LanguageFixerTool(Tool):
 
         detected: dict[int, str] = {}
         for tid, path in tid_to_path.items():
+            self._check_for_stop()
             if not os.path.exists(path):
                 self.logger.warning(f"Subtitle track #{tid} extraction failed for {video_path}")
                 continue
@@ -308,7 +379,8 @@ class LanguageFixerTool(Tool):
                         self.logger.debug(f"Unrecognized subtitle language '{detected_lang}' for {video_path} track #{tid}")
                         continue
                     detected[tid] = unified
-                    self.logger.info(f"Detected subtitle language for track #{tid}: {unified}")
+                    if log_detection:
+                        self.logger.info(f"Detected subtitle language for track #{tid}: {unified}")
             except Exception as e:
                 self.logger.debug(f"Subtitle language detection failed for {video_path} track #{tid}: {e}")
             finally:
@@ -319,7 +391,7 @@ class LanguageFixerTool(Tool):
 
         return detected
 
-    def _detect_audio_languages(self, tracks: list[dict], missing_audio: list[int]) -> dict[int, str]:
+    def _detect_audio_languages(self, tracks: list[dict], missing_audio: list[int], *, log_detection: bool = True) -> dict[int, str]:
         if not missing_audio:
             return {}
 
@@ -327,6 +399,7 @@ class LanguageFixerTool(Tool):
         detected: dict[int, str] = {}
 
         for tid in missing_audio:
+            self._check_for_stop()
             track = audio_tracks.get(tid)
             if not track:
                 continue
@@ -338,7 +411,8 @@ class LanguageFixerTool(Tool):
             detected_lang = self._guess_audio_language(name)
             if detected_lang:
                 detected[tid] = detected_lang
-                self.logger.info(f"Detected audio language for track #{tid}: {detected_lang}")
+                if log_detection:
+                    self.logger.info(f"Detected audio language for track #{tid}: {detected_lang}")
 
         return detected
 
