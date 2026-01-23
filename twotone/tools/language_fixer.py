@@ -80,19 +80,34 @@ class LanguageFixPlan:
             audio_updates_total,
         )
         if files_with_updates < len(self.items):
-            logger.info(
+            logger.debug(
                 "Files with missing languages but no detections: %d.",
                 len(self.items) - files_with_updates,
             )
         for item in self.items:
-            subtitles_ids = item.subtitles_missing
-            audio_ids = item.audio_missing
+            has_sub_updates = bool(item.subtitle_updates)
+            has_audio_updates = bool(item.audio_updates)
+
+            if not has_sub_updates and not has_audio_updates:
+                logger.debug("File: %s", item.path)
+                continue
 
             logger.info("File: %s", item.path)
-            for line in self._format_track_lines("subtitles", subtitles_ids, item.subtitle_updates, show_unknown=True):
-                logger.info(line)
-            if self.include_audio:
-                for line in self._format_track_lines("audio", audio_ids, item.audio_updates, show_unknown=True):
+            if has_sub_updates:
+                for line in self._format_track_lines(
+                    "subtitles",
+                    list(item.subtitle_updates.keys()),
+                    item.subtitle_updates,
+                    show_unknown=False,
+                ):
+                    logger.info(line)
+            if self.include_audio and has_audio_updates:
+                for line in self._format_track_lines(
+                    "audio",
+                    list(item.audio_updates.keys()),
+                    item.audio_updates,
+                    show_unknown=False,
+                ):
                     logger.info(line)
 
     @staticmethod
