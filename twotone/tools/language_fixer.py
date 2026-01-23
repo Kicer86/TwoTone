@@ -323,14 +323,15 @@ class LanguageFixerTool(Tool):
         tracks = self._get_tracks(video_path)
 
         missing_subtitles: list[int] = []
-        webvtt_skipped = False
+        webvtt_skipped: set[str] = set()
         for track in tracks:
             if track["type"] not in ("subtitle", "subtitles"):
                 continue
             if track["language"] is not None:
                 continue
             if self._is_webvtt_track(track):
-                webvtt_skipped = True
+                codec_id = track.get("codec_id") or track.get("codec") or "unknown"
+                webvtt_skipped.add(str(codec_id))
                 continue
             missing_subtitles.append(track["tid"])
 
@@ -343,7 +344,12 @@ class LanguageFixerTool(Tool):
             ]
 
         if webvtt_skipped:
-            self.logger.warning("WebVTT subtitles are not supported for language detection in %s", video_path)
+            formats = ", ".join(sorted(webvtt_skipped))
+            self.logger.warning(
+                "WebVTT subtitles are not supported for language detection in %s (codec_id: %s)",
+                video_path,
+                formats,
+            )
 
         if not missing_subtitles and not missing_audio:
             return None
@@ -356,10 +362,11 @@ class LanguageFixerTool(Tool):
 
     @staticmethod
     def _is_webvtt_track(track: dict) -> bool:
-        codec = str(track.get("codec") or "")
-        codec_id = str(track.get("codec_id") or "")
-        combined = f"{codec} {codec_id}".lower()
-        return "webvtt" in combined or combined.strip() == "vtt"
+        codec = str(track.get("codec") or "").lower()
+        codec_id = str(track.get("codec_id") or "").lower()
+        if "webvtt" not in f"{codec} {codec_id}":
+            return False
+        return not codec_id.startswith("s_text/webvtt")
 
     def _guess_audio_language(self, label: str) -> str | None:
         if not label:
