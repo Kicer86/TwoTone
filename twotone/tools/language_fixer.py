@@ -160,10 +160,7 @@ class LanguageFixerTool(Tool):
             raw_items,
             desc="Detecting languages",
             unit="video",
-            leave=False,
-            smoothing=0.1,
-            mininterval=.2,
-            disable=generic_utils.hide_progressbar(),
+            **generic_utils.get_tqdm_defaults(),
         ):
             self._check_for_stop()
             video_path = item["path"]
@@ -214,7 +211,7 @@ class LanguageFixerTool(Tool):
     def _apply_plan(self, items: list[LanguageFixPlanItem]) -> None:
         self.logger.info("Fixing track languages")
 
-        for item in tqdm(items, desc="Fixing", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+        for item in tqdm(items, desc="Fixing", unit="video", **generic_utils.get_tqdm_defaults()):
             self._check_for_stop()
 
             video_path = item.path
@@ -269,7 +266,7 @@ class LanguageFixerTool(Tool):
 
         results: list[dict] = []
         self.logger.debug("Analysing files")
-        for video in tqdm(video_files, desc="Analysing videos", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+        for video in tqdm(video_files, desc="Analysing videos", unit="video", **generic_utils.get_tqdm_defaults()):
             self._check_for_stop()
             missing = self._collect_missing_tracks(video, include_audio)
             if missing is not None:

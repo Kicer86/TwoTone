@@ -291,7 +291,7 @@ class Merge(generic_utils.InterruptibleProcess):
 
     def perform_merges(self, videos_and_subtitles: dict[str, list[subtitles_utils.SubtitleFile]]) -> None:
         self.logger.info("Starting merge")
-        for video, subtitles in tqdm(videos_and_subtitles.items(), desc="Merging", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+        for video, subtitles in tqdm(videos_and_subtitles.items(), desc="Merging", unit="video", **generic_utils.get_tqdm_defaults()):
             self._check_for_stop()
             self._merge(video, subtitles)
 

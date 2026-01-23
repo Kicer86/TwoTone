@@ -113,7 +113,7 @@ class Fixer(generic_utils.InterruptibleProcess):
         self._print_broken_videos(broken_videos_info)
         self.logger.info("Fixing videos")
 
-        for broken_video in tqdm(broken_videos_info, desc="Fixing", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+        for broken_video in tqdm(broken_videos_info, desc="Fixing", unit="video", **generic_utils.get_tqdm_defaults()):
             self._check_for_stop()
 
             video_info = broken_video[0]
@@ -206,7 +206,7 @@ class Fixer(generic_utils.InterruptibleProcess):
                     video_files.append(file_path)
 
         self.logger.debug("Analysing videos")
-        for video in tqdm(video_files, desc="Analysing videos", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+        for video in tqdm(video_files, desc="Analysing videos", unit="video", **generic_utils.get_tqdm_defaults()):
             self._check_for_stop()
             broken_video = self._check_if_broken(video)
             if broken_video is not None:
