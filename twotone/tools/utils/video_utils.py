@@ -516,6 +516,7 @@ def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path:
         "srt": ".srt",
         "ass": ".ass",
         "ssa": ".ssa",
+        "hdmv_pgs_subtitle": ".sup",
         "webvtt": ".vtt",
         "mov_text": ".srt",
         "text": ".srt",
