@@ -1,7 +1,7 @@
 import os
 import unittest
 
-from twotone.tools.utils import subtitles_utils, video_utils
+from twotone.tools.utils import process_utils, subtitles_utils, video_utils
 from common import TwoToneTestCase, build_test_video, get_audio, get_video, run_twotone, write_subtitle
 
 
@@ -49,6 +49,67 @@ class LanguageFixerTests(TwoToneTestCase):
         audios = info["tracks"].get("audio", [])
         self.assertEqual(len(audios), 1)
         self.assertEqual(audios[0]["language"], "eng")
+
+    def test_webvtt_extraction_fails(self):
+        vtt_path = write_subtitle(
+            os.path.join(self.wd.path, "sub.vtt"),
+            [
+                "WEBVTT",
+                "",
+                "00:00:00.000 --> 00:00:00.500",
+                "Hello",
+            ],
+        )
+        output_video = os.path.join(self.wd.path, "webvtt_subs.mkv")
+        status = process_utils.start_process(
+            "ffmpeg",
+            [
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=320x240:d=1",
+                "-i",
+                vtt_path,
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:0",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:s",
+                "copy",
+                output_video,
+            ],
+        )
+        self.assertEqual(status.returncode, 0, status.stderr)
+
+        info = video_utils.get_video_full_info_mkvmerge(output_video)
+        subtitle_tracks = [track for track in info.get("tracks", []) if track.get("type") in ("subtitle", "subtitles")]
+        self.assertTrue(subtitle_tracks, "Expected at least one subtitle track in generated file.")
+
+        track = None
+        for candidate in subtitle_tracks:
+            props = candidate.get("properties", {})
+            codec_id = (props.get("codec_id") or "").lower()
+            if codec_id.startswith("d_webvtt"):
+                track = candidate
+                break
+
+        self.assertIsNotNone(track, "Expected a D_WEBVTT subtitle track in generated file.")
+        props = track.get("properties", {})
+        codec_id = (props.get("codec_id") or "").lower()
+        self.assertIn("webvtt", codec_id or track.get("codec", "").lower())
+        self.assertTrue(
+            codec_id.startswith("d_webvtt"),
+            f"Expected D_WEBVTT subtitle track, got codec_id={codec_id!r}",
+        )
+
+        extracted = os.path.join(self.wd.path, "extracted.vtt")
+        status = process_utils.start_process("mkvextract", ["tracks", output_video, f"{track['id']}:{extracted}"])
+        self.assertNotEqual(status.returncode, 0)
 
 
 if __name__ == "__main__":
