@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 from tqdm import tqdm
 
-from ..tool import Tool
+from ..tool import EmptyPlan, Plan, Tool
 from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
 from .attachments_picker import AttachmentsPicker
 from .debug_routines import DebugRoutines
@@ -804,7 +804,7 @@ class MeltTool(Tool):
 
 
     @override
-    def analyze(self, args, logger: logging.Logger, working_dir: str):
+    def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
         # Reset cached state
         self._analysis_results = None
         self._data_source = None
@@ -864,7 +864,7 @@ class MeltTool(Tool):
 
         if not self._data_source:
             logger.info("No input source specified. Nothing to analyze.")
-            return
+            return EmptyPlan()
 
         logger.info("Collecting duplicates for analysis")
         duplicates_raw = self._data_source.collect_duplicates()
@@ -880,16 +880,18 @@ class MeltTool(Tool):
         )
 
         self._analysis_results = melter.analyze_duplicates(duplicates)
+        return EmptyPlan()
 
     @override
-    def perform(self, args, logger: logging.Logger, working_dir: str):
-        plan = self._analysis_results
+    def perform(self, args, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
+        _ = plan
+        analysis = self._analysis_results
         data_source = self._data_source
         interruption = self._interruption or generic_utils.InterruptibleProcess()
         # clear cached results early to free memory
         self._analysis_results = None
         # Quick exit if no analysis was done
-        if not plan or not data_source:
+        if not analysis or not data_source:
             logger.info("No analysis results, nothing to melt.")
             return
 
@@ -902,4 +904,4 @@ class MeltTool(Tool):
                         allow_language_guessing = args.allow_language_guessing,
         )
 
-        melter.process_duplicates(plan)
+        melter.process_duplicates(analysis)

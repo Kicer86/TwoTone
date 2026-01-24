@@ -103,7 +103,7 @@ def execute(argv: list[str]) -> None:
         with logging_redirect_tqdm():
             try:
                 tool_logger = logger.getChild(args.tool)
-                tool.analyze(
+                plan = tool.analyze(
                     args,
                     logger=tool_logger,
                     working_dir=tool_wd,
@@ -114,8 +114,10 @@ def execute(argv: list[str]) -> None:
                         args,
                         logger=tool_logger,
                         working_dir=tool_wd,
+                        plan=plan,
                     )
                 else:
+                    plan.render(tool_logger)
                     tool_logger.info("Dry run mode: analyze completed, skipping perform.")
             finally:
                 shutil.rmtree(pid_wd, ignore_errors=True)
