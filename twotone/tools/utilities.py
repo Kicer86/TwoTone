@@ -92,6 +92,9 @@ class UtilitiesTool(Tool):
         super().__init__()
         self._analysis_results: dict | None = None
 
+    def required_tools(self) -> set[str]:
+        return {"ffmpeg", "ffprobe"}
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
         subparsers = parser.add_subparsers(dest="subtool", help="Available subtools:")
@@ -118,8 +121,6 @@ class UtilitiesTool(Tool):
         self._analysis_results = None
 
         if args.subtool == "scenes":
-            process_utils.ensure_tools_exist(["ffmpeg", "ffprobe"], logger)
-
             # Build a simple plan payload; heavy work happens in perform
             try:
                 scale = float(args.scale)

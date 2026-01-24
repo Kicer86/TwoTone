@@ -25,6 +25,9 @@ class Tool:
     def setup_parser(self, parser: argparse.ArgumentParser):
         pass
 
+    def required_tools(self) -> set[str]:
+        return set()
+
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
         pass
 

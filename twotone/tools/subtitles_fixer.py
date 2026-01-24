@@ -219,6 +219,9 @@ class FixerTool(Tool):
         super().__init__()
         self._analysis_results: list[tuple[dict, list[int]]] | None = None
 
+    def required_tools(self) -> set[str]:
+        return {"ffprobe", "mkvextract", "mkvmerge"}
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--drop-unfixable", "-d",
@@ -231,7 +234,6 @@ class FixerTool(Tool):
     @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
         self._analysis_results = None
-        process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
 
         logger.info("Searching for broken files")
 

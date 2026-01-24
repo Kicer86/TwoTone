@@ -301,6 +301,9 @@ class MergeTool(Tool):
         super().__init__()
         self._analysis_results: dict[str, list[subtitles_utils.SubtitleFile]] | None = None
 
+    def required_tools(self) -> set[str]:
+        return {"ffmpeg", "ffprobe", "mkvmerge"}
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument('videos_path',
@@ -319,7 +322,6 @@ class MergeTool(Tool):
     @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
         self._analysis_results = None
-        process_utils.ensure_tools_exist(["mkvmerge", "ffmpeg", "ffprobe"], logger)
 
         logger.info("Searching for movie and subtitle files to be merged")
 
