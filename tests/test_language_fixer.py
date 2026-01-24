@@ -26,7 +26,7 @@ class LanguageFixerTests(TwoToneTestCase):
         output_video = os.path.join(self.wd.path, "missing_subtitle_lang.mkv")
         video_utils.generate_mkv(input_video=video_input, output_path=output_video, subtitles=[subtitle])
 
-        run_twotone("language_fix", [self.wd.path], ["--no-dry-run"])
+        run_twotone("language_fix", [self.wd.path], ["--no-dry-run", "--audio"])
 
         info = video_utils.get_video_data_mkvmerge(output_video)
         subtitles = info["tracks"].get("subtitle", [])

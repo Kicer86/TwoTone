@@ -155,16 +155,16 @@ class LanguageFixerTool(Tool):
         super().__init__()
         self.logger = logging.getLogger("TwoTone.language_fix")
         self.working_dir = ""
-        self._include_audio = True
+        self._include_audio = False
         self._base_path: str | None = None
         self._interruption: generic_utils.InterruptibleProcess | None = None
 
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
-            "--no-audio",
+            "--audio",
             action="store_true",
-            help="Do not attempt audio language detection.",
+            help="Enable audio language detection from track names (heuristic; may be inaccurate).",
         )
         parser.add_argument(
             "videos_path",
@@ -174,7 +174,7 @@ class LanguageFixerTool(Tool):
 
     @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
-        self._include_audio = not args.no_audio
+        self._include_audio = args.audio
         self._base_path = os.path.abspath(args.videos_path[0])
         self._set_context(logger, working_dir)
         process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
