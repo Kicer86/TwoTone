@@ -119,8 +119,6 @@ def _resolve_start_process_tool(call: ast.Call, local_strings: dict[str, str], f
 def _resolve_string_value(expr: ast.expr, local_strings: dict[str, str], func_globals: dict) -> str | None:
     if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
         return expr.value
-    if isinstance(expr, ast.Str):
-        return expr.s
     if isinstance(expr, ast.Name):
         if expr.id in local_strings:
             return local_strings[expr.id]
@@ -202,7 +200,7 @@ def _resolve_call_target(
         return _as_function(func_globals.get(call_func.id))
 
     if isinstance(call_func, ast.Attribute):
-        base = None
+        base: object | None = None
         if isinstance(call_func.value, ast.Name):
             base_name = call_func.value.id
             if base_name in ("self", "cls") and owner_class is not None:
