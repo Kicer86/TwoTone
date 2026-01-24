@@ -56,6 +56,14 @@ class MeltingTest(TwoToneTestCase):
     def setUp(self):
         super().setUp()
 
+        def run_ffmpeg(args, expected_path: str | None = None):
+            status = process_utils.start_process("ffmpeg", args)
+            if status.returncode != 0:
+                raise RuntimeError(f"ffmpeg failed: {status.stderr}")
+            if expected_path and not os.path.exists(expected_path):
+                raise RuntimeError(f"ffmpeg did not produce expected file: {expected_path}")
+            return status
+
         def gen_sample(out_path: Path):
             videos = ["Atoms - 8579.mp4",
                       "Blue_Sky_and_Clouds_Timelapse_0892__Videvo.mov",
@@ -75,9 +83,25 @@ class MeltingTest(TwoToneTestCase):
                     video_input_path = get_video(video)
                     audio_input_path = get_audio(audio)
                     output_path = os.path.join(output_dir, video + ".mp4")
-                    process_utils.start_process("ffmpeg", ["-i", video_input_path, "-i", audio_input_path, "-r", "25", "-vf", "fps=25", "-c:v", "libx265", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
-                                                "-shortest", "-map", "0:v:0", "-map", "1:a:0", "-c:a", "libvorbis", "-ar", "44100",
-                                                output_path])
+                    run_ffmpeg(
+                        [
+                            "-i", video_input_path,
+                            "-i", audio_input_path,
+                            "-r", "25",
+                            "-vf", "fps=25",
+                            "-c:v", "libx265",
+                            "-preset", "veryfast",
+                            "-crf", "18",
+                            "-pix_fmt", "yuv420p",
+                            "-shortest",
+                            "-map", "0:v:0",
+                            "-map", "1:a:0",
+                            "-c:a", "libvorbis",
+                            "-ar", "44100",
+                            output_path,
+                        ],
+                        expected_path=output_path,
+                    )
                     output_files.append(output_path)
 
                 # concatenate
@@ -88,7 +112,16 @@ class MeltingTest(TwoToneTestCase):
                         safe_path = path.replace("'", "'\\''")
                         f.write(f"file '{safe_path}'\n")
 
-                process_utils.start_process("ffmpeg", ["-f", "concat", "-safe", "0", "-i", files_list_path, "-c", "copy", str(out_path)])
+                run_ffmpeg(
+                    [
+                        "-f", "concat",
+                        "-safe", "0",
+                        "-i", files_list_path,
+                        "-c", "copy",
+                        str(out_path),
+                    ],
+                    expected_path=str(out_path),
+                )
 
         def gen_vhs(out_path: Path, input: str):
             """
@@ -117,7 +150,7 @@ class MeltingTest(TwoToneTestCase):
                 str(out_path)
             ]
 
-            process_utils.start_process("ffmpeg", args)
+            run_ffmpeg(args, expected_path=str(out_path))
 
         file_cache = FileCache("TwoToneTests")
 
