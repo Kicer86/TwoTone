@@ -288,7 +288,7 @@ class MeltingTest(TwoToneTestCase):
 
         with patch("twotone.tools.utils.video_utils.extract_subtitle_to_temp", side_effect=fake_extract), \
              patch("twotone.tools.utils.subtitles_utils.file_encoding", return_value="utf-8"), \
-             patch("twotone.tools.utils.subtitles_utils.guess_language", return_value="en"):
+             patch("twotone.tools.utils.subtitles_utils.guess_subtitle_language", return_value="en"):
             interruption = generic_utils.InterruptibleProcess()
             duplicates = StaticSource(interruption)
             sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path, allow_language_guessing=False)
