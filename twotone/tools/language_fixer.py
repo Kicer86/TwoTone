@@ -60,6 +60,7 @@ class LanguageFixPlanItem:
 class LanguageFixPlan:
     items: list[LanguageFixPlanItem]
     include_audio: bool
+    base_path: str | None = None
 
     def is_empty(self) -> bool:
         return len(self.items) == 0
@@ -89,10 +90,10 @@ class LanguageFixPlan:
             has_audio_updates = bool(item.audio_updates)
 
             if not has_sub_updates and not has_audio_updates:
-                logger.debug("File: %s", item.path)
+                logger.debug("File: %s", _format_path(item.path, self.base_path))
                 continue
 
-            logger.info("File: %s", item.path)
+            logger.info("File: %s", _format_path(item.path, self.base_path))
             if has_sub_updates:
                 for line in self._format_track_lines(
                     "subtitles",
@@ -131,6 +132,7 @@ class LanguageFixerTool(Tool):
         self.logger = logging.getLogger("TwoTone.language_fix")
         self.working_dir = ""
         self._include_audio = True
+        self._base_path: str | None = None
         self._interruption: generic_utils.InterruptibleProcess | None = None
 
     @override
@@ -149,6 +151,7 @@ class LanguageFixerTool(Tool):
     @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
         self._include_audio = not args.no_audio
+        self._base_path = os.path.abspath(args.videos_path[0])
         self._set_context(logger, working_dir)
         process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
 
@@ -191,7 +194,7 @@ class LanguageFixerTool(Tool):
                 )
             )
 
-        return LanguageFixPlan(items=plan_items, include_audio=self._include_audio)
+        return LanguageFixPlan(items=plan_items, include_audio=self._include_audio, base_path=self._base_path)
 
     @override
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
@@ -205,6 +208,7 @@ class LanguageFixerTool(Tool):
             self.logger.info("Unsupported plan type, nothing to fix.")
             return
 
+        self._base_path = plan.base_path
         self._apply_plan(plan.items)
         self.logger.info("Done")
 
@@ -229,7 +233,7 @@ class LanguageFixerTool(Tool):
                 self.logger.warning("No languages could be detected; skipping file.")
                 continue
 
-            self.logger.info("Processing %s", video_path)
+            self.logger.info("Processing %s", _format_path(video_path, self._base_path))
             if subtitle_updates:
                 for line in LanguageFixPlan._format_track_lines(
                     "subtitles",
@@ -349,14 +353,14 @@ class LanguageFixerTool(Tool):
             formats = ", ".join(sorted(webvtt_skipped))
             self.logger.warning(
                 "WebVTT subtitles are not supported for language detection in %s (codec_id: %s)",
-                video_path,
+                _format_path(video_path, self._base_path),
                 formats,
             )
         if pgs_skipped:
             formats = ", ".join(sorted(pgs_skipped))
             self.logger.warning(
                 "PGS subtitles are not supported for language detection in %s (codec_id: %s)",
-                video_path,
+                _format_path(video_path, self._base_path),
                 formats,
             )
 
@@ -423,7 +427,7 @@ class LanguageFixerTool(Tool):
         for tid, path in tid_to_path.items():
             self._check_for_stop()
             if not os.path.exists(path):
-                self.logger.warning(f"Subtitle track #{tid} extraction failed for {video_path}")
+                self.logger.warning(f"Subtitle track #{tid} extraction failed for {_format_path(video_path, self._base_path)}")
                 continue
 
             try:
@@ -433,13 +437,17 @@ class LanguageFixerTool(Tool):
                     try:
                         unified = language_utils.unify_lang(detected_lang)
                     except Exception:
-                        self.logger.debug(f"Unrecognized subtitle language '{detected_lang}' for {video_path} track #{tid}")
+                        self.logger.debug(
+                            f"Unrecognized subtitle language '{detected_lang}' for {_format_path(video_path, self._base_path)} track #{tid}"
+                        )
                         continue
                     detected[tid] = unified
                     if log_detection:
                         self.logger.info(f"Detected subtitle language for track #{tid}: {unified}")
             except Exception as e:
-                self.logger.debug(f"Subtitle language detection failed for {video_path} track #{tid}: {e}")
+                self.logger.debug(
+                    f"Subtitle language detection failed for {_format_path(video_path, self._base_path)} track #{tid}: {e}"
+                )
             finally:
                 try:
                     os.remove(path)
@@ -488,14 +496,34 @@ class LanguageFixerTool(Tool):
 
         status = process_utils.start_process("mkvmerge", args)
         if status.returncode != 0:
-            self.logger.error(f"mkvmerge failed for {video_path}: {status.stderr}")
+            self.logger.error(f"mkvmerge failed for {_format_path(video_path, self._base_path)}: {status.stderr}")
             if os.path.exists(output_path):
                 os.remove(output_path)
             return False
 
         if not os.path.exists(output_path):
-            self.logger.error(f"mkvmerge did not create output file for {video_path}")
+            self.logger.error(f"mkvmerge did not create output file for {_format_path(video_path, self._base_path)}")
             return False
 
         os.replace(output_path, video_path)
         return True
+
+
+def _format_path(path: str, base_path: str | None) -> str:
+    if not base_path:
+        return path
+
+    try:
+        base = os.path.abspath(base_path)
+        target = os.path.abspath(path)
+    except OSError:
+        return path
+
+    try:
+        if os.path.commonpath([base, target]) != base:
+            return path
+    except ValueError:
+        return path
+
+    rel = os.path.relpath(target, base)
+    return rel or path
