@@ -56,6 +56,7 @@ class LanguageFixPlanItem:
     audio_updates: dict[int, str]
     subtitle_languages: dict[int, str | None]
     audio_languages: dict[int, str | None]
+    unsupported_subtitles: dict[int, str]
 
 
 @dataclass
@@ -101,6 +102,7 @@ class LanguageFixPlan:
                     "subtitles",
                     item.subtitle_languages,
                     item.subtitle_updates,
+                    item.unsupported_subtitles,
                     show_unknown=True,
                 ):
                     logger.info(line)
@@ -109,6 +111,7 @@ class LanguageFixPlan:
                     "audio",
                     item.audio_languages,
                     item.audio_updates,
+                    {},
                     show_unknown=True,
                 ):
                     logger.info(line)
@@ -118,6 +121,7 @@ class LanguageFixPlan:
         label: str,
         languages: dict[int, str | None],
         updates: dict[int, str],
+        unsupported: dict[int, str],
         show_unknown: bool,
     ) -> list[str]:
         if not languages:
@@ -127,10 +131,13 @@ class LanguageFixPlan:
         for tid in sorted(languages.keys()):
             current = languages.get(tid)
             update = updates.get(tid)
+            unsupported_format = unsupported.get(tid)
 
             if current is None:
                 if update:
                     lines.append(f"    #{tid} unknown -> {update}")
+                elif unsupported_format:
+                    lines.append(f"    #{tid} unknown (unsupported: {unsupported_format})")
                 elif show_unknown:
                     lines.append(f"    #{tid} unknown")
                 continue
@@ -191,6 +198,7 @@ class LanguageFixerTool(Tool):
             subtitles_missing = item["missing_subtitles"]
             audio_missing = item["missing_audio"]
             tracks = item["tracks"]
+            unsupported_subtitles = item.get("unsupported_subtitles", {})
 
             subtitle_languages = {
                 track["tid"]: track["language"]
@@ -225,6 +233,7 @@ class LanguageFixerTool(Tool):
                     audio_updates=audio_updates,
                     subtitle_languages=subtitle_languages,
                     audio_languages=audio_languages,
+                    unsupported_subtitles=unsupported_subtitles,
                 )
             )
 
@@ -283,6 +292,7 @@ class LanguageFixerTool(Tool):
                     "subtitles",
                     subtitle_languages,
                     subtitle_updates,
+                    item.unsupported_subtitles,
                     show_unknown=True,
                 ):
                     self.logger.info(line)
@@ -291,6 +301,7 @@ class LanguageFixerTool(Tool):
                     "audio",
                     audio_languages,
                     audio_updates,
+                    {},
                     show_unknown=True,
                 ):
                     self.logger.info(line)
@@ -370,6 +381,7 @@ class LanguageFixerTool(Tool):
         missing_subtitles: list[int] = []
         webvtt_skipped: set[str] = set()
         pgs_skipped: set[str] = set()
+        unsupported_subtitles: dict[int, str] = {}
         for track in tracks:
             if track["type"] not in ("subtitle", "subtitles"):
                 continue
@@ -378,10 +390,12 @@ class LanguageFixerTool(Tool):
             if self._is_webvtt_track(track):
                 codec_id = track.get("codec_id") or track.get("codec") or "unknown"
                 webvtt_skipped.add(str(codec_id))
+                unsupported_subtitles[track["tid"]] = str(codec_id)
                 continue
             if self._is_pgs_track(track):
                 codec_id = track.get("codec_id") or track.get("codec") or "unknown"
                 pgs_skipped.add(str(codec_id))
+                unsupported_subtitles[track["tid"]] = str(codec_id)
                 continue
             missing_subtitles.append(track["tid"])
 
@@ -416,6 +430,7 @@ class LanguageFixerTool(Tool):
             "missing_subtitles": missing_subtitles,
             "missing_audio": missing_audio,
             "tracks": tracks,
+            "unsupported_subtitles": unsupported_subtitles,
         }
 
     @staticmethod
