@@ -321,6 +321,7 @@ class LanguageFixerTool(Tool):
 
         missing_subtitles: list[int] = []
         webvtt_skipped: set[str] = set()
+        pgs_skipped: set[str] = set()
         for track in tracks:
             if track["type"] not in ("subtitle", "subtitles"):
                 continue
@@ -329,6 +330,10 @@ class LanguageFixerTool(Tool):
             if self._is_webvtt_track(track):
                 codec_id = track.get("codec_id") or track.get("codec") or "unknown"
                 webvtt_skipped.add(str(codec_id))
+                continue
+            if self._is_pgs_track(track):
+                codec_id = track.get("codec_id") or track.get("codec") or "unknown"
+                pgs_skipped.add(str(codec_id))
                 continue
             missing_subtitles.append(track["tid"])
 
@@ -344,6 +349,13 @@ class LanguageFixerTool(Tool):
             formats = ", ".join(sorted(webvtt_skipped))
             self.logger.warning(
                 "WebVTT subtitles are not supported for language detection in %s (codec_id: %s)",
+                video_path,
+                formats,
+            )
+        if pgs_skipped:
+            formats = ", ".join(sorted(pgs_skipped))
+            self.logger.warning(
+                "PGS subtitles are not supported for language detection in %s (codec_id: %s)",
                 video_path,
                 formats,
             )
@@ -364,6 +376,12 @@ class LanguageFixerTool(Tool):
         if "webvtt" not in f"{codec} {codec_id}":
             return False
         return not codec_id.startswith("s_text/webvtt")
+
+    @staticmethod
+    def _is_pgs_track(track: dict) -> bool:
+        codec = str(track.get("codec") or "").lower()
+        codec_id = str(track.get("codec_id") or "").lower()
+        return "pgs" in f"{codec} {codec_id}" or "hdmv_pgs_subtitle" in f"{codec} {codec_id}"
 
     def _guess_audio_language(self, label: str) -> str | None:
         if not label:
@@ -410,7 +428,7 @@ class LanguageFixerTool(Tool):
 
             try:
                 encoding = subtitles_utils.file_encoding(path)
-                detected_lang = subtitles_utils.guess_language(path, encoding)
+                detected_lang = subtitles_utils.guess_subtitle_language(path, encoding)
                 if detected_lang:
                     try:
                         unified = language_utils.unify_lang(detected_lang)

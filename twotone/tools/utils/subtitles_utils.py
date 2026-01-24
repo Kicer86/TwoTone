@@ -80,7 +80,7 @@ def is_subtitle_microdvd(subtitle: SubtitleFile) -> bool:
         return False
 
 
-def guess_language(path: str, encoding: str) -> str:
+def guess_subtitle_language(path: str, encoding: str) -> str:
     result = ""
 
     with open(path, "r", encoding=encoding) as sf:
@@ -98,7 +98,7 @@ def build_subtitle_from_path(path: str, language: str | None = "") -> SubtitleFi
                    2/3 letter language code - use that language
     """
     encoding = file_encoding(path)
-    language = guess_language(path, encoding) if language is None else language
+    language = guess_subtitle_language(path, encoding) if language is None else language
 
     return SubtitleFile(path = path, language = language, encoding = encoding)
 
