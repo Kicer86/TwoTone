@@ -54,6 +54,8 @@ class LanguageFixPlanItem:
     audio_missing: list[int]
     subtitle_updates: dict[int, str]
     audio_updates: dict[int, str]
+    subtitle_languages: dict[int, str | None]
+    audio_languages: dict[int, str | None]
 
 
 @dataclass
@@ -97,32 +99,47 @@ class LanguageFixPlan:
             if has_sub_updates:
                 for line in self._format_track_lines(
                     "subtitles",
-                    list(item.subtitle_updates.keys()),
+                    item.subtitle_languages,
                     item.subtitle_updates,
-                    show_unknown=False,
+                    show_unknown=True,
                 ):
                     logger.info(line)
             if self.include_audio and has_audio_updates:
                 for line in self._format_track_lines(
                     "audio",
-                    list(item.audio_updates.keys()),
+                    item.audio_languages,
                     item.audio_updates,
-                    show_unknown=False,
+                    show_unknown=True,
                 ):
                     logger.info(line)
 
     @staticmethod
-    def _format_track_lines(label: str, tids: list[int], updates: dict[int, str], show_unknown: bool) -> list[str]:
-        if not tids:
+    def _format_track_lines(
+        label: str,
+        languages: dict[int, str | None],
+        updates: dict[int, str],
+        show_unknown: bool,
+    ) -> list[str]:
+        if not languages:
             return [f"  {label}: -"]
 
         lines = [f"  {label}:"]
-        for tid in tids:
-            lang = updates.get(tid)
-            if lang:
-                lines.append(f"    #{tid} -> {lang}")
-            elif show_unknown:
-                lines.append(f"    #{tid} -> unknown")
+        for tid in sorted(languages.keys()):
+            current = languages.get(tid)
+            update = updates.get(tid)
+
+            if current is None:
+                if update:
+                    lines.append(f"    #{tid} unknown -> {update}")
+                elif show_unknown:
+                    lines.append(f"    #{tid} unknown")
+                continue
+
+            if update and update != current:
+                lines.append(f"    #{tid} {current} -> {update}")
+            else:
+                lines.append(f"    #{tid} {current}")
+
         return lines
 
 
@@ -169,6 +186,18 @@ class LanguageFixerTool(Tool):
             video_path = item["path"]
             subtitles_missing = item["missing_subtitles"]
             audio_missing = item["missing_audio"]
+            tracks = item["tracks"]
+
+            subtitle_languages = {
+                track["tid"]: track["language"]
+                for track in tracks
+                if track["type"] in ("subtitle", "subtitles")
+            }
+            audio_languages = {
+                track["tid"]: track["language"]
+                for track in tracks
+                if track["type"] == "audio"
+            }
 
             subtitle_updates = self._detect_subtitle_languages(
                 video_path,
@@ -177,7 +206,6 @@ class LanguageFixerTool(Tool):
             )
             audio_updates: dict[int, str] = {}
             if self._include_audio:
-                tracks = self._get_tracks(video_path)
                 audio_updates = self._detect_audio_languages(
                     tracks,
                     audio_missing,
@@ -191,6 +219,8 @@ class LanguageFixerTool(Tool):
                     audio_missing=audio_missing,
                     subtitle_updates=subtitle_updates,
                     audio_updates=audio_updates,
+                    subtitle_languages=subtitle_languages,
+                    audio_languages=audio_languages,
                 )
             )
 
@@ -234,20 +264,30 @@ class LanguageFixerTool(Tool):
                 continue
 
             self.logger.info("Processing %s", _format_path(video_path, self._base_path))
+            subtitle_languages = {
+                track["tid"]: track["language"]
+                for track in tracks
+                if track["type"] in ("subtitle", "subtitles")
+            }
+            audio_languages = {
+                track["tid"]: track["language"]
+                for track in tracks
+                if track["type"] == "audio"
+            }
             if subtitle_updates:
                 for line in LanguageFixPlan._format_track_lines(
                     "subtitles",
-                    list(subtitle_updates.keys()),
+                    subtitle_languages,
                     subtitle_updates,
-                    show_unknown=False,
+                    show_unknown=True,
                 ):
                     self.logger.info(line)
             if audio_updates:
                 for line in LanguageFixPlan._format_track_lines(
                     "audio",
-                    list(audio_updates.keys()),
+                    audio_languages,
                     audio_updates,
-                    show_unknown=False,
+                    show_unknown=True,
                 ):
                     self.logger.info(line)
 
@@ -371,6 +411,7 @@ class LanguageFixerTool(Tool):
             "path": video_path,
             "missing_subtitles": missing_subtitles,
             "missing_audio": missing_audio,
+            "tracks": tracks,
         }
 
     @staticmethod
