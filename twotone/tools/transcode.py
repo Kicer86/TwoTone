@@ -400,9 +400,6 @@ class TranscodeTool(Tool):
         super().__init__()
         self._analysis_results: dict[str, int] | None = None
 
-    def required_tools(self) -> set[str]:
-        return {"exiftool", "ffmpeg", "ffprobe"}
-
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         def valid_ssim_value(value):
@@ -424,7 +421,6 @@ class TranscodeTool(Tool):
                             help='Path with videos to transcode.')
 
 
-    @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
         self._analysis_results = None
 
@@ -432,7 +428,6 @@ class TranscodeTool(Tool):
         self._analysis_results = transcoder.analyze_directory(args.videos_path[0])
         return EmptyPlan()
 
-    @override
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
         _ = plan
         analysis = self._analysis_results

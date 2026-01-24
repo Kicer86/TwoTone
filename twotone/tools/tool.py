@@ -3,6 +3,8 @@ import argparse
 import logging
 from typing import Protocol, runtime_checkable
 
+from twotone.tools.utils import requirements_utils
+
 
 @runtime_checkable
 class Plan(Protocol):
@@ -26,7 +28,7 @@ class Tool:
         pass
 
     def required_tools(self) -> set[str]:
-        return set()
+        return requirements_utils.collect_required_tools(self.analyze, self.perform)
 
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
         pass
