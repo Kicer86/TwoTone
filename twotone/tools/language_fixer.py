@@ -174,6 +174,10 @@ class LanguageFixerTool(Tool):
 
         self.logger.info("Searching for files with missing track languages")
         raw_items = self._scan_directory(args.videos_path[0], include_audio=self._include_audio)
+        self.logger.info(
+            "Found %d file(s) with missing track languages. Detecting languages.",
+            len(raw_items),
+        )
         plan_items: list[LanguageFixPlanItem] = []
 
         for item in tqdm(
