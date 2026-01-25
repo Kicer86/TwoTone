@@ -47,6 +47,14 @@ For a full list of options:
 python -m twotone merge --help
 ```
 
+#### Fix Missing Track Languages
+
+The language_fix tool scans MKV files and fills missing language metadata for subtitle tracks by extracting them and running language detection. It can also infer audio track language from the track name (use --audio to enable; heuristic may be inaccurate).
+
+```bash
+python -m twotone language_fix --help
+```
+
 #### Automatic Video transcoding
 
 The transcode tool transcodes videos using the x265 codec.

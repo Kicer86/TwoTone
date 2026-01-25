@@ -143,9 +143,6 @@ class ConcatenateTool(Tool):
         super().__init__()
         self._analysis_results: dict[str, list[tuple[str, int]]] | None = None
 
-    def required_tools(self) -> set[str]:
-        return {"ffmpeg", "ffprobe"}
-
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
         parser.description = (

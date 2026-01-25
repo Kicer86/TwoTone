@@ -246,7 +246,7 @@ class StreamsPicker:
                 if tmp_path:
                     try:
                         encoding = subtitles_utils.file_encoding(tmp_path)
-                        detected_lang = subtitles_utils.guess_language(tmp_path, encoding)
+                        detected_lang = subtitles_utils.guess_subtitle_language(tmp_path, encoding)
                         if detected_lang:
                             try:
                                 lang = language_utils.unify_lang(detected_lang)

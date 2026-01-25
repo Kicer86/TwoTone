@@ -753,9 +753,6 @@ class MeltTool(Tool):
         self._data_source: DuplicatesSource | None = None
         self._interruption: generic_utils.InterruptibleProcess | None = None
 
-    def required_tools(self) -> set[str]:
-        return {"ffmpeg", "ffprobe", "mkvmerge"}
-
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
         self.parser = parser

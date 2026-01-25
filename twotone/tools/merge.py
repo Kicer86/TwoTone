@@ -291,7 +291,7 @@ class Merge(generic_utils.InterruptibleProcess):
 
     def perform_merges(self, videos_and_subtitles: dict[str, list[subtitles_utils.SubtitleFile]]) -> None:
         self.logger.info("Starting merge")
-        for video, subtitles in tqdm(videos_and_subtitles.items(), desc="Merging", unit="video", leave=False, smoothing=0.1, mininterval=.2, disable=generic_utils.hide_progressbar()):
+        for video, subtitles in tqdm(videos_and_subtitles.items(), desc="Merging", unit="video", **generic_utils.get_tqdm_defaults()):
             self._check_for_stop()
             self._merge(video, subtitles)
 
@@ -300,9 +300,6 @@ class MergeTool(Tool):
     def __init__(self) -> None:
         super().__init__()
         self._analysis_results: dict[str, list[subtitles_utils.SubtitleFile]] | None = None
-
-    def required_tools(self) -> set[str]:
-        return {"ffmpeg", "ffprobe", "mkvmerge"}
 
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:

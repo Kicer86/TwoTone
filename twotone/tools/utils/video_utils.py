@@ -516,6 +516,7 @@ def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path:
         "srt": ".srt",
         "ass": ".ass",
         "ssa": ".ssa",
+        "hdmv_pgs_subtitle": ".sup",
         "webvtt": ".vtt",
         "mov_text": ".srt",
         "text": ".srt",
@@ -562,6 +563,10 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
     for audio in audios:
         if "language" in audio and audio["language"]:
             options.extend(["--language", f"0:{audio['language']}"])
+
+        name = audio.get("name")
+        if name:
+            options.extend(["--track-name", f"0:{name}"])
 
         if audio.get("default", False):
             options.extend(["--default-track", "0:yes"])
