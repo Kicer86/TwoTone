@@ -57,40 +57,12 @@ class MeltingTest(TwoToneTestCase):
         super().setUp()
 
         def run_ffmpeg(args, expected_path: str | None = None):
-            def replace_encoder(cmd_args, missing, replacement):
-                updated = list(cmd_args)
-                for i, value in enumerate(updated[:-1]):
-                    if value in ("-c:v", "-c:a") and updated[i + 1] == missing:
-                        updated[i + 1] = replacement
-                return updated
-
             status = process_utils.start_process("ffmpeg", args)
-            if status.returncode == 0:
-                if expected_path and not os.path.exists(expected_path):
-                    raise RuntimeError(f"ffmpeg did not produce expected file: {expected_path}")
-                return status
-
-            stderr = status.stderr or ""
-            fallback_map = {
-                "libvorbis": "aac",
-                "libx265": "libx264",
-            }
-            for missing, replacement in fallback_map.items():
-                if f"Unknown encoder '{missing}'" not in stderr:
-                    continue
-                new_args = replace_encoder(args, missing, replacement)
-                if new_args == args:
-                    continue
-                if expected_path and os.path.exists(expected_path):
-                    os.remove(expected_path)
-                status = process_utils.start_process("ffmpeg", new_args)
-                if status.returncode == 0:
-                    if expected_path and not os.path.exists(expected_path):
-                        raise RuntimeError(f"ffmpeg did not produce expected file: {expected_path}")
-                    return status
-                stderr = status.stderr or stderr
-
-            raise RuntimeError(f"ffmpeg failed: {stderr}")
+            if status.returncode != 0:
+                raise RuntimeError(f"ffmpeg failed: {status.stderr}")
+            if expected_path and not os.path.exists(expected_path):
+                raise RuntimeError(f"ffmpeg did not produce expected file: {expected_path}")
+            return status
 
         def gen_sample(out_path: Path):
             videos = ["Atoms - 8579.mp4",
@@ -117,14 +89,14 @@ class MeltingTest(TwoToneTestCase):
                             "-i", audio_input_path,
                             "-r", "25",
                             "-vf", "fps=25",
-                            "-c:v", "libx265",
+                            "-c:v", "libx264",
                             "-preset", "veryfast",
                             "-crf", "18",
                             "-pix_fmt", "yuv420p",
                             "-shortest",
                             "-map", "0:v:0",
                             "-map", "1:a:0",
-                            "-c:a", "libvorbis",
+                            "-c:a", "aac",
                             "-ar", "44100",
                             output_path,
                         ],
@@ -171,10 +143,11 @@ class MeltingTest(TwoToneTestCase):
                 "-i", input,
                 "-filter_complex", vf,
                 "-filter:a", af,
-                "-c:v", "libx265",
+                "-c:v", "libx264",
                 "-crf", "40",                                                                           # use low quality
                 "-preset", "slow",
                 "-pix_fmt", "yuv420p",
+                "-c:a", "aac",
                 str(out_path)
             ]
 
