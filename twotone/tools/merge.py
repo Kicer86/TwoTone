@@ -3,6 +3,7 @@ import argparse
 import logging
 import os
 import shutil
+from dataclasses import dataclass
 from collections import defaultdict
 from overrides import override
 from tqdm import tqdm
@@ -296,10 +297,36 @@ class Merge(generic_utils.InterruptibleProcess):
             self._merge(video, subtitles)
 
 
+@dataclass
+class MergePlan:
+    items: dict[str, list[subtitles_utils.SubtitleFile]]
+
+    def is_empty(self) -> bool:
+        return not self.items
+
+    def render(self, logger: logging.Logger) -> None:
+        if not self.items:
+            logger.info("No videos with subtitles to merge.")
+            return
+
+        logger.info("Planned merges: %d", len(self.items))
+        for video, subtitles in self.items.items():
+            logger.info("Video: %s", video)
+            if not subtitles:
+                logger.info("  subtitles: -")
+                continue
+            for subtitle in subtitles:
+                subtitle_path = subtitle.path or "-"
+                label = subtitle.language or "unknown"
+                if subtitle.name:
+                    logger.info("  [%s][%s] %s", label, subtitle.name, subtitle_path)
+                else:
+                    logger.info("  [%s] %s", label, subtitle_path)
+
+
 class MergeTool(Tool):
     def __init__(self) -> None:
         super().__init__()
-        self._analysis_results: dict[str, list[subtitles_utils.SubtitleFile]] | None = None
 
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
@@ -318,28 +345,27 @@ class MergeTool(Tool):
 
     @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
-        self._analysis_results = None
-
         logger.info("Searching for movie and subtitle files to be merged")
 
         merger = Merge(logger,
                        language=args.language,
                        lang_priority=args.languages_priority,
                        working_dir=working_dir)
-        self._analysis_results = merger.analyze_directory(args.videos_path[0])
-        return EmptyPlan()
+        analysis = merger.analyze_directory(args.videos_path[0])
+        return MergePlan(items=analysis)
 
     @override
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        _ = plan
+        if plan.is_empty():
+            logger.info("No analysis results, nothing to merge.")
+            return
+
+        if not isinstance(plan, MergePlan):
+            logger.info("Unsupported plan type, nothing to merge.")
+            return
+
         merger = Merge(logger,
                        language=args.language,
                        lang_priority=args.languages_priority,
                        working_dir=working_dir)
-        analysis = self._analysis_results
-        self._analysis_results = None
-        if analysis is None:
-            logger.info("No analysis results, nothing to merge.")
-            return
-
-        merger.perform_merges(analysis)
+        merger.perform_merges(plan.items)
