@@ -7,7 +7,7 @@ from collections import defaultdict
 from overrides import override
 from tqdm import tqdm
 
-from .tool import Tool
+from .tool import EmptyPlan, Plan, Tool
 from twotone.tools.utils import generic_utils, process_utils, video_utils, files_utils
 
 
@@ -143,6 +143,9 @@ class ConcatenateTool(Tool):
         super().__init__()
         self._analysis_results: dict[str, list[tuple[str, int]]] | None = None
 
+    def required_tools(self) -> set[str]:
+        return {"ffmpeg", "ffprobe"}
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
         parser.description = (
@@ -158,13 +161,15 @@ class ConcatenateTool(Tool):
                             help='Path with videos to concatenate.')
 
     @override
-    def analyze(self, args, logger: logging.Logger, working_dir: str):
+    def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
         self._analysis_results = None
         concatenator = Concatenate(logger, working_dir=working_dir)
         self._analysis_results = concatenator.analyze(args.videos_path[0])
+        return EmptyPlan()
 
     @override
-    def perform(self, args, logger: logging.Logger, working_dir: str):
+    def perform(self, args, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
+        _ = plan
         analysis = self._analysis_results
         self._analysis_results = None
         if analysis is None:

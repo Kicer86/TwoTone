@@ -9,7 +9,7 @@ from overrides import override
 from tqdm import tqdm
 from typing import Callable
 
-from .tool import Tool
+from .tool import EmptyPlan, Plan, Tool
 from twotone.tools.utils import generic_utils, process_utils, subtitles_utils, video_utils
 
 
@@ -219,6 +219,9 @@ class FixerTool(Tool):
         super().__init__()
         self._analysis_results: list[tuple[dict, list[int]]] | None = None
 
+    def required_tools(self) -> set[str]:
+        return {"ffprobe", "mkvextract", "mkvmerge"}
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--drop-unfixable", "-d",
@@ -229,17 +232,18 @@ class FixerTool(Tool):
                             help='Path with videos to analyze.')
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
         self._analysis_results = None
-        process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
 
         logger.info("Searching for broken files")
 
         fixer = Fixer(logger, working_dir=working_dir)
         self._analysis_results = fixer.scan_directory(args.videos_path[0])
+        return EmptyPlan()
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
+        _ = plan
         broken_videos = self._analysis_results
         self._analysis_results = None
         if broken_videos is None:

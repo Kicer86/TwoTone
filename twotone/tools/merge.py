@@ -9,7 +9,7 @@ from tqdm import tqdm
 from pathlib import Path
 from typing import List, Union, Sequence
 
-from .tool import Tool
+from .tool import EmptyPlan, Plan, Tool
 from twotone.tools.utils import files_utils, generic_utils, process_utils, subtitles_utils, video_utils
 
 
@@ -301,6 +301,9 @@ class MergeTool(Tool):
         super().__init__()
         self._analysis_results: dict[str, list[subtitles_utils.SubtitleFile]] | None = None
 
+    def required_tools(self) -> set[str]:
+        return {"ffmpeg", "ffprobe", "mkvmerge"}
+
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument('videos_path',
@@ -317,9 +320,8 @@ class MergeTool(Tool):
                                 'the end in undefined order')
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
         self._analysis_results = None
-        process_utils.ensure_tools_exist(["mkvmerge", "ffmpeg", "ffprobe"], logger)
 
         logger.info("Searching for movie and subtitle files to be merged")
 
@@ -328,9 +330,11 @@ class MergeTool(Tool):
                        lang_priority=args.languages_priority,
                        working_dir=working_dir)
         self._analysis_results = merger.analyze_directory(args.videos_path[0])
+        return EmptyPlan()
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
+        _ = plan
         merger = Merge(logger,
                        language=args.language,
                        lang_priority=args.languages_priority,
