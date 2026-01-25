@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 
+from dataclasses import dataclass
 from overrides import override
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
@@ -22,35 +23,495 @@ from .streams_picker import StreamsPicker
 
 FramesInfo = Dict[int, Dict[str, str]]
 
+DEFAULT_TOLERANCE_MS = 100
+
 def _split_path_fix(value: str) -> List[str]:
     pattern = r'"((?:[^"\\]|\\.)*?)"'
 
     matches = re.findall(pattern, value)
     return [match.replace(r'\"', '"') for match in matches]
 
+def _ensure_working_dir(working_dir: str) -> str:
+    wd = os.path.join(working_dir, str(os.getpid()))
+    os.makedirs(wd, exist_ok=True)
+    return wd
 
-class Melter:
+
+def _is_length_mismatch(base_ms: int | None, other_ms: int | None, tolerance_ms: int) -> bool:
+    if base_ms is None or other_ms is None:
+        return False
+    return abs(base_ms - other_ms) > tolerance_ms
+
+
+class MeltAnalyzer:
     def __init__(
-            self,
-            logger: logging.Logger,
-            interruption: generic_utils.InterruptibleProcess,
-            duplicates_source: DuplicatesSource,
-            wd: str,
-            output: str,
-            allow_length_mismatch: bool = False,
-            allow_language_guessing: bool = False,
-        ):
+        self,
+        logger: logging.Logger,
+        duplicates_source: DuplicatesSource,
+        wd: str,
+        allow_language_guessing: bool,
+        allow_length_mismatch: bool,
+        tolerance_ms: int,
+    ) -> None:
+        self.logger = logger
+        self.duplicates_source = duplicates_source
+        self.wd = wd
+        self.allow_language_guessing = allow_language_guessing
+        self.allow_length_mismatch = allow_length_mismatch
+        self.tolerance_ms = tolerance_ms
+
+    @staticmethod
+    def _stream_short_details(stype: str, stream: Dict[str, Any]) -> str:
+        def fmt_fps(value: str) -> str | None:
+            try:
+                fps = generic_utils.fps_str_to_float(str(value))
+            except Exception:
+                return None
+
+            if abs(fps - round(fps)) < 0.01:
+                return str(int(round(fps)))
+            return f"{fps:.2f}"
+
+        if stype == "video":
+            width = stream.get("width")
+            height = stream.get("height")
+            fps = stream.get("fps")
+            codec = stream.get("codec")
+            length = stream.get("length")
+            length_formatted = generic_utils.ms_to_time(length) if length else None
+            details = []
+            if width and height:
+                fps_val = fmt_fps(fps) if fps else None
+                if fps_val:
+                    details.append(f"{width}x{height}@{fps_val}")
+                else:
+                    details.append(f"{width}x{height}")
+            elif fps:
+                fps_val = fmt_fps(fps)
+                if fps_val:
+                    details.append(f"{fps_val}fps")
+            if codec:
+                details.append(codec)
+
+            if length_formatted:
+                details.append(f"duration: {length_formatted}")
+
+            return ", ".join(details)
+        if stype == "audio":
+            channels = stream.get("channels")
+            sample_rate = stream.get("sample_rate")
+            details = []
+            if channels:
+                details.append(f"{channels}ch")
+            if sample_rate:
+                details.append(f"{sample_rate}Hz")
+            return ", ".join(details)
+        if stype == "subtitle":
+            fmt = stream.get("format")
+            return fmt or ""
+        return ""
+
+    def _print_file_details(self, file: str, details: Dict[str, Any], ids: Dict[str, int]) -> None:
+        def formatter(key: str, value: Any) -> str:
+            if key == "fps":
+                try:
+                    fps = generic_utils.fps_str_to_float(str(value))
+                    return f"{fps:.3f}"
+                except Exception:
+                    return str(value)
+            if key == "length":
+                return generic_utils.ms_to_time(value) if value else "-"
+            return str(value) if value else "-"
+
+        def show(key: str) -> bool:
+            return key != "tid"
+
+        file_id = ids[file]
+        self.logger.info(f"File #{file_id} details:")
+        tracks = details["tracks"]
+        attachments = details["attachments"]
+
+        for stream_type, streams in tracks.items():
+            self.logger.info(f"  {stream_type}: {len(streams)} track(s)")
+            for stream in streams:
+                lang_name = language_utils.language_name(stream.get("language"))
+                short = self._stream_short_details(stream_type, stream)
+
+                info = lang_name
+                if short:
+                    info += f" ({short})"
+
+                sid = stream.get("tid")
+                self.logger.info(f"    #{sid}: {info}")
+
+        for attachment in attachments:
+            file_name = attachment["file_name"]
+            self.logger.info(f"  attachment: {file_name}")
+
+        # more details for debug
+        for stream_type, streams in tracks.items():
+            self.logger.debug(f"\t{stream_type}:")
+
+            for stream in streams:
+                sid = stream.get("tid")
+                self.logger.debug(f"\t#{sid}:")
+                for key, value in stream.items():
+                    if show(key):
+                        key_title = key + ":"
+                        self.logger.debug(
+                            f"\t\t{key_title:<16}{formatter(key, value)}")
+
+    def _print_streams_details(
+        self,
+        ids: Dict[str, int],
+        all_streams: Iterable[Tuple[str, Iterable[Tuple[str, int, str | None]]]],
+        tracks: Dict[str, Dict],
+    ) -> None:
+        for stype, type_stream in all_streams:
+            for stream in type_stream:
+                path = stream[0]
+                tid = stream[1]
+                language = language_utils.language_name(stream[2])
+
+                stream_details = None
+                track_infos = tracks.get(path, {}).get(stype, [])
+                for info in track_infos:
+                    if info.get("tid") == tid:
+                        stream_details = self._stream_short_details(stype, info)
+                        break
+
+                extra = f" ({stream_details})" if stream_details else ""
+
+                file_id = ids[path]
+                self.logger.info(f"{stype} track #{tid}: {language} from file #{file_id}{extra}")
+
+    def _print_attachments_details(self, ids: Dict[str, int], all_attachments: Iterable[Tuple[str, int]]) -> None:
+        for stream in all_attachments:
+            path = stream[0]
+            tid = stream[1]
+
+            file_id = ids[path]
+            self.logger.info(f"Attachment ID #{tid} from file #{file_id}")
+
+    @staticmethod
+    def _probe_inputs(files: Sequence[str]) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True) for file in files}
+        attachments = {file: info["attachments"] for file, info in details_full.items()}
+        tracks = {file: info["tracks"] for file, info in details_full.items()}
+        return details_full, attachments, tracks
+
+    @staticmethod
+    def _prepare_duplicates_set(duplicates: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+        """Prepare groups of duplicate files and output names per title.
+
+        Returns a plan in the form:
+        [
+          {"title": str, "groups": [{"files": [str,...], "output_name": str}, ...]},
+          ...
+        ]
+        """
+        def process_entries(entries: List[str]) -> List[Tuple[List[str], str]]:
+            # Returns list of: (group of duplicates, output base name)
+
+            def file_without_ext(path: str) -> str:
+                dir, name, _ = files_utils.split_path(path)
+                return os.path.join(dir, name)
+
+            if all(os.path.isdir(p) for p in entries):
+                dirs = entries
+
+                if len(dirs) == 1:
+                    # Special case: single dir → treat all files as one group of duplicates
+                    dir_path = dirs[0]
+                    media_files = [
+                        os.path.join(root, file)
+                        for root, _, filenames in os.walk(dir_path)
+                        for file in filenames
+                        if video_utils.is_video(file)
+                    ]
+                    media_files.sort()
+                    output_name = file_without_ext(os.path.relpath(media_files[0], dir_path)) if media_files else "output"
+                    return [(media_files, output_name)]
+
+                # Multiple dirs → group matching files by position
+                files_per_dir = []
+                for dir_path in dirs:
+                    media_files = [
+                        os.path.join(root, file)
+                        for root, _, filenames in os.walk(dir_path)
+                        for file in filenames
+                        if video_utils.is_video(file)
+                    ]
+                    media_files.sort()
+                    files_per_dir.append(media_files)
+
+                sorted_file_lists = [list(entry) for entry in zip(*files_per_dir)]
+                first_file_fullnames = [os.path.relpath(path[0], dirs[0]) for path in sorted_file_lists]
+                first_file_names = [file_without_ext(path) for path in first_file_fullnames]
+
+                return [(files_group, output_name) for files_group, output_name in zip(sorted_file_lists, first_file_names)]
+
+            else:
+                # List of individual files
+                first_file_fullname = os.path.basename(entries[0])
+                first_file_name = Path(first_file_fullname).stem
+                return [(entries, first_file_name)]
+
+        plan: List[Dict[str, Any]] = []
+        for title, entries in duplicates.items():
+            files_groups = process_entries(entries)
+            item = {
+                "title": title,
+                "groups": [{"files": files, "output_name": output_name} for files, output_name in files_groups]
+            }
+            plan.append(item)
+
+        return plan
+
+    def _pick_streams(
+        self,
+        tracks: Dict[str, Any],
+        ids: Dict[str, int],
+    ) -> Tuple[List[Tuple[str, int, str | None]], List[Tuple[str, int, str | None]], List[Tuple[str, int, str | None]]]:
+        picker_wd = os.path.join(self.wd, "stream_picker")
+        streams_picker = StreamsPicker(
+            self.logger,
+            self.duplicates_source,
+            picker_wd,
+            allow_language_guessing=self.allow_language_guessing,
+        )
+        return streams_picker.pick_streams(tracks, ids)
+
+    def _validate_input_files(
+        self,
+        tracks: Dict[str, Any],
+        ids: Dict[str, int],
+        video_streams: List[Tuple[str, int, str | None]],
+        audio_streams: List[Tuple[str, int, str | None]],
+        subtitle_streams: List[Tuple[str, int, str | None]],
+    ) -> bool:
+        # Validate lengths across used files
+
+        # Base length for detailed checks
+        v_path, v_tid, _ = video_streams[0]
+        base_length = tracks[v_path]["video"][v_tid]["length"]
+
+        # Subtitle mismatch (unsupported)
+        for path, _, _ in subtitle_streams:
+            length = tracks[path]["video"][0]["length"]
+            if _is_length_mismatch(base_length, length, self.tolerance_ms):
+                file_id = ids[path]
+                self.logger.error(
+                    f"Subtitles stream from file #{file_id} has length different than length of video stream from file {v_path}. "
+                    "This is not supported yet"
+                )
+                return False
+
+        # Audio lengths valdiation
+        for path, tid, _ in audio_streams:
+            length = tracks[path]["video"][0]["length"]
+            if _is_length_mismatch(base_length, length, self.tolerance_ms):
+                file_id = ids[path]
+                base_file_id = ids[v_path]
+                self.logger.warning(
+                    f"Audio stream from file #{file_id} has length different than length of video stream from file #{base_file_id}. "
+                    "Check for --allow-length-mismatch option to allow this."
+                )
+
+                if self.allow_length_mismatch:
+                    self.logger.info("Audio length mismatch detected; audio will be time-adjusted during processing.")
+
+                else:
+                    return False
+
+        return True
+
+    def _analyze_group(self, files: List[str], ids: Dict[str, int]) -> Dict[str, Any] | None:
+        # Probe inputs and print details
+        details_full, attachments, tracks = self._probe_inputs(files)
+        for file, file_details in details_full.items():
+            self._print_file_details(file, file_details, ids)
+
+        # Pick streams
+        try:
+            video_streams, audio_streams, subtitle_streams = self._pick_streams(tracks, ids)
+        except RuntimeError as err:
+            self.logger.error(err)
+            return None
+
+        # Validate and compute audio patch requirements
+        ok = self._validate_input_files(tracks, ids, video_streams, audio_streams, subtitle_streams)
+        if not ok:
+            return None
+
+        # Attachments picking
+        picked_attachments = AttachmentsPicker(self.logger).pick_attachments(attachments)
+        audio_prod_lang = self.duplicates_source.get_metadata_for(video_streams[0][0]).get("audio_prod_lang")
+
+        # Present proposed output
+        self.logger.info("Streams used to create output video file:")
+        self._print_streams_details(
+            ids,
+            (
+                ("video", video_streams),
+                ("audio", audio_streams),
+                ("subtitle", subtitle_streams),
+            ),
+            tracks,
+        )
+        self._print_attachments_details(ids, picked_attachments)
+
+        # Prepare plan entity
+        return {
+            "streams": {
+                "video": video_streams,
+                "audio": audio_streams,
+                "subtitle": subtitle_streams,
+            },
+            "attachments": picked_attachments,
+            "audio_prod_lang": audio_prod_lang,
+        }
+
+    def analyze_duplicates(self, duplicates: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+        base_plan = self._prepare_duplicates_set(duplicates)
+
+        analysis_plan: List[Dict[str, Any]] = []
+        for item in base_plan:
+            title = item["title"]
+            groups = item["groups"]
+
+            # Title header
+            self.logger.info("-------------------------" + "-" * len(title))
+            self.logger.info(f"Analyzing duplicates for {title}")
+            self.logger.info("-------------------------" + "-" * len(title))
+
+            analyzed_groups: List[Dict[str, Any]] = []
+            for group in groups:
+                files = group["files"]
+                output_name = group["output_name"]
+
+                if len(groups) > 1:
+                    self.logger.info("------------------------------------")
+                    self.logger.info("Processing group of duplicated files")
+                    self.logger.info("------------------------------------")
+
+                ids = {file: i + 1 for i, file in enumerate(files)}
+                for file, id in ids.items():
+                    self.logger.info(f"#{id}: {file}")
+
+                # analysis for group
+                plan_details = self._analyze_group(files, ids)
+                if plan_details is None:
+                    self.logger.info("Title not suitable for melting")
+                else:
+                    analyzed_groups.append({
+                        "files": files,
+                        "output_name": output_name,
+                        **plan_details,
+                    })
+
+                    self.logger.info("Title suitable for melting")
+
+            analysis_plan.append({
+                "title": title,
+                "groups": analyzed_groups,
+            })
+
+        return analysis_plan
+
+class MeltPerformer:
+    def __init__(
+        self,
+        logger: logging.Logger,
+        interruption: generic_utils.InterruptibleProcess,
+        working_dir: str,
+        output_dir: str,
+        tolerance_ms: int,
+    ) -> None:
         self.logger = logger
         self.interruption = interruption
-        self.duplicates_source = duplicates_source
-        self.debug_it: int = 0
-        self.wd = os.path.join(wd, str(os.getpid()))
-        self.output = output
-        self.allow_length_mismatch = allow_length_mismatch
-        self.allow_language_guessing = allow_language_guessing
-        self.tolerance_ms = 100
+        self.output_dir = output_dir
+        self.tolerance_ms = tolerance_ms
+        self.wd = _ensure_working_dir(working_dir)
 
-        os.makedirs(self.wd, exist_ok=True)
+    @staticmethod
+    def _collect_required_input_files(
+        video_streams: Sequence[Tuple[str, int, str | None]],
+        audio_streams: Sequence[Tuple[str, int, str | None]],
+        subtitle_streams: Sequence[Tuple[str, int, str | None]],
+        attachments: Sequence[Tuple[str, int]],
+    ) -> set[str]:
+        required_input_files: set[str] = set()
+        required_input_files |= {p for (p, _, _) in video_streams}
+        required_input_files |= {p for (p, _, _) in audio_streams}
+        required_input_files |= {p for (p, _, _) in subtitle_streams}
+        required_input_files |= {info[0] for info in attachments}
+        return required_input_files
+
+    def _build_mkvmerge_args(
+        self,
+        output_path: str,
+        streams_list_sorted: Sequence[Tuple[str, int, str, str | None]],
+        attachments: Sequence[Tuple[str, int]],
+        preferred_audio: Tuple[str, int, str, str | None] | None,
+        required_input_files: Iterable[str],
+    ) -> List[str]:
+        generation_args: List[str] = ["-o", output_path]
+        files_opts: Dict[str, Dict[str, Any]] = {
+            path: {"video": [], "audio": [], "subtitle": [], "attachments": [], "languages": {}, "defaults": set()}
+            for path in required_input_files
+        }
+
+        # Collect per-file options and track order
+        track_order: List[str] = []
+        for stream_type, tid, file_path, language in streams_list_sorted:
+            fo: Dict[str, Any] = files_opts[file_path]
+            fo[stream_type].append(tid)
+            fo["languages"][tid] = language or "und"
+            if stream_type in ("audio", "subtitle") and preferred_audio and (stream_type, tid, file_path, language) == preferred_audio:
+                fo["defaults"].add(tid)
+            file_index = generic_utils.get_key_position(files_opts, file_path)
+            track_order.append(f"{file_index}:{tid}")
+
+        for file_path, tid in attachments:
+            fo = files_opts[file_path]
+            fo["attachments"].append(tid)
+
+        # Serialize options into mkvmerge args, file by file
+        for file_path, fo in files_opts.items():
+            if fo["video"]:
+                generation_args.extend(["--video-tracks", ",".join(str(i) for i in fo["video"])])
+            else:
+                generation_args.append("--no-video")
+
+            if fo["audio"]:
+                generation_args.extend(["--audio-tracks", ",".join(str(i) for i in fo["audio"])])
+            else:
+                generation_args.append("--no-audio")
+
+            if fo["subtitle"]:
+                generation_args.extend(["--subtitle-tracks", ",".join(str(i) for i in fo["subtitle"])])
+            else:
+                generation_args.append("--no-subtitles")
+
+            if fo["attachments"]:
+                generation_args.extend(["--attachments", ",".join(str(i) for i in fo["attachments"])])
+            else:
+                generation_args.append("--no-attachments")
+
+            for tid, lang in fo["languages"].items():
+                generation_args.extend(["--language", f"{tid}:{lang}"])
+
+            for tid in fo["audio"] + fo["subtitle"]:
+                flag = "yes" if tid in fo["defaults"] else "no"
+                generation_args.extend(["--default-track", f"{tid}:{flag}"])
+
+            generation_args.append(file_path)
+
+        if track_order:
+            generation_args.extend(["--track-order", ",".join(track_order)])
+
+        return generation_args
 
     def _patch_audio_segment(
         self,
@@ -151,8 +612,8 @@ class Melter:
                     "-to", str(r_end / 1000),
                     "-i", v2_audio,
                     "-c:a", "flac",
-                    raw_cut
-                ],
+                    raw_cut,
+                ]
             )
 
             process_utils.start_process(
@@ -161,8 +622,8 @@ class Melter:
                     "-i", raw_cut,
                     "-filter:a", f"atempo={ratio:.3f}",
                     "-c:a", "flac",
-                    scaled_cut
-                ],
+                    scaled_cut,
+                ]
             )
 
             temp_segments.append(scaled_cut)
@@ -192,366 +653,8 @@ class Melter:
             ["-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path],
         )
 
-    def _stream_short_details(self, stype: str, stream: Dict[str, Any]) -> str:
-        def fmt_fps(value: str) -> str | None:
-            try:
-                fps = generic_utils.fps_str_to_float(str(value))
-            except Exception:
-                return None
-
-            if abs(fps - round(fps)) < 0.01:
-                return str(int(round(fps)))
-            return f"{fps:.2f}"
-
-        if stype == "video":
-            width = stream.get("width")
-            height = stream.get("height")
-            fps = stream.get("fps")
-            codec = stream.get("codec")
-            length = stream.get("length")
-            length_formatted = generic_utils.ms_to_time(length) if length else None
-            details = []
-            if width and height:
-                fps_val = fmt_fps(fps) if fps else None
-                if fps_val:
-                    details.append(f"{width}x{height}@{fps_val}")
-                else:
-                    details.append(f"{width}x{height}")
-            elif fps:
-                fps_val = fmt_fps(fps)
-                if fps_val:
-                    details.append(f"{fps_val}fps")
-            if codec:
-                details.append(codec)
-
-            if length_formatted:
-                details.append(f"duration: {length_formatted}")
-
-            return ", ".join(details)
-        if stype == "audio":
-            channels = stream.get("channels")
-            sample_rate = stream.get("sample_rate")
-            details = []
-            if channels:
-                details.append(f"{channels}ch")
-            if sample_rate:
-                details.append(f"{sample_rate}Hz")
-            return ", ".join(details)
-        if stype == "subtitle":
-            fmt = stream.get("format")
-            return fmt or ""
-        return ""
-
-    def _print_file_details(self, file: str, details: Dict[str, Any], ids: Dict[str, int]) -> None:
-        def formatter(key: str, value: Any) -> str:
-            if key == "fps":
-                try:
-                    fps = generic_utils.fps_str_to_float(str(value))
-                    return f"{fps:.3f}"
-                except Exception:
-                    return str(value)
-            if key == "length":
-                return generic_utils.ms_to_time(value) if value else "-"
-            return str(value) if value else "-"
-
-        def show(key: str) -> bool:
-            if key == "tid":
-                return False
-            else:
-                return True
-
-        file_id = ids[file]
-        self.logger.info(f"File #{file_id} details:")
-        tracks = details["tracks"]
-        attachments = details["attachments"]
-
-        for stream_type, streams in tracks.items():
-            self.logger.info(f"  {stream_type}: {len(streams)} track(s)")
-            for stream in streams:
-                lang_name = language_utils.language_name(stream.get("language"))
-                short = self._stream_short_details(stream_type, stream)
-
-                info = lang_name
-                if short:
-                    info += f" ({short})"
-
-                sid = stream.get("tid")
-                self.logger.info(f"    #{sid}: {info}")
-
-        for attachment in attachments:
-            file_name = attachment["file_name"]
-            self.logger.info(f"  attachment: {file_name}")
-
-        # more details for debug
-        for stream_type, streams in tracks.items():
-            self.logger.debug(f"\t{stream_type}:")
-
-            for stream in streams:
-                sid = stream.get("tid")
-                self.logger.debug(f"\t#{sid}:")
-                for key, value in stream.items():
-                    if show(key):
-                        key_title = key + ":"
-                        self.logger.debug(
-                            f"\t\t{key_title:<16}{formatter(key, value)}")
-
-    def _print_streams_details(self, ids: Dict[str, int], all_streams: Iterable[Tuple[str, Iterable[Tuple[str, int, str | None]]]], tracks: Dict[str, Dict]) -> None:
-        for stype, type_stream in all_streams:
-            for stream in type_stream:
-                path = stream[0]
-                tid = stream[1]
-                language = language_utils.language_name(stream[2])
-
-                stream_details = None
-                track_infos = tracks.get(path, {}).get(stype, [])
-                for info in track_infos:
-                    if info.get("tid") == tid:
-                        stream_details = self._stream_short_details(stype, info)
-                        break
-
-                extra = f" ({stream_details})" if stream_details else ""
-
-                file_id = ids[path]
-                self.logger.info(f"{stype} track #{tid}: {language} from file #{file_id}{extra}")
-
-    def _print_attachments_details(self, ids: Dict[str, int], all_attachments: Iterable[Tuple[str, int]]) -> None:
-        for stream in all_attachments:
-            path = stream[0]
-            tid = stream[1]
-
-            file_id = ids[path]
-            self.logger.info(f"Attachment ID #{tid} from file #{file_id}")
-
-    def _is_length_mismatch(self, base_ms: int | None, other_ms: int | None) -> bool:
-        if base_ms is None or other_ms is None:
-            return False
-        return abs(base_ms - other_ms) > self.tolerance_ms
-
-    def _pick_streams(self, tracks: Dict[str, Any], ids: Dict[str, int]) -> Tuple[List[Tuple[str, int, str | None]], List[Tuple[str, int, str | None]], List[Tuple[str, int, str | None]]]:
-        picker_wd = os.path.join(self.wd, "stream_picker")
-        streams_picker = StreamsPicker(self.logger, self.duplicates_source, picker_wd, allow_language_guessing=self.allow_language_guessing)
-        video_streams, audio_streams, subtitle_streams = streams_picker.pick_streams(tracks, ids)
-        return video_streams, audio_streams, subtitle_streams
-
-    def _probe_inputs(self, files: Sequence[str]) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-        details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True) for file in files}
-        attachments = {file: info["attachments"] for file, info in details_full.items()}
-        tracks = {file: info["tracks"] for file, info in details_full.items()}
-        return details_full, attachments, tracks
-
-    def _validate_input_files(
-        self,
-        tracks: Dict[str, Any],
-        ids: Dict[str, int],
-        video_streams: List[Tuple[str, int, str | None]],
-        audio_streams: List[Tuple[str, int, str | None]],
-        subtitle_streams: List[Tuple[str, int, str | None]],
-    ) -> bool:
-        # Validate lengths across used files
-
-        # Base length for detailed checks
-        v_path, v_tid, _ = video_streams[0]
-        base_length = tracks[v_path]["video"][v_tid]["length"]
-
-        # Subtitle mismatch (unsupported)
-        for path, _, _ in subtitle_streams:
-            length = tracks[path]["video"][0]["length"]
-            if self._is_length_mismatch(base_length, length):
-                file_id = ids[path]
-                self.logger.error(f"Subtitles stream from file #{file_id} has length different than length of video stream from file {v_path}. This is not supported yet"
-                                  )
-                return False
-
-        # Audio lengths valdiation
-        for path, tid, _ in audio_streams:
-            length = tracks[path]["video"][0]["length"]
-            if self._is_length_mismatch(base_length, length):
-                file_id = ids[path]
-                base_file_id = ids[v_path]
-                self.logger.warning(f"Audio stream from file #{file_id} has length different than length of video stream from file #{base_file_id}. Check for --allow-length-mismatch option to allow this.")
-
-                if self.allow_length_mismatch:
-                    self.logger.info("Audio length mismatch detected; audio will be time-adjusted during processing.")
-
-                else:
-                    return False
-
-        return True
-
-    def _analyze_group(self, files: List[str], ids: Dict[str, int]) -> Dict[str, Any] | None:
-        # Probe inputs and print details
-        details_full, attachments, tracks = self._probe_inputs(files)
-        for file, file_details in details_full.items():
-            self._print_file_details(file, file_details, ids)
-
-        # Pick streams
-        try:
-            video_streams, audio_streams, subtitle_streams = self._pick_streams(tracks, ids)
-        except RuntimeError as err:
-            self.logger.error(err)
-            return None
-
-        # Validate and compute audio patch requirements
-        ok = self._validate_input_files(tracks, ids, video_streams, audio_streams, subtitle_streams)
-        if not ok:
-            return None
-
-        # Attachments picking
-        picked_attachments = AttachmentsPicker(self.logger).pick_attachments(attachments)
-
-        # Present proposed output
-        self.logger.info("Streams used to create output video file:")
-        self._print_streams_details(
-            ids,
-            (
-                ("video", video_streams),
-                ("audio", audio_streams),
-                ("subtitle", subtitle_streams),
-            ),
-            tracks,
-        )
-        self._print_attachments_details(ids, picked_attachments)
-
-        # Prepare plan entity
-        return {
-            "streams": {
-                "video": video_streams,
-                "audio": audio_streams,
-                "subtitle": subtitle_streams,
-            },
-            "attachments": picked_attachments,
-        }
-
-    def _prepare_duplicates_set(self, duplicates: Dict[str, List[str]]) -> List[Dict[str, Any]]:
-        """Prepare groups of duplicate files and output names per title.
-
-        Returns a plan in the form:
-        [
-          {"title": str, "groups": [{"files": [str,...], "output_name": str}, ...]},
-          ...
-        ]
-        """
-        def process_entries(entries: List[str]) -> List[Tuple[List[str], str]]:
-            # Returns list of: (group of duplicates, output base name)
-
-            def file_without_ext(path: str) -> str:
-                dir, name, _ = files_utils.split_path(path)
-                return os.path.join(dir, name)
-
-            if all(os.path.isdir(p) for p in entries):
-                dirs = entries
-
-                if len(dirs) == 1:
-                    # Special case: single dir → treat all files as one group of duplicates
-                    dir_path = dirs[0]
-                    media_files = [
-                        os.path.join(root, file)
-                        for root, _, filenames in os.walk(dir_path)
-                        for file in filenames
-                        if video_utils.is_video(file)
-                    ]
-                    media_files.sort()
-                    output_name = file_without_ext(os.path.relpath(media_files[0], dir_path)) if media_files else "output"
-                    return [(media_files, output_name)]
-
-                # Multiple dirs → group matching files by position
-                files_per_dir = []
-                for dir_path in dirs:
-                    media_files = [
-                        os.path.join(root, file)
-                        for root, _, filenames in os.walk(dir_path)
-                        for file in filenames
-                        if video_utils.is_video(file)
-                    ]
-                    media_files.sort()
-                    files_per_dir.append(media_files)
-
-                sorted_file_lists = [list(entry) for entry in zip(*files_per_dir)]
-                first_file_fullnames = [os.path.relpath(path[0], dirs[0]) for path in sorted_file_lists]
-                first_file_names = [file_without_ext(path) for path in first_file_fullnames]
-
-                return [(files_group, output_name) for files_group, output_name in zip(sorted_file_lists, first_file_names)]
-
-            else:
-                # List of individual files
-                first_file_fullname = os.path.basename(entries[0])
-                first_file_name = Path(first_file_fullname).stem
-                return [(entries, first_file_name)]
-
-        plan: List[Dict[str, Any]] = []
-        for title, entries in duplicates.items():
-            files_groups = process_entries(entries)
-            item = {
-                "title": title,
-                "groups": [{"files": files, "output_name": output_name} for files, output_name in files_groups]
-            }
-            plan.append(item)
-
-        return plan
-
-    def analyze_duplicates(self, duplicates: Dict[str, List[str]]) -> List[Dict[str, Any]]:
-        base_plan = self._prepare_duplicates_set(duplicates)
-
-        analysis_plan: List[Dict[str, Any]] = []
-        for item in base_plan:
-            title = item["title"]
-            groups = item["groups"]
-
-            # Title header
-            self.logger.info("-------------------------" + "-" * len(title))
-            self.logger.info(f"Analyzing duplicates for {title}")
-            self.logger.info("-------------------------" + "-" * len(title))
-
-            analyzed_groups: List[Dict[str, Any]] = []
-            for group in groups:
-                files = group["files"]
-                output_name = group["output_name"]
-
-                if len(groups) > 1:
-                    self.logger.info("------------------------------------")
-                    self.logger.info("Processing group of duplicated files")
-                    self.logger.info("------------------------------------")
-
-                ids = {file: i + 1 for i, file in enumerate(files)}
-                for file, id in ids.items():
-                    self.logger.info(f"#{id}: {file}")
-
-                # analysis for group
-                plan_details = self._analyze_group(files, ids)
-                if plan_details is None:
-                    self.logger.info("Title not suitable for melting")
-                else:
-                    analyzed_groups.append({
-                        "files": files,
-                        "output_name": output_name,
-                        **plan_details,
-                    })
-
-                    self.logger.info("Title suitable for melting")
-
-            analysis_plan.append({
-                "title": title,
-                "groups": analyzed_groups,
-            })
-
-        return analysis_plan
-
-    def _collect_required_input_files(
-        self,
-        video_streams: Sequence[Tuple[str, int, str | None]],
-        audio_streams: Sequence[Tuple[str, int, str | None]],
-        subtitle_streams: Sequence[Tuple[str, int, str | None]],
-        attachments: Sequence[Tuple[str, int]],
-    ) -> set[str]:
-        required_input_files: set[str] = set()
-        required_input_files |= {p for (p, _, _) in video_streams}
-        required_input_files |= {p for (p, _, _) in audio_streams}
-        required_input_files |= {p for (p, _, _) in subtitle_streams}
-        required_input_files |= {info[0] for info in attachments}
-        return required_input_files
-
     def _build_output_path(self, title: str, output_name: str) -> str:
-        return os.path.join(self.output, title, output_name + ".mkv")
+        return os.path.join(self.output_dir, title, output_name + ".mkv")
 
     def _copy_single_input(self, input_path: str, output_path: str) -> None:
         self.logger.info(f"File {input_path} is superior. Using it whole as an output.")
@@ -573,7 +676,7 @@ class Melter:
 
         for (path, stream_index, language) in audio_streams:
             duration = video_utils.get_video_duration(path)
-            if self._is_length_mismatch(base_duration, duration):
+            if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
                 with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
                      generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
                     matcher = PairMatcher(self.interruption, mwd, video_path_base, path, self.logger.getChild("PairMatcher"))
@@ -592,93 +695,26 @@ class Melter:
 
     def _choose_preferred_audio(
         self,
+        audio_prod_lang: str | None,
         streams_list_sorted: Sequence[Tuple[str, int, str, str | None]],
-        default_video_path: str,
         default_audio_lang: str | None,
-    ) -> Tuple[str | None, Tuple[str, int, str, str | None] | None]:
-        metadata = self.duplicates_source.get_metadata_for(default_video_path)
-        prod_lang = metadata.get("audio_prod_lang")
-        preferred_lang = language_utils.unify_lang(prod_lang) if prod_lang else default_audio_lang
+    ) -> Tuple[str, int, str, str | None] | None:
+        preferred_lang = language_utils.unify_lang(audio_prod_lang) if audio_prod_lang else default_audio_lang
 
         preferred_audio = next(
             (info for info in streams_list_sorted if info[0] == "audio" and info[3] == preferred_lang),
             None,
         )
-        if prod_lang:
-            language_name = language_utils.language_name(prod_lang)
+        if audio_prod_lang:
+            language_name = language_utils.language_name(audio_prod_lang)
             if preferred_audio:
                 self.logger.info(f"Setting production audio language '{language_name}' as default.")
             else:
                 self.logger.warning(f"Production audio language '{language_name}' not found among audio streams.")
 
-        return preferred_lang, preferred_audio
+        return preferred_audio
 
-    def _build_mkvmerge_args(
-        self,
-        output_path: str,
-        streams_list_sorted: Sequence[Tuple[str, int, str, str | None]],
-        attachments: Sequence[Tuple[str, int]],
-        preferred_audio: Tuple[str, int, str, str | None] | None,
-        required_input_files: Iterable[str],
-    ) -> List[str]:
-        generation_args: List[str] = ["-o", output_path]
-        files_opts: Dict[str, Dict[str, Any]] = {
-            path: {"video": [], "audio": [], "subtitle": [], "attachments": [], "languages": {}, "defaults": set()}
-            for path in required_input_files
-        }
-
-        # Collect per-file options and track order
-        track_order: List[str] = []
-        for stream_type, tid, file_path, language in streams_list_sorted:
-            fo: Dict[str, Any] = files_opts[file_path]
-            fo[stream_type].append(tid)
-            fo["languages"][tid] = language or "und"
-            if stream_type in ("audio", "subtitle") and preferred_audio and (stream_type, tid, file_path, language) == preferred_audio:
-                fo["defaults"].add(tid)
-            file_index = generic_utils.get_key_position(files_opts, file_path)
-            track_order.append(f"{file_index}:{tid}")
-
-        for file_path, tid in attachments:
-            fo = files_opts[file_path]
-            fo["attachments"].append(tid)
-
-        # Serialize options into mkvmerge args, file by file
-        for file_path, fo in files_opts.items():
-            if fo["video"]:
-                generation_args.extend(["--video-tracks", ",".join(str(i) for i in fo["video"])])
-            else:
-                generation_args.append("--no-video")
-
-            if fo["audio"]:
-                generation_args.extend(["--audio-tracks", ",".join(str(i) for i in fo["audio"])])
-            else:
-                generation_args.append("--no-audio")
-
-            if fo["subtitle"]:
-                generation_args.extend(["--subtitle-tracks", ",".join(str(i) for i in fo["subtitle"])])
-            else:
-                generation_args.append("--no-subtitles")
-
-            if fo["attachments"]:
-                generation_args.extend(["--attachments", ",".join(str(i) for i in fo["attachments"])])
-            else:
-                generation_args.append("--no-attachments")
-
-            for tid, lang in fo["languages"].items():
-                generation_args.extend(["--language", f"{tid}:{lang}"])
-
-            for tid in fo["audio"] + fo["subtitle"]:
-                flag = "yes" if tid in fo["defaults"] else "no"
-                generation_args.extend(["--default-track", f"{tid}:{flag}"])
-
-            generation_args.append(file_path)
-
-        if track_order:
-            generation_args.extend(["--track-order", ",".join(track_order)])
-
-        return generation_args
-
-    def process_duplicates(self, plan: List[Dict[str, Any]]):
+    def process_duplicates(self, plan: List[Dict[str, Any]]) -> None:
         for item in tqdm(plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
             title = item["title"]
             groups = item["groups"]
@@ -694,15 +730,20 @@ class Melter:
                 video_streams: List[Tuple[str, int, str | None]] = streams_info.get("video", [])
                 audio_streams: List[Tuple[str, int, str | None]] = streams_info.get("audio", [])
                 subtitle_streams: List[Tuple[str, int, str | None]] = streams_info.get("subtitle", [])
-                required_input_files = self._collect_required_input_files(video_streams, audio_streams, subtitle_streams, attachments)
+                required_input_files = self._collect_required_input_files(
+                    video_streams,
+                    audio_streams,
+                    subtitle_streams,
+                    attachments,
+                )
 
                 output = self._build_output_path(title, output_name)
                 if os.path.exists(output):
                     self.logger.info(f"Output file {output} exists, removing it.")
                     os.remove(output)
 
-                output_dir = os.path.dirname(output)
-                os.makedirs(output_dir, exist_ok=True)
+                output_parent = os.path.dirname(output)
+                os.makedirs(output_parent, exist_ok=True)
 
                 if len(required_input_files) == 1:
                     # only one file is being used, just copy it to the output dir
@@ -714,22 +755,27 @@ class Melter:
                         video_streams,
                         audio_streams,
                         subtitle_streams,
-                        required_input_files
+                        required_input_files,
                     )
 
                     # Sort streams by language alphabetically
                     streams_list_sorted = sorted(streams_list, key=lambda stream: stream[3] if stream[3] else "")
 
                     # Decide which track should be default
-                    default_video_stream = next(filter(lambda s: s[0] == "video", streams_list))
                     default_audio_stream = next((s for s in streams_list if s[0] == "audio"), None)
                     default_audio_lang = default_audio_stream[3] if default_audio_stream else None
-                    _, preferred_audio = self._choose_preferred_audio(
-                        streams_list_sorted, default_video_stream[2], default_audio_lang
+                    preferred_audio = self._choose_preferred_audio(
+                        group.get("audio_prod_lang"),
+                        streams_list_sorted,
+                        default_audio_lang,
                     )
 
                     generation_args = self._build_mkvmerge_args(
-                        output, streams_list_sorted, attachments, preferred_audio, required_input_files
+                        output,
+                        streams_list_sorted,
+                        attachments,
+                        preferred_audio,
+                        required_input_files,
                     )
 
                     self.logger.info("Starting output file generation from chosen streams.")
@@ -746,12 +792,30 @@ class RequireJellyfinServer(argparse.Action):
         setattr(namespace, self.dest, values)
 
 
+@dataclass
+class MeltPlan:
+    items: List[Dict[str, Any]]
+    output_dir: str
+
+    def is_empty(self) -> bool:
+        return not self.items
+
+    def render(self, logger: logging.Logger) -> None:
+        if not self.items:
+            logger.info("No titles to melt.")
+            return
+
+        total_groups = sum(len(item.get("groups", [])) for item in self.items)
+        logger.info("Planned melt: %d title(s), %d group(s).", len(self.items), total_groups)
+        logger.info("Output directory: %s", self.output_dir)
+        if total_groups == 0:
+            logger.info("No suitable groups found for melting.")
+
+
 class MeltTool(Tool):
     def __init__(self) -> None:
         super().__init__()
-        self._analysis_results: List[Dict[str, Any]] | None = None
-        self._data_source: DuplicatesSource | None = None
-        self._interruption: generic_utils.InterruptibleProcess | None = None
+        self.parser: argparse.ArgumentParser | None = None
 
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
@@ -802,13 +866,10 @@ class MeltTool(Tool):
         parser.add_argument('--allow-language-guessing', action='store_true',
                             help='If audio language is not provided in file metadata, try find language codes (like EN or DE) in file names')
 
-
     @override
     def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
-        # Reset cached state
-        self._analysis_results = None
-        self._data_source = None
-        self._interruption = generic_utils.InterruptibleProcess()
+        interruption = generic_utils.InterruptibleProcess()
+        data_source: DuplicatesSource | None = None
 
         # Build data source based on arguments
         if args.jellyfin_server:
@@ -821,11 +882,11 @@ class MeltTool(Tool):
             if path_fix_list:
                 path_fix = (path_fix_list[0], path_fix_list[1])
 
-            self._data_source = JellyfinSource(interruption = self._interruption,
-                                               url = args.jellyfin_server,
-                                               token = args.jellyfin_token,
-                                               path_fix = path_fix,
-                                               logger = logger.getChild("JellyfinSource"))
+            data_source = JellyfinSource(interruption = interruption,
+                                         url = args.jellyfin_server,
+                                         token = args.jellyfin_token,
+                                         path_fix = path_fix,
+                                         logger = logger.getChild("JellyfinSource"))
         elif args.input_files:
             title = args.title
             input_entries = args.input_files
@@ -833,7 +894,7 @@ class MeltTool(Tool):
             if not title:
                 self.parser.error(f"Missing required option: --title")
 
-            src = StaticSource(interruption=self._interruption)
+            src = StaticSource(interruption=interruption)
 
             for input in input_entries:
                 # split by ',' but respect ""
@@ -860,48 +921,48 @@ class MeltTool(Tool):
                 if audio_prod_lang:
                     src.add_metadata(path, "audio_prod_lang", audio_prod_lang)
 
-            self._data_source = src
+            data_source = src
 
-        if not self._data_source:
+        if not data_source:
             logger.info("No input source specified. Nothing to analyze.")
             return EmptyPlan()
 
         logger.info("Collecting duplicates for analysis")
-        duplicates_raw = self._data_source.collect_duplicates()
+        duplicates_raw = data_source.collect_duplicates()
         duplicates = {title: list(files) for title, files in duplicates_raw.items()}
 
-        melter = Melter(logger,
-                        self._interruption,
-                        self._data_source,
-                        wd = working_dir,
-                        output = args.output_dir,
-                        allow_length_mismatch = args.allow_length_mismatch,
-                        allow_language_guessing = args.allow_language_guessing,
+        analysis_wd = _ensure_working_dir(working_dir)
+        analyzer = MeltAnalyzer(
+            logger,
+            data_source,
+            analysis_wd,
+            args.allow_language_guessing,
+            args.allow_length_mismatch,
+            DEFAULT_TOLERANCE_MS,
         )
-
-        self._analysis_results = melter.analyze_duplicates(duplicates)
-        return EmptyPlan()
+        analysis = analyzer.analyze_duplicates(duplicates)
+        return MeltPlan(
+            items=analysis,
+            output_dir=args.output_dir,
+        )
 
     @override
     def perform(self, args, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        _ = plan
-        analysis = self._analysis_results
-        data_source = self._data_source
-        interruption = self._interruption or generic_utils.InterruptibleProcess()
-        # clear cached results early to free memory
-        self._analysis_results = None
-        # Quick exit if no analysis was done
-        if not analysis or not data_source:
+        _ = args
+        if plan.is_empty():
             logger.info("No analysis results, nothing to melt.")
             return
 
-        melter = Melter(logger,
-                        interruption,
-                        data_source,
-                        wd = working_dir,
-                        output = args.output_dir,
-                        allow_length_mismatch = args.allow_length_mismatch,
-                        allow_language_guessing = args.allow_language_guessing,
-        )
+        if not isinstance(plan, MeltPlan):
+            logger.info("Unsupported plan type, nothing to melt.")
+            return
 
-        melter.process_duplicates(analysis)
+        interruption = generic_utils.InterruptibleProcess()
+        performer = MeltPerformer(
+            logger,
+            interruption,
+            working_dir,
+            plan.output_dir,
+            DEFAULT_TOLERANCE_MS,
+        )
+        performer.process_duplicates(plan.items)

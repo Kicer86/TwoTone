@@ -1,2 +1,7 @@
 
-from .melt import DuplicatesSource, Melter, MeltTool
+from .melt import (
+    DuplicatesSource,
+    MeltAnalyzer,
+    MeltPerformer,
+    MeltTool,
+)
