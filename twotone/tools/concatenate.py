@@ -3,6 +3,7 @@ import argparse
 import logging
 import os
 import re
+from dataclasses import dataclass
 from collections import defaultdict
 from overrides import override
 from tqdm import tqdm
@@ -141,7 +142,6 @@ class Concatenate(generic_utils.InterruptibleProcess):
 class ConcatenateTool(Tool):
     def __init__(self) -> None:
         super().__init__()
-        self._analysis_results: dict[str, list[tuple[str, int]]] | None = None
 
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
@@ -159,19 +159,43 @@ class ConcatenateTool(Tool):
 
     @override
     def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
-        self._analysis_results = None
         concatenator = Concatenate(logger, working_dir=working_dir)
-        self._analysis_results = concatenator.analyze(args.videos_path[0])
-        return EmptyPlan()
+        analysis = concatenator.analyze(args.videos_path[0])
+        if analysis is None:
+            return EmptyPlan()
+        return ConcatenatePlan(items=analysis)
 
     @override
     def perform(self, args, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        _ = plan
-        analysis = self._analysis_results
-        self._analysis_results = None
-        if analysis is None:
+        _ = args
+        _ = working_dir
+
+        if plan.is_empty():
             logger.info("No analysis results, skipping concatenation.")
             return
 
+        if not isinstance(plan, ConcatenatePlan):
+            logger.info("Unsupported plan type, skipping concatenation.")
+            return
+
         concatenator = Concatenate(logger, working_dir)
-        concatenator.perform(analysis)
+        concatenator.perform(plan.items)
+
+
+@dataclass
+class ConcatenatePlan:
+    items: dict[str, list[tuple[str, int]]]
+
+    def is_empty(self) -> bool:
+        return not self.items
+
+    def render(self, logger: logging.Logger) -> None:
+        if not self.items:
+            logger.info("No videos to concatenate.")
+            return
+
+        logger.info("Planned concatenations: %d", len(self.items))
+        for output, details in self.items.items():
+            logger.info("Output: %s", output)
+            for path, part in details:
+                logger.info("  part %d: %s", part, path)
