@@ -25,23 +25,6 @@ class EmptyPlan:
         return None
 
 
-@runtime_checkable
-class Plan(Protocol):
-    def is_empty(self) -> bool:
-        ...
-
-    def render(self, logger: logging.Logger) -> None:
-        ...
-
-
-class EmptyPlan:
-    def is_empty(self) -> bool:
-        return True
-
-    def render(self, logger: logging.Logger) -> None:
-        return None
-
-
 class Tool(ABC):
     @abstractmethod
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
