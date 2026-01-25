@@ -118,8 +118,6 @@ class UtilitiesTool(Tool):
         self._analysis_results = None
 
         if args.subtool == "scenes":
-            process_utils.ensure_tools_exist(["ffmpeg", "ffprobe"], logger)
-
             # Build a simple plan payload; heavy work happens in perform
             try:
                 scale = float(args.scale)

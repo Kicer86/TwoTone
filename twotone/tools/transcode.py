@@ -424,11 +424,11 @@ class TranscodeTool(Tool):
     @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
         self._analysis_results = None
-        process_utils.ensure_tools_exist(["ffmpeg", "ffprobe", "exiftool"], logger)
 
         transcoder = Transcoder(working_dir = working_dir, logger = logger, target_ssim = args.ssim)
         self._analysis_results = transcoder.analyze_directory(args.videos_path[0])
         return EmptyPlan()
+
 
     @override
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:

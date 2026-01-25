@@ -17,7 +17,7 @@ from .tools import          \
     transcode,              \
     utilities
 
-from .tools.utils import generic_utils
+from .tools.utils import generic_utils, process_utils
 
 TOOLS = {
     "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file"),
@@ -105,6 +105,9 @@ def execute(argv: list[str]) -> None:
         with logging_redirect_tqdm():
             try:
                 tool_logger = logger.getChild(args.tool)
+                required_tools = sorted(tool.required_tools())
+                if required_tools:
+                    process_utils.ensure_tools_exist(required_tools, tool_logger)
                 plan = tool.analyze(
                     args,
                     logger=tool_logger,
