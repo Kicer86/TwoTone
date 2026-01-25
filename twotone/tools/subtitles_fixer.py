@@ -4,6 +4,7 @@ import logging
 import os
 import pysubs2
 
+from dataclasses import dataclass
 from functools import partial
 from overrides import override
 from tqdm import tqdm
@@ -214,10 +215,30 @@ class Fixer(generic_utils.InterruptibleProcess):
 
         return broken_videos
 
+
+@dataclass
+class SubtitlesFixPlan:
+    items: list[tuple[dict, list[int]]]
+
+    def is_empty(self) -> bool:
+        return not self.items
+
+    def render(self, logger: logging.Logger) -> None:
+        if not self.items:
+            logger.info("No broken subtitles found.")
+            return
+
+        logger.info("Planned subtitle repairs for %d video(s).", len(self.items))
+        for video_info, broken in self.items:
+            path = video_info.get("path", "<unknown>")
+            logger.info("  %s: %d broken subtitle(s)", path, len(broken))
+            if broken:
+                tracks = ", ".join(str(tid) for tid in broken)
+                logger.info("    tracks: %s", tracks)
+
 class FixerTool(Tool):
     def __init__(self) -> None:
         super().__init__()
-        self._analysis_results: list[tuple[dict, list[int]]] | None = None
 
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
@@ -230,23 +251,22 @@ class FixerTool(Tool):
 
     @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
-        self._analysis_results = None
-
         logger.info("Searching for broken files")
 
         fixer = Fixer(logger, working_dir=working_dir)
-        self._analysis_results = fixer.scan_directory(args.videos_path[0])
-        return EmptyPlan()
+        broken_videos = fixer.scan_directory(args.videos_path[0])
+        return SubtitlesFixPlan(items=broken_videos)
 
     @override
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        _ = plan
-        broken_videos = self._analysis_results
-        self._analysis_results = None
-        if broken_videos is None:
+        if plan.is_empty():
             logger.info("No analysis results, nothing to fix.")
             return
 
+        if not isinstance(plan, SubtitlesFixPlan):
+            logger.info("Unsupported plan type, nothing to fix.")
+            return
+
         fixer = Fixer(logger, working_dir)
-        fixer.repair_videos(broken_videos, drop_broken = args.drop_unfixable)
+        fixer.repair_videos(plan.items, drop_broken = args.drop_unfixable)
         logger.info("Done")
