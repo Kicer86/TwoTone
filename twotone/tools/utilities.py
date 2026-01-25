@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import re
+from dataclasses import dataclass
 
 from overrides import override
 
@@ -87,10 +88,27 @@ def extract_scenes(video_path, output_dir, format: str, scale: float):
     os.rmdir(temp_folder)
 
 
+@dataclass
+class ScenesPlan:
+    video_path: str
+    output: str
+    format: str
+    scale: float
+
+    def is_empty(self) -> bool:
+        return False
+
+    def render(self, logger: logging.Logger) -> None:
+        logger.info("Planned scene extraction:")
+        logger.info(f"  video: {self.video_path}")
+        logger.info(f"  output: {self.output}")
+        logger.info(f"  format: {self.format}")
+        logger.info(f"  scale: {self.scale}%")
+
+
 class UtilitiesTool(Tool):
     def __init__(self) -> None:
         super().__init__()
-        self._analysis_results: dict | None = None
 
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
@@ -115,37 +133,38 @@ class UtilitiesTool(Tool):
 
     @override
     def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
-        self._analysis_results = None
-
         if args.subtool == "scenes":
-            # Build a simple plan payload; heavy work happens in perform
             try:
                 scale = float(args.scale)
             except Exception:
                 raise ValueError(f"Invalid scale value: {args.scale}")
 
-            self._analysis_results = {
-                "subtool": "scenes",
-                "video_path": args.video_path[0],
-                "output": args.output,
-                "format": args.format,
-                "scale": scale,
-            }
+            return ScenesPlan(
+                video_path=args.video_path[0],
+                output=args.output,
+                format=args.format,
+                scale=scale,
+            )
         else:
             logger.error(f"Error: Unknown subtool {args.subtool}")
-        return EmptyPlan()
+            return EmptyPlan()
 
     @override
     def perform(self, args, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        _ = plan
-        analysis = self._analysis_results
-        self._analysis_results = None
+        _ = args
+        _ = working_dir
 
-        if analysis is None:
+        if plan.is_empty():
             logger.info("No analysis results, nothing to perform.")
             return
 
-        if analysis.get("subtool") == "scenes":
-            extract_scenes(video_path = analysis["video_path"], output_dir = analysis["output"], format = analysis["format"], scale = float(analysis["scale"]))
-        else:
-            logger.error(f"Error: Unknown subtool {analysis.get('subtool')}")
+        if not isinstance(plan, ScenesPlan):
+            logger.info("Unsupported plan type, nothing to perform.")
+            return
+
+        extract_scenes(
+            video_path=plan.video_path,
+            output_dir=plan.output,
+            format=plan.format,
+            scale=float(plan.scale),
+        )
