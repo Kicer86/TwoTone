@@ -870,13 +870,16 @@ class MeltTool(Tool):
     def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
         interruption = generic_utils.InterruptibleProcess()
         data_source: DuplicatesSource | None = None
+        parser = self.parser
+        if parser is None:
+            raise RuntimeError("Parser not initialized. Call setup_parser before analyze.")
 
         # Build data source based on arguments
         if args.jellyfin_server:
             path_fix_list = _split_path_fix(args.jellyfin_path_fix) if args.jellyfin_path_fix else None
 
             if path_fix_list and len(path_fix_list) != 2:
-                self.parser.error(f"Invalid content for --jellyfin-path-fix argument. Got: {path_fix_list}")
+                parser.error(f"Invalid content for --jellyfin-path-fix argument. Got: {path_fix_list}")
 
             path_fix: tuple[str, str] | None = None
             if path_fix_list:
@@ -892,7 +895,7 @@ class MeltTool(Tool):
             input_entries = args.input_files
 
             if not title:
-                self.parser.error(f"Missing required option: --title")
+                parser.error("Missing required option: --title")
 
             src = StaticSource(interruption=interruption)
 
