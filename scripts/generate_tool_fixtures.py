@@ -25,6 +25,14 @@ def _write_placeholder(path: Path) -> None:
         path.write_bytes(b"")
 
 
+def _write_subtitle(path: Path, text: str = "Hello world") -> None:
+    _ensure_dir(path.parent)
+    if path.exists():
+        return
+    payload = f"1\n00:00:00,000 --> 00:00:01,000\n{text}\n\n"
+    path.write_text(payload, encoding="utf-8")
+
+
 def _generate_video(
     path: Path,
     *,
@@ -153,6 +161,40 @@ def _generate_concatenate(root: Path) -> None:
     _write_placeholder(ignored_dir / "README.txt")
 
 
+def _generate_merge(root: Path) -> None:
+    base = root / "merge"
+    ok_dir = base / "ok"
+    warnings_dir = base / "warnings"
+
+    single_dir = ok_dir / "single"
+    single_subs = single_dir / "subtitles"
+    multi_dir = ok_dir / "multi"
+    dup_dir = warnings_dir / "duplicate_names"
+
+    _ensure_dir(single_subs)
+    _ensure_dir(multi_dir)
+    _ensure_dir(dup_dir)
+
+    # Single video with subtitles in the same dir and a subdir.
+    single_video = single_dir / "Lone Movie.mp4"
+    _ensure_video(single_video, profile="mp4", color="blue")
+    _write_subtitle(single_dir / "Lone Movie.en.srt", text="Hello world")
+    _write_subtitle(single_subs / "Lone Movie.pl.srt", text="Witaj swiecie")
+
+    # Multiple videos matched by prefix in one directory.
+    ep1 = multi_dir / "Series 01.mkv"
+    ep2 = multi_dir / "Series 02.mkv"
+    _ensure_video(ep1, profile="mkv", color="green")
+    _ensure_video(ep2, profile="mkv", color="yellow")
+    _write_subtitle(multi_dir / "Series 01.en.srt", text="Episode one")
+    _write_subtitle(multi_dir / "Series 01.pl.srt", text="Odcinek pierwszy")
+    _write_subtitle(multi_dir / "Series 02.en.srt", text="Episode two")
+
+    # Warning case: duplicate video base names (different extensions).
+    _ensure_video(dup_dir / "SameName.mp4", profile="mp4", color="red")
+    _ensure_video(dup_dir / "SameName.mkv", profile="mkv", color="purple")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate fixture files for manual tool inspection.")
     parser.add_argument(
@@ -162,17 +204,19 @@ def main() -> int:
     )
     parser.add_argument(
         "--tool",
-        default="concatenate",
-        choices=["concatenate"],
-        help="Tool fixtures to generate.",
+        default="all",
+        choices=["all", "concatenate", "merge"],
+        help="Tool fixtures to generate (default: all).",
     )
 
     args = parser.parse_args()
     root = Path(args.root)
     _ensure_dir(root)
 
-    if args.tool == "concatenate":
+    if args.tool in {"all", "concatenate"}:
         _generate_concatenate(root)
+    if args.tool in {"all", "merge"}:
+        _generate_merge(root)
 
     print(f"Fixtures generated under: {root.resolve()}")
     return 0
