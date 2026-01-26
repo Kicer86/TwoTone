@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import tempfile
+from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from overrides import override
 from tqdm import tqdm
@@ -382,7 +383,6 @@ class Transcoder(generic_utils.InterruptibleProcess):
             else:
                 self.logger.warning(f"Skipping {file}: could not determine optimal CRF")
 
-        self.logger.info(f"Analysis complete. Files to transcode: {len(plan)}")
         return plan
 
     def perform_transcodes(self, plan: dict[str, int]) -> None:
@@ -395,10 +395,27 @@ class Transcoder(generic_utils.InterruptibleProcess):
             self._final_transcode(file, crf + 1)
 
 
+@dataclass
+class TranscodePlan:
+    items: dict[str, int]
+    target_ssim: float
+
+    def is_empty(self) -> bool:
+        return not self.items
+
+    def render(self, logger: logging.Logger) -> None:
+        if not self.items:
+            logger.info("No videos to transcode.")
+            return
+
+        logger.info("Planned transcodes: %d (target SSIM: %.4f)", len(self.items), self.target_ssim)
+        for path, crf in self.items.items():
+            logger.info("  %s -> CRF %d", path, crf)
+
+
 class TranscodeTool(Tool):
     def __init__(self) -> None:
         super().__init__()
-        self._analysis_results: dict[str, int] | None = None
 
     @override
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
@@ -423,21 +440,20 @@ class TranscodeTool(Tool):
 
     @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
-        self._analysis_results = None
-
         transcoder = Transcoder(working_dir = working_dir, logger = logger, target_ssim = args.ssim)
-        self._analysis_results = transcoder.analyze_directory(args.videos_path[0])
-        return EmptyPlan()
+        analysis = transcoder.analyze_directory(args.videos_path[0])
+        return TranscodePlan(items=analysis, target_ssim=args.ssim)
 
 
     @override
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        _ = plan
-        analysis = self._analysis_results
-        self._analysis_results = None
-        if analysis is None:
+        if plan.is_empty():
             logger.info("No analysis results, nothing to transcode.")
             return
 
-        transcoder = Transcoder(working_dir = working_dir, logger = logger, target_ssim = args.ssim)
-        transcoder.perform_transcodes(analysis)
+        if not isinstance(plan, TranscodePlan):
+            logger.info("Unsupported plan type, nothing to transcode.")
+            return
+
+        transcoder = Transcoder(working_dir = working_dir, logger = logger, target_ssim = plan.target_ssim)
+        transcoder.perform_transcodes(plan.items)

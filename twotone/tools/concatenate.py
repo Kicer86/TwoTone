@@ -3,6 +3,7 @@ import argparse
 import logging
 import os
 import re
+from dataclasses import dataclass
 from collections import defaultdict
 from overrides import override
 from tqdm import tqdm
@@ -18,7 +19,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
         self.logger = logger
         self.working_dir = working_dir
 
-    def analyze(self, path: str) -> dict[str, list[tuple[str, int]]] | None:
+    def analyze(self, path: str, ignore_warnings: bool = False) -> dict[str, list[tuple[str, int]]] | None:
         self.logger.info(f"Collecting video files from path {path}")
         video_files = video_utils.collect_video_files(path, self)
 
@@ -62,11 +63,13 @@ class Concatenate(generic_utils.InterruptibleProcess):
         self.logger.info("Processing groups")
         warnings = False
         sorted_videos: dict[str, list[tuple[str, int]]] = {}
+        valid_videos: dict[str, list[tuple[str, int]]] = {}
         for common_name, details in matched_videos.items():
 
             # sort parts by part number [1]
             details = sorted(details, key = lambda detail: detail[1])
             sorted_videos[common_name] = details
+            group_has_warning = False
 
             # collect all part numbers
             parts = []
@@ -76,29 +79,25 @@ class Concatenate(generic_utils.InterruptibleProcess):
             if len(parts) < 2:
                 self.logger.warning(f"There are less than two parts for video represented under a common name: {common_name}")
                 warnings = True
+                group_has_warning = True
 
             # expect parts to be numbered from 1 to N
             for i, value in enumerate(parts):
                 if i + 1 != value:
                     self.logger.warning(f"There is a mismatch in CD numbers for a group of files represented under a common name: {common_name}")
                     warnings = True
+                    group_has_warning = True
 
-        if warnings:
+            if group_has_warning and ignore_warnings:
+                continue
+            valid_videos[common_name] = details
+
+        if warnings and not ignore_warnings:
             self.logger.error("Fix above warnings and try again")
             return None
 
-        self.logger.info("Files to be concatenated (in given order):")
-        for common_name, details in sorted_videos.items():
-            paths = [path for path, _ in details]
-            common_path = os.path.commonpath(paths)
-            self.logger.info(f"Files from {common_path}:")
-
-            cl = len(common_path) + 1
-            for path in paths:
-                self.logger.info(f"\t{path[cl:]}")
-
-            self.logger.info(f"\t->{common_name}")
-
+        if ignore_warnings:
+            return valid_videos
         return sorted_videos
 
     def perform(self, sorted_videos: dict[str, list[tuple[str, int]]]) -> None:
@@ -141,7 +140,6 @@ class Concatenate(generic_utils.InterruptibleProcess):
 class ConcatenateTool(Tool):
     def __init__(self) -> None:
         super().__init__()
-        self._analysis_results: dict[str, list[tuple[str, int]]] | None = None
 
     @override
     def setup_parser(self, parser: argparse.ArgumentParser):
@@ -156,22 +154,56 @@ class ConcatenateTool(Tool):
         parser.add_argument('videos_path',
                             nargs=1,
                             help='Path with videos to concatenate.')
+        parser.add_argument('--ignore-warnings',
+                            action='store_true',
+                            help='Skip videos with warnings and continue with valid groups.')
 
     @override
     def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
-        self._analysis_results = None
         concatenator = Concatenate(logger, working_dir=working_dir)
-        self._analysis_results = concatenator.analyze(args.videos_path[0])
-        return EmptyPlan()
+        analysis = concatenator.analyze(args.videos_path[0], ignore_warnings=args.ignore_warnings)
+        if analysis is None:
+            return EmptyPlan()
+        return ConcatenatePlan(items=analysis)
 
     @override
     def perform(self, args, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        _ = plan
-        analysis = self._analysis_results
-        self._analysis_results = None
-        if analysis is None:
+        _ = args
+        _ = working_dir
+
+        if plan.is_empty():
             logger.info("No analysis results, skipping concatenation.")
             return
 
+        if not isinstance(plan, ConcatenatePlan):
+            logger.info("Unsupported plan type, skipping concatenation.")
+            return
+
         concatenator = Concatenate(logger, working_dir)
-        concatenator.perform(analysis)
+        concatenator.perform(plan.items)
+
+
+@dataclass
+class ConcatenatePlan:
+    items: dict[str, list[tuple[str, int]]]
+
+    def is_empty(self) -> bool:
+        return not self.items
+
+    def render(self, logger: logging.Logger) -> None:
+        if not self.items:
+            logger.info("No videos to concatenate.")
+            return
+
+        logger.info("Planned concatenations: %d", len(self.items))
+        for output, details in self.items.items():
+            paths = [path for path, _ in details]
+            common_path = os.path.commonpath(paths) if paths else ""
+            if common_path:
+                logger.info("Files from %s:", common_path)
+                for path, _ in details:
+                    logger.info("  %s", os.path.relpath(path, common_path))
+            else:
+                for path, part in details:
+                    logger.info("  part %d: %s", part, path)
+            logger.info("  -> %s", output)
