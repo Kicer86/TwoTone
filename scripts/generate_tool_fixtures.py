@@ -33,6 +33,58 @@ def _write_subtitle(path: Path, text: str = "Hello world") -> None:
     path.write_text(payload, encoding="utf-8")
 
 
+def _format_srt_time(ms: int) -> str:
+    hours = ms // 3_600_000
+    ms -= hours * 3_600_000
+    minutes = ms // 60_000
+    ms -= minutes * 60_000
+    seconds = ms // 1_000
+    ms -= seconds * 1_000
+    return f"{hours:02}:{minutes:02}:{seconds:02},{ms:03}"
+
+
+def _write_srt(path: Path, entries: list[tuple[int, int, str]]) -> None:
+    _ensure_dir(path.parent)
+    if path.exists():
+        return
+    lines: list[str] = []
+    for idx, (start_ms, end_ms, text) in enumerate(entries, start=1):
+        lines.append(str(idx))
+        lines.append(f"{_format_srt_time(start_ms)} --> {_format_srt_time(end_ms)}")
+        lines.append(text)
+        lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _mux_subtitle(video_path: Path, subtitle_path: Path, output_path: Path) -> bool:
+    if not _ffmpeg_available():
+        return False
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        "-i",
+        str(subtitle_path),
+        "-map",
+        "0",
+        "-map",
+        "1",
+        "-c",
+        "copy",
+        "-c:s",
+        "srt",
+        str(output_path),
+    ]
+
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+
 def _generate_video(
     path: Path,
     *,
@@ -76,17 +128,17 @@ def _generate_video(
         return False
 
 
-def _ensure_video(path: Path, *, profile: str, color: str) -> None:
+def _ensure_video(path: Path, *, profile: str, color: str, duration: float = 1.0) -> None:
     _ensure_dir(path.parent)
     if path.exists():
         return
 
     if profile == "mp4":
-        ok = _generate_video(path, vcodec="libx264", acodec="aac", color=color)
+        ok = _generate_video(path, vcodec="libx264", acodec="aac", color=color, duration=duration)
     elif profile == "mkv":
-        ok = _generate_video(path, vcodec="libx264", acodec="aac", color=color)
+        ok = _generate_video(path, vcodec="libx264", acodec="aac", color=color, duration=duration)
     elif profile == "avi":
-        ok = _generate_video(path, vcodec="mpeg4", acodec="mp3", color=color)
+        ok = _generate_video(path, vcodec="mpeg4", acodec="mp3", color=color, duration=duration)
     elif profile == "rmvb":
         ok = False
     else:
@@ -195,6 +247,40 @@ def _generate_merge(root: Path) -> None:
     _ensure_video(dup_dir / "SameName.mkv", profile="mkv", color="purple")
 
 
+def _generate_subtitles_fixer(root: Path) -> None:
+    base = root / "subtitles_fixer"
+    ok_dir = base / "ok"
+    broken_dir = base / "broken"
+    no_subs_dir = base / "no_subs"
+
+    _ensure_dir(ok_dir)
+    _ensure_dir(broken_dir)
+    _ensure_dir(no_subs_dir)
+
+    # OK: subtitle ends before video end.
+    ok_video = ok_dir / "ok_with_subs.mkv"
+    ok_source = ok_dir / "ok_with_subs.source.mp4"
+    ok_srt = ok_dir / "ok_with_subs.srt"
+    if not ok_video.exists():
+        _ensure_video(ok_source, profile="mp4", color="green")
+        _write_srt(ok_srt, [(0, 800, "Hello world")])
+        if not _mux_subtitle(ok_source, ok_srt, ok_video):
+            _write_placeholder(ok_video)
+
+    # Broken: subtitle track longer than video.
+    broken_video = broken_dir / "broken_with_subs.mkv"
+    broken_source = broken_dir / "broken_with_subs.source.mp4"
+    broken_srt = broken_dir / "broken_with_subs.srt"
+    if not broken_video.exists():
+        _ensure_video(broken_source, profile="mp4", color="red", duration=1.0)
+        _write_srt(broken_srt, [(0, 4_000, "Too long subtitle")])
+        if not _mux_subtitle(broken_source, broken_srt, broken_video):
+            _write_placeholder(broken_video)
+
+    # No subtitles at all.
+    _ensure_video(no_subs_dir / "no_subs.mkv", profile="mkv", color="blue")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate fixture files for manual tool inspection.")
     parser.add_argument(
@@ -205,7 +291,7 @@ def main() -> int:
     parser.add_argument(
         "--tool",
         default="all",
-        choices=["all", "concatenate", "merge"],
+        choices=["all", "concatenate", "merge", "subtitles_fixer"],
         help="Tool fixtures to generate (default: all).",
     )
 
@@ -217,6 +303,8 @@ def main() -> int:
         _generate_concatenate(root)
     if args.tool in {"all", "merge"}:
         _generate_merge(root)
+    if args.tool in {"all", "subtitles_fixer"}:
+        _generate_subtitles_fixer(root)
 
     print(f"Fixtures generated under: {root.resolve()}")
     return 0
