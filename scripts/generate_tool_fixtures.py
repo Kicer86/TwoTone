@@ -294,6 +294,18 @@ def _generate_transcode(root: Path) -> None:
     _ensure_video(nested_dir / "Nested Sample.avi", profile="avi", color="purple")
 
 
+def _generate_utilities(root: Path) -> None:
+    base = root / "utilities"
+    scenes_dir = base / "scenes"
+    nested_dir = scenes_dir / "nested"
+
+    _ensure_dir(scenes_dir)
+    _ensure_dir(nested_dir)
+
+    _ensure_video(scenes_dir / "Scenes Sample.mp4", profile="mp4", color="blue")
+    _ensure_video(nested_dir / "Nested Scenes Sample.mkv", profile="mkv", color="yellow")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate fixture files for manual tool inspection.")
     parser.add_argument(
@@ -304,7 +316,7 @@ def main() -> int:
     parser.add_argument(
         "--tool",
         default="all",
-        choices=["all", "concatenate", "merge", "subtitles_fixer", "transcode"],
+        choices=["all", "concatenate", "merge", "subtitles_fixer", "transcode", "utilities"],
         help="Tool fixtures to generate (default: all).",
     )
 
@@ -320,6 +332,8 @@ def main() -> int:
         _generate_subtitles_fixer(root)
     if args.tool in {"all", "transcode"}:
         _generate_transcode(root)
+    if args.tool in {"all", "utilities"}:
+        _generate_utilities(root)
 
     print(f"Fixtures generated under: {root.resolve()}")
     return 0
