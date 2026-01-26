@@ -56,7 +56,14 @@ def _write_srt(path: Path, entries: list[tuple[int, int, str]]) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _mux_subtitle(video_path: Path, subtitle_path: Path, output_path: Path) -> bool:
+def _mux_subtitle(
+    video_path: Path,
+    subtitle_path: Path,
+    output_path: Path,
+    *,
+    audio_title: str | None = None,
+    subtitle_language: str | None = None,
+) -> bool:
     if not _ffmpeg_available():
         return False
 
@@ -75,6 +82,38 @@ def _mux_subtitle(video_path: Path, subtitle_path: Path, output_path: Path) -> b
         "copy",
         "-c:s",
         "srt",
+    ]
+    if audio_title:
+        cmd.extend(["-metadata:s:a:0", f"title={audio_title}"])
+        cmd.extend(["-metadata:s:a:0", "language=und"])
+    if subtitle_language:
+        cmd.extend(["-metadata:s:s:0", f"language={subtitle_language}"])
+    cmd.append(str(output_path))
+
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+
+def _remux_with_audio_title(video_path: Path, output_path: Path, audio_title: str) -> bool:
+    if not _ffmpeg_available():
+        return False
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-metadata:s:a:0",
+        f"title={audio_title}",
+        "-metadata:s:a:0",
+        "language=und",
         str(output_path),
     ]
 
@@ -294,6 +333,44 @@ def _generate_transcode(root: Path) -> None:
     _ensure_video(nested_dir / "Nested Sample.avi", profile="avi", color="purple")
 
 
+def _generate_language_fixer(root: Path) -> None:
+    base = root / "language_fixer"
+    missing_dir = base / "missing"
+    audio_dir = base / "audio_only"
+
+    _ensure_dir(missing_dir)
+    _ensure_dir(audio_dir)
+
+    # Missing subtitle language (subtitle language set to und).
+    missing_source = missing_dir / "Missing Subs.source.mp4"
+    missing_srt = missing_dir / "Missing Subs.srt"
+    missing_output = missing_dir / "Missing Subs.mkv"
+    if not missing_output.exists():
+        _ensure_video(missing_source, profile="mp4", color="blue")
+        _write_srt(
+            missing_srt,
+            [
+                (0, 900, "Witaj swiecie"),
+                (1200, 2300, "To jest test"),
+            ],
+        )
+        if not _mux_subtitle(
+            missing_source,
+            missing_srt,
+            missing_output,
+            subtitle_language="und",
+        ):
+            _write_placeholder(missing_output)
+
+    # Missing audio language but with a track name hint.
+    audio_source = audio_dir / "Audio Missing.source.mp4"
+    audio_output = audio_dir / "Audio Missing.mkv"
+    if not audio_output.exists():
+        _ensure_video(audio_source, profile="mp4", color="green")
+        if not _remux_with_audio_title(audio_source, audio_output, "English"):
+            _write_placeholder(audio_output)
+
+
 def _generate_utilities(root: Path) -> None:
     base = root / "utilities"
     scenes_dir = base / "scenes"
@@ -316,7 +393,7 @@ def main() -> int:
     parser.add_argument(
         "--tool",
         default="all",
-        choices=["all", "concatenate", "merge", "subtitles_fixer", "transcode", "utilities"],
+        choices=["all", "concatenate", "merge", "subtitles_fixer", "transcode", "language_fixer", "utilities"],
         help="Tool fixtures to generate (default: all).",
     )
 
@@ -332,6 +409,8 @@ def main() -> int:
         _generate_subtitles_fixer(root)
     if args.tool in {"all", "transcode"}:
         _generate_transcode(root)
+    if args.tool in {"all", "language_fixer"}:
+        _generate_language_fixer(root)
     if args.tool in {"all", "utilities"}:
         _generate_utilities(root)
 
