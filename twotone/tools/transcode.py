@@ -383,7 +383,6 @@ class Transcoder(generic_utils.InterruptibleProcess):
             else:
                 self.logger.warning(f"Skipping {file}: could not determine optimal CRF")
 
-        self.logger.info(f"Analysis complete. Files to transcode: {len(plan)}")
         return plan
 
     def perform_transcodes(self, plan: dict[str, int]) -> None:
