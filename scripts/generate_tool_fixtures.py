@@ -167,17 +167,24 @@ def _generate_video(
         return False
 
 
-def _ensure_video(path: Path, *, profile: str, color: str, duration: float = 1.0) -> None:
+def _ensure_video(
+    path: Path,
+    *,
+    profile: str,
+    color: str,
+    duration: float = 1.0,
+    size: str = "320x240",
+) -> None:
     _ensure_dir(path.parent)
     if path.exists():
         return
 
     if profile == "mp4":
-        ok = _generate_video(path, vcodec="libx264", acodec="aac", color=color, duration=duration)
+        ok = _generate_video(path, vcodec="libx264", acodec="aac", color=color, duration=duration, size=size)
     elif profile == "mkv":
-        ok = _generate_video(path, vcodec="libx264", acodec="aac", color=color, duration=duration)
+        ok = _generate_video(path, vcodec="libx264", acodec="aac", color=color, duration=duration, size=size)
     elif profile == "avi":
-        ok = _generate_video(path, vcodec="mpeg4", acodec="mp3", color=color, duration=duration)
+        ok = _generate_video(path, vcodec="mpeg4", acodec="mp3", color=color, duration=duration, size=size)
     elif profile == "rmvb":
         ok = False
     else:
@@ -371,6 +378,33 @@ def _generate_language_fixer(root: Path) -> None:
             _write_placeholder(audio_output)
 
 
+def _generate_melt(root: Path) -> None:
+    base = root / "melt"
+    movie_dir = base / "movie"
+    series_a = base / "series" / "set_a"
+    series_b = base / "series" / "set_b"
+    mismatch_dir = base / "mismatch"
+
+    _ensure_dir(movie_dir)
+    _ensure_dir(series_a)
+    _ensure_dir(series_b)
+    _ensure_dir(mismatch_dir)
+
+    # Single-dir duplicates (use as --input <movie_dir>).
+    _ensure_video(movie_dir / "Movie A 1080p.mkv", profile="mkv", color="blue", size="640x360")
+    _ensure_video(movie_dir / "Movie A 720p.mkv", profile="mkv", color="red", size="320x240")
+
+    # Multi-dir duplicates (use as --input <series_a> --input <series_b>).
+    _ensure_video(series_a / "Episode 01.mkv", profile="mkv", color="green")
+    _ensure_video(series_a / "Episode 02.mkv", profile="mkv", color="yellow")
+    _ensure_video(series_b / "Episode 01.mkv", profile="mkv", color="purple")
+    _ensure_video(series_b / "Episode 02.mkv", profile="mkv", color="cyan")
+
+    # Length mismatch case to test allow-length-mismatch behavior.
+    _ensure_video(mismatch_dir / "Mismatch A.mkv", profile="mkv", color="orange", duration=1.0)
+    _ensure_video(mismatch_dir / "Mismatch B.mkv", profile="mkv", color="pink", duration=2.0)
+
+
 def _generate_utilities(root: Path) -> None:
     base = root / "utilities"
     scenes_dir = base / "scenes"
@@ -393,7 +427,7 @@ def main() -> int:
     parser.add_argument(
         "--tool",
         default="all",
-        choices=["all", "concatenate", "merge", "subtitles_fixer", "transcode", "language_fixer", "utilities"],
+        choices=["all", "concatenate", "merge", "subtitles_fixer", "transcode", "language_fixer", "melt", "utilities"],
         help="Tool fixtures to generate (default: all).",
     )
 
@@ -411,6 +445,8 @@ def main() -> int:
         _generate_transcode(root)
     if args.tool in {"all", "language_fixer"}:
         _generate_language_fixer(root)
+    if args.tool in {"all", "melt"}:
+        _generate_melt(root)
     if args.tool in {"all", "utilities"}:
         _generate_utilities(root)
 
