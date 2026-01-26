@@ -283,11 +283,6 @@ class Merge(generic_utils.InterruptibleProcess):
     def analyze_directory(self, path: str) -> dict[str, list[subtitles_utils.SubtitleFile]]:
         self.logger.info(f"Looking for video and subtitle files in {path}")
         vas = self._process_dir(path)
-
-        self.logger.info(f"Found {len(vas)} videos with subtitles to merge")
-        for video in vas:
-            self.logger.debug(video)
-
         return vas
 
     def perform_merges(self, videos_and_subtitles: dict[str, list[subtitles_utils.SubtitleFile]]) -> None:
