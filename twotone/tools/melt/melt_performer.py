@@ -94,9 +94,10 @@ class MeltPerformer:
             for tid, lang in fo["languages"].items():
                 generation_args.extend(["--language", f"{tid}:{lang}"])
 
-            for tid in fo["audio"] + fo["subtitle"]:
-                flag = "yes" if tid in fo["defaults"] else "no"
-                generation_args.extend(["--default-track", f"{tid}:{flag}"])
+            if preferred_audio:
+                for tid in fo["audio"] + fo["subtitle"]:
+                    flag = "yes" if tid in fo["defaults"] else "no"
+                    generation_args.extend(["--default-track", f"{tid}:{flag}"])
 
             generation_args.append(file_path)
 
