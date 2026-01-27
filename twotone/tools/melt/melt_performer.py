@@ -274,10 +274,16 @@ class MeltPerformer:
         audio_streams: Sequence[Tuple[str, int, str | None]],
         subtitle_streams: Sequence[Tuple[str, int, str | None]],
         required_input_files: set[str],
+        attachments: Sequence[Tuple[str, int]],
     ) -> List[Tuple[str, int, str, str | None]]:
         streams_list: List[Tuple[str, int, str, str | None]] = []
         video_path_base, video_tid, _ = video_streams[0]
         base_duration = video_utils.get_video_duration(video_path_base)
+        protected_paths = (
+            {p for (p, _, _) in video_streams}
+            | {p for (p, _, _) in subtitle_streams}
+            | {p for (p, _) in attachments}
+        )
 
         for (path, stream_index, language) in video_streams:
             streams_list.append(("video", stream_index, path, language))
@@ -285,6 +291,7 @@ class MeltPerformer:
         for (path, stream_index, language) in audio_streams:
             duration = video_utils.get_video_duration(path)
             if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
+                original_path = path
                 with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
                      generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
                     matcher = PairMatcher(self.interruption, mwd, video_path_base, path, self.logger.getChild("PairMatcher"))
@@ -294,6 +301,8 @@ class MeltPerformer:
                     path = patched_audio
                     stream_index = 0
                     required_input_files.add(path)
+                    if original_path not in protected_paths:
+                        required_input_files.discard(original_path)
             streams_list.append(("audio", stream_index, path, language))
 
         for (path, stream_index, language) in subtitle_streams:
@@ -364,6 +373,7 @@ class MeltPerformer:
                         audio_streams,
                         subtitle_streams,
                         required_input_files,
+                        attachments,
                     )
 
                     # Sort streams by language alphabetically
