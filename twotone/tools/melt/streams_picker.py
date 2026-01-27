@@ -48,7 +48,7 @@ class StreamsPicker:
         filtered_videos = files_details.copy()
         for stream_type in ["video", "audio", "subtitle"]:
             max_videos = max(len(streams.get(stream_type, [])) for _, streams in filtered_videos.items())
-            filtered_videos = {k: v for k, v in files_details.items() if len(v.get(stream_type, [])) == max_videos}
+            filtered_videos = {k: v for k, v in filtered_videos.items() if len(v.get(stream_type, [])) == max_videos}
 
             if len(filtered_videos) == 1:
                 return list(filtered_videos.keys())[0]
