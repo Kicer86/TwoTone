@@ -87,6 +87,13 @@ class MeltAnalyzer:
             raise RuntimeError(f"Track #{tid} not found.")
         return track
 
+    @staticmethod
+    def _pick_primary_video_track(streams: Sequence[Dict[str, Any]], file_id: int) -> Dict[str, Any]:
+        for track in streams:
+            if not track.get("attached_pic", False):
+                return track
+        raise RuntimeError(f"No video track found in file #{file_id}.")
+
     def _print_file_details(self, file: str, details: Dict[str, Any], ids: Dict[str, int]) -> None:
         def formatter(key: str, value: Any) -> str:
             if key == "fps":
@@ -280,9 +287,9 @@ class MeltAnalyzer:
 
         # Subtitle mismatch (unsupported)
         for path, _, _ in subtitle_streams:
-            length = tracks[path]["video"][0]["length"]
+            file_id = ids[path]
+            length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
             if _is_length_mismatch(base_length, length, self.tolerance_ms):
-                file_id = ids[path]
                 self.logger.debug(
                     f"Subtitles stream from file #{file_id} has length different than length of video stream from file {v_path}. "
                     "This is not supported yet"
@@ -291,9 +298,9 @@ class MeltAnalyzer:
 
         # Audio lengths valdiation
         for path, tid, _ in audio_streams:
-            length = tracks[path]["video"][0]["length"]
+            file_id = ids[path]
+            length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
             if _is_length_mismatch(base_length, length, self.tolerance_ms):
-                file_id = ids[path]
                 base_file_id = ids[v_path]
                 self.logger.debug(
                     f"Audio stream from file #{file_id} has length different than length of video stream from file #{base_file_id}. "
