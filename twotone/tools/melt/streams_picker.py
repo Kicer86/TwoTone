@@ -7,7 +7,7 @@ from collections import defaultdict
 from functools import cmp_to_key
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
-from ..utils import files_utils, language_utils
+from ..utils import files_utils, generic_utils, language_utils
 from ..utils import subtitles_utils, video_utils
 from .duplicates_source import DuplicatesSource
 
@@ -48,7 +48,7 @@ class StreamsPicker:
         filtered_videos = files_details.copy()
         for stream_type in ["video", "audio", "subtitle"]:
             max_videos = max(len(streams.get(stream_type, [])) for _, streams in filtered_videos.items())
-            filtered_videos = {k: v for k, v in files_details.items() if len(v.get(stream_type, [])) == max_videos}
+            filtered_videos = {k: v for k, v in filtered_videos.items() if len(v.get(stream_type, [])) == max_videos}
 
             if len(filtered_videos) == 1:
                 return list(filtered_videos.keys())[0]
@@ -156,14 +156,30 @@ class StreamsPicker:
 
     def pick_streams(self, files_details: Dict, ids: Dict[str, int]):
         # video preference comparator
-        def video_cmp(lhs: Dict, rhs: Dict) -> int:
-            if lhs["width"] > rhs["width"] and lhs["height"] > rhs["height"]:
+        def video_cmp(lhs: Dict[str, Any], rhs: Dict[str, Any]) -> int:
+            lhs_w = int(lhs["width"])
+            lhs_h = int(lhs["height"])
+            rhs_w = int(rhs["width"])
+            rhs_h = int(rhs["height"])
+
+            lhs_area = lhs_w * lhs_h
+            rhs_area = rhs_w * rhs_h
+
+            if lhs_area > rhs_area:
                 return 1
-            if lhs["width"] < rhs["width"] and lhs["height"] < rhs["height"]:
+            if lhs_area < rhs_area:
+                return -1
+            if lhs_w > rhs_w:
+                return 1
+            if lhs_w < rhs_w:
+                return -1
+            if lhs_h > rhs_h:
+                return 1
+            if lhs_h < rhs_h:
                 return -1
 
-            lhs_fps = eval(str(lhs.get("fps", "0")))
-            rhs_fps = eval(str(rhs.get("fps", "0")))
+            lhs_fps = generic_utils.fps_str_to_float(str(lhs.get("fps", "0")))
+            rhs_fps = generic_utils.fps_str_to_float(str(rhs.get("fps", "0")))
 
             if lhs_fps > rhs_fps:
                 return 1
@@ -181,9 +197,9 @@ class StreamsPicker:
                     if lhs_value is None or rhs_value is None:
                         continue
                     if lhs_value > rhs_value:
-                        return -1
-                    if lhs_value < rhs_value:
                         return 1
+                    if lhs_value < rhs_value:
+                        return -1
                 return 0
             return _cmp
 
@@ -259,8 +275,13 @@ class StreamsPicker:
 
             return lang
 
-        #collect video streams (path and index) which are attached_pics so we can drop them later as not handled now
-        attached_pics = [(file_path, index) for (file_path, details) in files_details.items() for index, vd in enumerate(details["video"]) if vd.get("attached_pic", False)]
+        #collect video streams (path and tid) which are attached_pics so we can drop them later as not handled now
+        attached_pics = [
+            (file_path, vd.get("tid"))
+            for (file_path, details) in files_details.items()
+            for vd in details["video"]
+            if vd.get("attached_pic", False)
+        ]
 
         best_file_candidate = StreamsPicker._pick_best_file_candidate(files_details)
         video_streams = self._pick_streams(

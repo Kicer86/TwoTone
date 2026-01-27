@@ -379,6 +379,58 @@ class MeltingTest(TwoToneTestCase):
             self.assertTrue(len(subtitle_streams) >= 1)
             self.assertEqual(subtitle_streams[0][2], "eng")
 
+    def test_streams_picker_prefers_higher_sample_rate_audio(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+
+        file1 = os.path.join(self.wd.path, "audio_48k.mkv")
+        file2 = os.path.join(self.wd.path, "audio_24k.mkv")
+
+        files_details = {
+            file1: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "24000/1001"}],
+                "audio": [{"tid": 1, "language": "eng", "channels": 6, "sample_rate": 48000}],
+                "subtitle": [],
+            },
+            file2: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "24000/1001"}],
+                "audio": [{"tid": 1, "language": "eng", "channels": 6, "sample_rate": 24000}],
+                "subtitle": [],
+            },
+        }
+        ids = {file1: 1, file2: 2}
+
+        _, audio_streams, _ = sp.pick_streams(files_details, ids)
+
+        self.assertEqual(audio_streams[0][0], file1)
+
+    def test_streams_picker_prefers_higher_resolution_video(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+
+        file1 = os.path.join(self.wd.path, "video_800.mkv")
+        file2 = os.path.join(self.wd.path, "video_796.mkv")
+
+        files_details = {
+            file1: {
+                "video": [{"tid": 0, "width": 1920, "height": 800, "fps": "24000/1001"}],
+                "audio": [],
+                "subtitle": [],
+            },
+            file2: {
+                "video": [{"tid": 0, "width": 1920, "height": 796, "fps": "24000/1001"}],
+                "audio": [],
+                "subtitle": [],
+            },
+        }
+        ids = {file1: 1, file2: 2}
+
+        video_streams, _, _ = sp.pick_streams(files_details, ids)
+
+        self.assertEqual(video_streams[0][0], file1)
+
 
     def test_mismatch_unused_file_ignored(self):
         file1 = build_test_video(
