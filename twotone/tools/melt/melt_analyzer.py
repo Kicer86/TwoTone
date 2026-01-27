@@ -221,6 +221,10 @@ class MeltAnalyzer:
                     media_files.sort()
                     files_per_dir.append(media_files)
 
+                lengths = [len(files) for files in files_per_dir]
+                if len(set(lengths)) != 1:
+                    raise RuntimeError(f"Input directories have different counts of video files: {lengths}")
+
                 sorted_file_lists = [list(entry) for entry in zip(*files_per_dir)]
                 first_file_fullnames = [os.path.relpath(path[0], dirs[0]) for path in sorted_file_lists]
                 first_file_names = [file_without_ext(path) for path in first_file_fullnames]
