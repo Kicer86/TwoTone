@@ -259,8 +259,13 @@ class StreamsPicker:
 
             return lang
 
-        #collect video streams (path and index) which are attached_pics so we can drop them later as not handled now
-        attached_pics = [(file_path, index) for (file_path, details) in files_details.items() for index, vd in enumerate(details["video"]) if vd.get("attached_pic", False)]
+        #collect video streams (path and tid) which are attached_pics so we can drop them later as not handled now
+        attached_pics = [
+            (file_path, vd.get("tid"))
+            for (file_path, details) in files_details.items()
+            for vd in details["video"]
+            if vd.get("attached_pic", False)
+        ]
 
         best_file_candidate = StreamsPicker._pick_best_file_candidate(files_details)
         video_streams = self._pick_streams(
