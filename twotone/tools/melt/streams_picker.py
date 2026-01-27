@@ -156,28 +156,27 @@ class StreamsPicker:
 
     def pick_streams(self, files_details: Dict, ids: Dict[str, int]):
         # video preference comparator
-        def video_cmp(lhs: Dict, rhs: Dict) -> int:
-            lhs_w = int(lhs.get("width"))
-            lhs_h = int(lhs.get("height"))
-            rhs_w = int(rhs.get("width"))
-            rhs_h = int(rhs.get("height"))
+        def video_cmp(lhs: Dict[str, Any], rhs: Dict[str, Any]) -> int:
+            lhs_w = int(lhs["width"])
+            lhs_h = int(lhs["height"])
+            rhs_w = int(rhs["width"])
+            rhs_h = int(rhs["height"])
 
-            if None not in (lhs_w, lhs_h, rhs_w, rhs_h):
-                lhs_area = lhs_w * lhs_h
-                rhs_area = rhs_w * rhs_h
+            lhs_area = lhs_w * lhs_h
+            rhs_area = rhs_w * rhs_h
 
-                if lhs_area > rhs_area:
-                    return 1
-                if lhs_area < rhs_area:
-                    return -1
-                if lhs_w > rhs_w:
-                    return 1
-                if lhs_w < rhs_w:
-                    return -1
-                if lhs_h > rhs_h:
-                    return 1
-                if lhs_h < rhs_h:
-                    return -1
+            if lhs_area > rhs_area:
+                return 1
+            if lhs_area < rhs_area:
+                return -1
+            if lhs_w > rhs_w:
+                return 1
+            if lhs_w < rhs_w:
+                return -1
+            if lhs_h > rhs_h:
+                return 1
+            if lhs_h < rhs_h:
+                return -1
 
             lhs_fps = generic_utils.fps_str_to_float(str(lhs.get("fps", "0")))
             rhs_fps = generic_utils.fps_str_to_float(str(rhs.get("fps", "0")))
