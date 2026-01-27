@@ -80,6 +80,13 @@ class MeltAnalyzer:
             return fmt or ""
         return ""
 
+    @staticmethod
+    def _pick_track_by_tid(streams: Sequence[Dict[str, Any]], tid: int) -> Dict[str, Any]:
+        track = next((item for item in streams if item.get("tid") == tid), None)
+        if track is None:
+            raise RuntimeError(f"Track #{tid} not found.")
+        return track
+
     def _print_file_details(self, file: str, details: Dict[str, Any], ids: Dict[str, int]) -> None:
         def formatter(key: str, value: Any) -> str:
             if key == "fps":
@@ -263,8 +270,9 @@ class MeltAnalyzer:
 
         # Base length for detailed checks
         v_path, v_tid, _ = video_streams[0]
-        base_length = tracks[v_path]["video"][v_tid]["length"]
         base_file_id = ids[v_path]
+        base_track = self._pick_track_by_tid(tracks[v_path]["video"], v_tid)
+        base_length = base_track["length"]
 
         # Subtitle mismatch (unsupported)
         for path, _, _ in subtitle_streams:
