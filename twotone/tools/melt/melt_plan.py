@@ -190,7 +190,7 @@ class MeltPlan:
                     output_name = group.get("output_name", "output")
                     output_path = os.path.join(self.output_dir, title, f"{output_name}.mkv")
                     files = group.get("files", [])
-                    problem_ids = {int(val) for val in re.findall(r"#(\\d+)", issue)}
+                    problem_ids = {int(val) for val in re.findall(r"#(\d+)", issue)}
                     if len(skipped) > 1:
                         logger.info("  Candidate %d:", idx)
                         prefix = "    "
