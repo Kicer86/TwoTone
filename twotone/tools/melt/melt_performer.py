@@ -140,12 +140,20 @@ class MeltPerformer:
         seg1_start, seg1_end = min(left_points), max(left_points)
 
         # 1. Extract main audio tracks
-        process_utils.start_process("ffmpeg", ["-y", "-i", base_video, "-map", "0:a:0", "-c:a", "flac", v1_audio])
-        process_utils.start_process("ffmpeg", ["-y", "-i", source_video, "-map", "0:a:0", "-c:a", "flac", v2_audio])
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", ["-y", "-i", base_video, "-map", "0:a:0", "-c:a", "flac", v1_audio])
+        )
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", ["-y", "-i", source_video, "-map", "0:a:0", "-c:a", "flac", v2_audio])
+        )
 
         # 2. Extract head and tail from base audio
-        process_utils.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(seg1_start / 1000), "-i", v1_audio, "-c:a", "flac", head_path])
-        process_utils.start_process("ffmpeg", ["-y", "-ss", str(seg1_end / 1000), "-i", v1_audio, "-c:a", "flac", tail_path])
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(seg1_start / 1000), "-i", v1_audio, "-c:a", "flac", head_path])
+        )
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", ["-y", "-ss", str(seg1_end / 1000), "-i", v1_audio, "-c:a", "flac", tail_path])
+        )
 
         # 3. Generate subsegment split points from provided mapping pairs
         total_left_duration = seg1_end - seg1_start
@@ -197,25 +205,29 @@ class MeltPerformer:
             raw_cut = os.path.join(wd, f"cut_{idx}.flac")
             scaled_cut = os.path.join(wd, f"scaled_{idx}.flac")
 
-            process_utils.start_process(
-                "ffmpeg", [
-                    "-y",
-                    "-ss", str(r_start / 1000),
-                    "-to", str(r_end / 1000),
-                    "-i", v2_audio,
-                    "-c:a", "flac",
-                    raw_cut,
-                ]
+            process_utils.raise_on_error(
+                process_utils.start_process(
+                    "ffmpeg", [
+                        "-y",
+                        "-ss", str(r_start / 1000),
+                        "-to", str(r_end / 1000),
+                        "-i", v2_audio,
+                        "-c:a", "flac",
+                        raw_cut,
+                    ]
+                )
             )
 
-            process_utils.start_process(
-                "ffmpeg", [
-                    "-y",
-                    "-i", raw_cut,
-                    "-filter:a", f"atempo={ratio:.3f}",
-                    "-c:a", "flac",
-                    scaled_cut,
-                ]
+            process_utils.raise_on_error(
+                process_utils.start_process(
+                    "ffmpeg", [
+                        "-y",
+                        "-i", raw_cut,
+                        "-filter:a", f"atempo={ratio:.3f}",
+                        "-c:a", "flac",
+                        scaled_cut,
+                    ]
+                )
             )
 
             temp_segments.append(scaled_cut)
@@ -229,20 +241,24 @@ class MeltPerformer:
             f.write(f"file '{tail_path}'\n")
 
         merged_flac = os.path.join(wd, "merged.flac")
-        process_utils.start_process(
-            "ffmpeg", [
-                "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", concat_list,
-                "-c:a", "flac", merged_flac
-            ],
+        process_utils.raise_on_error(
+            process_utils.start_process(
+                "ffmpeg", [
+                    "-y",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", concat_list,
+                    "-c:a", "flac", merged_flac
+                ],
+            )
         )
 
         # 6. Encode to final audio format
-        process_utils.start_process(
-            "ffmpeg",
-            ["-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path],
+        process_utils.raise_on_error(
+            process_utils.start_process(
+                "ffmpeg",
+                ["-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path],
+            )
         )
 
     def _build_output_path(self, title: str, output_name: str) -> str:
