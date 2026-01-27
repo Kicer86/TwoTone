@@ -7,7 +7,7 @@ from collections import defaultdict
 from functools import cmp_to_key
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
-from ..utils import files_utils, language_utils
+from ..utils import files_utils, generic_utils, language_utils
 from ..utils import subtitles_utils, video_utils
 from .duplicates_source import DuplicatesSource
 
@@ -162,8 +162,8 @@ class StreamsPicker:
             if lhs["width"] < rhs["width"] and lhs["height"] < rhs["height"]:
                 return -1
 
-            lhs_fps = eval(str(lhs.get("fps", "0")))
-            rhs_fps = eval(str(rhs.get("fps", "0")))
+            lhs_fps = generic_utils.fps_str_to_float(str(lhs.get("fps", "0")))
+            rhs_fps = generic_utils.fps_str_to_float(str(rhs.get("fps", "0")))
 
             if lhs_fps > rhs_fps:
                 return 1
