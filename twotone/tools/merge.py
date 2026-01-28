@@ -208,7 +208,7 @@ class Merge(generic_utils.InterruptibleProcess):
             input_files.append(subtitle.path)
 
             # Subtitles are buggy sometimes, use ffmpeg to fix them.
-            # Also makemkv does not handle MicroDVD subtitles, so convert all to SubRip.
+            # Also mkvmerge does not handle MicroDVD subtitles, so convert all to SubRip.
             fps = input_file_details["video"][0]["fps"]
             converted_subtitle = self._convert_subtitle(fps, subtitle, temporary_subtitles_dir)
 
