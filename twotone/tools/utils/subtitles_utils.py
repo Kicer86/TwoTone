@@ -119,10 +119,20 @@ def is_subtitle_microdvd(subtitle: SubtitleFile) -> bool:
 def guess_subtitle_language(path: str, encoding: str) -> str:
     result = ""
 
-    with open(path, "r", encoding=encoding) as sf:
-        content = sf.readlines()
-        content_joined = "".join(content)
-        result = langid.classify(content_joined)[0]
+    if not encoding:
+        encoding = "utf-8"
+
+    if encoding.lower() in {"ascii", "us-ascii"}:
+        encoding = "utf-8"
+
+    try:
+        with open(path, "r", encoding=encoding, errors="replace") as sf:
+            content = sf.read()
+    except LookupError:
+        with open(path, "r", encoding="utf-8", errors="replace") as sf:
+            content = sf.read()
+
+    result = langid.classify(content)[0]
 
     return result
 
