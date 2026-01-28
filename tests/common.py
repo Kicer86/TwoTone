@@ -15,6 +15,8 @@ from platformdirs import user_cache_dir
 from typing import Dict, List, Union
 from unittest.mock import patch
 
+import pysubs2
+
 from twotone.tools.utils import video_utils
 
 import twotone.twotone
@@ -376,34 +378,59 @@ def hashes(path: str) -> Dict[str, str]:
 
 
 def generate_microdvd_subtitles(path: str, length: int, fps: float = 60):
-    with open(path, "w") as sf:
-        b = 0
-        e = 0
-        for t in range(length):
-            b = int(round(t * fps, 0))
-            e = int(round(b + fps/2, 0))
-            sf.write(f"{{{b}}}{{{e}}}{t}\n")
-
-        # microdvd requires at least 3 entries for ffmpeg to consume it
-        if length < 3:
-            # add some empty entries to satisfy ffmpeg
-            sf.write(f"{{{e}}}{{{e + 1}}}\n")
-            sf.write(f"{{{e + 1}}}{{{e + 2}}}\n")
+    generate_subtitles(
+        path,
+        length=length,
+        unit="seconds",
+        fps=fps,
+        interval_ms=1000,
+        event_ms=500,
+    )
 
 
 def generate_subrip_subtitles(path: str, length: int):
-    content = []
+    generate_subtitles(
+        path,
+        length=length,
+        unit="ms",
+        interval_ms=1000,
+        event_ms=100,
+    )
 
-    for i, t in enumerate(range(0, length, 1000)):
-        b = generic_utils.ms_to_time(t)
-        e = generic_utils.ms_to_time(t + 100)
 
-        content.append(str(i + 1))
-        content.append(f"{b} --> {e}")
-        content.append(str(i))
-        content.append("\n")
+def _pysubs2_format_for_path(path: str) -> str | None:
+    ext = Path(path).suffix.lower()
+    return pysubs2.formats.FILE_EXTENSION_TO_FORMAT_IDENTIFIER.get(ext)
 
-    write_subtitle(path, content)
+
+def generate_subtitles(
+    path: str,
+    length: int,
+    *,
+    unit: str = "ms",
+    fps: float | None = None,
+    interval_ms: int = 1000,
+    event_ms: int = 100,
+) -> None:
+    if unit not in ("ms", "s", "sec", "seconds"):
+        raise ValueError(f"Unsupported unit: {unit}")
+
+    total_ms = length if unit == "ms" else int(length * 1000)
+    subs = pysubs2.SSAFile()
+
+    for i, t in enumerate(range(0, total_ms, interval_ms)):
+        end = min(t + event_ms, total_ms)
+        subs.append(pysubs2.SSAEvent(start=t, end=end, text=str(i)))
+
+    fmt = _pysubs2_format_for_path(path)
+    if fmt == "microdvd" and fps is not None and len(subs) < 3:
+        frame_ms = max(1, int(round(1000 / fps)))
+        last_end = subs[-1].end if subs else 0
+        while len(subs) < 3:
+            subs.append(pysubs2.SSAEvent(start=last_end, end=last_end + frame_ms, text=""))
+            last_end += frame_ms
+
+    subs.save(path, format_=fmt, fps=fps)
 
 
 def write_subtitle(path: str, lines: list[str], *, encoding: str = "utf-8") -> str:

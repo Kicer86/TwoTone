@@ -1,10 +1,9 @@
 import os
 import unittest
 
-import pysubs2
 from parameterized import parameterized
 
-from common import TwoToneTestCase, add_test_media, generate_microdvd_subtitles, generate_subrip_subtitles, list_files
+from common import TwoToneTestCase, add_test_media, generate_subtitles, list_files
 from twotone.tools.utils import subtitles_utils, video_utils
 
 
@@ -22,13 +21,11 @@ class MkvmergeSubtitleFormats(TwoToneTestCase):
 
         subtitle_path = os.path.join(self.wd.path, f"subtitle.{ext}")
         if ext == "srt":
-            generate_subrip_subtitles(subtitle_path, length=2000)
+            generate_subtitles(subtitle_path, length=2000, unit="ms", interval_ms=1000, event_ms=100)
         elif ext == "ass":
-            subs = pysubs2.SSAFile()
-            subs.append(pysubs2.SSAEvent(start=0, end=1000, text="Hello"))
-            subs.save(subtitle_path, format_="ass")
+            generate_subtitles(subtitle_path, length=2000, unit="ms", interval_ms=1000, event_ms=100)
         elif ext == "sub":
-            generate_microdvd_subtitles(subtitle_path, length=3, fps=25)
+            generate_subtitles(subtitle_path, length=3, unit="seconds", fps=25, interval_ms=1000, event_ms=500)
         else:
             self.fail(f"Unhandled subtitle extension in test: {ext}")
 
