@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Union, Sequence
 
 from .tool import EmptyPlan, Plan, Tool
-from twotone.tools.utils import files_utils, generic_utils, process_utils, subtitles_utils, video_utils
+from twotone.tools.utils import files_utils, generic_utils, subtitles_utils, video_utils
 
 
 class Merge(generic_utils.InterruptibleProcess):
@@ -135,33 +135,27 @@ class Merge(generic_utils.InterruptibleProcess):
         input_file = subtitle.path
         assert input_file
 
-        output_file = files_utils.get_unique_file_name(temporary_dir, "srt")
+        # Only convert frame-based subtitles. Preserve other formats as-is to avoid losing metadata/styling.
+        if not subtitles_utils.is_subtitle_microdvd(subtitle):
+            return subtitle
+
+        fps = generic_utils.fps_str_to_float(video_fps)
         encoding = subtitle.encoding if subtitle.encoding != "UTF-8-SIG" else "utf-8"
         assert encoding
 
-        status = process_utils.start_process(
-            "ffmpeg",
-            ["-y", "-sub_charenc", encoding, "-i", input_file, output_file]
+        subs = subtitles_utils.open_subtitle_file(input_file, fps=fps)
+        if subs is None:
+            raise RuntimeError(f"Failed to open MicroDVD subtitle: {input_file}")
+
+        output_file = files_utils.get_unique_file_name(temporary_dir, "srt")
+        subs.save(output_file, format_="srt", encoding="utf-8")
+
+        converted_subtitle = subtitles_utils.SubtitleFile(
+            path=output_file,
+            language=subtitle.language,
+            encoding="utf-8",
+            name=subtitle.name,
         )
-
-        if status.returncode == 0:
-            # there is no way (as of now) to tell ffmpeg to convert subtitles with proper frame rate in mind.
-            # so here some naive conversion is being done
-            # see: https://trac.ffmpeg.org/ticket/10929
-            #      https://trac.ffmpeg.org/ticket/3287
-            if subtitles_utils.is_subtitle_microdvd(subtitle):
-                fps = eval(video_fps)
-
-                # prepare new output file, and use previous one as new input
-                input_file = output_file
-                output_file = files_utils.get_unique_file_name(temporary_dir, "srt")
-
-                subtitles_utils.fix_subtitles_fps(input_file, output_file, fps)
-
-        else:
-            raise RuntimeError(f"ffmpeg exited with unexpected error:\n{status.stderr}")
-
-        converted_subtitle = subtitles_utils.SubtitleFile(path = output_file, language = subtitle.language, encoding = "utf-8", name = subtitle.name)
         return converted_subtitle
 
     def _merge(self, input_video: str, subtitles: list[subtitles_utils.SubtitleFile]) -> None:
@@ -207,8 +201,8 @@ class Merge(generic_utils.InterruptibleProcess):
                 self.logger.info(f"\t[{subtitle.language}]: {subtitle.path}")
             input_files.append(subtitle.path)
 
-            # Subtitles are buggy sometimes, use ffmpeg to fix them.
-            # Also mkvmerge does not handle MicroDVD subtitles, so convert all to SubRip.
+            # Convert only frame-based subtitles (MicroDVD) using the video's FPS.
+            # Leave time-based formats as-is to preserve styling/metadata.
             fps = input_file_details["video"][0]["fps"]
             converted_subtitle = self._convert_subtitle(fps, subtitle, temporary_subtitles_dir)
 
