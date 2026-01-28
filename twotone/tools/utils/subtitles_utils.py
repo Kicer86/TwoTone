@@ -1,5 +1,6 @@
 import cchardet
 import logging
+from pathlib import Path
 import py3langid as langid
 import pysubs2
 
@@ -30,14 +31,45 @@ class SubtitleFile(SubtitleCommonData):
     encoding: str | None = None
 
 ffmpeg_default_fps = 23.976  # constant taken from https://trac.ffmpeg.org/ticket/3287
+MAX_SUBTITLE_BYTES = 64 * 1024
+SUBTITLE_EXTENSIONS = {
+    ".ass",
+    ".cap",
+    ".dfxp",
+    ".json",
+    ".lrc",
+    ".mpl",
+    ".mpsub",
+    ".pjs",
+    ".rt",
+    ".sami",
+    ".scc",
+    ".smi",
+    ".srt",
+    ".ssa",
+    ".sub",
+    ".ttml",
+    ".txt",
+    ".tmp",
+    ".usf",
+    ".vtt",
+    ".sbv",
+    ".stl",
+    ".xml",
+}
 
 
 def file_encoding(file: str) -> str:
     detector = cchardet.UniversalDetector()
+    remaining = MAX_SUBTITLE_BYTES
 
     with open(file, 'rb') as file_obj:
-        for line in file_obj.readlines():
-            detector.feed(line)
+        while remaining > 0:
+            chunk = file_obj.read(min(4096, remaining))
+            if not chunk:
+                break
+            detector.feed(chunk)
+            remaining -= len(chunk)
             if detector.done:
                 break
         detector.close()
@@ -60,6 +92,10 @@ def open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> Optional[p
 
 def is_subtitle(file: str) -> bool:
     logging.debug(f"Checking file {file} for being subtitle")
+    suffix = Path(file).suffix.lower()
+    if suffix not in SUBTITLE_EXTENSIONS:
+        logging.debug("\tNot a subtitle file")
+        return False
 
     subs = open_subtitle_file(file)
     if subs:
