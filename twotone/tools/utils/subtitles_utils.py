@@ -7,6 +7,7 @@ import pysubs2
 from dataclasses import dataclass
 from typing import Dict, Optional
 
+from . import process_utils
 
 @dataclass(kw_only=True)
 class SubtitleCommonData:
@@ -58,6 +59,19 @@ SUBTITLE_EXTENSIONS = {
     ".xml",
 }
 
+FFPROBE_SUBTITLE_FORMATS = {
+    "ass",
+    "microdvd",
+    "mpl2",
+    "sami",
+    "srt",
+    "ssa",
+    "subrip",
+    "ttml",
+    "vtt",
+    "webvtt",
+}
+
 
 def file_encoding(file: str) -> str:
     detector = cchardet.UniversalDetector()
@@ -97,13 +111,21 @@ def is_subtitle(file: str) -> bool:
         logging.debug("\tNot a subtitle file")
         return False
 
-    subs = open_subtitle_file(file)
-    if subs:
-        logging.debug("\tSubtitle format detected")
-        return True
-    else:
+    status = process_utils.start_process(
+        "ffprobe",
+        ["-v", "error", "-show_entries", "format=format_name", "-of", "default=nw=1:nk=1", file],
+    )
+    if status.returncode != 0:
         logging.debug("\tNot a subtitle file")
         return False
+
+    formats = {fmt.strip().lower() for fmt in status.stdout.split(",") if fmt.strip()}
+    if formats & FFPROBE_SUBTITLE_FORMATS:
+        logging.debug("\tSubtitle format detected")
+        return True
+
+    logging.debug("\tNot a subtitle file")
+    return False
 
 
 def is_subtitle_microdvd(subtitle: SubtitleFile) -> bool:
