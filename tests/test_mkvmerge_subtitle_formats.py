@@ -11,7 +11,12 @@ class MkvmergeSubtitleFormats(TwoToneTestCase):
     cases = [
         ("srt_supported", "srt", True),
         ("ass_supported", "ass", True),
+        ("ssa_supported", "ssa", True),
+        ("vtt_supported", "vtt", True),
         ("sub_unsupported", "sub", False),
+        ("json_unsupported", "json", False),
+        ("txt_unsupported", "txt", False),
+        ("ttml_unsupported", "ttml", False),
     ]
 
     @parameterized.expand(cases)
@@ -20,14 +25,10 @@ class MkvmergeSubtitleFormats(TwoToneTestCase):
         video_path = next(path for path in list_files(self.wd.path) if path.lower().endswith(".mp4"))
 
         subtitle_path = os.path.join(self.wd.path, f"subtitle.{ext}")
-        if ext == "srt":
-            generate_subtitles(subtitle_path, length=2000, unit="ms", interval_ms=1000, event_ms=100)
-        elif ext == "ass":
-            generate_subtitles(subtitle_path, length=2000, unit="ms", interval_ms=1000, event_ms=100)
-        elif ext == "sub":
+        if ext == "sub":
             generate_subtitles(subtitle_path, length=3, unit="seconds", fps=25, interval_ms=1000, event_ms=500)
         else:
-            self.fail(f"Unhandled subtitle extension in test: {ext}")
+            generate_subtitles(subtitle_path, length=2000, unit="ms", interval_ms=1000, event_ms=100)
 
         output_path = os.path.join(self.wd.path, f"out_{ext}.mkv")
         subtitle = subtitles_utils.SubtitleFile(path=subtitle_path, language="eng")
