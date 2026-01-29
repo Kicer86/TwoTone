@@ -32,6 +32,7 @@ class SubtitleFile(SubtitleCommonData):
 
 ffmpeg_default_fps = 23.976  # constant taken from https://trac.ffmpeg.org/ticket/3287
 MAX_SUBTITLE_BYTES = 64 * 1024
+MAX_LANGID_CHARS = 64 * 1024
 SUBTITLE_EXTENSIONS = {
     ".ass",
     ".cap",
@@ -200,12 +201,16 @@ def guess_subtitle_language(path: str, encoding: str) -> str:
 
     try:
         with open(path, "r", encoding=encoding, errors="replace") as sf:
-            content = sf.read()
+            content = sf.read(MAX_LANGID_CHARS)
     except LookupError:
         with open(path, "r", encoding="utf-8", errors="replace") as sf:
-            content = sf.read()
+            content = sf.read(MAX_LANGID_CHARS)
 
-    result = langid.classify(content)[0]
+    try:
+        result = langid.classify(content)[0]
+    except Exception as e:
+        logging.debug(f"Language detection failed for {path}: {e}")
+        result = ""
 
     return result
 
