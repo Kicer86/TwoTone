@@ -304,7 +304,11 @@ class Merge(generic_utils.InterruptibleProcess):
         self.logger.info("Starting merge")
         for video, subtitles in tqdm(videos_and_subtitles.items(), desc="Merging", unit="video", **generic_utils.get_tqdm_defaults()):
             self._check_for_stop()
-            self._merge(video, subtitles)
+            try:
+                self._merge(video, subtitles)
+            except Exception as e:
+                self.logger.error(f"Error occurred: {e}")
+                continue
 
 
 @dataclass
