@@ -72,6 +72,30 @@ FFPROBE_SUBTITLE_FORMATS = {
     "webvtt",
 }
 
+MKVMERGE_SUPPORTED_FORMATS = {
+    "ass",
+    "ssa",
+    "srt",
+    "subrip",
+    "vtt",
+    "webvtt",
+}
+
+MKVMERGE_UNSUPPORTED_FORMATS = {
+    "json",
+    "microdvd",
+    "mpl2",
+    "sami",
+    "ttml",
+    "tmp",
+    "whisper_jax",
+}
+
+
+def subtitle_format_from_extension(path: str) -> str | None:
+    ext = Path(path).suffix.lower()
+    return pysubs2.formats.FILE_EXTENSION_TO_FORMAT_IDENTIFIER.get(ext)
+
 
 def file_encoding(file: str) -> str:
     detector = cchardet.UniversalDetector()

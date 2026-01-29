@@ -135,20 +135,22 @@ class Merge(generic_utils.InterruptibleProcess):
         input_file = subtitle.path
         assert input_file
 
-        # Only convert frame-based subtitles. Preserve other formats as-is to avoid losing metadata/styling.
-        if not subtitles_utils.is_subtitle_microdvd(subtitle):
+        # Convert formats not supported by mkvmerge to a rich text format (ASS).
+        # Preserve supported formats to avoid losing metadata/styling.
+        format_id = subtitles_utils.subtitle_format_from_extension(input_file)
+        if format_id not in subtitles_utils.MKVMERGE_UNSUPPORTED_FORMATS:
             return subtitle
 
-        fps = generic_utils.fps_str_to_float(video_fps)
         encoding = subtitle.encoding if subtitle.encoding != "UTF-8-SIG" else "utf-8"
         assert encoding
 
+        fps = generic_utils.fps_str_to_float(video_fps)
         subs = subtitles_utils.open_subtitle_file(input_file, fps=fps)
         if subs is None:
-            raise RuntimeError(f"Failed to open MicroDVD subtitle: {input_file}")
+            raise RuntimeError(f"Failed to open subtitle: {input_file}")
 
-        output_file = files_utils.get_unique_file_name(temporary_dir, "srt")
-        subs.save(output_file, format_="srt", encoding="utf-8")
+        output_file = files_utils.get_unique_file_name(temporary_dir, "ass")
+        subs.save(output_file, format_="ass", encoding="utf-8")
 
         converted_subtitle = subtitles_utils.SubtitleFile(
             path=output_file,
@@ -201,8 +203,8 @@ class Merge(generic_utils.InterruptibleProcess):
                 self.logger.info(f"\t[{subtitle.language}]: {subtitle.path}")
             input_files.append(subtitle.path)
 
-            # Convert only frame-based subtitles (MicroDVD) using the video's FPS.
-            # Leave time-based formats as-is to preserve styling/metadata.
+            # Convert formats not supported by mkvmerge to a rich text format (ASS).
+            # Leave supported formats as-is to preserve styling/metadata.
             fps = input_file_details["video"][0]["fps"]
             converted_subtitle = self._convert_subtitle(fps, subtitle, temporary_subtitles_dir)
 
