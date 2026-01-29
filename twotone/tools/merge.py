@@ -138,19 +138,32 @@ class Merge(generic_utils.InterruptibleProcess):
         # Convert formats not supported by mkvmerge to a rich text format (ASS).
         # Preserve supported formats to avoid losing metadata/styling.
         format_id = subtitles_utils.subtitle_format_from_extension(input_file)
-        if format_id not in subtitles_utils.MKVMERGE_UNSUPPORTED_FORMATS:
+        encoding = (subtitle.encoding or "").lower()
+        encoding = "utf-8" if encoding in {"utf-8-sig"} else encoding
+
+        needs_conversion = False
+        target_format: str | None = None
+
+        if format_id in subtitles_utils.MKVMERGE_UNSUPPORTED_FORMATS:
+            needs_conversion = True
+            target_format = "ass"
+        elif encoding and encoding not in {"utf-8", "utf8", "ascii", "us-ascii"}:
+            needs_conversion = True
+            target_format = format_id
+
+        if not needs_conversion:
             return subtitle
 
-        encoding = subtitle.encoding if subtitle.encoding != "UTF-8-SIG" else "utf-8"
-        assert encoding
+        if target_format is None:
+            raise RuntimeError(f"Unsupported subtitle format: {input_file}")
 
         fps = generic_utils.fps_str_to_float(video_fps)
         subs = subtitles_utils.open_subtitle_file(input_file, fps=fps)
         if subs is None:
             raise RuntimeError(f"Failed to open subtitle: {input_file}")
 
-        output_file = files_utils.get_unique_file_name(temporary_dir, "ass")
-        subs.save(output_file, format_="ass", encoding="utf-8")
+        output_file = files_utils.get_unique_file_name(temporary_dir, target_format)
+        subs.save(output_file, format_=target_format, encoding="utf-8")
 
         converted_subtitle = subtitles_utils.SubtitleFile(
             path=output_file,
