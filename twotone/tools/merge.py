@@ -302,13 +302,21 @@ class Merge(generic_utils.InterruptibleProcess):
 
     def perform_merges(self, videos_and_subtitles: dict[str, list[subtitles_utils.SubtitleFile]]) -> None:
         self.logger.info("Starting merge")
+        failed: list[str] = []
         for video, subtitles in tqdm(videos_and_subtitles.items(), desc="Merging", unit="video", **generic_utils.get_tqdm_defaults()):
             self._check_for_stop()
             try:
                 self._merge(video, subtitles)
             except Exception as e:
                 self.logger.error(f"Error occurred: {e}")
+                failed.append(video)
                 continue
+
+        if failed:
+            total = len(videos_and_subtitles)
+            self.logger.warning(f"Merge completed with errors: {len(failed)}/{total} failed")
+            for video in failed:
+                self.logger.warning(f"Failed: {video}")
 
 
 @dataclass
