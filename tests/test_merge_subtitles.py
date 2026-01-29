@@ -5,7 +5,7 @@ import re
 import unittest
 
 from twotone.tools.utils import files_utils, video_utils
-from common import TwoToneTestCase, assert_video_info, list_files, add_test_media, hashes, run_twotone, write_subtitle
+from common import TwoToneTestCase, assert_video_info, list_files, add_test_media, hashes, run_twotone, write_srt_subtitle
 
 
 default_video_set = [
@@ -123,11 +123,11 @@ class SubtitlesMerge(TwoToneTestCase):
         add_test_media("Atoms.*mp4", self.wd.path)
         add_test_media("Atoms.*srt", self.wd.path)
 
-        write_subtitle(
+        write_srt_subtitle(
             os.path.join(self.wd.path, "commentary by director.srt"),
             [
-                "00:00:00:Hello",
-                "00:00:06:Commentary",
+                (0, 6000, "Hello"),
+                (6000, 12000, "Commentary"),
             ],
         )
 
@@ -158,37 +158,34 @@ class SubtitlesMerge(TwoToneTestCase):
             self.assertIsNone(track.get("name"))
 
     def test_raw_txt_subtitles_conversion(self):
-        # Allow automatic txt to srt conversion
+        # Raw txt subtitles are ignored (ambiguous format)
         add_test_media("herd-of-horses-in-fog.*(mp4|txt)", self.wd.path)
 
         run_twotone("merge", [self.wd.path], ["--no-dry-run"])
 
         # verify results
         files_after = list_files(self.wd.path)
-        self.assertEqual(len(files_after), 1)
-
-        video = files_after[0]
-        assert_video_info(self, video, expected_subtitles=1)
+        self.assertEqual(len(files_after), 2)
 
     def test_invalid_subtitle_extension(self):
         add_test_media("Frog.*mp4", self.wd.path)
 
-        write_subtitle(
-                os.path.join(self.wd.path, "Frog_en.srt"),
-                [
-                    "00:00:00:Hello World",
-                    "00:00:06:This is some sample subtitle in english",
-                ],
-            )
+        write_srt_subtitle(
+            os.path.join(self.wd.path, "Frog_en.srt"),
+            [
+                (0, 6000, "Hello World"),
+                (6000, 12000, "This is some sample subtitle in english"),
+            ],
+        )
 
-        write_subtitle(
-                os.path.join(self.wd.path, "Frog_pl.srt"),
-                [
-                    "00:00:00:Witaj Świecie",
-                    "00:00:06:To jest przykładowy tekst po polsku",
-                ],
-                encoding="cp1250",
-            )
+        write_srt_subtitle(
+            os.path.join(self.wd.path, "Frog_pl.srt"),
+            [
+                (0, 6000, "Witaj Świecie"),
+                (6000, 12000, "To jest przykładowy tekst po polsku"),
+            ],
+            encoding="cp1250",
+        )
 
         run_twotone("merge", [self.wd.path], ["--no-dry-run"])
 

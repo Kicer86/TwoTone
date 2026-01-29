@@ -423,14 +423,14 @@ def generate_subtitles(
         subs.append(pysubs2.SSAEvent(start=t, end=end, text=str(i)))
 
     fmt = _pysubs2_format_for_path(path)
-    if fmt == "microdvd" and fps is not None and len(subs) < 3:
-        frame_ms = max(1, int(round(1000 / fps)))
-        last_end = subs[-1].end if subs else 0
-        while len(subs) < 3:
-            subs.append(pysubs2.SSAEvent(start=last_end, end=last_end + frame_ms, text=""))
-            last_end += frame_ms
+    if fmt is None:
+        write_subtitle(path, ["0"])
+        return
 
-    subs.save(path, format_=fmt, fps=fps)
+    try:
+        subs.save(path, format_=fmt, fps=fps)
+    except NotImplementedError:
+        write_subtitle(path, ["0"])
 
 
 def write_subtitle(path: str, lines: list[str], *, encoding: str = "utf-8") -> str:
@@ -439,6 +439,19 @@ def write_subtitle(path: str, lines: list[str], *, encoding: str = "utf-8") -> s
             f.write(line)
             if not line.endswith("\n"):
                 f.write("\n")
+    return path
+
+
+def write_srt_subtitle(
+    path: str,
+    entries: list[tuple[int, int, str]],
+    *,
+    encoding: str = "utf-8",
+) -> str:
+    subs = pysubs2.SSAFile()
+    for start_ms, end_ms, text in entries:
+        subs.append(pysubs2.SSAEvent(start=start_ms, end=end_ms, text=text))
+    subs.save(path, format_="srt", encoding=encoding)
     return path
 
 

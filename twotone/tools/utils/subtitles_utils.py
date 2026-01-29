@@ -7,7 +7,6 @@ import pysubs2
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from . import process_utils
 
 @dataclass(kw_only=True)
 class SubtitleCommonData:
@@ -43,9 +42,7 @@ SUBTITLE_EXTENSIONS = {
     ".mpsub",
     ".pjs",
     ".rt",
-    ".sami",
     ".scc",
-    ".smi",
     ".srt",
     ".ssa",
     ".sub",
@@ -57,13 +54,13 @@ SUBTITLE_EXTENSIONS = {
     ".sbv",
     ".stl",
     ".xml",
+    ".idx",
 }
 
 FFPROBE_SUBTITLE_FORMATS = {
     "ass",
     "microdvd",
     "mpl2",
-    "sami",
     "srt",
     "ssa",
     "subrip",
@@ -71,6 +68,10 @@ FFPROBE_SUBTITLE_FORMATS = {
     "vtt",
     "webvtt",
 }
+
+NON_AMBIGUOUS_SUBTITLE_EXTENSIONS = SUBTITLE_EXTENSIONS - {".txt", ".json", ".xml"}
+FALLBACK_SUBTITLE_EXTENSIONS = {".sub"}
+
 
 MKVMERGE_SUPPORTED_FORMATS = {
     "ass",
@@ -85,7 +86,6 @@ MKVMERGE_UNSUPPORTED_FORMATS = {
     "json",
     "microdvd",
     "mpl2",
-    "sami",
     "ttml",
     "tmp",
     "whisper_jax",
@@ -121,6 +121,7 @@ def open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> Optional[p
     try:
         encoding = file_encoding(file)
         subs = pysubs2.load(file, encoding = encoding, fps = fps)
+        _strip_microdvd_header(subs, fps)
         return subs
 
     except Exception as e:
@@ -135,21 +136,47 @@ def is_subtitle(file: str) -> bool:
         logging.debug("\tNot a subtitle file")
         return False
 
+    from . import process_utils
+
     status = process_utils.start_process(
         "ffprobe",
         ["-v", "error", "-show_entries", "format=format_name", "-of", "default=nw=1:nk=1", file],
     )
-    if status.returncode != 0:
-        logging.debug("\tNot a subtitle file")
-        return False
+    if status.returncode == 0:
+        formats = {fmt.strip().lower() for fmt in status.stdout.split(",") if fmt.strip()}
+        if formats & FFPROBE_SUBTITLE_FORMATS:
+            logging.debug("\tSubtitle format detected")
+            return True
 
-    formats = {fmt.strip().lower() for fmt in status.stdout.split(",") if fmt.strip()}
-    if formats & FFPROBE_SUBTITLE_FORMATS:
-        logging.debug("\tSubtitle format detected")
-        return True
+        if suffix in NON_AMBIGUOUS_SUBTITLE_EXTENSIONS:
+            logging.debug("\tAssuming subtitle based on extension")
+            return True
+    else:
+        if suffix in FALLBACK_SUBTITLE_EXTENSIONS:
+            logging.debug("\tAssuming subtitle based on extension (ffprobe failed)")
+            return True
 
     logging.debug("\tNot a subtitle file")
     return False
+
+
+def _strip_microdvd_header(subs: pysubs2.SSAFile | None, fps: float | None = None) -> None:
+    if not subs or not subs.format or subs.format.lower() != "microdvd":
+        return
+    if len(subs) == 0:
+        return
+
+    first = subs[0]
+    if first.start != 0 or first.end != 0:
+        return
+
+    try:
+        header_fps = float(first.text)
+    except (TypeError, ValueError):
+        return
+
+    if fps is None or abs(header_fps - fps) < 0.05:
+        del subs[0]
 
 
 def is_subtitle_microdvd(subtitle: SubtitleFile) -> bool:

@@ -1,4 +1,5 @@
 
+import math
 import os
 import unittest
 import tempfile
@@ -11,9 +12,9 @@ from common import (
     TwoToneTestCase,
     hashes,
     current_path,
-    generate_microdvd_subtitles,
     run_twotone,
     write_subtitle,
+    write_srt_subtitle,
 )
 from twotone.tools.utils import generic_utils, process_utils
 
@@ -27,16 +28,24 @@ def create_broken_video_with_scaled_subtitle_timings(output_video_path: str, inp
         if abs(fps - subtitles_utils.ffmpeg_default_fps) < 1:
             raise RuntimeError("source video is not suitable, has nearly default fps")
 
-        length = default_video_track["length"] / 1000
+        length_ms = default_video_track["length"]
+        scale = fps / subtitles_utils.ffmpeg_default_fps
+        epsilon = 1
 
-        subtitle_path = f"{subtitle_dir}/sub.sub"
-        generate_microdvd_subtitles(subtitle_path, int(length), fps)
+        subtitle_path = f"{subtitle_dir}/sub.srt"
+        write_srt_subtitle(
+            subtitle_path,
+            [
+                (0, int(1000 * scale), "Intro"),
+                (int((length_ms - 1000) * scale), max(0, int(length_ms * scale) - epsilon), "Tail"),
+            ],
+        )
 
-        # convert to srt format
-        srt_subtitle_path = f"{subtitle_dir}/sub.srt"
-        status = process_utils.start_process("ffmpeg", ["-y", "-i", subtitle_path, srt_subtitle_path])
-
-        video_utils.generate_mkv(input_video = input_video, output_path = output_video_path, subtitles = [subtitles_utils.SubtitleFile(path = srt_subtitle_path, language = "eng", encoding = "utf8")])
+        video_utils.generate_mkv(
+            input_video = input_video,
+            output_path = output_video_path,
+            subtitles = [subtitles_utils.SubtitleFile(path = subtitle_path, language = "eng", encoding = "utf8")],
+        )
 
 
 def create_broken_video_with_too_long_last_subtitle(output_video_path: str, input_video: str):
@@ -73,16 +82,30 @@ def create_broken_video_with_some_incompatible_subtitles(output_video_path: str,
 
         length = default_video_track["length"]
 
-        # Create 'broken' subtitles 10x longer than video lenght.
-        # Using subtitles_utils.ffmpeg_default_fps as fps no matter the original video's fps due to ffmpeg bug (https://trac.ffmpeg.org/ticket/10929)
-        subtitle_path1 = f"{subtitle_dir}/sub1.sub"
-        generate_microdvd_subtitles(subtitle_path1, int(length/1000 * 10), subtitles_utils.ffmpeg_default_fps)
+        scale = fps / subtitles_utils.ffmpeg_default_fps
+        buffer_ms = 1000
+        subtitle_path1 = f"{subtitle_dir}/sub1.srt"
+        write_srt_subtitle(
+            subtitle_path1,
+            [
+                (0, int(1000 * scale), "Broken intro"),
+                (math.ceil((length - 1000) * scale) + buffer_ms, math.ceil(length * scale) + buffer_ms, "Broken tail"),
+            ],
+        )
 
-        # generate another, valid subtitles
-        subtitle_path2 = f"{subtitle_dir}/sub2.sub"
-        generate_microdvd_subtitles(subtitle_path2, int(length/ 1000), subtitles_utils.ffmpeg_default_fps)
+        subtitle_path2 = f"{subtitle_dir}/sub2.srt"
+        write_srt_subtitle(
+            subtitle_path2,
+            [
+                (0, 1000, "Valid intro"),
+                (max(0, length - 1000), length, "Valid tail"),
+            ],
+        )
 
-        process_utils.start_process("ffmpeg", ["-i", input_video, "-i", subtitle_path1, "-i", subtitle_path2, "-map", "0", "-map", "1", "-map", "2", "-c:v", "copy", "-c:a", "copy", output_video_path])
+        process_utils.start_process(
+            "ffmpeg",
+            ["-i", input_video, "-i", subtitle_path1, "-i", subtitle_path2, "-map", "0", "-map", "1", "-map", "2", "-c:v", "copy", "-c:a", "copy", output_video_path],
+        )
 
 
 def create_broken_video_with_metadata_rich_subtitles(output_video_path: str, input_video: str):
