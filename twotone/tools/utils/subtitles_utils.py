@@ -1,10 +1,11 @@
 import cchardet
 import logging
+from pathlib import Path
+import re
 import py3langid as langid
 import pysubs2
 
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 
 @dataclass(kw_only=True)
@@ -30,14 +31,77 @@ class SubtitleFile(SubtitleCommonData):
     encoding: str | None = None
 
 ffmpeg_default_fps = 23.976  # constant taken from https://trac.ffmpeg.org/ticket/3287
+MAX_SUBTITLE_BYTES = 64 * 1024
+MAX_LANGID_CHARS = MAX_SUBTITLE_BYTES
+SUBTITLE_EXTENSIONS = {
+    ".ass",
+    ".cap",
+    ".dfxp",
+    ".json",
+    ".lrc",
+    ".mpl",
+    ".mpsub",
+    ".pjs",
+    ".rt",
+    ".scc",
+    ".srt",
+    ".ssa",
+    ".sub",
+    ".ttml",
+    ".txt",
+    ".tmp",
+    ".usf",
+    ".vtt",
+    ".sbv",
+    ".stl",
+    ".xml",
+    ".idx",
+}
+
+FFPROBE_SUBTITLE_FORMATS = {
+    "ass",
+    "microdvd",
+    "mpl2",
+    "srt",
+    "ssa",
+    "subrip",
+    "ttml",
+    "vtt",
+    "webvtt",
+}
+
+NON_AMBIGUOUS_SUBTITLE_EXTENSIONS = SUBTITLE_EXTENSIONS - {".txt", ".json", ".xml", ".idx"}
+FALLBACK_SUBTITLE_EXTENSIONS = {".sub"}
+
+_IDX_LANG_RE = re.compile(r"^\s*id\s*:\s*([a-zA-Z]{2,3})(?:\s*,|\s*$)")
+
+
+MKVMERGE_UNSUPPORTED_FORMATS = {
+    "json",
+    "microdvd",
+    "mpl2",
+    "ttml",
+    "tmp",
+    "whisper_jax",
+}
+
+
+def subtitle_format_from_extension(path: str) -> str | None:
+    ext = Path(path).suffix.lower()
+    return pysubs2.formats.FILE_EXTENSION_TO_FORMAT_IDENTIFIER.get(ext)
 
 
 def file_encoding(file: str) -> str:
     detector = cchardet.UniversalDetector()
+    remaining = MAX_SUBTITLE_BYTES
 
     with open(file, 'rb') as file_obj:
-        for line in file_obj.readlines():
-            detector.feed(line)
+        while remaining > 0:
+            chunk = file_obj.read(min(4096, remaining))
+            if not chunk:
+                break
+            detector.feed(chunk)
+            remaining -= len(chunk)
             if detector.done:
                 break
         detector.close()
@@ -47,10 +111,11 @@ def file_encoding(file: str) -> str:
     return encoding
 
 
-def open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> Optional[pysubs2.SSAFile]:
+def open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> pysubs2.SSAFile | None:
     try:
         encoding = file_encoding(file)
         subs = pysubs2.load(file, encoding = encoding, fps = fps)
+        _strip_microdvd_header(subs, fps)
         return subs
 
     except Exception as e:
@@ -60,14 +125,69 @@ def open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> Optional[p
 
 def is_subtitle(file: str) -> bool:
     logging.debug(f"Checking file {file} for being subtitle")
-
-    subs = open_subtitle_file(file)
-    if subs:
-        logging.debug("\tSubtitle format detected")
-        return True
-    else:
+    path_obj = Path(file)
+    suffix = path_obj.suffix.lower()
+    if suffix not in SUBTITLE_EXTENSIONS:
         logging.debug("\tNot a subtitle file")
         return False
+
+    if suffix == ".sub" and _vobsub_idx_exists(path_obj):
+        logging.debug("\tDetected VobSub pair, skipping .sub file")
+        return False
+
+    if suffix == ".idx" and _vobsub_sub_exists(path_obj):
+        logging.debug("\tDetected VobSub pair, accepting .idx file")
+        return True
+
+    from . import process_utils
+
+    status = process_utils.start_process(
+        "ffprobe",
+        ["-v", "error", "-show_entries", "format=format_name", "-of", "default=nw=1:nk=1", file],
+    )
+    if status.returncode == 0:
+        formats = {fmt.strip().lower() for fmt in status.stdout.split(",") if fmt.strip()}
+        if formats & FFPROBE_SUBTITLE_FORMATS:
+            logging.debug("\tSubtitle format detected")
+            return True
+
+        if suffix in NON_AMBIGUOUS_SUBTITLE_EXTENSIONS:
+            logging.debug("\tAssuming subtitle based on extension")
+            return True
+    else:
+        if suffix in FALLBACK_SUBTITLE_EXTENSIONS:
+            logging.debug("\tAssuming subtitle based on extension (ffprobe failed)")
+            return True
+
+    logging.debug("\tNot a subtitle file")
+    return False
+
+
+def _vobsub_idx_exists(path_obj: Path) -> bool:
+    return path_obj.with_suffix(".idx").exists() or path_obj.with_suffix(".IDX").exists()
+
+
+def _vobsub_sub_exists(path_obj: Path) -> bool:
+    return path_obj.with_suffix(".sub").exists() or path_obj.with_suffix(".SUB").exists()
+
+
+def _strip_microdvd_header(subs: pysubs2.SSAFile | None, fps: float | None = None) -> None:
+    if not subs or not subs.format or subs.format.lower() != "microdvd":
+        return
+    if len(subs) == 0:
+        return
+
+    first = subs[0]
+    if first.start != 0 or first.end != 0:
+        return
+
+    try:
+        header_fps = float(first.text)
+    except (TypeError, ValueError):
+        return
+
+    if fps is None or abs(header_fps - fps) < 0.05:
+        del subs[0]
 
 
 def is_subtitle_microdvd(subtitle: SubtitleFile) -> bool:
@@ -83,10 +203,35 @@ def is_subtitle_microdvd(subtitle: SubtitleFile) -> bool:
 def guess_subtitle_language(path: str, encoding: str) -> str:
     result = ""
 
-    with open(path, "r", encoding=encoding) as sf:
-        content = sf.readlines()
-        content_joined = "".join(content)
-        result = langid.classify(content_joined)[0]
+    if not encoding:
+        encoding = "utf-8"
+
+    if encoding.lower() in {"ascii", "us-ascii"}:
+        encoding = "utf-8"
+
+    suffix = Path(path).suffix.lower()
+
+    try:
+        with open(path, "r", encoding=encoding, errors="replace") as sf:
+            if suffix == ".idx":
+                for line in sf:
+                    match = _IDX_LANG_RE.match(line)
+                    if match:
+                        return match.group(1).lower()
+            sf.seek(0)
+            content = sf.read(MAX_LANGID_CHARS)
+    except LookupError:
+        with open(path, "r", encoding="utf-8", errors="replace") as sf:
+            content = sf.read(MAX_LANGID_CHARS)
+
+    if not content.strip():
+        return ""
+
+    try:
+        result = langid.classify(content)[0]
+    except Exception as e:
+        logging.debug(f"Language detection failed for {path}: {e}")
+        result = ""
 
     return result
 
@@ -116,7 +261,7 @@ def build_subtitle_from_dict(path: str, data: dict) -> SubtitleFile:
     )
 
 
-def build_audio_from_path(path: str, language: str | None = "") -> Dict:
+def build_audio_from_path(path: str, language: str | None = "") -> dict:
     return {"path": path, "language": language}
 
 

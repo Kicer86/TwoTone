@@ -4,14 +4,17 @@ import unittest
 from parameterized import parameterized
 
 from twotone.tools.utils import subtitles_utils, video_utils
-from common import TwoToneTestCase, get_video, remove_key, write_subtitle
+from common import TwoToneTestCase, get_video, remove_key, write_subtitle, generate_subtitles
 
 
 class UtilsTests(TwoToneTestCase):
-    def _test_content(self, content: str, valid: bool):
-        subtitle_path = os.path.join(self.wd.path, "subtitle.txt")
+    def _test_content(self, ext: str, content: str, valid: bool):
+        subtitle_path = os.path.join(self.wd.path, f"subtitle.{ext}")
 
-        write_subtitle(subtitle_path, [content])
+        if ext == "sub":
+            generate_subtitles(subtitle_path, length=2, unit="seconds", fps=25, interval_ms=1000, event_ms=500)
+        else:
+            write_subtitle(subtitle_path, [content])
 
         if valid:
             self.assertTrue(subtitles_utils.is_subtitle(subtitle_path))
@@ -44,29 +47,48 @@ class UtilsTests(TwoToneTestCase):
     subtitle_samples = [
         (
             "SubRip (SRT)",
+            "srt",
             "1\n00:00:01,000 --> 00:00:03,000\nHello world\n\n",
             True,
         ),
         (
             "MicroDVD",
-            "{0}{72}Hello world",
+            "sub",
+            "",
             True,
         ),
         (
             "WebVTT",
+            "vtt",
             "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello world\n",
             True,
         ),
         (
             "Plain text file",
+            "txt",
             "This is just a plain text file, not subtitles.",
             False,
         ),
     ]
 
     @parameterized.expand(subtitle_samples)
-    def test_subtitle_detection(self, name, content, valid):
-        self._test_content(content, valid)
+    def test_subtitle_detection(self, name, ext, content, valid):
+        self._test_content(ext, content, valid)
+
+    def test_idx_language_detection(self):
+        subtitle_path = os.path.join(self.wd.path, "movie.idx")
+        write_subtitle(
+            subtitle_path,
+            [
+                "# VobSub index file, v7",
+                "size: 720x576",
+                "palette: 000000,ffffff",
+                "id: zho, index: 0",
+            ],
+        )
+
+        subtitle = subtitles_utils.build_subtitle_from_path(subtitle_path, language=None)
+        self.assertEqual(subtitle.language, "zho")
 
 
     test_videos = [

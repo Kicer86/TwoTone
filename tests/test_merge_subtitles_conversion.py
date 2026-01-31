@@ -14,7 +14,7 @@ class SubtitlesConversion(TwoToneTestCase):
         (
             "microdvd_subtitles_with_nondefault_fps",
             "sea-waves-crashing-on-beach-shore.*mp4",
-            "sea-waves.txt",
+            "sea-waves.sub",
             25,
             None,
             25,
@@ -22,7 +22,7 @@ class SubtitlesConversion(TwoToneTestCase):
         (
             "microdvd_subtitles_with_default_fps",
             "moon_23.976.mp4",
-            "moon_23.976.txt",
+            "moon_23.976.sub",
             1,
             subtitles_utils.ffmpeg_default_fps,
             1,
