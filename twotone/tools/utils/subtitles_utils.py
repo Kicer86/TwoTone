@@ -71,7 +71,7 @@ FFPROBE_SUBTITLE_FORMATS = {
     "webvtt",
 }
 
-NON_AMBIGUOUS_SUBTITLE_EXTENSIONS = SUBTITLE_EXTENSIONS - {".txt", ".json", ".xml"}
+NON_AMBIGUOUS_SUBTITLE_EXTENSIONS = SUBTITLE_EXTENSIONS - {".txt", ".json", ".xml", ".idx"}
 FALLBACK_SUBTITLE_EXTENSIONS = {".sub"}
 
 _IDX_LANG_RE = re.compile(r"^\s*id\s*:\s*([a-zA-Z]{2,3})(?:\s*,|\s*$)")
