@@ -6,7 +6,6 @@ import py3langid as langid
 import pysubs2
 
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 
 @dataclass(kw_only=True)
@@ -33,7 +32,7 @@ class SubtitleFile(SubtitleCommonData):
 
 ffmpeg_default_fps = 23.976  # constant taken from https://trac.ffmpeg.org/ticket/3287
 MAX_SUBTITLE_BYTES = 64 * 1024
-MAX_LANGID_CHARS = 64 * 1024
+MAX_LANGID_CHARS = MAX_SUBTITLE_BYTES
 SUBTITLE_EXTENSIONS = {
     ".ass",
     ".cap",
@@ -112,7 +111,7 @@ def file_encoding(file: str) -> str:
     return encoding
 
 
-def open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> Optional[pysubs2.SSAFile]:
+def open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> pysubs2.SSAFile | None:
     try:
         encoding = file_encoding(file)
         subs = pysubs2.load(file, encoding = encoding, fps = fps)
@@ -225,6 +224,9 @@ def guess_subtitle_language(path: str, encoding: str) -> str:
         with open(path, "r", encoding="utf-8", errors="replace") as sf:
             content = sf.read(MAX_LANGID_CHARS)
 
+    if not content.strip():
+        return ""
+
     try:
         result = langid.classify(content)[0]
     except Exception as e:
@@ -259,7 +261,7 @@ def build_subtitle_from_dict(path: str, data: dict) -> SubtitleFile:
     )
 
 
-def build_audio_from_path(path: str, language: str | None = "") -> Dict:
+def build_audio_from_path(path: str, language: str | None = "") -> dict:
     return {"path": path, "language": language}
 
 

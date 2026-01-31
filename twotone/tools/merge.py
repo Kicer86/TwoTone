@@ -8,9 +8,9 @@ from collections import defaultdict
 from overrides import override
 from tqdm import tqdm
 from pathlib import Path
-from typing import List, Union, Sequence
+from typing import List
 
-from .tool import EmptyPlan, Plan, Tool
+from .tool import Plan, Tool
 from twotone.tools.utils import files_utils, generic_utils, subtitles_utils, video_utils
 
 
@@ -189,7 +189,7 @@ class Merge(generic_utils.InterruptibleProcess):
     def _merge(self, input_video: str, subtitles: list[subtitles_utils.SubtitleFile]) -> None:
         self.logger.info(f"Merging video file: {_display_path(input_video, self.base_path)} with subtitles:")
 
-        video_dir, video_name, video_extension = files_utils.split_path(input_video)
+        video_dir, video_name, _ = files_utils.split_path(input_video)
         output_video = video_dir + "/" + video_name + "." + "mkv"
         temporary_output_video = video_dir + "/_tt_merge_" + video_name + "." + "mkv"
 

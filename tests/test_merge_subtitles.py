@@ -1,11 +1,10 @@
 
-import logging
 import os
 import re
 import unittest
 from unittest.mock import patch
 
-from twotone.tools.utils import files_utils, video_utils
+from twotone.tools.utils import files_utils
 from common import TwoToneTestCase, assert_video_info, list_files, add_test_media, hashes, run_twotone, write_srt_subtitle, write_subtitle
 
 
