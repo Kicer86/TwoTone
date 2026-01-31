@@ -22,6 +22,18 @@ class Merge(generic_utils.InterruptibleProcess):
         self.language = language
         self.lang_priority = lang_priority.split(",") if lang_priority else []
         self.working_dir = working_dir
+        self.base_path: str | None = None
+
+    def _display_path(self, path: str) -> str:
+        if not self.base_path:
+            return path
+        try:
+            rel = os.path.relpath(path, self.base_path)
+        except ValueError:
+            return path
+        if rel.startswith(".."):
+            return path
+        return rel
 
     def _build_subtitle_from_path(self, path: str) -> subtitles_utils.SubtitleFile:
         language = None if self.language == "auto" else self.language
@@ -174,7 +186,7 @@ class Merge(generic_utils.InterruptibleProcess):
         return converted_subtitle
 
     def _merge(self, input_video: str, subtitles: list[subtitles_utils.SubtitleFile]) -> None:
-        self.logger.info(f"Merging video file: {input_video} with subtitles:")
+        self.logger.info(f"Merging video file: {self._display_path(input_video)} with subtitles:")
 
         video_dir, video_name, video_extension = files_utils.split_path(input_video)
         output_video = video_dir + "/" + video_name + "." + "mkv"
@@ -211,9 +223,9 @@ class Merge(generic_utils.InterruptibleProcess):
             assert subtitle.path
 
             if subtitle.name:
-                self.logger.info(f"\t[{subtitle.language}][{subtitle.name}]: {subtitle.path}")
+                self.logger.info(f"\t[{subtitle.language}][{subtitle.name}]: {self._display_path(subtitle.path)}")
             else:
-                self.logger.info(f"\t[{subtitle.language}]: {subtitle.path}")
+                self.logger.info(f"\t[{subtitle.language}]: {self._display_path(subtitle.path)}")
             input_files.append(subtitle.path)
 
             # Convert formats not supported by mkvmerge to a rich text format (ASS).
@@ -297,6 +309,7 @@ class Merge(generic_utils.InterruptibleProcess):
 
     def analyze_directory(self, path: str) -> dict[str, list[subtitles_utils.SubtitleFile]]:
         self.logger.info(f"Looking for video and subtitle files in {path}")
+        self.base_path = os.path.abspath(path)
         vas = self._process_dir(path)
         return vas
 
@@ -316,12 +329,24 @@ class Merge(generic_utils.InterruptibleProcess):
             total = len(videos_and_subtitles)
             self.logger.warning(f"Merge completed with errors: {len(failed)}/{total} failed")
             for video in failed:
-                self.logger.warning(f"Failed: {video}")
+                self.logger.warning(f"Failed: {self._display_path(video)}")
 
 
 @dataclass
 class MergePlan:
     items: dict[str, list[subtitles_utils.SubtitleFile]]
+    base_path: str | None = None
+
+    def _display_path(self, path: str) -> str:
+        if not self.base_path:
+            return path
+        try:
+            rel = os.path.relpath(path, self.base_path)
+        except ValueError:
+            return path
+        if rel.startswith(".."):
+            return path
+        return rel
 
     def is_empty(self) -> bool:
         return not self.items
@@ -333,7 +358,7 @@ class MergePlan:
 
         logger.info("Planned merges: %d", len(self.items))
         for video, subtitles in self.items.items():
-            logger.info("Video: %s", video)
+            logger.info("Video: %s", self._display_path(video))
             if not subtitles:
                 logger.info("  subtitles: -")
                 continue
@@ -341,9 +366,9 @@ class MergePlan:
                 subtitle_path = subtitle.path or "-"
                 label = subtitle.language or "unknown"
                 if subtitle.name:
-                    logger.info("  [%s][%s] %s", label, subtitle.name, subtitle_path)
+                    logger.info("  [%s][%s] %s", label, subtitle.name, self._display_path(subtitle_path))
                 else:
-                    logger.info("  [%s] %s", label, subtitle_path)
+                    logger.info("  [%s] %s", label, self._display_path(subtitle_path))
 
 
 class MergeTool(Tool):
@@ -374,7 +399,7 @@ class MergeTool(Tool):
                        lang_priority=args.languages_priority,
                        working_dir=working_dir)
         analysis = merger.analyze_directory(args.videos_path[0])
-        return MergePlan(items=analysis)
+        return MergePlan(items=analysis, base_path=os.path.abspath(args.videos_path[0]))
 
     @override
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
