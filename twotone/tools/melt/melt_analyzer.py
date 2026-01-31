@@ -315,15 +315,60 @@ class MeltAnalyzer:
 
         return None
 
+    def _log_group_issue(self, title: str, issue: str, files: Sequence[str]) -> None:
+        self.logger.warning("Title %s: %s", title, issue)
+        for path in files:
+            self.logger.warning("  %s", path)
+
+    def _validate_group_lengths(
+        self,
+        tracks: Dict[str, Any],
+        ids: Dict[str, int],
+        title: str,
+        files: Sequence[str],
+    ) -> str | None:
+        base_length = None
+        base_file_id = None
+
+        for path, info in tracks.items():
+            try:
+                track = self._pick_primary_video_track(info["video"], ids[path])
+            except Exception:
+                continue
+
+            length = track.get("length")
+            if length is None:
+                continue
+
+            if base_length is None:
+                base_length = length
+                base_file_id = ids[path]
+                continue
+
+            if _is_length_mismatch(base_length, length, self.tolerance_ms):
+                issue = f"Video length mismatch between #{ids[path]} and #{base_file_id} (use --allow-length-mismatch)."
+                if self.allow_length_mismatch:
+                    self.logger.debug(f"{issue} Continuing due to allow-length-mismatch.")
+                    continue
+                self._log_group_issue(title, issue, files)
+                return issue
+
+        return None
+
     def _analyze_group(
         self,
         files: List[str],
         ids: Dict[str, int],
+        title: str,
     ) -> tuple[Dict[str, Any] | None, str | None, Dict[str, Any]]:
         # Probe inputs and print details
         details_full, attachments, tracks = self._probe_inputs(files)
         for file, file_details in details_full.items():
             self._print_file_details(file, file_details, ids)
+
+        length_issue = self._validate_group_lengths(tracks, ids, title, files)
+        if length_issue:
+            return None, length_issue, details_full
 
         # Pick streams
         try:
@@ -391,7 +436,7 @@ class MeltAnalyzer:
                 ids = {file: i + 1 for i, file in enumerate(files)}
 
                 # analysis for group
-                plan_details, issue, files_details = self._analyze_group(files, ids)
+                plan_details, issue, files_details = self._analyze_group(files, ids, title)
                 if plan_details is None:
                     skipped_groups.append({
                         "files": files,
