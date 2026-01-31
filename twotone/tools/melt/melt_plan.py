@@ -178,28 +178,3 @@ class MeltPlan:
 
         if skipped_sets:
             logger.info("Skipped candidates: %d set(s), %d file(s).", skipped_sets, skipped_files)
-
-            for item in skipped_items:
-                title = item.get("title", "<unknown>")
-                skipped = item.get("skipped_groups", [])
-                if not skipped:
-                    continue
-                logger.info("Title: %s", title)
-                for idx, group in enumerate(skipped, start=1):
-                    issue = group.get("issue", "Unknown issue.")
-                    output_name = group.get("output_name", "output")
-                    output_path = os.path.join(self.output_dir, title, f"{output_name}.mkv")
-                    files = group.get("files", [])
-                    problem_ids = {int(val) for val in re.findall(r"#(\d+)", issue)}
-                    if len(skipped) > 1:
-                        logger.info("  Candidate %d:", idx)
-                        prefix = "    "
-                    else:
-                        prefix = "  "
-                    logger.info("%sIssue: %s", prefix, issue)
-                    logger.info("%sOutput: %s", prefix, output_path)
-                    if files:
-                        logger.info("%sFiles:", prefix)
-                        for file_idx, path in enumerate(files, start=1):
-                            marker = " (!)" if file_idx in problem_ids else ""
-                            logger.info("%s  #%d%s: %s", prefix, file_idx, marker, path)
