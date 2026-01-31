@@ -154,6 +154,14 @@ class MeltTool(Tool):
             args.allow_length_mismatch,
             DEFAULT_TOLERANCE_MS,
         )
+        all_entries = [path for entries in duplicates.values() for path in entries]
+        if path_fix:
+            analyzer.base_path = path_fix[1]
+        elif all_entries:
+            try:
+                analyzer.base_path = os.path.commonpath(all_entries)
+            except ValueError:
+                analyzer.base_path = None
         analysis = analyzer.analyze_duplicates(duplicates)
         return MeltPlan(
             items=analysis,

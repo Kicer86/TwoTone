@@ -28,6 +28,7 @@ class MeltAnalyzer:
         self.allow_language_guessing = allow_language_guessing
         self.allow_length_mismatch = allow_length_mismatch
         self.tolerance_ms = tolerance_ms
+        self.base_path: str | None = None
 
     @staticmethod
     def _stream_short_details(stype: str, stream: Dict[str, Any]) -> str:
@@ -318,7 +319,15 @@ class MeltAnalyzer:
     def _log_group_issue(self, title: str, issue: str, files: Sequence[str]) -> None:
         self.logger.warning("Title %s: %s", title, issue)
         for path in files:
-            self.logger.warning("  %s", path)
+            self.logger.warning("  %s", self._format_group_path(path))
+
+    def _format_group_path(self, path: str) -> str:
+        if not self.base_path:
+            return path
+        try:
+            return os.path.relpath(path, self.base_path)
+        except ValueError:
+            return path
 
     def _validate_group_lengths(
         self,
@@ -350,7 +359,6 @@ class MeltAnalyzer:
                 if self.allow_length_mismatch:
                     self.logger.debug(f"{issue} Continuing due to allow-length-mismatch.")
                     continue
-                self._log_group_issue(title, issue, files)
                 return issue
 
         return None
@@ -438,6 +446,7 @@ class MeltAnalyzer:
                 # analysis for group
                 plan_details, issue, files_details = self._analyze_group(files, ids, title)
                 if plan_details is None:
+                    self._log_group_issue(title, issue or "Unknown issue.", files)
                     skipped_groups.append({
                         "files": files,
                         "output_name": output_name,
