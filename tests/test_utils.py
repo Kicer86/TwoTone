@@ -75,6 +75,21 @@ class UtilsTests(TwoToneTestCase):
     def test_subtitle_detection(self, name, ext, content, valid):
         self._test_content(ext, content, valid)
 
+    def test_idx_language_detection(self):
+        subtitle_path = os.path.join(self.wd.path, "movie.idx")
+        write_subtitle(
+            subtitle_path,
+            [
+                "# VobSub index file, v7",
+                "size: 720x576",
+                "palette: 000000,ffffff",
+                "id: zho, index: 0",
+            ],
+        )
+
+        subtitle = subtitles_utils.build_subtitle_from_path(subtitle_path, language=None)
+        self.assertEqual(subtitle.language, "zho")
+
 
     test_videos = [
         # case: merge all audio tracks
