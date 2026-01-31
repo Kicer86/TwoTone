@@ -141,15 +141,13 @@ def is_subtitle(file: str) -> bool:
         logging.debug("\tNot a subtitle file")
         return False
 
-    if suffix == ".sub":
-        if path_obj.with_suffix(".idx").exists() or path_obj.with_suffix(".IDX").exists():
-            logging.debug("\tDetected VobSub pair, skipping .sub file")
-            return False
+    if suffix == ".sub" and _vobsub_idx_exists(path_obj):
+        logging.debug("\tDetected VobSub pair, skipping .sub file")
+        return False
 
-    if suffix == ".idx":
-        if path_obj.with_suffix(".sub").exists() or path_obj.with_suffix(".SUB").exists():
-            logging.debug("\tDetected VobSub pair, accepting .idx file")
-            return True
+    if suffix == ".idx" and _vobsub_sub_exists(path_obj):
+        logging.debug("\tDetected VobSub pair, accepting .idx file")
+        return True
 
     from . import process_utils
 
@@ -173,6 +171,14 @@ def is_subtitle(file: str) -> bool:
 
     logging.debug("\tNot a subtitle file")
     return False
+
+
+def _vobsub_idx_exists(path_obj: Path) -> bool:
+    return path_obj.with_suffix(".idx").exists() or path_obj.with_suffix(".IDX").exists()
+
+
+def _vobsub_sub_exists(path_obj: Path) -> bool:
+    return path_obj.with_suffix(".sub").exists() or path_obj.with_suffix(".SUB").exists()
 
 
 def _strip_microdvd_header(subs: pysubs2.SSAFile | None, fps: float | None = None) -> None:
