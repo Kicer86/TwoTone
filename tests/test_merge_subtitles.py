@@ -3,9 +3,10 @@ import logging
 import os
 import re
 import unittest
+from unittest.mock import patch
 
 from twotone.tools.utils import files_utils, video_utils
-from common import TwoToneTestCase, assert_video_info, list_files, add_test_media, hashes, run_twotone, write_srt_subtitle
+from common import TwoToneTestCase, assert_video_info, list_files, add_test_media, hashes, run_twotone, write_srt_subtitle, write_subtitle
 
 
 default_video_set = [
@@ -166,6 +167,40 @@ class SubtitlesMerge(TwoToneTestCase):
         # verify results
         files_after = list_files(self.wd.path)
         self.assertEqual(len(files_after), 2)
+
+    def test_vobsub_pair_cleanup(self):
+        add_test_media(r"moon\.mp4", self.wd.path)
+
+        video_path = next(path for path in list_files(self.wd.path) if path.lower().endswith(".mp4"))
+        base_name = os.path.splitext(os.path.basename(video_path))[0]
+
+        idx_path = os.path.join(self.wd.path, f"{base_name}.idx")
+        sub_path = os.path.join(self.wd.path, f"{base_name}.sub")
+
+        write_subtitle(
+            idx_path,
+            [
+                "# VobSub index file, v7",
+                "size: 720x576",
+                "palette: 000000,ffffff",
+                "id: zho, index: 0",
+            ],
+        )
+        write_subtitle(sub_path, ["dummy"])
+
+        def fake_generate_mkv(*, output_path, **_kwargs):
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, "wb") as f:
+                f.write(b"")
+
+        with patch("twotone.tools.utils.video_utils.generate_mkv", side_effect=fake_generate_mkv):
+            run_twotone("merge", [self.wd.path], ["--no-dry-run"])
+
+        files_after = list_files(self.wd.path)
+        self.assertEqual(len(files_after), 1)
+        self.assertTrue(files_after[0].lower().endswith(".mkv"))
+        self.assertFalse(os.path.exists(idx_path))
+        self.assertFalse(os.path.exists(sub_path))
 
     def test_invalid_subtitle_extension(self):
         add_test_media("Frog.*mp4", self.wd.path)

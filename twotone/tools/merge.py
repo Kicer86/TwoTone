@@ -195,10 +195,10 @@ class Merge(generic_utils.InterruptibleProcess):
         # collect details about input file
         input_file_details = video_utils.get_video_data(input_video)
 
-        input_files = []
+        input_files: set[str] = set()
 
         # register input for removal
-        input_files.append(input_video)
+        input_files.add(input_video)
 
         # set subtitles and languages
         sorted_subtitles = self._sort_subtitles(subtitles)
@@ -226,7 +226,16 @@ class Merge(generic_utils.InterruptibleProcess):
                 self.logger.info(f"\t[{subtitle.language}][{subtitle.name}]: {self._display_path(subtitle.path)}")
             else:
                 self.logger.info(f"\t[{subtitle.language}]: {self._display_path(subtitle.path)}")
-            input_files.append(subtitle.path)
+            input_files.add(subtitle.path)
+            subtitle_path_obj = Path(subtitle.path)
+            if subtitle_path_obj.suffix.lower() == ".idx":
+                paired_sub = subtitle_path_obj.with_suffix(".sub")
+                if paired_sub.exists():
+                    input_files.add(str(paired_sub))
+                else:
+                    paired_sub = subtitle_path_obj.with_suffix(".SUB")
+                    if paired_sub.exists():
+                        input_files.add(str(paired_sub))
 
             # Convert formats not supported by mkvmerge to a rich text format (ASS).
             # Leave supported formats as-is to preserve styling/metadata.
@@ -241,7 +250,8 @@ class Merge(generic_utils.InterruptibleProcess):
 
         # Remove all inputs
         for input in input_files:
-            os.remove(input)
+            if os.path.exists(input):
+                os.remove(input)
 
         # rename final file to a proper one
         shutil.move(temporary_output_video, output_video)
