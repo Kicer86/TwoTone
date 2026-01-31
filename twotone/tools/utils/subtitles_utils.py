@@ -219,14 +219,16 @@ def guess_subtitle_language(path: str, encoding: str) -> str:
     if encoding.lower() in {"ascii", "us-ascii"}:
         encoding = "utf-8"
 
+    suffix = Path(path).suffix.lower()
+
     try:
         with open(path, "r", encoding=encoding, errors="replace") as sf:
-            if Path(path).suffix.lower() == ".idx":
+            if suffix == ".idx":
                 for line in sf:
                     match = _IDX_LANG_RE.match(line)
                     if match:
                         return match.group(1).lower()
-                sf.seek(0)
+            sf.seek(0)
             content = sf.read(MAX_LANGID_CHARS)
     except LookupError:
         with open(path, "r", encoding="utf-8", errors="replace") as sf:
