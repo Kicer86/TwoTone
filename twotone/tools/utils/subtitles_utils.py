@@ -1,6 +1,7 @@
 import cchardet
 import logging
 from pathlib import Path
+import re
 import py3langid as langid
 import pysubs2
 
@@ -72,6 +73,8 @@ FFPROBE_SUBTITLE_FORMATS = {
 
 NON_AMBIGUOUS_SUBTITLE_EXTENSIONS = SUBTITLE_EXTENSIONS - {".txt", ".json", ".xml"}
 FALLBACK_SUBTITLE_EXTENSIONS = {".sub"}
+
+_IDX_LANG_RE = re.compile(r"^\s*id\s*:\s*([a-zA-Z]{2,3})(?:\s*,|\s*$)")
 
 
 MKVMERGE_SUPPORTED_FORMATS = {
@@ -212,6 +215,12 @@ def guess_subtitle_language(path: str, encoding: str) -> str:
 
     try:
         with open(path, "r", encoding=encoding, errors="replace") as sf:
+            if Path(path).suffix.lower() == ".idx":
+                for line in sf:
+                    match = _IDX_LANG_RE.match(line)
+                    if match:
+                        return match.group(1).lower()
+                sf.seek(0)
             content = sf.read(MAX_LANGID_CHARS)
     except LookupError:
         with open(path, "r", encoding="utf-8", errors="replace") as sf:
