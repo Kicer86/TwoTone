@@ -132,10 +132,21 @@ def open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> Optional[p
 
 def is_subtitle(file: str) -> bool:
     logging.debug(f"Checking file {file} for being subtitle")
-    suffix = Path(file).suffix.lower()
+    path_obj = Path(file)
+    suffix = path_obj.suffix.lower()
     if suffix not in SUBTITLE_EXTENSIONS:
         logging.debug("\tNot a subtitle file")
         return False
+
+    if suffix == ".sub":
+        if path_obj.with_suffix(".idx").exists() or path_obj.with_suffix(".IDX").exists():
+            logging.debug("\tDetected VobSub pair, skipping .sub file")
+            return False
+
+    if suffix == ".idx":
+        if path_obj.with_suffix(".sub").exists() or path_obj.with_suffix(".SUB").exists():
+            logging.debug("\tDetected VobSub pair, accepting .idx file")
+            return True
 
     from . import process_utils
 
