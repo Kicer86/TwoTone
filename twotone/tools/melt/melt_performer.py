@@ -401,9 +401,11 @@ class MeltPerformer:
         return preferred_audio
 
     def process_duplicates(self, plan: List[Dict[str, Any]]) -> None:
-        for item in tqdm(plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
+        visible_items = [item for item in plan if item.get("groups") or item.get("skipped_groups")]
+        planned_items = [item for item in visible_items if item.get("groups")]
+        for item in tqdm(planned_items, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
             title = item["title"]
-            groups = item["groups"]
+            groups = item.get("groups", [])
 
             for group in tqdm(groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
                 self.interruption._check_for_stop()
