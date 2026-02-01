@@ -1,6 +1,5 @@
 import logging
 import os
-import re
 
 from dataclasses import dataclass
 from typing import Any, Dict, List
@@ -110,6 +109,12 @@ class MeltPlan:
             for item in skipped_items
             for group in item.get("skipped_groups", [])
         )
+        has_missing_language = any(
+            "missing properties" in (group.get("issue") or "").lower()
+            and "language" in (group.get("issue") or "").lower()
+            for item in skipped_items
+            for group in item.get("skipped_groups", [])
+        )
 
         if planned_items:
             logger.info(
@@ -178,3 +183,5 @@ class MeltPlan:
 
         if skipped_sets:
             logger.info("Skipped candidates: %d set(s), %d file(s).", skipped_sets, skipped_files)
+            if has_missing_language:
+                logger.info("Hint: Some candidates were skipped due to missing stream language. Consider running: twotone language_fix")

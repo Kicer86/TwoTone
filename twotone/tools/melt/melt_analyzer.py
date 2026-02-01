@@ -18,14 +18,12 @@ class MeltAnalyzer:
         logger: logging.Logger,
         duplicates_source: DuplicatesSource,
         wd: str,
-        allow_language_guessing: bool,
         allow_length_mismatch: bool,
         tolerance_ms: int,
     ) -> None:
         self.logger = logger
         self.duplicates_source = duplicates_source
         self.wd = wd
-        self.allow_language_guessing = allow_language_guessing
         self.allow_length_mismatch = allow_length_mismatch
         self.tolerance_ms = tolerance_ms
         self.base_path: str | None = None
@@ -266,7 +264,6 @@ class MeltAnalyzer:
             self.logger,
             self.duplicates_source,
             picker_wd,
-            allow_language_guessing=self.allow_language_guessing,
         )
         return streams_picker.pick_streams(tracks, ids)
 

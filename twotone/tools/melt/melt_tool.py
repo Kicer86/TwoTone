@@ -74,9 +74,6 @@ class MeltTool(Tool):
                             help='[EXPERIMENTAL] Continue processing even if input video lengths differ.\n'
                                  'This may require additional processing that can consume significant time and disk space.')
 
-        parser.add_argument('--allow-language-guessing', action='store_true',
-                            help='If audio language is not provided in file metadata, try find language codes (like EN or DE) in file names')
-
     @override
     def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
         interruption = generic_utils.InterruptibleProcess()
@@ -150,7 +147,6 @@ class MeltTool(Tool):
             logger,
             data_source,
             analysis_wd,
-            args.allow_language_guessing,
             args.allow_length_mismatch,
             DEFAULT_TOLERANCE_MS,
         )
