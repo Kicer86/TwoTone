@@ -374,10 +374,6 @@ class MeltAnalyzer:
         for file, file_details in details_full.items():
             self._print_file_details(file, file_details, ids)
 
-        length_issue = self._validate_group_lengths(tracks, ids, title, files)
-        if length_issue:
-            return None, length_issue, details_full
-
         # Pick streams
         try:
             video_streams, audio_streams, subtitle_streams = self._pick_streams(tracks, ids)
@@ -388,6 +384,13 @@ class MeltAnalyzer:
         if not video_streams:
             self.logger.debug("No video streams found.")
             return None, "No video streams found.", details_full
+
+        # If all streams come from a single file, length mismatches are irrelevant.
+        stream_paths = {path for path, _, _ in (video_streams + audio_streams + subtitle_streams)}
+        if len(stream_paths) > 1:
+            length_issue = self._validate_group_lengths(tracks, ids, title, files)
+            if length_issue:
+                return None, length_issue, details_full
 
         # Validate and compute audio patch requirements
         issue = self._validate_input_files(tracks, ids, video_streams, audio_streams, subtitle_streams)
