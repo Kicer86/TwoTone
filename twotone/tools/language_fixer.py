@@ -15,6 +15,7 @@ from twotone.tools.utils import generic_utils, language_utils, process_utils, su
 
 
 _LANG_TOKEN_RE = re.compile(r"[A-Za-z]{2,}")
+_FILENAME_LANG_RE = re.compile(r"(?i)(?:([a-z]{2,3})(?=dub))|(?<![a-z])([a-z]{2,3})(?![a-z])")
 
 # Heuristic: tokens that are common audio labels but not languages.
 _AUDIO_LABEL_STOPWORDS = {
@@ -164,7 +165,7 @@ class LanguageFixerTool(Tool):
         parser.add_argument(
             "--audio",
             action="store_true",
-            help="Enable audio language detection from track names (heuristic; may be inaccurate).",
+            help="Enable audio language detection from track names and file names (heuristic; may be inaccurate).",
         )
         parser.add_argument(
             "videos_path",
@@ -177,7 +178,10 @@ class LanguageFixerTool(Tool):
         self._include_audio = args.audio
         self._base_path = os.path.abspath(args.videos_path[0])
         self._set_context(logger, working_dir)
-        process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
+        tools = ["mkvmerge", "mkvextract", "ffprobe"]
+        if args.audio:
+            tools.append("ffmpeg")
+        process_utils.ensure_tools_exist(tools, logger)
 
         self.logger.info("Searching for files with missing track languages")
         raw_items = self._scan_directory(args.videos_path[0], include_audio=self._include_audio)
@@ -219,6 +223,7 @@ class LanguageFixerTool(Tool):
             audio_updates: dict[int, str] = {}
             if self._include_audio:
                 audio_updates = self._detect_audio_languages(
+                    video_path,
                     tracks,
                     audio_missing,
                     log_detection=False,
@@ -314,14 +319,15 @@ class LanguageFixerTool(Tool):
                 self.logger.warning("Failed to update track languages.")
 
     def _scan_directory(self, path: str, include_audio: bool) -> list[dict]:
-        self.logger.debug(f"Finding MKV files in {path}")
+        self.logger.debug(f"Finding video files in {path}")
         video_files = []
 
         for cd, _, files in os.walk(path, followlinks=True):
             for file in files:
                 self._check_for_stop()
-                if file.lower().endswith(".mkv"):
-                    video_files.append(os.path.join(cd, file))
+                file_path = os.path.join(cd, file)
+                if video_utils.is_video(file_path):
+                    video_files.append(file_path)
 
         results: list[dict] = []
         self.logger.debug("Analysing files")
@@ -343,6 +349,15 @@ class LanguageFixerTool(Tool):
             self._interruption._check_for_stop()
 
     def _get_tracks(self, video_path: str) -> list[dict]:
+        if self._is_mkv(video_path):
+            return self._get_tracks_mkvmerge(video_path)
+        return self._get_tracks_ffprobe(video_path)
+
+    @staticmethod
+    def _is_mkv(path: str) -> bool:
+        return os.path.splitext(path)[1].lower() == ".mkv"
+
+    def _get_tracks_mkvmerge(self, video_path: str) -> list[dict]:
         info = video_utils.get_video_full_info_mkvmerge(video_path)
         tracks: list[dict] = []
 
@@ -375,29 +390,63 @@ class LanguageFixerTool(Tool):
 
         return tracks
 
+    def _get_tracks_ffprobe(self, video_path: str) -> list[dict]:
+        info = video_utils.get_video_full_info(video_path)
+        tracks: list[dict] = []
+        for stream in info.get("streams", []):
+            track_type = stream.get("codec_type")
+            tid = stream.get("index")
+            tags = stream.get("tags", {}) or {}
+
+            language = tags.get("language")
+            if language == "und":
+                language = None
+            if language:
+                try:
+                    language = language_utils.unify_lang(language)
+                except Exception:
+                    language = None
+
+            name = tags.get("title")
+            codec = stream.get("codec_name")
+            codec_id = stream.get("codec_tag_string") or stream.get("codec_tag")
+
+            tracks.append({
+                "type": track_type,
+                "tid": tid,
+                "language": language,
+                "name": name,
+                "codec": codec,
+                "codec_id": codec_id,
+            })
+
+        return tracks
+
     def _collect_missing_tracks(self, video_path: str, include_audio: bool) -> dict | None:
+        is_mkv = self._is_mkv(video_path)
         tracks = self._get_tracks(video_path)
 
         missing_subtitles: list[int] = []
         webvtt_skipped: set[str] = set()
         pgs_skipped: set[str] = set()
         unsupported_subtitles: dict[int, str] = {}
-        for track in tracks:
-            if track["type"] not in ("subtitle", "subtitles"):
-                continue
-            if track["language"] is not None:
-                continue
-            if self._is_webvtt_track(track):
-                codec_id = track.get("codec_id") or track.get("codec") or "unknown"
-                webvtt_skipped.add(str(codec_id))
-                unsupported_subtitles[track["tid"]] = str(codec_id)
-                continue
-            if self._is_pgs_track(track):
-                codec_id = track.get("codec_id") or track.get("codec") or "unknown"
-                pgs_skipped.add(str(codec_id))
-                unsupported_subtitles[track["tid"]] = str(codec_id)
-                continue
-            missing_subtitles.append(track["tid"])
+        if is_mkv:
+            for track in tracks:
+                if track["type"] not in ("subtitle", "subtitles"):
+                    continue
+                if track["language"] is not None:
+                    continue
+                if self._is_webvtt_track(track):
+                    codec_id = track.get("codec_id") or track.get("codec") or "unknown"
+                    webvtt_skipped.add(str(codec_id))
+                    unsupported_subtitles[track["tid"]] = str(codec_id)
+                    continue
+                if self._is_pgs_track(track):
+                    codec_id = track.get("codec_id") or track.get("codec") or "unknown"
+                    pgs_skipped.add(str(codec_id))
+                    unsupported_subtitles[track["tid"]] = str(codec_id)
+                    continue
+                missing_subtitles.append(track["tid"])
 
         missing_audio: list[int] = []
         if include_audio:
@@ -476,6 +525,32 @@ class LanguageFixerTool(Tool):
 
         return None
 
+    def _guess_audio_language_from_filename(self, path: str) -> str | None:
+        base_name = os.path.splitext(os.path.basename(path))[0]
+        file_name_low = base_name.lower()
+
+        best: str | None = None
+        best_rank = 99
+        for match in _FILENAME_LANG_RE.finditer(file_name_low):
+            for group_idx, value in enumerate(match.groups(), start=1):
+                if not value:
+                    continue
+                if not language_utils.is_valid_lang_code(value):
+                    continue
+                rank = group_idx
+                if rank < best_rank:
+                    best_rank = rank
+                    best = value
+                break
+
+        if best:
+            try:
+                return language_utils.unify_lang(best)
+            except Exception:
+                return None
+
+        return None
+
     def _detect_subtitle_languages(self, video_path: str, missing_subtitles: list[int], *, log_detection: bool = True) -> dict[int, str]:
         if not missing_subtitles:
             return {}
@@ -516,12 +591,20 @@ class LanguageFixerTool(Tool):
 
         return detected
 
-    def _detect_audio_languages(self, tracks: list[dict], missing_audio: list[int], *, log_detection: bool = True) -> dict[int, str]:
+    def _detect_audio_languages(
+        self,
+        video_path: str,
+        tracks: list[dict],
+        missing_audio: list[int],
+        *,
+        log_detection: bool = True,
+    ) -> dict[int, str]:
         if not missing_audio:
             return {}
 
         audio_tracks = {track["tid"]: track for track in tracks if track["type"] == "audio"}
         detected: dict[int, str] = {}
+        filename_lang = self._guess_audio_language_from_filename(video_path)
 
         for tid in missing_audio:
             self._check_for_stop()
@@ -530,14 +613,15 @@ class LanguageFixerTool(Tool):
                 continue
 
             name = track.get("name")
-            if not name:
-                continue
-
-            detected_lang = self._guess_audio_language(name)
+            detected_lang = self._guess_audio_language(name) if name else None
+            source = "track name"
+            if not detected_lang and filename_lang:
+                detected_lang = filename_lang
+                source = "file name"
             if detected_lang:
                 detected[tid] = detected_lang
                 if log_detection:
-                    self.logger.info(f"Detected audio language for track #{tid}: {detected_lang}")
+                    self.logger.info(f"Detected audio language for track #{tid}: {detected_lang} ({source})")
 
         return detected
 
@@ -545,6 +629,11 @@ class LanguageFixerTool(Tool):
         if not updates:
             return False
 
+        if self._is_mkv(video_path):
+            return self._apply_language_updates_mkvmerge(video_path, updates)
+        return self._apply_language_updates_ffmpeg(video_path, updates)
+
+    def _apply_language_updates_mkvmerge(self, video_path: str, updates: dict[int, str]) -> bool:
         output_path = f"{video_path}.langfix.mkv"
         if os.path.exists(output_path):
             os.remove(output_path)
@@ -563,6 +652,49 @@ class LanguageFixerTool(Tool):
 
         if not os.path.exists(output_path):
             self.logger.error(f"mkvmerge did not create output file for {_format_path(video_path, self._base_path)}")
+            return False
+
+        os.replace(output_path, video_path)
+        return True
+
+    def _apply_language_updates_ffmpeg(self, video_path: str, updates: dict[int, str]) -> bool:
+        output_path = f"{video_path}.langfix{os.path.splitext(video_path)[1]}"
+        if os.path.exists(output_path):
+            os.remove(output_path)
+
+        tracks = self._get_tracks_ffprobe(video_path)
+        audio_map: dict[int, int] = {}
+        subtitle_map: dict[int, int] = {}
+        audio_idx = 0
+        subtitle_idx = 0
+        for track in tracks:
+            if track["type"] == "audio":
+                audio_map[track["tid"]] = audio_idx
+                audio_idx += 1
+            elif track["type"] in ("subtitle", "subtitles"):
+                subtitle_map[track["tid"]] = subtitle_idx
+                subtitle_idx += 1
+
+        args = ["-y", "-i", video_path, "-map", "0", "-c", "copy"]
+        for tid, lang in sorted(updates.items()):
+            if tid in audio_map:
+                args.extend(["-metadata:s:a:%d" % audio_map[tid], f"language={lang}"])
+            elif tid in subtitle_map:
+                args.extend(["-metadata:s:s:%d" % subtitle_map[tid], f"language={lang}"])
+            else:
+                self.logger.warning("Skipping track #%s in %s (not found for ffmpeg update).", tid, _format_path(video_path, self._base_path))
+
+        args.append(output_path)
+
+        status = process_utils.start_process("ffmpeg", args)
+        if status.returncode != 0:
+            self.logger.error(f"ffmpeg failed for {_format_path(video_path, self._base_path)}: {status.stderr}")
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            return False
+
+        if not os.path.exists(output_path):
+            self.logger.error(f"ffmpeg did not create output file for {_format_path(video_path, self._base_path)}")
             return False
 
         os.replace(output_path, video_path)

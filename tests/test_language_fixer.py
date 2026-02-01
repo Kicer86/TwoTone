@@ -50,6 +50,39 @@ class LanguageFixerTests(TwoToneTestCase):
         self.assertEqual(len(audios), 1)
         self.assertEqual(audios[0]["language"], "eng")
 
+    def test_audio_language_detection_from_filename(self):
+        audio_path = get_audio("807184__logicmoon__mirrors.wav")
+        video_input = get_video("moon.mp4")
+
+        output_video = os.path.join(self.wd.path, "sample_endub.mp4")
+        status = process_utils.start_process(
+            "ffmpeg",
+            [
+                "-y",
+                "-i",
+                video_input,
+                "-i",
+                audio_path,
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                output_video,
+            ],
+        )
+        self.assertEqual(status.returncode, 0, status.stderr)
+
+        run_twotone("language_fix", [self.wd.path, "--audio"], ["--no-dry-run"])
+
+        info = video_utils.get_video_data(output_video)
+        audios = info.get("audio", [])
+        self.assertEqual(len(audios), 1)
+        self.assertEqual(audios[0]["language"], "eng")
+
     def test_webvtt_extraction_fails(self):
         vtt_path = write_subtitle(
             os.path.join(self.wd.path, "sub.vtt"),
