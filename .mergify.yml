@@ -3,7 +3,7 @@ pull_request_rules:
     conditions:
       - check-success="Tests (windows-latest)"
       - check-success="Tests (macos-latest)"
-      - check-success="Tests (ubuntu-24.04)"
+      - check-success="Tests (ubuntu-latest)"
       - check-success=Mypy
       - "#commits=1"
       - or:
