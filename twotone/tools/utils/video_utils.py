@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Tuple
@@ -509,6 +510,8 @@ def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path:
     """
 
     tids_list: List[int] = list(tids)
+    if logger:
+        logger.debug("Extracting subtitles from %s (tids=%s)", video_path, ",".join(str(t) for t in tids_list))
 
     # Map formats to file extensions
     ext_map = {
@@ -540,15 +543,32 @@ def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path:
         out_path = f"{output_base_path}.{tid}{suffix}"
         tid_to_path[tid] = out_path
         options.append(f"{tid}:{out_path}")
+        if logger:
+            logger.debug("  tid #%s -> %s (format=%s)", tid, out_path, fmt or "unknown")
 
     try:
+        start = time.perf_counter()
         status = process_utils.start_process("mkvextract", options)
+        elapsed = time.perf_counter() - start
+        if logger:
+            logger.debug("mkvextract finished in %.3fs (rc=%s)", elapsed, status.returncode)
         if status.returncode != 0 and logger:
             logger.error(f"mkvextract failed for {video_path}: {status.stderr}")
 
     except Exception as e:
         if logger:
             logger.error(f"Subtitle extraction failed for {video_path}: {e}")
+
+    if logger:
+        for tid, out_path in tid_to_path.items():
+            if os.path.exists(out_path):
+                try:
+                    size = os.path.getsize(out_path)
+                except OSError:
+                    size = -1
+                logger.debug("  extracted tid #%s -> %s (%s bytes)", tid, out_path, size)
+            else:
+                logger.debug("  missing output for tid #%s -> %s", tid, out_path)
 
     return tid_to_path
 

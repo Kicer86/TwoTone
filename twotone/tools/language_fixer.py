@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import re
+import time
 import uuid
 
 import pycountry
@@ -16,6 +17,7 @@ from twotone.tools.utils import generic_utils, language_utils, process_utils, su
 
 _LANG_TOKEN_RE = re.compile(r"[A-Za-z]{2,}")
 _FILENAME_LANG_RE = re.compile(r"(?i)(?:([a-z]{2,3})(?=dub))|(?<![a-z])([a-z]{2,3})(?![a-z])")
+_SLOW_STEP_LOG_S = 0.5
 
 # Heuristic: tokens that are common audio labels but not languages.
 _AUDIO_LABEL_STOPWORDS = {
@@ -184,7 +186,9 @@ class LanguageFixerTool(Tool):
         process_utils.ensure_tools_exist(tools, logger)
 
         self.logger.info("Searching for files with missing track languages")
+        scan_start = time.perf_counter()
         raw_items = self._scan_directory(args.videos_path[0], include_audio=self._include_audio)
+        self._log_duration("scan_directory", time.perf_counter() - scan_start)
         self.logger.info(
             "Found %d file(s) with missing track languages. Detecting languages.",
             len(raw_items),
@@ -215,19 +219,23 @@ class LanguageFixerTool(Tool):
                 if track["type"] == "audio"
             }
 
+            subtitle_start = time.perf_counter()
             subtitle_updates = self._detect_subtitle_languages(
                 video_path,
                 subtitles_missing,
                 log_detection=False,
             )
+            self._log_if_slow("detect_subtitle_languages", video_path, subtitle_start)
             audio_updates: dict[int, str] = {}
             if self._include_audio:
+                audio_start = time.perf_counter()
                 audio_updates = self._detect_audio_languages(
                     video_path,
                     tracks,
                     audio_missing,
                     log_detection=False,
                 )
+                self._log_if_slow("detect_audio_languages", video_path, audio_start)
 
             plan_items.append(
                 LanguageFixPlanItem(
@@ -320,6 +328,7 @@ class LanguageFixerTool(Tool):
 
     def _scan_directory(self, path: str, include_audio: bool) -> list[dict]:
         self.logger.debug(f"Finding video files in {path}")
+        scan_start = time.perf_counter()
         video_files = []
 
         for cd, _, files in os.walk(path, followlinks=True):
@@ -329,11 +338,14 @@ class LanguageFixerTool(Tool):
                 if video_utils.is_video(file_path):
                     video_files.append(file_path)
 
+        self._log_duration("scan_directory.collect_files", time.perf_counter() - scan_start)
         results: list[dict] = []
         self.logger.debug("Analysing files")
         for video in tqdm(video_files, desc="Analysing videos", unit="video", **generic_utils.get_tqdm_defaults()):
             self._check_for_stop()
+            missing_start = time.perf_counter()
             missing = self._collect_missing_tracks(video, include_audio)
+            self._log_if_slow("collect_missing_tracks", video, missing_start)
             if missing is not None:
                 results.append(missing)
 
@@ -358,7 +370,9 @@ class LanguageFixerTool(Tool):
         return os.path.splitext(path)[1].lower() == ".mkv"
 
     def _get_tracks_mkvmerge(self, video_path: str) -> list[dict]:
+        start = time.perf_counter()
         info = video_utils.get_video_full_info_mkvmerge(video_path)
+        self._log_if_slow("get_tracks_mkvmerge", video_path, start)
         tracks: list[dict] = []
 
         for track in info.get("tracks", []):
@@ -391,7 +405,9 @@ class LanguageFixerTool(Tool):
         return tracks
 
     def _get_tracks_ffprobe(self, video_path: str) -> list[dict]:
+        start = time.perf_counter()
         info = video_utils.get_video_full_info(video_path)
+        self._log_if_slow("get_tracks_ffprobe", video_path, start)
         tracks: list[dict] = []
         for stream in info.get("streams", []):
             track_type = stream.get("codec_type")
@@ -424,7 +440,9 @@ class LanguageFixerTool(Tool):
 
     def _collect_missing_tracks(self, video_path: str, include_audio: bool) -> dict | None:
         is_mkv = self._is_mkv(video_path)
+        tracks_start = time.perf_counter()
         tracks = self._get_tracks(video_path)
+        self._log_if_slow("get_tracks", video_path, tracks_start)
 
         missing_subtitles: list[int] = []
         webvtt_skipped: set[str] = set()
@@ -555,8 +573,10 @@ class LanguageFixerTool(Tool):
         if not missing_subtitles:
             return {}
 
+        extract_start = time.perf_counter()
         base_tmp = os.path.join(self.working_dir, f"subtitle_{uuid.uuid4().hex}")
         tid_to_path = video_utils.extract_subtitle_to_temp(video_path, missing_subtitles, base_tmp, logger=self.logger)
+        self._log_if_slow("extract_subtitles", video_path, extract_start)
 
         detected: dict[int, str] = {}
         for tid, path in tid_to_path.items():
@@ -566,8 +586,12 @@ class LanguageFixerTool(Tool):
                 continue
 
             try:
+                encoding_start = time.perf_counter()
                 encoding = subtitles_utils.file_encoding(path)
+                self._log_if_slow("subtitle_file_encoding", path, encoding_start)
+                lang_start = time.perf_counter()
                 detected_lang = subtitles_utils.guess_subtitle_language(path, encoding)
+                self._log_if_slow("subtitle_language_guess", path, lang_start)
                 if detected_lang:
                     try:
                         unified = language_utils.unify_lang(detected_lang)
@@ -656,6 +680,19 @@ class LanguageFixerTool(Tool):
 
         os.replace(output_path, video_path)
         return True
+
+    def _log_duration(self, label: str, elapsed: float, path: str | None = None) -> None:
+        if path:
+            self.logger.debug("%s %.3fs: %s", label, elapsed, _format_path(path, self._base_path))
+        else:
+            self.logger.debug("%s %.3fs", label, elapsed)
+
+    def _log_if_slow(self, label: str, path: str, start_time: float | None) -> None:
+        if start_time is None:
+            return
+        elapsed = time.perf_counter() - start_time
+        if elapsed >= _SLOW_STEP_LOG_S:
+            self._log_duration(label, elapsed, path)
 
     def _apply_language_updates_ffmpeg(self, video_path: str, updates: dict[int, str]) -> bool:
         output_path = f"{video_path}.langfix{os.path.splitext(video_path)[1]}"
