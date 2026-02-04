@@ -5,7 +5,6 @@ import re
 import time
 import uuid
 
-import pycountry
 from dataclasses import dataclass
 
 from overrides import override
@@ -15,39 +14,17 @@ from .tool import Plan, Tool
 from twotone.tools.utils import generic_utils, language_utils, process_utils, subtitles_utils, video_utils
 
 
-_LANG_TOKEN_RE = re.compile(r"[A-Za-z]{2,}")
-_FILENAME_LANG_RE = re.compile(r"(?i)(?:([a-z]{2,3})(?=dub))|(?<![a-z])([a-z]{2,3})(?![a-z])")
+_FILENAME_LANG_KEYWORD_RE = re.compile(
+    r"(?i)"
+    r"(?:"
+    r"(?:dubbing|dubbed|dub|dubb|lektor|lector|voice|audio)\b[\W_]+(?P<lang>[a-z]{2,3})\b"
+    r"|"
+    r"\b(?P<lang_rev>[a-z]{2,3})\b[\W_]+(?:dubbing|dubbed|dub|dubb|lektor|lector|voice|audio)\b"
+    r")"
+)
+# Matches a language code glued directly to "dub" (e.g. "endub", "pldub").
+_GLUED_DUB_RE = re.compile(r"(?i)(?<![a-z])(?P<lang>[a-z]{2,3})dub(?:bing|bed|b)?\b")
 _SLOW_STEP_LOG_S = 0.5
-
-# Heuristic: tokens that are common audio labels but not languages.
-_AUDIO_LABEL_STOPWORDS = {
-    "audio",
-    "commentary",
-    "director",
-    "dub",
-    "dubbed",
-    "dialog",
-    "dialogue",
-    "mono",
-    "stereo",
-    "surround",
-    "track",
-    "voice",
-    "vocals",
-    "mix",
-    "mixdown",
-    "aac",
-    "ac3",
-    "eac3",
-    "dts",
-    "truehd",
-    "atmos",
-    "flac",
-    "mp3",
-    "opus",
-    "pcm",
-    "lpcm",
-}
 
 
 @dataclass
@@ -518,26 +495,62 @@ class LanguageFixerTool(Tool):
         if not label:
             return None
 
-        for token in _LANG_TOKEN_RE.findall(label):
-            token_low = token.lower()
-            if token_low in _AUDIO_LABEL_STOPWORDS:
-                continue
+        best = self._guess_language_from_keyword_context(label)
+        if best:
+            return best
 
-            if language_utils.is_valid_lang_code(token_low):
+        return self._guess_language_from_label_tokens(label)
+
+    @staticmethod
+    def _guess_language_from_label_tokens(label: str) -> str | None:
+        import pycountry
+
+        for token in re.findall(r"[A-Za-z]{2,}", label):
+            low = token.lower()
+
+            # Try full language name (e.g. "English", "Polish")
+            if len(low) > 3:
                 try:
-                    return language_utils.unify_lang(token_low)
-                except Exception:
+                    lang = pycountry.languages.lookup(token)
+                    if hasattr(lang, "alpha_3"):
+                        return lang.alpha_3
+                except LookupError:
                     pass
-
-            try:
-                lang_info = pycountry.languages.lookup(token_low)
-            except LookupError:
                 continue
 
-            code = getattr(lang_info, "alpha_3", None) or getattr(lang_info, "alpha_2", None)
-            if code:
+            # Try 3-letter language code (skip 2-letter — too many collisions
+            # with common English words like "mr", "no", "am", "it", etc.)
+            if len(low) != 3 or not language_utils.is_valid_lang_code(low):
+                continue
+            try:
+                code = language_utils.unify_lang(low)
+            except (ValueError, Exception):
+                continue
+            lang_info = pycountry.languages.get(alpha_3=code)
+            if lang_info and hasattr(lang_info, "alpha_2"):
+                return code
+
+        return None
+
+    def _guess_language_from_keyword_context(self, text: str) -> str | None:
+        text_low = text.lower()
+        for match in _FILENAME_LANG_KEYWORD_RE.finditer(text_low):
+            value = match.group("lang") or match.group("lang_rev")
+            if not value:
+                continue
+            if not language_utils.is_valid_lang_code(value):
+                continue
+            try:
+                return language_utils.unify_lang(value)
+            except Exception:
+                return None
+
+        # Try glued patterns like "endub", "pldubbing"
+        for match in _GLUED_DUB_RE.finditer(text_low):
+            value = match.group("lang")
+            if value and language_utils.is_valid_lang_code(value):
                 try:
-                    return language_utils.unify_lang(code)
+                    return language_utils.unify_lang(value)
                 except Exception:
                     pass
 
@@ -545,29 +558,7 @@ class LanguageFixerTool(Tool):
 
     def _guess_audio_language_from_filename(self, path: str) -> str | None:
         base_name = os.path.splitext(os.path.basename(path))[0]
-        file_name_low = base_name.lower()
-
-        best: str | None = None
-        best_rank = 99
-        for match in _FILENAME_LANG_RE.finditer(file_name_low):
-            for group_idx, value in enumerate(match.groups(), start=1):
-                if not value:
-                    continue
-                if not language_utils.is_valid_lang_code(value):
-                    continue
-                rank = group_idx
-                if rank < best_rank:
-                    best_rank = rank
-                    best = value
-                break
-
-        if best:
-            try:
-                return language_utils.unify_lang(best)
-            except Exception:
-                return None
-
-        return None
+        return self._guess_language_from_keyword_context(base_name)
 
     def _detect_subtitle_languages(self, video_path: str, missing_subtitles: list[int], *, log_detection: bool = True) -> dict[int, str]:
         if not missing_subtitles:
