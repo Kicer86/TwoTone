@@ -644,12 +644,11 @@ class LanguageFixerTool(Tool):
         if not updates:
             return False
 
-        if self._is_mkv(video_path):
-            return self._apply_language_updates_mkvmerge(video_path, updates)
-        return self._apply_language_updates_ffmpeg(video_path, updates)
-
-    def _apply_language_updates_mkvmerge(self, video_path: str, updates: dict[int, str]) -> bool:
+        is_mkv = self._is_mkv(video_path)
+        base, _ = os.path.splitext(video_path)
         output_path = f"{video_path}.langfix.mkv"
+        final_path = f"{base}.mkv" if not is_mkv else video_path
+
         if os.path.exists(output_path):
             os.remove(output_path)
 
@@ -669,7 +668,13 @@ class LanguageFixerTool(Tool):
             self.logger.error(f"mkvmerge did not create output file for {_format_path(video_path, self._base_path)}")
             return False
 
-        os.replace(output_path, video_path)
+        if not is_mkv:
+            os.remove(video_path)
+            os.rename(output_path, final_path)
+            self.logger.info(f"Converted to MKV: {_format_path(final_path, self._base_path)}")
+        else:
+            os.replace(output_path, video_path)
+
         return True
 
     def _log_duration(self, label: str, elapsed: float, path: str | None = None) -> None:
@@ -684,49 +689,6 @@ class LanguageFixerTool(Tool):
         elapsed = time.perf_counter() - start_time
         if elapsed >= _SLOW_STEP_LOG_S:
             self._log_duration(label, elapsed, path)
-
-    def _apply_language_updates_ffmpeg(self, video_path: str, updates: dict[int, str]) -> bool:
-        output_path = f"{video_path}.langfix{os.path.splitext(video_path)[1]}"
-        if os.path.exists(output_path):
-            os.remove(output_path)
-
-        tracks = self._get_tracks_ffprobe(video_path)
-        audio_map: dict[int, int] = {}
-        subtitle_map: dict[int, int] = {}
-        audio_idx = 0
-        subtitle_idx = 0
-        for track in tracks:
-            if track["type"] == "audio":
-                audio_map[track["tid"]] = audio_idx
-                audio_idx += 1
-            elif track["type"] in ("subtitle", "subtitles"):
-                subtitle_map[track["tid"]] = subtitle_idx
-                subtitle_idx += 1
-
-        args = ["-y", "-i", video_path, "-map", "0", "-c", "copy"]
-        for tid, lang in sorted(updates.items()):
-            if tid in audio_map:
-                args.extend(["-metadata:s:a:%d" % audio_map[tid], f"language={lang}"])
-            elif tid in subtitle_map:
-                args.extend(["-metadata:s:s:%d" % subtitle_map[tid], f"language={lang}"])
-            else:
-                self.logger.warning("Skipping track #%s in %s (not found for ffmpeg update).", tid, _format_path(video_path, self._base_path))
-
-        args.append(output_path)
-
-        status = process_utils.start_process("ffmpeg", args)
-        if status.returncode != 0:
-            self.logger.error(f"ffmpeg failed for {_format_path(video_path, self._base_path)}: {status.stderr}")
-            if os.path.exists(output_path):
-                os.remove(output_path)
-            return False
-
-        if not os.path.exists(output_path):
-            self.logger.error(f"ffmpeg did not create output file for {_format_path(video_path, self._base_path)}")
-            return False
-
-        os.replace(output_path, video_path)
-        return True
 
 
 def _format_path(path: str, base_path: str | None) -> str:

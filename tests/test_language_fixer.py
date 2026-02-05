@@ -78,7 +78,9 @@ class LanguageFixerTests(TwoToneTestCase):
 
         run_twotone("language_fix", [self.wd.path, "--audio"], ["--no-dry-run"])
 
-        info = video_utils.get_video_data(output_video)
+        # language_fix converts non-MKV files to MKV
+        converted_video = os.path.splitext(output_video)[0] + ".mkv"
+        info = video_utils.get_video_data(converted_video)
         audios = info.get("audio", [])
         self.assertEqual(len(audios), 1)
         self.assertEqual(audios[0]["language"], "eng")
