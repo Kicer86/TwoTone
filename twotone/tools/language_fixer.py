@@ -214,18 +214,19 @@ class LanguageFixerTool(Tool):
                 )
                 self._log_if_slow("detect_audio_languages", video_path, audio_start)
 
-            plan_items.append(
-                LanguageFixPlanItem(
-                    path=video_path,
-                    subtitles_missing=subtitles_missing,
-                    audio_missing=audio_missing,
-                    subtitle_updates=subtitle_updates,
-                    audio_updates=audio_updates,
-                    subtitle_languages=subtitle_languages,
-                    audio_languages=audio_languages,
-                    unsupported_subtitles=unsupported_subtitles,
+            if subtitle_updates or audio_updates:
+                plan_items.append(
+                    LanguageFixPlanItem(
+                        path=video_path,
+                        subtitles_missing=subtitles_missing,
+                        audio_missing=audio_missing,
+                        subtitle_updates=subtitle_updates,
+                        audio_updates=audio_updates,
+                        subtitle_languages=subtitle_languages,
+                        audio_languages=audio_languages,
+                        unsupported_subtitles=unsupported_subtitles,
+                    )
                 )
-            )
 
         return LanguageFixPlan(items=plan_items, include_audio=self._include_audio, base_path=self._base_path)
 
@@ -246,7 +247,7 @@ class LanguageFixerTool(Tool):
         self.logger.info("Done")
 
     def _apply_plan(self, items: list[LanguageFixPlanItem]) -> None:
-        self.logger.info("Fixing track languages")
+        self.logger.info("Fixing track languages for %d file(s)", len(items))
 
         for item in tqdm(items, desc="Fixing", unit="video", **generic_utils.get_tqdm_defaults()):
             self._check_for_stop()
@@ -263,7 +264,7 @@ class LanguageFixerTool(Tool):
             }
 
             if not subtitle_updates and not audio_updates:
-                self.logger.warning("No languages could be detected; skipping file.")
+                self.logger.debug("Languages already set for %s, skipping.", _format_path(video_path, self._base_path))
                 continue
 
             self.logger.info("Processing %s", _format_path(video_path, self._base_path))
