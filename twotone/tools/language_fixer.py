@@ -659,8 +659,14 @@ class LanguageFixerTool(Tool):
         args.append(video_path)
 
         status = process_utils.start_process("mkvmerge", args)
-        if status.returncode != 0:
-            self.logger.error(f"mkvmerge failed for {_format_path(video_path, self._base_path)}: {status.stderr}")
+        if status.returncode not in (0, 1):
+            output = (status.stdout or "") + (status.stderr or "")
+            self.logger.error(
+                "mkvmerge failed (exit %d) for %s: %s",
+                status.returncode,
+                _format_path(video_path, self._base_path),
+                output.strip() or "(no output)",
+            )
             if os.path.exists(output_path):
                 os.remove(output_path)
             return False
