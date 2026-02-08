@@ -83,7 +83,7 @@ class Merge(generic_utils.InterruptibleProcess):
 
         if len(subtitles) > 0:
             subtitles_str = '\n'.join(subtitles)
-            self.logger.warning(f"When matching videos with subtitles in {path}, given subtitles were not matched to any video: {subtitles_str}")
+            self.logger.warning(f"When matching videos with subtitles in {dir_path}, given subtitles were not matched to any video: {subtitles_str}")
 
         return matches
 
