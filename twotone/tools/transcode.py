@@ -27,7 +27,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
     def _find_video_files(self, directory: str) -> list[str]:
         """Find video files with specified extensions."""
         video_files = []
-        for root, _, files in os.walk(directory):
+        for root, _, files in os.walk(directory, followlinks=True):
             for file in files:
                 if video_utils.is_video(file):
                     video_files.append(os.path.join(root, file))
