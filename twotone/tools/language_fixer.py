@@ -347,6 +347,10 @@ class LanguageFixerTool(Tool):
     def _is_mkv(path: str) -> bool:
         return os.path.splitext(path)[1].lower() == ".mkv"
 
+    @staticmethod
+    def _is_rmvb(path: str) -> bool:
+        return os.path.splitext(path)[1].lower() in (".rmvb", ".rm")
+
     def _get_tracks_mkvmerge(self, video_path: str) -> list[dict]:
         start = time.perf_counter()
         info = video_utils.get_video_full_info_mkvmerge(video_path)
@@ -643,6 +647,17 @@ class LanguageFixerTool(Tool):
 
     def _apply_language_updates(self, video_path: str, updates: dict[int, str]) -> bool:
         if not updates:
+            return False
+
+        # RMVB files with RealAudio "cook" codec cannot be reliably converted to MKV.
+        # mkvmerge produces broken files with audio sync issues.
+        # See: https://gitlab.com/mbunkus/mkvtoolnix/-/issues/708
+        # See: https://forum.videohelp.com/threads/299034-Problem-converting-RMVB-to-MP4
+        if self._is_rmvb(video_path):
+            self.logger.warning(
+                "Skipping RMVB file (cannot be reliably converted to MKV): %s",
+                _format_path(video_path, self._base_path),
+            )
             return False
 
         is_mkv = self._is_mkv(video_path)
