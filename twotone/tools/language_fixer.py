@@ -649,10 +649,6 @@ class LanguageFixerTool(Tool):
         if not updates:
             return False
 
-        # RMVB files with RealAudio "cook" codec cannot be reliably converted to MKV.
-        # mkvmerge produces broken files with audio sync issues.
-        # See: https://gitlab.com/mbunkus/mkvtoolnix/-/issues/708
-        # See: https://forum.videohelp.com/threads/299034-Problem-converting-RMVB-to-MP4
         if self._is_rmvb(video_path):
             self.logger.warning(
                 "Skipping RMVB file (cannot be reliably converted to MKV): %s",

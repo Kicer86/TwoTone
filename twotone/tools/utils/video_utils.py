@@ -574,6 +574,16 @@ def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path:
 
 
 def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | Dict | None = None, audios: List[Dict] | None = None, thumbnail: Union[str, None] = None):
+    # RMVB/RM files cannot be reliably converted to MKV due to RealAudio "cook" codec issues.
+    # mkvmerge produces broken files with audio sync problems.
+    # See: https://gitlab.com/mbunkus/mkvtoolnix/-/issues/708
+    # See: https://forum.videohelp.com/threads/299034-Problem-converting-RMVB-to-MP4
+    ext = os.path.splitext(input_video)[1].lower()
+    if ext in (".rmvb", ".rm"):
+        raise ValueError(
+            f"Cannot convert RMVB/RM files to MKV (unsupported RealAudio codec): {input_video}"
+        )
+
     subtitles = subtitles or []
     audios = audios or []
 
