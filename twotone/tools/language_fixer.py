@@ -11,7 +11,7 @@ from overrides import override
 from tqdm import tqdm
 
 from .tool import Plan, Tool
-from twotone.tools.utils import generic_utils, language_utils, process_utils, subtitles_utils, video_utils
+from twotone.tools.utils import files_utils, generic_utils, language_utils, process_utils, subtitles_utils, video_utils
 
 
 _FILENAME_LANG_KEYWORD_RE = re.compile(
@@ -73,10 +73,10 @@ class LanguageFixPlan:
             has_audio_updates = bool(item.audio_updates)
 
             if not has_sub_updates and not has_audio_updates:
-                logger.debug("File: %s", _format_path(item.path, self.base_path))
+                logger.debug("File: %s", files_utils.format_path(item.path, self.base_path))
                 continue
 
-            logger.info("File: %s", _format_path(item.path, self.base_path))
+            logger.info("File: %s", files_utils.format_path(item.path, self.base_path))
             if has_sub_updates:
                 for line in self._format_track_lines(
                     "subtitles",
@@ -264,10 +264,10 @@ class LanguageFixerTool(Tool):
             }
 
             if not subtitle_updates and not audio_updates:
-                self.logger.debug("Languages already set for %s, skipping.", _format_path(video_path, self._base_path))
+                self.logger.debug("Languages already set for %s, skipping.", files_utils.format_path(video_path, self._base_path))
                 continue
 
-            self.logger.info("Processing %s", _format_path(video_path, self._base_path))
+            self.logger.info("Processing %s", files_utils.format_path(video_path, self._base_path))
             subtitle_languages = {
                 track["tid"]: track["language"]
                 for track in tracks
@@ -460,14 +460,14 @@ class LanguageFixerTool(Tool):
             formats = ", ".join(sorted(webvtt_skipped))
             self.logger.warning(
                 "WebVTT subtitles are not supported for language detection in %s (codec_id: %s)",
-                _format_path(video_path, self._base_path),
+                files_utils.format_path(video_path, self._base_path),
                 formats,
             )
         if pgs_skipped:
             formats = ", ".join(sorted(pgs_skipped))
             self.logger.warning(
                 "PGS subtitles are not supported for language detection in %s (codec_id: %s)",
-                _format_path(video_path, self._base_path),
+                files_utils.format_path(video_path, self._base_path),
                 formats,
             )
 
@@ -578,7 +578,7 @@ class LanguageFixerTool(Tool):
         for tid, path in tid_to_path.items():
             self._check_for_stop()
             if not os.path.exists(path):
-                self.logger.warning(f"Subtitle track #{tid} extraction failed for {_format_path(video_path, self._base_path)}")
+                self.logger.warning(f"Subtitle track #{tid} extraction failed for {files_utils.format_path(video_path, self._base_path)}")
                 continue
 
             try:
@@ -593,7 +593,7 @@ class LanguageFixerTool(Tool):
                         unified = language_utils.unify_lang(detected_lang)
                     except Exception:
                         self.logger.debug(
-                            f"Unrecognized subtitle language '{detected_lang}' for {_format_path(video_path, self._base_path)} track #{tid}"
+                            f"Unrecognized subtitle language '{detected_lang}' for {files_utils.format_path(video_path, self._base_path)} track #{tid}"
                         )
                         continue
                     detected[tid] = unified
@@ -601,7 +601,7 @@ class LanguageFixerTool(Tool):
                         self.logger.info(f"Detected subtitle language for track #{tid}: {unified}")
             except Exception as e:
                 self.logger.debug(
-                    f"Subtitle language detection failed for {_format_path(video_path, self._base_path)} track #{tid}: {e}"
+                    f"Subtitle language detection failed for {files_utils.format_path(video_path, self._base_path)} track #{tid}: {e}"
                 )
             finally:
                 try:
@@ -652,7 +652,7 @@ class LanguageFixerTool(Tool):
         if self._is_rmvb(video_path):
             self.logger.warning(
                 "Skipping RMVB file (cannot be reliably converted to MKV): %s",
-                _format_path(video_path, self._base_path),
+                files_utils.format_path(video_path, self._base_path),
             )
             return False
 
@@ -675,7 +675,7 @@ class LanguageFixerTool(Tool):
             self.logger.error(
                 "mkvmerge failed (exit %d) for %s: %s",
                 status.returncode,
-                _format_path(video_path, self._base_path),
+                files_utils.format_path(video_path, self._base_path),
                 output.strip() or "(no output)",
             )
             if os.path.exists(output_path):
@@ -683,13 +683,13 @@ class LanguageFixerTool(Tool):
             return False
 
         if not os.path.exists(output_path):
-            self.logger.error(f"mkvmerge did not create output file for {_format_path(video_path, self._base_path)}")
+            self.logger.error(f"mkvmerge did not create output file for {files_utils.format_path(video_path, self._base_path)}")
             return False
 
         if not is_mkv:
             os.remove(video_path)
             os.rename(output_path, final_path)
-            self.logger.info(f"Converted to MKV: {_format_path(final_path, self._base_path)}")
+            self.logger.info(f"Converted to MKV: {files_utils.format_path(final_path, self._base_path)}")
         else:
             os.replace(output_path, video_path)
 
@@ -697,7 +697,7 @@ class LanguageFixerTool(Tool):
 
     def _log_duration(self, label: str, elapsed: float, path: str | None = None) -> None:
         if path:
-            self.logger.debug("%s %.3fs: %s", label, elapsed, _format_path(path, self._base_path))
+            self.logger.debug("%s %.3fs: %s", label, elapsed, files_utils.format_path(path, self._base_path))
         else:
             self.logger.debug("%s %.3fs", label, elapsed)
 
@@ -707,23 +707,3 @@ class LanguageFixerTool(Tool):
         elapsed = time.perf_counter() - start_time
         if elapsed >= _SLOW_STEP_LOG_S:
             self._log_duration(label, elapsed, path)
-
-
-def _format_path(path: str, base_path: str | None) -> str:
-    if not base_path:
-        return path
-
-    try:
-        base = os.path.abspath(base_path)
-        target = os.path.abspath(path)
-    except OSError:
-        return path
-
-    try:
-        if os.path.commonpath([base, target]) != base:
-            return path
-    except ValueError:
-        return path
-
-    rel = os.path.relpath(target, base)
-    return rel or path

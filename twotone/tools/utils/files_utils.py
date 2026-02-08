@@ -57,12 +57,23 @@ class TempFileManager:
             os.remove(self.filepath)
 
 
-def get_printable_path(path: str, common_prefix: str) -> str:
-    pl = len(common_prefix)
-    assert path[:pl] == common_prefix
+def format_path(path: str, base_path: str | None) -> str:
+    """Format path as relative to base_path if possible, otherwise return absolute path."""
+    if not base_path:
+        return path
 
-    # skip '/' or '\' (on windows) if first char
-    if path[pl] == os.sep or (os.altsep is not None and path[pl] == os.altsep):
-        return path[pl + 1:]
-    else:
-        return path[pl:]
+    try:
+        base = os.path.abspath(base_path)
+        target = os.path.abspath(path)
+    except OSError:
+        return path
+
+    try:
+        if os.path.commonpath([base, target]) != base:
+            return path
+    except ValueError:
+        # On Windows, paths on different drives raise ValueError
+        return path
+
+    rel = os.path.relpath(target, base)
+    return rel or path
