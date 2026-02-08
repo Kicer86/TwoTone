@@ -634,7 +634,12 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
     result = process_utils.start_process(cmd, options)
 
     # validate result and output file
-    if result.returncode != 0:
+    # mkvmerge returns: 0 = success, 1 = success with warnings, 2 = error
+    if result.returncode == 1:
+        warnings = (result.stdout or "") + (result.stderr or "")
+        if warnings.strip():
+            logging.warning(f"{cmd} completed with warnings: {warnings.strip()}")
+    elif result.returncode > 1:
         if os.path.exists(output_path):
             os.remove(output_path)
         raise RuntimeError(f"{cmd} exited with unexpected error:\n{result.stderr}\n\nAnd output: {result.stdout}")
