@@ -385,7 +385,9 @@ class MeltAnalyzer:
         # If all streams come from a single file, length mismatches are irrelevant.
         stream_paths = {path for path, _, _ in (video_streams + audio_streams + subtitle_streams)}
         if len(stream_paths) > 1:
-            length_issue = self._validate_group_lengths(tracks, ids, title, files)
+            # Only validate lengths for files from which streams are actually used
+            used_tracks = {path: info for path, info in tracks.items() if path in stream_paths}
+            length_issue = self._validate_group_lengths(used_tracks, ids, title, files)
             if length_issue:
                 return None, length_issue, details_full
 
