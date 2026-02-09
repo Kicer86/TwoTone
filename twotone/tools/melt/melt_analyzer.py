@@ -18,16 +18,15 @@ class MeltAnalyzer:
         logger: logging.Logger,
         duplicates_source: DuplicatesSource,
         wd: str,
-        allow_language_guessing: bool,
         allow_length_mismatch: bool,
         tolerance_ms: int,
     ) -> None:
         self.logger = logger
         self.duplicates_source = duplicates_source
         self.wd = wd
-        self.allow_language_guessing = allow_language_guessing
         self.allow_length_mismatch = allow_length_mismatch
         self.tolerance_ms = tolerance_ms
+        self.base_path: str | None = None
 
     @staticmethod
     def _stream_short_details(stype: str, stream: Dict[str, Any]) -> str:
@@ -265,7 +264,6 @@ class MeltAnalyzer:
             self.logger,
             self.duplicates_source,
             picker_wd,
-            allow_language_guessing=self.allow_language_guessing,
         )
         return streams_picker.pick_streams(tracks, ids)
 
@@ -315,10 +313,58 @@ class MeltAnalyzer:
 
         return None
 
+    def _log_group_issue(self, title: str, issue: str, files: Sequence[str]) -> None:
+        self.logger.warning("Title %s: %s", title, issue)
+        for path in files:
+            self.logger.warning("  %s", self._format_group_path(path))
+
+    def _format_group_path(self, path: str) -> str:
+        if not self.base_path:
+            return path
+        try:
+            return os.path.relpath(path, self.base_path)
+        except ValueError:
+            return path
+
+    def _validate_group_lengths(
+        self,
+        tracks: Dict[str, Any],
+        ids: Dict[str, int],
+        title: str,
+        files: Sequence[str],
+    ) -> str | None:
+        base_length = None
+        base_file_id = None
+
+        for path, info in tracks.items():
+            try:
+                track = self._pick_primary_video_track(info["video"], ids[path])
+            except Exception:
+                continue
+
+            length = track.get("length")
+            if length is None:
+                continue
+
+            if base_length is None:
+                base_length = length
+                base_file_id = ids[path]
+                continue
+
+            if _is_length_mismatch(base_length, length, self.tolerance_ms):
+                issue = f"Video length mismatch between #{ids[path]} and #{base_file_id} (use --allow-length-mismatch)."
+                if self.allow_length_mismatch:
+                    self.logger.debug(f"{issue} Continuing due to allow-length-mismatch.")
+                    continue
+                return issue
+
+        return None
+
     def _analyze_group(
         self,
         files: List[str],
         ids: Dict[str, int],
+        title: str,
     ) -> tuple[Dict[str, Any] | None, str | None, Dict[str, Any]]:
         # Probe inputs and print details
         details_full, attachments, tracks = self._probe_inputs(files)
@@ -335,6 +381,15 @@ class MeltAnalyzer:
         if not video_streams:
             self.logger.debug("No video streams found.")
             return None, "No video streams found.", details_full
+
+        # If all streams come from a single file, length mismatches are irrelevant.
+        stream_paths = {path for path, _, _ in (video_streams + audio_streams + subtitle_streams)}
+        if len(stream_paths) > 1:
+            # Only validate lengths for files from which streams are actually used
+            used_tracks = {path: info for path, info in tracks.items() if path in stream_paths}
+            length_issue = self._validate_group_lengths(used_tracks, ids, title, files)
+            if length_issue:
+                return None, length_issue, details_full
 
         # Validate and compute audio patch requirements
         issue = self._validate_input_files(tracks, ids, video_streams, audio_streams, subtitle_streams)
@@ -391,8 +446,9 @@ class MeltAnalyzer:
                 ids = {file: i + 1 for i, file in enumerate(files)}
 
                 # analysis for group
-                plan_details, issue, files_details = self._analyze_group(files, ids)
+                plan_details, issue, files_details = self._analyze_group(files, ids, title)
                 if plan_details is None:
+                    self._log_group_issue(title, issue or "Unknown issue.", files)
                     skipped_groups.append({
                         "files": files,
                         "output_name": output_name,

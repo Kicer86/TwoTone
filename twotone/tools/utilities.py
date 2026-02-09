@@ -82,7 +82,7 @@ def extract_scenes(video_path, output_dir, format: str, scale: float):
             # Rename and move the file in one step
             os.rename(old_path, new_path)
         else:
-            print("Error")
+            logging.warning(f"Frame {frame_number} ({frame_file}) not found in PTS map, skipping")
 
     # Cleanup temp folder
     os.rmdir(temp_folder)

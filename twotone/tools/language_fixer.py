@@ -2,49 +2,29 @@ import argparse
 import logging
 import os
 import re
+import time
 import uuid
 
-import pycountry
 from dataclasses import dataclass
 
 from overrides import override
 from tqdm import tqdm
 
 from .tool import Plan, Tool
-from twotone.tools.utils import generic_utils, language_utils, process_utils, subtitles_utils, video_utils
+from twotone.tools.utils import files_utils, generic_utils, language_utils, process_utils, subtitles_utils, video_utils
 
 
-_LANG_TOKEN_RE = re.compile(r"[A-Za-z]{2,}")
-
-# Heuristic: tokens that are common audio labels but not languages.
-_AUDIO_LABEL_STOPWORDS = {
-    "audio",
-    "commentary",
-    "director",
-    "dub",
-    "dubbed",
-    "dialog",
-    "dialogue",
-    "mono",
-    "stereo",
-    "surround",
-    "track",
-    "voice",
-    "vocals",
-    "mix",
-    "mixdown",
-    "aac",
-    "ac3",
-    "eac3",
-    "dts",
-    "truehd",
-    "atmos",
-    "flac",
-    "mp3",
-    "opus",
-    "pcm",
-    "lpcm",
-}
+_FILENAME_LANG_KEYWORD_RE = re.compile(
+    r"(?i)"
+    r"(?:"
+    r"(?:dubbing|dubbed|dub|dubb|lektor|lector|voice|audio)\b[\W_]+(?P<lang>[a-z]{2,3})\b"
+    r"|"
+    r"\b(?P<lang_rev>[a-z]{2,3})\b[\W_]+(?:dubbing|dubbed|dub|dubb|lektor|lector|voice|audio)\b"
+    r")"
+)
+# Matches a language code glued directly to "dub" (e.g. "endub", "pldub").
+_GLUED_DUB_RE = re.compile(r"(?i)(?<![a-z])(?P<lang>[a-z]{2,3})dub(?:bing|bed|b)?\b")
+_SLOW_STEP_LOG_S = 0.5
 
 
 @dataclass
@@ -93,10 +73,10 @@ class LanguageFixPlan:
             has_audio_updates = bool(item.audio_updates)
 
             if not has_sub_updates and not has_audio_updates:
-                logger.debug("File: %s", _format_path(item.path, self.base_path))
+                logger.debug("File: %s", files_utils.format_path(item.path, self.base_path))
                 continue
 
-            logger.info("File: %s", _format_path(item.path, self.base_path))
+            logger.info("File: %s", files_utils.format_path(item.path, self.base_path))
             if has_sub_updates:
                 for line in self._format_track_lines(
                     "subtitles",
@@ -164,7 +144,7 @@ class LanguageFixerTool(Tool):
         parser.add_argument(
             "--audio",
             action="store_true",
-            help="Enable audio language detection from track names (heuristic; may be inaccurate).",
+            help="Enable audio language detection from track names and file names (heuristic; may be inaccurate).",
         )
         parser.add_argument(
             "videos_path",
@@ -177,10 +157,15 @@ class LanguageFixerTool(Tool):
         self._include_audio = args.audio
         self._base_path = os.path.abspath(args.videos_path[0])
         self._set_context(logger, working_dir)
-        process_utils.ensure_tools_exist(["mkvmerge", "mkvextract", "ffprobe"], logger)
+        tools = ["mkvmerge", "mkvextract", "ffprobe"]
+        if args.audio:
+            tools.append("ffmpeg")
+        process_utils.ensure_tools_exist(tools, logger)
 
         self.logger.info("Searching for files with missing track languages")
+        scan_start = time.perf_counter()
         raw_items = self._scan_directory(args.videos_path[0], include_audio=self._include_audio)
+        self._log_duration("scan_directory", time.perf_counter() - scan_start)
         self.logger.info(
             "Found %d file(s) with missing track languages. Detecting languages.",
             len(raw_items),
@@ -211,31 +196,37 @@ class LanguageFixerTool(Tool):
                 if track["type"] == "audio"
             }
 
+            subtitle_start = time.perf_counter()
             subtitle_updates = self._detect_subtitle_languages(
                 video_path,
                 subtitles_missing,
                 log_detection=False,
             )
+            self._log_if_slow("detect_subtitle_languages", video_path, subtitle_start)
             audio_updates: dict[int, str] = {}
             if self._include_audio:
+                audio_start = time.perf_counter()
                 audio_updates = self._detect_audio_languages(
+                    video_path,
                     tracks,
                     audio_missing,
                     log_detection=False,
                 )
+                self._log_if_slow("detect_audio_languages", video_path, audio_start)
 
-            plan_items.append(
-                LanguageFixPlanItem(
-                    path=video_path,
-                    subtitles_missing=subtitles_missing,
-                    audio_missing=audio_missing,
-                    subtitle_updates=subtitle_updates,
-                    audio_updates=audio_updates,
-                    subtitle_languages=subtitle_languages,
-                    audio_languages=audio_languages,
-                    unsupported_subtitles=unsupported_subtitles,
+            if subtitle_updates or audio_updates:
+                plan_items.append(
+                    LanguageFixPlanItem(
+                        path=video_path,
+                        subtitles_missing=subtitles_missing,
+                        audio_missing=audio_missing,
+                        subtitle_updates=subtitle_updates,
+                        audio_updates=audio_updates,
+                        subtitle_languages=subtitle_languages,
+                        audio_languages=audio_languages,
+                        unsupported_subtitles=unsupported_subtitles,
+                    )
                 )
-            )
 
         return LanguageFixPlan(items=plan_items, include_audio=self._include_audio, base_path=self._base_path)
 
@@ -256,7 +247,7 @@ class LanguageFixerTool(Tool):
         self.logger.info("Done")
 
     def _apply_plan(self, items: list[LanguageFixPlanItem]) -> None:
-        self.logger.info("Fixing track languages")
+        self.logger.info("Fixing track languages for %d file(s)", len(items))
 
         for item in tqdm(items, desc="Fixing", unit="video", **generic_utils.get_tqdm_defaults()):
             self._check_for_stop()
@@ -273,10 +264,10 @@ class LanguageFixerTool(Tool):
             }
 
             if not subtitle_updates and not audio_updates:
-                self.logger.warning("No languages could be detected; skipping file.")
+                self.logger.debug("Languages already set for %s, skipping.", files_utils.format_path(video_path, self._base_path))
                 continue
 
-            self.logger.info("Processing %s", _format_path(video_path, self._base_path))
+            self.logger.info("Processing %s", files_utils.format_path(video_path, self._base_path))
             subtitle_languages = {
                 track["tid"]: track["language"]
                 for track in tracks
@@ -314,20 +305,25 @@ class LanguageFixerTool(Tool):
                 self.logger.warning("Failed to update track languages.")
 
     def _scan_directory(self, path: str, include_audio: bool) -> list[dict]:
-        self.logger.debug(f"Finding MKV files in {path}")
+        self.logger.debug(f"Finding video files in {path}")
+        scan_start = time.perf_counter()
         video_files = []
 
         for cd, _, files in os.walk(path, followlinks=True):
             for file in files:
                 self._check_for_stop()
-                if file.lower().endswith(".mkv"):
-                    video_files.append(os.path.join(cd, file))
+                file_path = os.path.join(cd, file)
+                if video_utils.is_video(file_path):
+                    video_files.append(file_path)
 
+        self._log_duration("scan_directory.collect_files", time.perf_counter() - scan_start)
         results: list[dict] = []
         self.logger.debug("Analysing files")
         for video in tqdm(video_files, desc="Analysing videos", unit="video", **generic_utils.get_tqdm_defaults()):
             self._check_for_stop()
+            missing_start = time.perf_counter()
             missing = self._collect_missing_tracks(video, include_audio)
+            self._log_if_slow("collect_missing_tracks", video, missing_start)
             if missing is not None:
                 results.append(missing)
 
@@ -343,7 +339,22 @@ class LanguageFixerTool(Tool):
             self._interruption._check_for_stop()
 
     def _get_tracks(self, video_path: str) -> list[dict]:
+        if self._is_mkv(video_path):
+            return self._get_tracks_mkvmerge(video_path)
+        return self._get_tracks_ffprobe(video_path)
+
+    @staticmethod
+    def _is_mkv(path: str) -> bool:
+        return os.path.splitext(path)[1].lower() == ".mkv"
+
+    @staticmethod
+    def _is_rmvb(path: str) -> bool:
+        return os.path.splitext(path)[1].lower() in (".rmvb", ".rm")
+
+    def _get_tracks_mkvmerge(self, video_path: str) -> list[dict]:
+        start = time.perf_counter()
         info = video_utils.get_video_full_info_mkvmerge(video_path)
+        self._log_if_slow("get_tracks_mkvmerge", video_path, start)
         tracks: list[dict] = []
 
         for track in info.get("tracks", []):
@@ -375,29 +386,67 @@ class LanguageFixerTool(Tool):
 
         return tracks
 
+    def _get_tracks_ffprobe(self, video_path: str) -> list[dict]:
+        start = time.perf_counter()
+        info = video_utils.get_video_full_info(video_path)
+        self._log_if_slow("get_tracks_ffprobe", video_path, start)
+        tracks: list[dict] = []
+        for stream in info.get("streams", []):
+            track_type = stream.get("codec_type")
+            tid = stream.get("index")
+            tags = stream.get("tags", {}) or {}
+
+            language = tags.get("language")
+            if language == "und":
+                language = None
+            if language:
+                try:
+                    language = language_utils.unify_lang(language)
+                except Exception:
+                    language = None
+
+            name = tags.get("title")
+            codec = stream.get("codec_name")
+            codec_id = stream.get("codec_tag_string") or stream.get("codec_tag")
+
+            tracks.append({
+                "type": track_type,
+                "tid": tid,
+                "language": language,
+                "name": name,
+                "codec": codec,
+                "codec_id": codec_id,
+            })
+
+        return tracks
+
     def _collect_missing_tracks(self, video_path: str, include_audio: bool) -> dict | None:
+        is_mkv = self._is_mkv(video_path)
+        tracks_start = time.perf_counter()
         tracks = self._get_tracks(video_path)
+        self._log_if_slow("get_tracks", video_path, tracks_start)
 
         missing_subtitles: list[int] = []
         webvtt_skipped: set[str] = set()
         pgs_skipped: set[str] = set()
         unsupported_subtitles: dict[int, str] = {}
-        for track in tracks:
-            if track["type"] not in ("subtitle", "subtitles"):
-                continue
-            if track["language"] is not None:
-                continue
-            if self._is_webvtt_track(track):
-                codec_id = track.get("codec_id") or track.get("codec") or "unknown"
-                webvtt_skipped.add(str(codec_id))
-                unsupported_subtitles[track["tid"]] = str(codec_id)
-                continue
-            if self._is_pgs_track(track):
-                codec_id = track.get("codec_id") or track.get("codec") or "unknown"
-                pgs_skipped.add(str(codec_id))
-                unsupported_subtitles[track["tid"]] = str(codec_id)
-                continue
-            missing_subtitles.append(track["tid"])
+        if is_mkv:
+            for track in tracks:
+                if track["type"] not in ("subtitle", "subtitles"):
+                    continue
+                if track["language"] is not None:
+                    continue
+                if self._is_webvtt_track(track):
+                    codec_id = track.get("codec_id") or track.get("codec") or "unknown"
+                    webvtt_skipped.add(str(codec_id))
+                    unsupported_subtitles[track["tid"]] = str(codec_id)
+                    continue
+                if self._is_pgs_track(track):
+                    codec_id = track.get("codec_id") or track.get("codec") or "unknown"
+                    pgs_skipped.add(str(codec_id))
+                    unsupported_subtitles[track["tid"]] = str(codec_id)
+                    continue
+                missing_subtitles.append(track["tid"])
 
         missing_audio: list[int] = []
         if include_audio:
@@ -411,14 +460,14 @@ class LanguageFixerTool(Tool):
             formats = ", ".join(sorted(webvtt_skipped))
             self.logger.warning(
                 "WebVTT subtitles are not supported for language detection in %s (codec_id: %s)",
-                _format_path(video_path, self._base_path),
+                files_utils.format_path(video_path, self._base_path),
                 formats,
             )
         if pgs_skipped:
             formats = ", ".join(sorted(pgs_skipped))
             self.logger.warning(
                 "PGS subtitles are not supported for language detection in %s (codec_id: %s)",
-                _format_path(video_path, self._base_path),
+                files_utils.format_path(video_path, self._base_path),
                 formats,
             )
 
@@ -451,54 +500,100 @@ class LanguageFixerTool(Tool):
         if not label:
             return None
 
-        for token in _LANG_TOKEN_RE.findall(label):
-            token_low = token.lower()
-            if token_low in _AUDIO_LABEL_STOPWORDS:
-                continue
+        best = self._guess_language_from_keyword_context(label)
+        if best:
+            return best
 
-            if language_utils.is_valid_lang_code(token_low):
+        return self._guess_language_from_label_tokens(label)
+
+    @staticmethod
+    def _guess_language_from_label_tokens(label: str) -> str | None:
+        import pycountry
+
+        for token in re.findall(r"[A-Za-z]{2,}", label):
+            low = token.lower()
+
+            # Try full language name (e.g. "English", "Polish")
+            if len(low) > 3:
                 try:
-                    return language_utils.unify_lang(token_low)
-                except Exception:
+                    lang = pycountry.languages.lookup(token)
+                    if hasattr(lang, "alpha_3"):
+                        return lang.alpha_3
+                except LookupError:
                     pass
-
-            try:
-                lang_info = pycountry.languages.lookup(token_low)
-            except LookupError:
                 continue
 
-            code = getattr(lang_info, "alpha_3", None) or getattr(lang_info, "alpha_2", None)
-            if code:
+            # Try 3-letter language code (skip 2-letter — too many collisions
+            # with common English words like "mr", "no", "am", "it", etc.)
+            if len(low) != 3 or not language_utils.is_valid_lang_code(low):
+                continue
+            try:
+                code = language_utils.unify_lang(low)
+            except (ValueError, Exception):
+                continue
+            lang_info = pycountry.languages.get(alpha_3=code)
+            if lang_info and hasattr(lang_info, "alpha_2"):
+                return code
+
+        return None
+
+    def _guess_language_from_keyword_context(self, text: str) -> str | None:
+        text_low = text.lower()
+        for match in _FILENAME_LANG_KEYWORD_RE.finditer(text_low):
+            value = match.group("lang") or match.group("lang_rev")
+            if not value:
+                continue
+            if not language_utils.is_valid_lang_code(value):
+                continue
+            try:
+                return language_utils.unify_lang(value)
+            except Exception:
+                return None
+
+        # Try glued patterns like "endub", "pldubbing"
+        for match in _GLUED_DUB_RE.finditer(text_low):
+            value = match.group("lang")
+            if value and language_utils.is_valid_lang_code(value):
                 try:
-                    return language_utils.unify_lang(code)
+                    return language_utils.unify_lang(value)
                 except Exception:
                     pass
 
         return None
 
+    def _guess_audio_language_from_filename(self, path: str) -> str | None:
+        base_name = os.path.splitext(os.path.basename(path))[0]
+        return self._guess_language_from_keyword_context(base_name)
+
     def _detect_subtitle_languages(self, video_path: str, missing_subtitles: list[int], *, log_detection: bool = True) -> dict[int, str]:
         if not missing_subtitles:
             return {}
 
+        extract_start = time.perf_counter()
         base_tmp = os.path.join(self.working_dir, f"subtitle_{uuid.uuid4().hex}")
         tid_to_path = video_utils.extract_subtitle_to_temp(video_path, missing_subtitles, base_tmp, logger=self.logger)
+        self._log_if_slow("extract_subtitles", video_path, extract_start)
 
         detected: dict[int, str] = {}
         for tid, path in tid_to_path.items():
             self._check_for_stop()
             if not os.path.exists(path):
-                self.logger.warning(f"Subtitle track #{tid} extraction failed for {_format_path(video_path, self._base_path)}")
+                self.logger.warning(f"Subtitle track #{tid} extraction failed for {files_utils.format_path(video_path, self._base_path)}")
                 continue
 
             try:
+                encoding_start = time.perf_counter()
                 encoding = subtitles_utils.file_encoding(path)
+                self._log_if_slow("subtitle_file_encoding", path, encoding_start)
+                lang_start = time.perf_counter()
                 detected_lang = subtitles_utils.guess_subtitle_language(path, encoding)
+                self._log_if_slow("subtitle_language_guess", path, lang_start)
                 if detected_lang:
                     try:
                         unified = language_utils.unify_lang(detected_lang)
                     except Exception:
                         self.logger.debug(
-                            f"Unrecognized subtitle language '{detected_lang}' for {_format_path(video_path, self._base_path)} track #{tid}"
+                            f"Unrecognized subtitle language '{detected_lang}' for {files_utils.format_path(video_path, self._base_path)} track #{tid}"
                         )
                         continue
                     detected[tid] = unified
@@ -506,7 +601,7 @@ class LanguageFixerTool(Tool):
                         self.logger.info(f"Detected subtitle language for track #{tid}: {unified}")
             except Exception as e:
                 self.logger.debug(
-                    f"Subtitle language detection failed for {_format_path(video_path, self._base_path)} track #{tid}: {e}"
+                    f"Subtitle language detection failed for {files_utils.format_path(video_path, self._base_path)} track #{tid}: {e}"
                 )
             finally:
                 try:
@@ -516,12 +611,20 @@ class LanguageFixerTool(Tool):
 
         return detected
 
-    def _detect_audio_languages(self, tracks: list[dict], missing_audio: list[int], *, log_detection: bool = True) -> dict[int, str]:
+    def _detect_audio_languages(
+        self,
+        video_path: str,
+        tracks: list[dict],
+        missing_audio: list[int],
+        *,
+        log_detection: bool = True,
+    ) -> dict[int, str]:
         if not missing_audio:
             return {}
 
         audio_tracks = {track["tid"]: track for track in tracks if track["type"] == "audio"}
         detected: dict[int, str] = {}
+        filename_lang = self._guess_audio_language_from_filename(video_path)
 
         for tid in missing_audio:
             self._check_for_stop()
@@ -530,14 +633,15 @@ class LanguageFixerTool(Tool):
                 continue
 
             name = track.get("name")
-            if not name:
-                continue
-
-            detected_lang = self._guess_audio_language(name)
+            detected_lang = self._guess_audio_language(name) if name else None
+            source = "track name"
+            if not detected_lang and filename_lang:
+                detected_lang = filename_lang
+                source = "file name"
             if detected_lang:
                 detected[tid] = detected_lang
                 if log_detection:
-                    self.logger.info(f"Detected audio language for track #{tid}: {detected_lang}")
+                    self.logger.info(f"Detected audio language for track #{tid}: {detected_lang} ({source})")
 
         return detected
 
@@ -545,7 +649,18 @@ class LanguageFixerTool(Tool):
         if not updates:
             return False
 
+        if self._is_rmvb(video_path):
+            self.logger.warning(
+                "Skipping RMVB file (cannot be reliably converted to MKV): %s",
+                files_utils.format_path(video_path, self._base_path),
+            )
+            return False
+
+        is_mkv = self._is_mkv(video_path)
+        base, _ = os.path.splitext(video_path)
         output_path = f"{video_path}.langfix.mkv"
+        final_path = f"{base}.mkv" if not is_mkv else video_path
+
         if os.path.exists(output_path):
             os.remove(output_path)
 
@@ -555,35 +670,40 @@ class LanguageFixerTool(Tool):
         args.append(video_path)
 
         status = process_utils.start_process("mkvmerge", args)
-        if status.returncode != 0:
-            self.logger.error(f"mkvmerge failed for {_format_path(video_path, self._base_path)}: {status.stderr}")
+        if status.returncode not in (0, 1):
+            output = (status.stdout or "") + (status.stderr or "")
+            self.logger.error(
+                "mkvmerge failed (exit %d) for %s: %s",
+                status.returncode,
+                files_utils.format_path(video_path, self._base_path),
+                output.strip() or "(no output)",
+            )
             if os.path.exists(output_path):
                 os.remove(output_path)
             return False
 
         if not os.path.exists(output_path):
-            self.logger.error(f"mkvmerge did not create output file for {_format_path(video_path, self._base_path)}")
+            self.logger.error(f"mkvmerge did not create output file for {files_utils.format_path(video_path, self._base_path)}")
             return False
 
-        os.replace(output_path, video_path)
+        if not is_mkv:
+            os.remove(video_path)
+            os.rename(output_path, final_path)
+            self.logger.info(f"Converted to MKV: {files_utils.format_path(final_path, self._base_path)}")
+        else:
+            os.replace(output_path, video_path)
+
         return True
 
+    def _log_duration(self, label: str, elapsed: float, path: str | None = None) -> None:
+        if path:
+            self.logger.debug("%s %.3fs: %s", label, elapsed, files_utils.format_path(path, self._base_path))
+        else:
+            self.logger.debug("%s %.3fs", label, elapsed)
 
-def _format_path(path: str, base_path: str | None) -> str:
-    if not base_path:
-        return path
-
-    try:
-        base = os.path.abspath(base_path)
-        target = os.path.abspath(path)
-    except OSError:
-        return path
-
-    try:
-        if os.path.commonpath([base, target]) != base:
-            return path
-    except ValueError:
-        return path
-
-    rel = os.path.relpath(target, base)
-    return rel or path
+    def _log_if_slow(self, label: str, path: str, start_time: float | None) -> None:
+        if start_time is None:
+            return
+        elapsed = time.perf_counter() - start_time
+        if elapsed >= _SLOW_STEP_LOG_S:
+            self._log_duration(label, elapsed, path)

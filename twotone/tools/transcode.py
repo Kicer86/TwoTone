@@ -27,7 +27,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
     def _find_video_files(self, directory: str) -> list[str]:
         """Find video files with specified extensions."""
         video_files = []
-        for root, _, files in os.walk(directory):
+        for root, _, files in os.walk(directory, followlinks=True):
             for file in files:
                 if video_utils.is_video(file):
                     video_files.append(os.path.join(root, file))
@@ -280,17 +280,17 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
             if overwrite_input:
                 try:
-                    logging.debug(f"Replacing {input_file} with {temp_file}")
+                    self.logger.debug(f"Replacing {input_file} with {temp_file}")
                     os.replace(temp_file, input_file)
 
                 except OSError:
-                    logging.debug(f"Replacing {input_file} with {temp_file} (second attempt)")
+                    self.logger.debug(f"Replacing {input_file} with {temp_file} (second attempt)")
                     shutil.move(temp_file, input_file)
             else:
                 final_output_file = os.path.join(self.working_dir, f"{basename}.{ext}")
-                logging.debug(f"Renaming {temp_file} to {final_output_file}")
+                self.logger.debug(f"Renaming {temp_file} to {final_output_file}")
                 shutil.move(temp_file, final_output_file)
-                logging.debug(f"Removing {input_file}")
+                self.logger.debug(f"Removing {input_file}")
                 os.remove(input_file)
 
             self.logger.info(
@@ -301,7 +301,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
             )
 
         except ValueError:
-            logging.error(f"Error occured, removing temporary file {temp_file}")
+            self.logger.error(f"Error occurred, removing temporary file {temp_file}")
             os.remove(temp_file)
 
 

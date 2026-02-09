@@ -113,7 +113,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
                 audio_streams = file_details.get("audio", [])
                 for audio_stream in audio_streams:
                     codec = audio_stream.get("codec")
-                    if codec.lower() == "cook":
+                    if codec and codec.lower() == "cook":
                         audio_codec = "aac"
                         break
 

@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Tuple
@@ -509,6 +510,8 @@ def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path:
     """
 
     tids_list: List[int] = list(tids)
+    if logger:
+        logger.debug("Extracting subtitles from %s (tids=%s)", video_path, ",".join(str(t) for t in tids_list))
 
     # Map formats to file extensions
     ext_map = {
@@ -540,9 +543,15 @@ def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path:
         out_path = f"{output_base_path}.{tid}{suffix}"
         tid_to_path[tid] = out_path
         options.append(f"{tid}:{out_path}")
+        if logger:
+            logger.debug("  tid #%s -> %s (format=%s)", tid, out_path, fmt or "unknown")
 
     try:
+        start = time.perf_counter()
         status = process_utils.start_process("mkvextract", options)
+        elapsed = time.perf_counter() - start
+        if logger:
+            logger.debug("mkvextract finished in %.3fs (rc=%s)", elapsed, status.returncode)
         if status.returncode != 0 and logger:
             logger.error(f"mkvextract failed for {video_path}: {status.stderr}")
 
@@ -550,10 +559,31 @@ def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path:
         if logger:
             logger.error(f"Subtitle extraction failed for {video_path}: {e}")
 
+    if logger:
+        for tid, out_path in tid_to_path.items():
+            if os.path.exists(out_path):
+                try:
+                    size = os.path.getsize(out_path)
+                except OSError:
+                    size = -1
+                logger.debug("  extracted tid #%s -> %s (%s bytes)", tid, out_path, size)
+            else:
+                logger.debug("  missing output for tid #%s -> %s", tid, out_path)
+
     return tid_to_path
 
 
 def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | Dict | None = None, audios: List[Dict] | None = None, thumbnail: Union[str, None] = None):
+    # RMVB/RM files cannot be reliably converted to MKV due to RealAudio "cook" codec issues.
+    # mkvmerge produces broken files with audio sync problems.
+    # See: https://gitlab.com/mbunkus/mkvtoolnix/-/issues/708
+    # See: https://forum.videohelp.com/threads/299034-Problem-converting-RMVB-to-MP4
+    ext = os.path.splitext(input_video)[1].lower()
+    if ext in (".rmvb", ".rm"):
+        raise ValueError(
+            f"Cannot convert RMVB/RM files to MKV (unsupported RealAudio codec): {input_video}"
+        )
+
     subtitles = subtitles or []
     audios = audios or []
 
@@ -604,7 +634,12 @@ def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFil
     result = process_utils.start_process(cmd, options)
 
     # validate result and output file
-    if result.returncode != 0:
+    # mkvmerge returns: 0 = success, 1 = success with warnings, 2 = error
+    if result.returncode == 1:
+        warnings = (result.stdout or "") + (result.stderr or "")
+        if warnings.strip():
+            logging.warning(f"{cmd} completed with warnings: {warnings.strip()}")
+    elif result.returncode > 1:
         if os.path.exists(output_path):
             os.remove(output_path)
         raise RuntimeError(f"{cmd} exited with unexpected error:\n{result.stderr}\n\nAnd output: {result.stdout}")

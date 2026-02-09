@@ -14,18 +14,6 @@ from .tool import Plan, Tool
 from twotone.tools.utils import files_utils, generic_utils, subtitles_utils, video_utils
 
 
-def _display_path(path: str, base_path: str | None) -> str:
-    if not base_path:
-        return path
-    try:
-        rel = os.path.relpath(path, base_path)
-    except ValueError:
-        return path
-    if rel.startswith(".."):
-        return path
-    return rel
-
-
 class Merge(generic_utils.InterruptibleProcess):
 
     def __init__(self, logger: logging.Logger, language: str, lang_priority: str, working_dir: str) -> None:
@@ -83,7 +71,7 @@ class Merge(generic_utils.InterruptibleProcess):
 
         if len(subtitles) > 0:
             subtitles_str = '\n'.join(subtitles)
-            self.logger.warning(f"When matching videos with subtitles in {path}, given subtitles were not matched to any video: {subtitles_str}")
+            self.logger.warning(f"When matching videos with subtitles in {dir_path}, given subtitles were not matched to any video: {subtitles_str}")
 
         return matches
 
@@ -187,7 +175,7 @@ class Merge(generic_utils.InterruptibleProcess):
         return converted_subtitle
 
     def _merge(self, input_video: str, subtitles: list[subtitles_utils.SubtitleFile]) -> None:
-        self.logger.info(f"Merging video file: {_display_path(input_video, self.base_path)} with subtitles:")
+        self.logger.info(f"Merging video file: {files_utils.format_path(input_video, self.base_path)} with subtitles:")
 
         video_dir, video_name, _ = files_utils.split_path(input_video)
         output_video = video_dir + "/" + video_name + "." + "mkv"
@@ -224,9 +212,9 @@ class Merge(generic_utils.InterruptibleProcess):
             assert subtitle.path
 
             if subtitle.name:
-                self.logger.info(f"\t[{subtitle.language}][{subtitle.name}]: {_display_path(subtitle.path, self.base_path)}")
+                self.logger.info(f"\t[{subtitle.language}][{subtitle.name}]: {files_utils.format_path(subtitle.path, self.base_path)}")
             else:
-                self.logger.info(f"\t[{subtitle.language}]: {_display_path(subtitle.path, self.base_path)}")
+                self.logger.info(f"\t[{subtitle.language}]: {files_utils.format_path(subtitle.path, self.base_path)}")
             input_files.add(subtitle.path)
             subtitle_path_obj = Path(subtitle.path)
             if subtitle_path_obj.suffix.lower() == ".idx":
@@ -340,7 +328,7 @@ class Merge(generic_utils.InterruptibleProcess):
             total = len(videos_and_subtitles)
             self.logger.warning(f"Merge completed with errors: {len(failed)}/{total} failed")
             for video in failed:
-                self.logger.warning(f"Failed: {_display_path(video, self.base_path)}")
+                self.logger.warning(f"Failed: {files_utils.format_path(video, self.base_path)}")
 
 
 @dataclass
@@ -358,7 +346,7 @@ class MergePlan:
 
         logger.info("Planned merges: %d", len(self.items))
         for video, subtitles in self.items.items():
-            logger.info("Video: %s", _display_path(video, self.base_path))
+            logger.info("Video: %s", files_utils.format_path(video, self.base_path))
             if not subtitles:
                 logger.info("  subtitles: -")
                 continue
@@ -366,9 +354,9 @@ class MergePlan:
                 subtitle_path = subtitle.path or "-"
                 label = subtitle.language or "unknown"
                 if subtitle.name:
-                    logger.info("  [%s][%s] %s", label, subtitle.name, _display_path(subtitle_path, self.base_path))
+                    logger.info("  [%s][%s] %s", label, subtitle.name, files_utils.format_path(subtitle_path, self.base_path))
                 else:
-                    logger.info("  [%s] %s", label, _display_path(subtitle_path, self.base_path))
+                    logger.info("  [%s] %s", label, files_utils.format_path(subtitle_path, self.base_path))
 
 
 class MergeTool(Tool):
