@@ -29,6 +29,15 @@ TOOLS = {
     "utilities": (utilities.UtilitiesTool(), "Various smaller tools"),
 }
 
+def _plan_item_count(plan: object) -> int | None:
+    items = getattr(plan, "items", None)
+    if items is None:
+        return None
+    try:
+        return len(items)
+    except TypeError:
+        return None
+
 
 class CustomParserFormatter(argparse.HelpFormatter):
     @override
@@ -114,7 +123,22 @@ def execute(argv: list[str]) -> None:
                     working_dir=tool_wd,
                 )
 
-                if args.no_dry_run:
+                if plan.is_empty():
+                    plan.render(tool_logger)
+                    tool_logger.info("Analysis complete: nothing to do.")
+                    if args.no_dry_run:
+                        tool_logger.info("Skipping perform.")
+                    else:
+                        tool_logger.info("Dry run mode: analyze completed, skipping perform.")
+                elif args.no_dry_run:
+                    plan_count = _plan_item_count(plan)
+                    if plan_count is None:
+                        tool_logger.info("Analysis complete: starting perform.")
+                    else:
+                        tool_logger.info(
+                            "Analysis complete: %d item(s) to process. Starting perform.",
+                            plan_count,
+                        )
                     tool.perform(
                         args,
                         logger=tool_logger,
