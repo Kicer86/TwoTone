@@ -10,10 +10,9 @@ from sklearn.linear_model import RANSACRegressor, LinearRegression
 from typing import Callable, Dict, List, Tuple, Optional
 
 from .debug_routines import DebugRoutines
+from .melt_common import FramesInfo
 from .phash_cache import PhashCache
 from ..utils import files_utils, generic_utils, image_utils, video_utils
-
-FramesInfo = Dict[int, Dict[str, str]]
 
 
 class PairMatcher:
