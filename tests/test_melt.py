@@ -52,14 +52,13 @@ def analyze_duplicates_helper(
     allow_length_mismatch: bool = False,
     tolerance_ms: int = DEFAULT_TOLERANCE_MS,
 ):
-    wd = os.path.join(working_dir, str(os.getpid()))
-    os.makedirs(wd, exist_ok=True)
+    os.makedirs(working_dir, exist_ok=True)
     duplicates_raw = duplicates_source.collect_duplicates()
     duplicates = {title: list(files) for title, files in duplicates_raw.items()}
     analyzer = MeltAnalyzer(
         logger,
         duplicates_source,
-        wd,
+        working_dir,
         allow_length_mismatch,
         tolerance_ms,
     )
