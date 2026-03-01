@@ -168,16 +168,8 @@ class ConcatenateTool(Tool):
 
     @override
     def perform(self, args, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        _ = args
-        _ = working_dir
-
-        if plan.is_empty():
-            logger.info("No analysis results, skipping concatenation.")
-            return
-
         if not isinstance(plan, ConcatenatePlan):
-            logger.info("Unsupported plan type, skipping concatenation.")
-            return
+            raise TypeError(f"Expected ConcatenatePlan, got {type(plan).__name__}")
 
         concatenator = Concatenate(logger, working_dir)
         concatenator.perform(plan.items)

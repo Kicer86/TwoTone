@@ -234,13 +234,8 @@ class LanguageFixerTool(Tool):
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
         self._set_context(logger, working_dir)
 
-        if plan.is_empty():
-            self.logger.info("No analysis results, nothing to fix.")
-            return
-
         if not isinstance(plan, LanguageFixPlan):
-            self.logger.info("Unsupported plan type, nothing to fix.")
-            return
+            raise TypeError(f"Expected LanguageFixPlan, got {type(plan).__name__}")
 
         self._base_path = plan.base_path
         self._apply_plan(plan.items)

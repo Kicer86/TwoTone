@@ -391,13 +391,8 @@ class MergeTool(Tool):
 
     @override
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        if plan.is_empty():
-            logger.info("No analysis results, nothing to merge.")
-            return
-
         if not isinstance(plan, MergePlan):
-            logger.info("Unsupported plan type, nothing to merge.")
-            return
+            raise TypeError(f"Expected MergePlan, got {type(plan).__name__}")
 
         merger = Merge(logger,
                        language=args.language,

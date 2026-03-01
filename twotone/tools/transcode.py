@@ -447,13 +447,8 @@ class TranscodeTool(Tool):
 
     @override
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        if plan.is_empty():
-            logger.info("No analysis results, nothing to transcode.")
-            return
-
         if not isinstance(plan, TranscodePlan):
-            logger.info("Unsupported plan type, nothing to transcode.")
-            return
+            raise TypeError(f"Expected TranscodePlan, got {type(plan).__name__}")
 
         transcoder = Transcoder(working_dir = working_dir, logger = logger, target_ssim = plan.target_ssim)
         transcoder.perform_transcodes(plan.items)

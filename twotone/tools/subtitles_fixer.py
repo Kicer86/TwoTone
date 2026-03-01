@@ -258,13 +258,8 @@ class FixerTool(Tool):
 
     @override
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        if plan.is_empty():
-            logger.info("No analysis results, nothing to fix.")
-            return
-
         if not isinstance(plan, SubtitlesFixPlan):
-            logger.info("Unsupported plan type, nothing to fix.")
-            return
+            raise TypeError(f"Expected SubtitlesFixPlan, got {type(plan).__name__}")
 
         fixer = Fixer(logger, working_dir)
         fixer.repair_videos(plan.items, drop_broken = args.drop_unfixable)
