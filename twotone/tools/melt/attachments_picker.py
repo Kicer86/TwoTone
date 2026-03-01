@@ -1,14 +1,13 @@
 
 import logging
 
-from typing import Dict
 
 
 class AttachmentsPicker:
     def __init__(self, logger: logging.Logger):
         self.logger = logger
 
-    def pick_attachments(self, files_details: Dict):
+    def pick_attachments(self, files_details: dict):
         picked_attachments = []
         for file, attachments in files_details.items():
             for attachment in attachments:

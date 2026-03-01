@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict
+from typing import Any
 
 from . import generic_utils
 
@@ -28,7 +28,7 @@ class TmdbCache:
         cache_dir = generic_utils.get_twotone_config_dir()
         os.makedirs(cache_dir, exist_ok=True)
         self._cache_path = os.path.join(cache_dir, cache_filename)
-        self._data: Dict[str, Dict[str, Any]] = {}
+        self._data: dict[str, dict[str, Any]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -51,7 +51,7 @@ class TmdbCache:
             self._data = {}
             return
 
-        converted: Dict[str, Dict[str, Any]] = {}
+        converted: dict[str, dict[str, Any]] = {}
         for tmdb_id, entry in raw_data.items():
             if isinstance(entry, dict):
                 converted[str(tmdb_id)] = entry
@@ -77,7 +77,7 @@ class TmdbCache:
 
         return self._data.get(tmdb_id, {}).get(key)
 
-    def get_all(self, tmdb_id: str) -> Dict[str, Any]:
+    def get_all(self, tmdb_id: str) -> dict[str, Any]:
         """Return all cached values for ``tmdb_id``."""
 
         return dict(self._data.get(tmdb_id, {}))
@@ -88,7 +88,7 @@ class TmdbCache:
         self._data.setdefault(tmdb_id, {})[key] = value
         self._save()
 
-    def update(self, tmdb_id: str, values: Dict[str, Any]) -> None:
+    def update(self, tmdb_id: str, values: dict[str, Any]) -> None:
         """Update multiple values for ``tmdb_id`` at once."""
 
         if not values:

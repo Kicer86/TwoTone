@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from overrides import override
 from tqdm import tqdm
-from typing import Callable, List
+from typing import Callable
 
 from .tool import EmptyPlan, Plan, Tool
 from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
@@ -153,7 +153,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
             segments.append((start, end))
 
         # # Merge overlapping segments
-        merged_segments: List[tuple[float, float]] = []
+        merged_segments: list[tuple[float, float]] = []
         for start, end in sorted(segments):
             if not merged_segments or start > merged_segments[-1][1]:  # No overlap
                 merged_segments.append((start, end))
@@ -194,7 +194,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
                                         Should return True if the condition is met.
 
         Returns:
-            Tuple[int, any]: The optimal value and its corresponding evaluation result.
+            tuple[int, any]: The optimal value and its corresponding evaluation result.
         """
         best_value = None
         best_result = None

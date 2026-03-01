@@ -8,7 +8,7 @@ from functools import partial
 from itertools import permutations
 from parameterized import parameterized
 from pathlib import Path
-from typing import Dict, Iterator
+from typing import Iterator
 
 from twotone.tools.utils import generic_utils, process_utils, video_utils
 from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, StaticSource, StreamsPicker
@@ -36,7 +36,7 @@ def normalize(obj):
         return obj
 
 
-def all_key_orders(d: Dict) -> Iterator[Dict]:
+def all_key_orders(d: dict) -> Iterator[dict]:
     """
     Yield dictionaries with all possible key orderings (same keys and values).
     """
@@ -83,7 +83,7 @@ def process_duplicates_helper(
     performer.process_duplicates(plan)
 
 
-def _build_path_to_id_map(input: Dict) -> Dict[str, int]:
+def _build_path_to_id_map(input: dict) -> dict[str, int]:
     return {path: idx for idx, path in enumerate(input.keys())}
 
 

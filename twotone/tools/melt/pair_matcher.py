@@ -7,7 +7,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from sklearn.linear_model import RANSACRegressor, LinearRegression
-from typing import Callable, Dict, List, Tuple, Optional
+from typing import Callable
 
 from .debug_routines import DebugRoutines
 from .melt_common import FramesInfo
@@ -80,7 +80,7 @@ class PairMatcher:
         return dict(results)
 
     @staticmethod
-    def calculate_ratio(pairs: List[Tuple[int, int]]) -> float:
+    def calculate_ratio(pairs: list[tuple[int, int]]) -> float:
         ratios = [(r[0] - l[0]) / (r[1] - l[1]) for l, r in zip(pairs[:-1], pairs[1:]) if (r[1] - l[1]) != 0]
         median_ratio = np.median(ratios)
         return float(median_ratio)
@@ -95,7 +95,7 @@ class PairMatcher:
 
 
     @staticmethod
-    def _get_new_info(info: Dict[str, str], path: str) -> Dict[str, str]:
+    def _get_new_info(info: dict[str, str], path: str) -> dict[str, str]:
         new_info = info.copy()
         new_info["path"] = path
         return new_info
@@ -106,13 +106,13 @@ class PairMatcher:
         return valuable_scenes
 
     @staticmethod
-    def _get_frames_for_timestamps(timestamps: List[int], frames_info: FramesInfo) -> FramesInfo:
+    def _get_frames_for_timestamps(timestamps: list[int], frames_info: FramesInfo) -> FramesInfo:
         frame_files = {timestamp: info for timestamp, info in frames_info.items() if timestamp in timestamps}
 
         return frame_files
 
     @staticmethod
-    def filter_phash_outliers(phash: PhashCache, pairs: List[Tuple[int, int]], lhs_set: FramesInfo, rhs_set: FramesInfo) -> List[Tuple[int, int]]:
+    def filter_phash_outliers(phash: PhashCache, pairs: list[tuple[int, int]], lhs_set: FramesInfo, rhs_set: FramesInfo) -> list[tuple[int, int]]:
         dists_array = np.array([abs(phash.get(lhs_set[l]["path"]) - phash.get(rhs_set[r]["path"])) for l, r in pairs], dtype=float)
         med = float(np.median(dists_array))
         mad = float(np.median(np.abs(dists_array - med)))
@@ -120,7 +120,7 @@ class PairMatcher:
         return [pair for pair, dist in zip(pairs, dists_array) if dist <= threshold]
 
     @staticmethod
-    def summarize_pairs(phash: PhashCache, pairs: List[Tuple[int, int]], lhs: FramesInfo, rhs: FramesInfo, verbose: bool = False) -> str:
+    def summarize_pairs(phash: PhashCache, pairs: list[tuple[int, int]], lhs: FramesInfo, rhs: FramesInfo, verbose: bool = False) -> str:
         distances = []
         for lhs_ts, rhs_ts in pairs:
             d = abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"]))
@@ -158,7 +158,7 @@ class PairMatcher:
         return summary
 
     @staticmethod
-    def summarize_segments(pairs: List[Tuple[int, int]], lhs_fps: float, rhs_fps: float, verbose: bool = True) -> str:
+    def summarize_segments(pairs: list[tuple[int, int]], lhs_fps: float, rhs_fps: float, verbose: bool = True) -> str:
         if len(pairs) < 2:
             return "Not enough pairs to build segments."
 
@@ -229,7 +229,7 @@ class PairMatcher:
         return (x, y, w, h)
 
     @staticmethod
-    def _interpolate_crop_rects(timestamps_list: List[int], rects_list: List[Tuple[int, int, int, int]]) -> Callable[[int], Tuple[int, int, int, int]]:
+    def _interpolate_crop_rects(timestamps_list: list[int], rects_list: list[tuple[int, int, int, int]]) -> Callable[[int], tuple[int, int, int, int]]:
         """
         Given a list of timestamps and matching crop rects, return a function that interpolates
         a crop for any timestamp between and extrapolates outside the range.
@@ -254,7 +254,7 @@ class PairMatcher:
         return interpolate
 
     @staticmethod
-    def _find_interpolated_crop(pairs_with_timestamps: List[Tuple[int, int]], lhs_frames: FramesInfo, rhs_frames: FramesInfo) -> Tuple[Callable[[int], Tuple[int, int, int, int]], Callable[[int], Tuple[int, int, int, int]]]:
+    def _find_interpolated_crop(pairs_with_timestamps: list[tuple[int, int]], lhs_frames: FramesInfo, rhs_frames: FramesInfo) -> tuple[Callable[[int], tuple[int, int, int, int]], Callable[[int], tuple[int, int, int, int]]]:
         timestamps_lhs = []
         timestamps_rhs = []
         lhs_crops = []
@@ -298,7 +298,7 @@ class PairMatcher:
         # Return interpolators
         return PairMatcher._interpolate_crop_rects(timestamps_lhs, lhs_crops), PairMatcher._interpolate_crop_rects(timestamps_rhs, rhs_crops)
 
-    def _apply_crop_interpolated(self, frames: FramesInfo, dst_dir: str, crop_fn: Callable[[int], Tuple[int, int, int, int]]) -> FramesInfo:
+    def _apply_crop_interpolated(self, frames: FramesInfo, dst_dir: str, crop_fn: Callable[[int], tuple[int, int, int, int]]) -> FramesInfo:
         def _process_frame(item):
             timestamp, info = item
             self.interruption._check_for_stop()
@@ -316,17 +316,17 @@ class PairMatcher:
 
         return dict(results)
 
-    def _three_before(self, timestamps: List[int], target: int) -> List[int]:
+    def _three_before(self, timestamps: list[int], target: int) -> list[int]:
         timestamps = sorted(timestamps)
         idx = int(np.searchsorted(timestamps, target))
         return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-3):idx]))
 
-    def _nearest_three(self, timestamps: List[int], target: int) -> List[int]:
+    def _nearest_three(self, timestamps: list[int], target: int) -> list[int]:
         timestamps = sorted(timestamps)
         idx = int(np.searchsorted(timestamps, target))
         return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-1):idx+2]))
 
-    def _best_phash_match(self, lhs_ts: int, rhs_ts_guess: int, lhs_all_set: FramesInfo, rhs_all_set: FramesInfo) -> Tuple[int, int] | None:
+    def _best_phash_match(self, lhs_ts: int, rhs_ts_guess: int, lhs_all_set: FramesInfo, rhs_all_set: FramesInfo) -> tuple[int, int] | None:
         lhs_near = self._nearest_three(list(lhs_all_set.keys()), lhs_ts)
         rhs_near = self._nearest_three(list(rhs_all_set.keys()), rhs_ts_guess)
         best = None
@@ -340,7 +340,7 @@ class PairMatcher:
                         best_dist = d
         return best
 
-    def _build_matches(self, lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int, int]]:
+    def _build_matches(self, lhs: FramesInfo, rhs: FramesInfo) -> list[tuple[int, int, int]]:
         lhs_items = list(lhs.items())
         rhs_items = list(rhs.items())
 
@@ -355,7 +355,7 @@ class PairMatcher:
         all_matches.sort()
         return all_matches
 
-    def _build_initial_candidates(self, lhs: FramesInfo, rhs: FramesInfo) -> List[Tuple[int, int]]:
+    def _build_initial_candidates(self, lhs: FramesInfo, rhs: FramesInfo) -> list[tuple[int, int]]:
         all_matches = self._build_matches(lhs, rhs)
 
         used_lhs = set()
@@ -370,7 +370,7 @@ class PairMatcher:
 
         return sorted(pairs)
 
-    def _reject_outliers(self, pairs: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    def _reject_outliers(self, pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
         if len(pairs) < 3:
             return pairs
 
@@ -382,7 +382,7 @@ class PairMatcher:
         inliers = model.inlier_mask_
         return [p for p, keep in zip(pairs, inliers) if keep]
 
-    def _check_history(self, pair: Tuple[int, int], lhs_pool: FramesInfo, rhs_pool: FramesInfo, cutoff: float) -> bool:
+    def _check_history(self, pair: tuple[int, int], lhs_pool: FramesInfo, rhs_pool: FramesInfo, cutoff: float) -> bool:
         lhs_three = self._three_before(list(lhs_pool.keys()), pair[0])
         rhs_three = self._three_before(list(rhs_pool.keys()), pair[1])
 
@@ -405,7 +405,7 @@ class PairMatcher:
 
         return False
 
-    def _extrapolate_matches(self, known_pairs: List[Tuple[int, int]], lhs_pool: FramesInfo, rhs_pool: FramesInfo, phash: PhashCache) -> List[Tuple[int, int]]:
+    def _extrapolate_matches(self, known_pairs: list[tuple[int, int]], lhs_pool: FramesInfo, rhs_pool: FramesInfo, phash: PhashCache) -> list[tuple[int, int]]:
         known_pairs.sort()
         lhs_used = {l for l, _ in known_pairs}
         rhs_used = {r for _, r in known_pairs}
@@ -446,12 +446,12 @@ class PairMatcher:
 
     def _crop_both_sets(
         self,
-        pairs_with_timestamps: List[Tuple[int, int]],
+        pairs_with_timestamps: list[tuple[int, int]],
         lhs_frames: FramesInfo,
         rhs_frames: FramesInfo,
         lhs_cropped_dir: str,
         rhs_cropped_dir: str
-    ) -> Tuple[FramesInfo, FramesInfo]:
+    ) -> tuple[FramesInfo, FramesInfo]:
         # Step 1: Get interpolated crop functions for both sets
         lhs_crop_fn, rhs_crop_fn = PairMatcher._find_interpolated_crop(pairs_with_timestamps, lhs_frames, rhs_frames)
 
@@ -467,7 +467,7 @@ class PairMatcher:
     def _calculate_cutoff(
         self,
         phash: PhashCache,
-        pairs: List[Tuple[int, int]],
+        pairs: list[tuple[int, int]],
         lhs: FramesInfo,
         rhs: FramesInfo
     ) -> int:
@@ -479,7 +479,7 @@ class PairMatcher:
 
         return median + std * 2
 
-    def _make_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> List[Tuple[int, int]]:
+    def _make_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> list[tuple[int, int]]:
         # Pipeline
         lhs = PairMatcher._filter_low_detailed(lhs)
         rhs = PairMatcher._filter_low_detailed(rhs)
@@ -526,15 +526,15 @@ class PairMatcher:
         return unique_pairs
 
 
-    def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: Tuple[int, int], last: Tuple[int, int], cutoff: float, lookahead_seconds: float = 3.0):
+    def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: tuple[int, int], last: tuple[int, int], cutoff: float, lookahead_seconds: float = 3.0):
         self.logger.debug("Improving boundaries")
         self.logger.debug("Current first: {first} and last: {last} pairs")
         phash = PhashCache()
         ratio = PairMatcher.calculate_ratio([first, last])
 
-        def find_best_pair(lhs: FramesInfo, rhs: FramesInfo) -> Tuple[Optional[Tuple[int, int]], int]:
+        def find_best_pair(lhs: FramesInfo, rhs: FramesInfo) -> tuple[tuple[int, int] | None, int]:
             best_score = 1000
-            best_pair: Optional[Tuple[int, int]] = None
+            best_pair: tuple[int, int] | None = None
 
             for lhs_ts, lhs_info in lhs.items():
                 lhs_hash = phash.get(lhs_info["path"])
@@ -608,7 +608,7 @@ class PairMatcher:
         return refined_first, refined_last
 
 
-    def create_segments_mapping(self) -> Tuple[List[Tuple[int, int]], FramesInfo, FramesInfo]:
+    def create_segments_mapping(self) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo]:
         lhs_scene_changes = video_utils.detect_scene_changes(self.lhs_path, threshold = 0.3)
         rhs_scene_changes = video_utils.detect_scene_changes(self.rhs_path, threshold = 0.3)
 

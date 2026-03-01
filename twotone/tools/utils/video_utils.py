@@ -5,7 +5,6 @@ import re
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Union, Tuple
 
 from . import language_utils, process_utils, subtitles_utils
 from .generic_utils import fps_str_to_float, time_to_ms
@@ -27,7 +26,7 @@ def get_video_frames_count(video_file: str):
         return None
 
 
-def detect_scene_changes(file_path, threshold = 0.4) -> List[int]:
+def detect_scene_changes(file_path, threshold = 0.4) -> list[int]:
     """
         Run ffmpeg with a scene detection filter and extract scene change times.
         Function returns list of scene changes in milliseconds
@@ -59,7 +58,7 @@ def detect_scene_changes(file_path, threshold = 0.4) -> List[int]:
     return sorted(set(scene_times))
 
 
-def extract_timestamp_frame_mapping(video_path: str) -> Dict[int, int]:
+def extract_timestamp_frame_mapping(video_path: str) -> dict[int, int]:
     """
     Extracts a mapping of timestamp (seconds) to frame number from a video.
 
@@ -95,7 +94,7 @@ def extract_timestamp_frame_mapping(video_path: str) -> Dict[int, int]:
     return timestamp_frame_map
 
 
-def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", scale: Union[float, Tuple[int, int]] = 0.5) -> Dict[int, Dict]:
+def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", scale: float | tuple[int, int] = 0.5) -> dict[int, dict]:
     """
         Function extracts all frames into the given directory (should be empty).
         Returns a dict mapping timestamp (ms) -> {'path': frame_path, 'frame': frame_number}
@@ -206,7 +205,7 @@ def get_video_full_info(path: str) -> dict:
     return output_json
 
 
-def get_video_data(path: str) -> Dict:
+def get_video_data(path: str) -> dict:
 
     def get_length(stream) -> int | None:
         """Return stream length in milliseconds if available."""
@@ -225,7 +224,7 @@ def get_video_data(path: str) -> Dict:
 
         return length
 
-    def get_language(stream) -> Union[str | None]:
+    def get_language(stream) -> str | None:
         if "tags" in stream:
             tags = stream["tags"]
             language = tags.get("language", None)
@@ -315,14 +314,14 @@ def get_video_full_info_mkvmerge(path: str) -> dict:
     return json.loads(result.stdout)
 
 
-def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
+def get_video_data_mkvmerge(path: str, enrich: bool = False) -> dict:
     """
         Return stream information parsed from ``mkvmerge -J`` output.
         For non mkv files, mkvmerge does not provide as much information as ffprobe.
         Set 'enrich' to True to enrich mkvmerge's outpput with data from ffprobe.
     """
 
-    def find_ffprobe_track(track_id: int, ffprobe_info: Dict | None) -> Dict:
+    def find_ffprobe_track(track_id: int, ffprobe_info: dict | None) -> dict:
         for streams in (ffprobe_info or {}).values():
             for stream in streams:
                 if stream.get("tid", None) == track_id:
@@ -330,7 +329,7 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
 
         return {}
 
-    def merge_properties(initial: Dict | None, update: Dict) -> Dict:
+    def merge_properties(initial: dict | None, update: dict) -> dict:
         if initial is None:
             return update
 
@@ -469,7 +468,7 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> Dict:
     }
 
 
-def compare_videos(lhs: List[Dict], rhs: List[Dict]) -> bool:
+def compare_videos(lhs: list[dict], rhs: list[dict]) -> bool:
     if len(lhs) != len(rhs):
         return False
 
@@ -488,7 +487,7 @@ def compare_videos(lhs: List[Dict], rhs: List[Dict]) -> bool:
     return True
 
 
-def collect_video_files(path: str, interruptible) -> List[str]:
+def collect_video_files(path: str, interruptible) -> list[str]:
     video_files = []
     for cd, _, files in os.walk(path, followlinks=True):
         for file in files:
@@ -501,7 +500,7 @@ def collect_video_files(path: str, interruptible) -> List[str]:
     return video_files
 
 
-def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path: str, logger: Optional[logging.Logger] = None) -> Dict[int, str]:
+def extract_subtitle_to_temp(video_path: str, tids: list[int], output_base_path: str, logger: logging.Logger | None = None) -> dict[int, str]:
     """Extract subtitle tracks to temporary files.
 
     - Determines stream formats internally using video metadata.
@@ -509,7 +508,7 @@ def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path:
     - Returns a mapping {tid: output_path} for all requested tids.
     """
 
-    tids_list: List[int] = list(tids)
+    tids_list: list[int] = list(tids)
     if logger:
         logger.debug("Extracting subtitles from %s (tids=%s)", video_path, ",".join(str(t) for t in tids_list))
 
@@ -535,7 +534,7 @@ def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path:
             logger.debug(f"Failed to get stream info for '{video_path}': {e}")
 
     # Build mkvextract options
-    tid_to_path: Dict[int, str] = {}
+    tid_to_path: dict[int, str] = {}
     options = ["tracks", video_path]
     for tid in tids_list:
         fmt = stream_fmt.get(tid, "")
@@ -573,7 +572,7 @@ def extract_subtitle_to_temp(video_path: str, tids: List[int], output_base_path:
     return tid_to_path
 
 
-def generate_mkv(output_path: str, input_video: str, subtitles: List[SubtitleFile] | Dict | None = None, audios: List[Dict] | None = None, thumbnail: Union[str, None] = None):
+def generate_mkv(output_path: str, input_video: str, subtitles: list[SubtitleFile] | dict | None = None, audios: list[dict] | None = None, thumbnail: str | None = None):
     # RMVB/RM files cannot be reliably converted to MKV due to RealAudio "cook" codec issues.
     # mkvmerge produces broken files with audio sync problems.
     # See: https://gitlab.com/mbunkus/mkvtoolnix/-/issues/708

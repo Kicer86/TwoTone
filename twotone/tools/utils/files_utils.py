@@ -2,13 +2,12 @@
 import shutil
 
 from pathlib import Path
-from typing import Tuple
 import os
 import tempfile
 import uuid
 
 
-def split_path(path: str) -> Tuple[str, str, str]:
+def split_path(path: str) -> tuple[str, str, str]:
     info = Path(path)
 
     return str(info.parent), info.stem, info.suffix[1:]

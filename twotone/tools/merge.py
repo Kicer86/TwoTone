@@ -8,7 +8,6 @@ from collections import defaultdict
 from overrides import override
 from tqdm import tqdm
 from pathlib import Path
-from typing import List
 
 from .tool import Plan, Tool
 from twotone.tools.utils import files_utils, generic_utils, subtitles_utils, video_utils
@@ -126,7 +125,7 @@ class Merge(generic_utils.InterruptibleProcess):
             return len(l)
 
     def _sort_subtitles(self, subtitles: list[subtitles_utils.SubtitleFile]) -> list[subtitles_utils.SubtitleFile]:
-        priorities: List[str | None] = list(self.lang_priority)
+        priorities: list[str | None] = list(self.lang_priority)
         priorities.append(None)
         subtitles_sorted = sorted(subtitles, key=lambda s: self._get_index_for(priorities, s.language))
 

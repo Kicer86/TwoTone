@@ -1,14 +1,13 @@
 import os
 import re
 
-from typing import Dict, List
 
-FramesInfo = Dict[int, Dict[str, str]]
+FramesInfo = dict[int, dict[str, str]]
 
 DEFAULT_TOLERANCE_MS = 100
 
 
-def _split_path_fix(value: str) -> List[str]:
+def _split_path_fix(value: str) -> list[str]:
     pattern = r'"((?:[^"\\]|\\.)*?)"'
 
     matches = re.findall(pattern, value)

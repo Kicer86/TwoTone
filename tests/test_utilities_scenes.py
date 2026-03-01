@@ -4,7 +4,6 @@ import os
 import re
 
 from pathlib import Path
-from typing import List
 
 from twotone.tools.utilities import extract_scenes
 from common import TwoToneTestCase, WorkingDirectoryForTest, get_video
@@ -34,7 +33,7 @@ def extract_scene_number(path: str) -> int:
         return int(match.group(1))
     raise ValueError(f"Path {path} does not contain a scene number")
 
-def pick_first_last_sorted(files: List[str]) -> List[str]:
+def pick_first_last_sorted(files: list[str]) -> list[str]:
     from collections import defaultdict
 
     grouped = defaultdict(list)

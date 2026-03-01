@@ -2,7 +2,7 @@ import logging
 
 from collections import defaultdict
 from functools import cmp_to_key
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Generator
 
 from ..utils import generic_utils, language_utils
 from .duplicates_source import DuplicatesSource
@@ -32,7 +32,7 @@ class StreamsPicker:
                 yield k, v
 
     @staticmethod
-    def _pick_best_file_candidate(files_details: Dict[str, Dict]):
+    def _pick_best_file_candidate(files_details: dict[str, dict]):
         """
             Function returns file with most streams.
         """
@@ -51,14 +51,14 @@ class StreamsPicker:
 
     def _pick_streams(
         self,
-        files_details: Dict[str, Dict],
+        files_details: dict[str, dict],
         best_file: str,
-        files_ids: Dict[str, int],
+        files_ids: dict[str, int],
         stream_type: str,
-        unique_keys: List[str],
+        unique_keys: list[str],
         preference,
         get_language
-    ) -> List[Tuple[str, int, Optional[str]]]:
+    ) -> list[tuple[str, int, str | None]]:
         """Pick best streams of ``stream_type`` from ``files_details``.
 
         ``unique_keys`` determines the grouping for uniqueness. ``preference`` is
@@ -68,7 +68,7 @@ class StreamsPicker:
         ``get_language`` is a functor returning language for given stream and path.
         """
 
-        stream_index: defaultdict[Tuple[Any, ...], defaultdict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+        stream_index: defaultdict[tuple[Any, ...], defaultdict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
 
         # organize all streams by unique_key and file
         for path, details in StreamsPicker._iter_starting_with(files_details, best_file):
@@ -102,7 +102,7 @@ class StreamsPicker:
                 stream_index[unique_key][path].append(current)
 
         # process collected streams
-        picked_streams: list[tuple[Tuple[Any, ...], dict[str, Any]]] = []
+        picked_streams: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
         for key, file_streams in stream_index.items():
 
             # from all files providing streams with given 'key' use those with most entries
@@ -117,7 +117,7 @@ class StreamsPicker:
                 continue
 
             # two or more files provide streams of the same uniqness. choose better ones
-            def preference_sorting(lhs: Dict, rhs: Dict) -> int:
+            def preference_sorting(lhs: dict, rhs: dict) -> int:
                 return preference(lhs["details"], rhs["details"])
 
             # sort lists of details for each file
@@ -136,7 +136,7 @@ class StreamsPicker:
                 picked_streams.append((key, stream))
 
         # Flatten result
-        result: list[tuple[str, int, Optional[str]]] = []
+        result: list[tuple[str, int, str | None]] = []
         for unique_key, entry in picked_streams:
             tid = entry["tid"]
             path = entry["file"]
@@ -146,9 +146,9 @@ class StreamsPicker:
         return result
 
 
-    def pick_streams(self, files_details: Dict, ids: Dict[str, int]):
+    def pick_streams(self, files_details: dict, ids: dict[str, int]):
         # video preference comparator
-        def video_cmp(lhs: Dict[str, Any], rhs: Dict[str, Any]) -> int:
+        def video_cmp(lhs: dict[str, Any], rhs: dict[str, Any]) -> int:
             lhs_w = int(lhs["width"])
             lhs_h = int(lhs["height"])
             rhs_w = int(rhs["width"])
@@ -182,7 +182,7 @@ class StreamsPicker:
 
         # comparator based on keys
         def cmp_by_keys(keys):
-            def _cmp(lhs: Dict, rhs: Dict) -> int:
+            def _cmp(lhs: dict, rhs: dict) -> int:
                 for key in keys:
                     lhs_value = lhs.get(key)
                     rhs_value = rhs.get(key)
@@ -199,7 +199,7 @@ class StreamsPicker:
                 stream,
                 stream_type,
                 path,
-                override_languages : Optional[Dict[str, str]] = None) -> Optional[str]:
+                override_languages : dict[str, str] | None = None) -> str | None:
             id = ids[path]
             lang = stream.get("language")
 

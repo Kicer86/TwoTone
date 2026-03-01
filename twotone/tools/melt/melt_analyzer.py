@@ -2,7 +2,7 @@ import logging
 import os
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Iterable, Sequence
 from tqdm import tqdm
 
 from ..utils import files_utils, generic_utils, language_utils, video_utils
@@ -29,7 +29,7 @@ class MeltAnalyzer:
         self.base_path: str | None = None
 
     @staticmethod
-    def _stream_short_details(stype: str, stream: Dict[str, Any]) -> str:
+    def _stream_short_details(stype: str, stream: dict[str, Any]) -> str:
         def fmt_fps(value: str) -> str | None:
             try:
                 fps = generic_utils.fps_str_to_float(str(value))
@@ -80,20 +80,20 @@ class MeltAnalyzer:
         return ""
 
     @staticmethod
-    def _pick_track_by_tid(streams: Sequence[Dict[str, Any]], tid: int) -> Dict[str, Any]:
+    def _pick_track_by_tid(streams: Sequence[dict[str, Any]], tid: int) -> dict[str, Any]:
         track = next((item for item in streams if item.get("tid") == tid), None)
         if track is None:
             raise RuntimeError(f"Track #{tid} not found.")
         return track
 
     @staticmethod
-    def _pick_primary_video_track(streams: Sequence[Dict[str, Any]], file_id: int) -> Dict[str, Any]:
+    def _pick_primary_video_track(streams: Sequence[dict[str, Any]], file_id: int) -> dict[str, Any]:
         for track in streams:
             if not track.get("attached_pic", False):
                 return track
         raise RuntimeError(f"No video track found in file #{file_id}.")
 
-    def _print_file_details(self, file: str, details: Dict[str, Any], ids: Dict[str, int]) -> None:
+    def _print_file_details(self, file: str, details: dict[str, Any], ids: dict[str, int]) -> None:
         def formatter(key: str, value: Any) -> str:
             if key == "fps":
                 try:
@@ -145,9 +145,9 @@ class MeltAnalyzer:
 
     def _print_streams_details(
         self,
-        ids: Dict[str, int],
-        all_streams: Iterable[Tuple[str, Iterable[Tuple[str, int, str | None]]]],
-        tracks: Dict[str, Dict],
+        ids: dict[str, int],
+        all_streams: Iterable[tuple[str, Iterable[tuple[str, int, str | None]]]],
+        tracks: dict[str, dict],
     ) -> None:
         for stype, type_stream in all_streams:
             for stream in type_stream:
@@ -167,7 +167,7 @@ class MeltAnalyzer:
                 file_id = ids[path]
                 self.logger.debug(f"{stype} track #{tid}: {language} from file #{file_id}{extra}")
 
-    def _print_attachments_details(self, ids: Dict[str, int], all_attachments: Iterable[Tuple[str, int]]) -> None:
+    def _print_attachments_details(self, ids: dict[str, int], all_attachments: Iterable[tuple[str, int]]) -> None:
         for stream in all_attachments:
             path = stream[0]
             tid = stream[1]
@@ -176,14 +176,14 @@ class MeltAnalyzer:
             self.logger.debug(f"Attachment ID #{tid} from file #{file_id}")
 
     @staticmethod
-    def _probe_inputs(files: Sequence[str]) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    def _probe_inputs(files: Sequence[str]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True) for file in files}
         attachments = {file: info["attachments"] for file, info in details_full.items()}
         tracks = {file: info["tracks"] for file, info in details_full.items()}
         return details_full, attachments, tracks
 
     @staticmethod
-    def _prepare_duplicates_set(duplicates: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+    def _prepare_duplicates_set(duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
         """Prepare groups of duplicate files and output names per title.
 
         Returns a plan in the form:
@@ -192,7 +192,7 @@ class MeltAnalyzer:
           ...
         ]
         """
-        def process_entries(entries: List[str]) -> List[Tuple[List[str], str]]:
+        def process_entries(entries: list[str]) -> list[tuple[list[str], str]]:
             # Returns list of: (group of duplicates, output base name)
 
             def file_without_ext(path: str) -> str:
@@ -243,7 +243,7 @@ class MeltAnalyzer:
                 first_file_name = Path(first_file_fullname).stem
                 return [(entries, first_file_name)]
 
-        plan: List[Dict[str, Any]] = []
+        plan: list[dict[str, Any]] = []
         for title, entries in duplicates.items():
             files_groups = process_entries(entries)
             item = {
@@ -256,9 +256,9 @@ class MeltAnalyzer:
 
     def _pick_streams(
         self,
-        tracks: Dict[str, Any],
-        ids: Dict[str, int],
-    ) -> Tuple[List[Tuple[str, int, str | None]], List[Tuple[str, int, str | None]], List[Tuple[str, int, str | None]]]:
+        tracks: dict[str, Any],
+        ids: dict[str, int],
+    ) -> tuple[list[tuple[str, int, str | None]], list[tuple[str, int, str | None]], list[tuple[str, int, str | None]]]:
         picker_wd = os.path.join(self.wd, "stream_picker")
         streams_picker = StreamsPicker(
             self.logger,
@@ -269,11 +269,11 @@ class MeltAnalyzer:
 
     def _validate_input_files(
         self,
-        tracks: Dict[str, Any],
-        ids: Dict[str, int],
-        video_streams: List[Tuple[str, int, str | None]],
-        audio_streams: List[Tuple[str, int, str | None]],
-        subtitle_streams: List[Tuple[str, int, str | None]],
+        tracks: dict[str, Any],
+        ids: dict[str, int],
+        video_streams: list[tuple[str, int, str | None]],
+        audio_streams: list[tuple[str, int, str | None]],
+        subtitle_streams: list[tuple[str, int, str | None]],
     ) -> str | None:
         # Validate lengths across used files
 
@@ -328,8 +328,8 @@ class MeltAnalyzer:
 
     def _validate_group_lengths(
         self,
-        tracks: Dict[str, Any],
-        ids: Dict[str, int],
+        tracks: dict[str, Any],
+        ids: dict[str, int],
         title: str,
         files: Sequence[str],
     ) -> str | None:
@@ -362,10 +362,10 @@ class MeltAnalyzer:
 
     def _analyze_group(
         self,
-        files: List[str],
-        ids: Dict[str, int],
+        files: list[str],
+        ids: dict[str, int],
         title: str,
-    ) -> tuple[Dict[str, Any] | None, str | None, Dict[str, Any]]:
+    ) -> tuple[dict[str, Any] | None, str | None, dict[str, Any]]:
         # Probe inputs and print details
         details_full, attachments, tracks = self._probe_inputs(files)
         for file, file_details in details_full.items():
@@ -425,16 +425,16 @@ class MeltAnalyzer:
             "files_details": details_full,
         }, None, details_full
 
-    def analyze_duplicates(self, duplicates: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+    def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
         base_plan = self._prepare_duplicates_set(duplicates)
 
-        analysis_plan: List[Dict[str, Any]] = []
+        analysis_plan: list[dict[str, Any]] = []
         for item in tqdm(base_plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults()):
             title = item["title"]
             groups = item["groups"]
 
-            analyzed_groups: List[Dict[str, Any]] = []
-            skipped_groups: List[Dict[str, Any]] = []
+            analyzed_groups: list[dict[str, Any]] = []
+            skipped_groups: list[dict[str, Any]] = []
             if len(groups) > 1:
                 groups_iter = tqdm(groups, desc="Candidates", unit="set", position=1, **generic_utils.get_tqdm_defaults())
             else:

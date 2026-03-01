@@ -7,12 +7,12 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from tqdm import tqdm
-from typing import Any, Dict, List
+from typing import Any
 
 from . import generic_utils
 from . import video_utils
 
-DEFAULT_TOOL_OPTIONS: Dict[str, List[str]] = {
+DEFAULT_TOOL_OPTIONS: dict[str, list[str]] = {
     "ffmpeg": ["-hide_banner"],
     "ffprobe": ["-hide_banner"],
     "mkvextract": ["--quiet"],
@@ -26,7 +26,7 @@ class ProcessResult:
     stderr: str
 
 
-def start_process(process: str, args: List[str], show_progress = False) -> ProcessResult:
+def start_process(process: str, args: list[str], show_progress = False) -> ProcessResult:
     defaults = DEFAULT_TOOL_OPTIONS.get(process, [])
     for opt in reversed(defaults):
         if opt not in args:
@@ -37,7 +37,7 @@ def start_process(process: str, args: List[str], show_progress = False) -> Proce
 
     full_cmd = f"{process} {' '.join(args)}"
     logging.debug(f"Starting {full_cmd}")
-    popen_kwargs: Dict[str, Any] = {
+    popen_kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "universal_newlines": True,
@@ -96,7 +96,7 @@ def raise_on_error(status: ProcessResult):
         raise RuntimeError(error)
 
 
-def ensure_tools_exist(tools: List[str], logger: logging.Logger) -> None:
+def ensure_tools_exist(tools: list[str], logger: logging.Logger) -> None:
     """Verify that all required external tools are available."""
     for tool in tools:
         path = shutil.which(tool)
