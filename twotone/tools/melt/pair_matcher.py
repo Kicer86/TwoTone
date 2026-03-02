@@ -61,7 +61,7 @@ class PairMatcher:
 
         def process_frame(item):
             timestamp, info = item
-            self.interruption._check_for_stop()
+            self.interruption.check_for_stop()
             path = info["path"]
             img = cv.imread(path, cv.IMREAD_GRAYSCALE)
             if img is None:
@@ -301,7 +301,7 @@ class PairMatcher:
     def _apply_crop_interpolated(self, frames: FramesInfo, dst_dir: str, crop_fn: Callable[[int], tuple[int, int, int, int]]) -> FramesInfo:
         def _process_frame(item):
             timestamp, info = item
-            self.interruption._check_for_stop()
+            self.interruption.check_for_stop()
             path = info["path"]
             img = cv.imread(path, cv.IMREAD_GRAYSCALE)
             x, y, w, h = crop_fn(timestamp)
@@ -646,7 +646,7 @@ class PairMatcher:
 
         prev_first, prev_last = None, None
         while True:
-            self.interruption._check_for_stop()
+            self.interruption.check_for_stop()
             # crop frames basing on matching ones
             lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self._crop_both_sets(
                 pairs_with_timestamps = matching_pairs,

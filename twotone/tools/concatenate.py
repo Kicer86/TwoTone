@@ -103,7 +103,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
     def perform(self, sorted_videos: dict[str, list[tuple[str, int]]]) -> None:
         self.logger.info("Starting concatenation")
         for output, details in tqdm(sorted_videos.items(), desc="Concatenating", unit="movie", **generic_utils.get_tqdm_defaults()):
-            self._check_for_stop()
+            self.check_for_stop()
 
             input_files = [video for video, _ in details]
 

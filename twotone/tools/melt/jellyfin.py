@@ -51,7 +51,7 @@ class JellyfinSource(DuplicatesSource):
         paths_by_id: dict = defaultdict(lambda: defaultdict(list))
 
         def fetchItems(params: dict[str, str] = {}) -> None:
-            self.interruption._check_for_stop()
+            self.interruption.check_for_stop()
             params.update({"fields": "Path,ProviderIds"})
 
             response = requests.get(endpoint + "/Items", headers=headers, params=params)

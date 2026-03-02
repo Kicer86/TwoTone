@@ -491,7 +491,7 @@ def collect_video_files(path: str, interruptible) -> list[str]:
     video_files = []
     for cd, _, files in os.walk(path, followlinks=True):
         for file in files:
-            interruptible._check_for_stop()
+            interruptible.check_for_stop()
             file_path = os.path.join(cd, file)
 
             if is_video(file_path):

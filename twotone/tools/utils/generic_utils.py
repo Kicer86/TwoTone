@@ -71,6 +71,20 @@ def get_twotone_working_dir():
 
 
 class InterruptibleProcess:
+    """Cooperative graceful-shutdown helper.
+
+    Registers SIGINT/SIGTERM handlers and exposes ``check_for_stop()``
+    which raises ``SystemExit`` when a signal has been received.
+
+    Can be used via **inheritance** (the worker class inherits
+    ``InterruptibleProcess`` and calls ``self.check_for_stop()``
+    periodically) or via **composition** (an instance is passed around
+    and callees invoke ``interruption.check_for_stop()``).
+
+    Note: each ``InterruptibleProcess()`` call **replaces** the
+    process-wide signal handlers — keep at most one live instance.
+    """
+
     def __init__(self):
         self._work = True
         signal.signal(signal.SIGINT, self.exit_gracefully)
@@ -80,7 +94,7 @@ class InterruptibleProcess:
         logging.info(f"Got signal #{signum}. Exiting soon.")
         self._work = False
 
-    def _check_for_stop(self):
+    def check_for_stop(self):
         if not self._work:
             logging.warning("Exiting now due to received signal.")
             sys.exit(1)

@@ -269,14 +269,14 @@ class Merge(generic_utils.InterruptibleProcess):
 
         dir_entries: list[tuple[str, list[str]]] = []
         for cd, _, files in os.walk(path, followlinks = True):
-            self._check_for_stop()
+            self.check_for_stop()
             files_list = list(files)
             dir_entries.append((cd, files_list))
 
         for cd, files in tqdm(dir_entries, desc="Processing files", unit="file", **generic_utils.get_tqdm_defaults()):
             video_files = []
             for file in files:
-                self._check_for_stop()
+                self.check_for_stop()
                 file_path = os.path.join(cd, file)
 
                 if video_utils.is_video(file_path):
@@ -315,7 +315,7 @@ class Merge(generic_utils.InterruptibleProcess):
         self.logger.info("Starting merge")
         failed: list[str] = []
         for video, subtitles in tqdm(videos_and_subtitles.items(), desc="Merging", unit="video", **generic_utils.get_tqdm_defaults()):
-            self._check_for_stop()
+            self.check_for_stop()
             try:
                 self._merge(video, subtitles)
             except Exception as e:

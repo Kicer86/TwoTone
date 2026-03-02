@@ -107,7 +107,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
         i = 0
         for (start, end) in tqdm(segments, desc="Extracting scenes", unit="scene", **generic_utils.get_tqdm_defaults()):
-            self._check_for_stop()
+            self.check_for_stop()
             output_file = os.path.join(output_dir, f"{filename}.frag{i}.mp4")
             self._extract_segment(video_file, start, end, output_file)
             output_files.append(output_file)
@@ -336,7 +336,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
                 self.logger.info(f"Starting CRF bisection for {input_file} with veryfast preset using whole file")
 
             def evaluate_crf(mid_crf):
-                self._check_for_stop()
+                self.check_for_stop()
                 qualities = []
 
                 def get_quality(wd_dir, segment_file):
@@ -375,7 +375,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
         video_files = self._find_video_files(directory)
         for file in video_files:
-            self._check_for_stop()
+            self.check_for_stop()
             self.logger.info(f"Analyzing {file}")
             best_crf = self.find_optimal_crf(file)
             if best_crf is not None:
@@ -389,7 +389,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         """Perform final transcodes using a precomputed CRF plan."""
         self.logger.info(f"Starting final transcodes with {self.codec}")
         for file, crf in plan.items():
-            self._check_for_stop()
+            self.check_for_stop()
             self.logger.info(f"Transcoding {file} with CRF: {crf}")
             # increase crf by one as veryslow preset will be used
             self._final_transcode(file, crf + 1)

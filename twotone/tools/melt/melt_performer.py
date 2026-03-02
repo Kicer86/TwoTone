@@ -408,7 +408,7 @@ class MeltPerformer:
             groups = item.get("groups", [])
 
             for group in tqdm(groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
-                self.interruption._check_for_stop()
+                self.interruption.check_for_stop()
 
                 output_name = group["output_name"]
 
