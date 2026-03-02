@@ -113,6 +113,11 @@ class PairMatcher:
 
     @staticmethod
     def filter_phash_outliers(phash: PhashCache, pairs: list[tuple[int, int]], lhs_set: FramesInfo, rhs_set: FramesInfo) -> list[tuple[int, int]]:
+        if len(pairs) <= 3:
+            # Too few data points for reliable MAD-based outlier detection.
+            # Let downstream filters (ORB, history check) handle quality control.
+            return pairs
+
         dists_array = np.array([abs(phash.get(lhs_set[l]["path"]) - phash.get(rhs_set[r]["path"])) for l, r in pairs], dtype=float)
         med = float(np.median(dists_array))
         mad = float(np.median(np.abs(dists_array - med)))
@@ -326,6 +331,17 @@ class PairMatcher:
         idx = int(np.searchsorted(timestamps, target))
         return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-1):idx+2]))
 
+    @staticmethod
+    def _snap_to_nearest_frame(keys: list[int], target: int) -> int:
+        """Return the timestamp from *keys* closest to *target*."""
+        idx = int(np.searchsorted(keys, target))
+        candidates = []
+        if idx > 0:
+            candidates.append(keys[idx - 1])
+        if idx < len(keys):
+            candidates.append(keys[idx])
+        return min(candidates, key=lambda k: abs(k - target))
+
     def _best_phash_match(self, lhs_ts: int, rhs_ts_guess: int, lhs_all_set: FramesInfo, rhs_all_set: FramesInfo) -> tuple[int, int] | None:
         lhs_near = self._nearest_three(list(lhs_all_set.keys()), lhs_ts)
         rhs_near = self._nearest_three(list(rhs_all_set.keys()), rhs_ts_guess)
@@ -526,86 +542,245 @@ class PairMatcher:
         return unique_pairs
 
 
-    def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: tuple[int, int], last: tuple[int, int], cutoff: float, lookahead_seconds: float = 3.0):
+    @staticmethod
+    def _find_entropy_transition(frames: FramesInfo, start_ts: int, direction: int, entropy_threshold: float = 3.5) -> int | None:
+        """Find the timestamp where entropy crosses *entropy_threshold*.
+
+        Walks from *start_ts* in *direction* (+1 = forward, -1 = backward) and
+        returns the first timestamp whose entropy is on the "rich" side of the
+        threshold (i.e. above it when walking into content, below it when walking
+        into darkness).  Returns ``None`` when no transition is found.
+        """
+        keys = sorted(frames.keys())
+        try:
+            idx = keys.index(start_ts)
+        except ValueError:
+            return None
+
+        start_entropy = image_utils.image_entropy(frames[start_ts]["path"])
+        looking_for_rich = start_entropy <= entropy_threshold
+
+        while True:
+            idx += direction
+            if idx < 0 or idx >= len(keys):
+                return None
+            ts = keys[idx]
+            e = image_utils.image_entropy(frames[ts]["path"])
+            if looking_for_rich and e > entropy_threshold:
+                return ts
+            if not looking_for_rich and e <= entropy_threshold:
+                # We walked from rich into low-entropy — return the previous
+                # (last rich) frame.
+                prev_idx = idx - direction
+                return keys[prev_idx] if 0 <= prev_idx < len(keys) else None
+
+        return None
+
+    def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: tuple[int, int], last: tuple[int, int], cutoff: float, max_gap_seconds: float = 15.0):
+        """Find the first and last common frame pair by walking outward from known matches.
+
+        Uses the linear time mapping derived from *first* and *last* to predict
+        where each LHS frame should appear in RHS, then walks from the current
+        boundaries toward the edges of the video.  Allows configurable gaps of
+        non-matching frames before giving up, instead of stopping on first miss.
+
+        When the search enters a low-entropy region (dark frames, end credits),
+        phash matching becomes unreliable.  In that case the boundary is
+        extrapolated linearly from well-matched pairs, but only if both files
+        show a consistent entropy transition at the predicted position.
+        """
         self.logger.debug("Improving boundaries")
-        self.logger.debug("Current first: {first} and last: {last} pairs")
+        self.logger.debug(f"Current first: {first} and last: {last}")
         phash = PhashCache()
         ratio = PairMatcher.calculate_ratio([first, last])
 
-        def find_best_pair(lhs: FramesInfo, rhs: FramesInfo) -> tuple[tuple[int, int] | None, int]:
-            best_score = 1000
-            best_pair: tuple[int, int] | None = None
+        # Ensure cutoff is not absurdly tight — with few calibration pairs or
+        # cropped frames the computed cutoff can be as low as 4, which makes the
+        # search unable to extend even a single frame.
+        cutoff = max(cutoff, 16)
 
-            for lhs_ts, lhs_info in lhs.items():
-                lhs_hash = phash.get(lhs_info["path"])
-                options = [(abs(lhs_hash - phash.get(rhs_info["path"])), rhs_ts) for rhs_ts, rhs_info in rhs.items()]
-                if not options:
-                    continue
+        def find_boundary(anchor: tuple[int, int], reference: tuple[int, int], direction: int) -> tuple[tuple[int, int], bool]:
+            """Walk from *anchor* in *direction*, using linear prediction to find matches.
 
-                options.sort()
-                best_dist, best_rhs = options[0]
-                pair_candidate = (lhs_ts, best_rhs)
+            Returns ``(best_pair, entered_low_entropy)`` where the flag indicates
+            that the search stopped because it reached a low-entropy zone rather
+            than exhausting the gap budget on high-entropy mismatches.
+            """
+            lhs_keys = sorted(lhs.keys())
+            rhs_keys = sorted(rhs.keys())
 
-                pair_ratio_to_first = PairMatcher.calculate_ratio([pair_candidate, first])
-                pair_ratio_to_last = PairMatcher.calculate_ratio([pair_candidate, last])
+            current_best = anchor
+            max_gap = int(max_gap_seconds * self.lhs_fps)
+            consecutive_misses = 0
+            entered_low_entropy = False
 
-                if best_dist < best_score and PairMatcher.is_ratio_acceptable(pair_ratio_to_first, ratio) and PairMatcher.is_ratio_acceptable(pair_ratio_to_last, ratio):
-                    best_score = best_dist
-                    best_pair = pair_candidate
+            # Check roughly every half-second worth of frames
+            step = max(1, int(self.lhs_fps * 0.5))
 
-            return best_pair, best_score
-
-        def find_boundary(lhs_set: FramesInfo, rhs_set: FramesInfo, lhs_ts, rhs_ts, direction):
-            lhs_keys = sorted(lhs_set.keys())
-            rhs_keys = sorted(rhs_set.keys())
-
-            lhs_idx = lhs_keys.index(lhs_ts)
-            rhs_idx = rhs_keys.index(rhs_ts)
-
-            current_pair = (lhs_ts, rhs_ts)
-
-            step_lhs = int(self.lhs_fps * lookahead_seconds)
-            step_rhs = int(self.rhs_fps * lookahead_seconds)
+            start_idx = lhs_keys.index(anchor[0])
+            i = 0
 
             while True:
-                lhs_slice = slice(lhs_idx + direction, lhs_idx + direction * step_lhs, direction)
-                rhs_slice = slice(rhs_idx + direction, rhs_idx + direction * step_rhs, direction)
-
-                lhs_range = lhs_keys[lhs_slice]
-                rhs_range = rhs_keys[rhs_slice]
-
-                if not lhs_range or not rhs_range:
+                i += step
+                idx = start_idx + direction * i
+                if idx < 0 or idx >= len(lhs_keys):
                     break
 
-                lhs_candidates = {lhs_ts: lhs[lhs_ts] for lhs_ts in lhs_range if PairMatcher._is_rich(lhs[lhs_ts]["path"])}
-                rhs_candidates = {rhs_ts: rhs[rhs_ts] for rhs_ts in rhs_range if PairMatcher._is_rich(rhs[rhs_ts]["path"])}
+                lhs_ts = lhs_keys[idx]
 
-                best_pair, best_score = find_best_pair(lhs_candidates, rhs_candidates)
+                # Check if we entered a low-entropy zone — phash is unreliable here
+                if not PairMatcher._is_rich(lhs[lhs_ts]["path"]):
+                    entered_low_entropy = True
+                    break
 
-                if best_pair and best_score < cutoff:
-                    if best_pair == current_pair:
-                        break
-                    else:
-                        current_pair = best_pair
-                        lhs_ts = current_pair[0]
-                        rhs_ts = current_pair[1]
-                        lhs_idx = lhs_keys.index(lhs_ts)
-                        rhs_idx = rhs_keys.index(rhs_ts)
+                # Predict the corresponding RHS timestamp using the linear mapping
+                predicted_rhs = int(anchor[1] + (lhs_ts - anchor[0]) / ratio)
 
-                        lhs_path = lhs_set[lhs_ts]["path"]
-                        rhs_path = rhs_set[rhs_ts]["path"]
+                rhs_near = self._nearest_three(rhs_keys, predicted_rhs)
+
+                best_dist = float('inf')
+                best_pair: tuple[int, int] | None = None
+                for rhs_ts in rhs_near:
+                    if rhs_ts not in rhs or lhs_ts not in lhs:
+                        continue
+                    d = abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"]))
+                    if d < best_dist:
+                        best_dist = d
+                        best_pair = (lhs_ts, rhs_ts)
+
+                if best_pair is not None and best_dist <= cutoff:
+                    # Validate ratio against reference to avoid false positives
+                    if reference != best_pair:
+                        cand_ratio = PairMatcher.calculate_ratio([best_pair, reference])
+                        if not PairMatcher.is_ratio_acceptable(cand_ratio, ratio):
+                            consecutive_misses += step
+                            if consecutive_misses >= max_gap:
+                                break
+                            continue
+
+                    current_best = best_pair
+                    consecutive_misses = 0
                 else:
-                    break
+                    consecutive_misses += step
+                    if consecutive_misses >= max_gap:
+                        break
 
-            return current_pair
+            return current_best, entered_low_entropy
 
-        refined_first = find_boundary(lhs, rhs, first[0], first[1], direction=-1)
-        self.logger.debug(f"Refined First: L: {lhs[refined_first[0]]['path']} R: {rhs[refined_first[1]]['path']}")
+        refined_first, first_low_entropy = find_boundary(first, last, direction=-1)
+        self.logger.debug(f"Refined First: L: {lhs[refined_first[0]]['path']} R: {rhs[refined_first[1]]['path']}"
+                          f"{' (stopped at low-entropy zone)' if first_low_entropy else ''}")
 
-        refined_last = find_boundary(lhs, rhs, last[0], last[1], direction=1)
-        self.logger.debug(f"Refined Last:  L: {lhs[refined_last[0]]['path']} R: {rhs[refined_last[1]]['path']}")
+        refined_last, last_low_entropy = find_boundary(last, first, direction=1)
+        self.logger.debug(f"Refined Last:  L: {lhs[refined_last[0]]['path']} R: {rhs[refined_last[1]]['path']}"
+                          f"{' (stopped at low-entropy zone)' if last_low_entropy else ''}")
+
+        # Extrapolate through low-entropy regions when possible
+        refined_first = self._extrapolate_through_low_entropy(
+            lhs, rhs, refined_first, refined_last, ratio, direction=-1,
+            entered_low_entropy=first_low_entropy,
+        )
+        refined_last = self._extrapolate_through_low_entropy(
+            lhs, rhs, refined_last, refined_first, ratio, direction=1,
+            entered_low_entropy=last_low_entropy,
+        )
 
         return refined_first, refined_last
+
+    def _extrapolate_through_low_entropy(
+        self,
+        lhs: FramesInfo,
+        rhs: FramesInfo,
+        boundary: tuple[int, int],
+        reference: tuple[int, int],
+        ratio: float,
+        direction: int,
+        entered_low_entropy: bool,
+    ) -> tuple[int, int]:
+        """Extend *boundary* through a low-entropy zone using linear extrapolation.
+
+        Instead of comparing individual frames (unreliable on dark/uniform
+        content), we locate the entropy transition point (dark↔content) in each
+        file independently, then check whether those transitions are consistent
+        with the known time-mapping ratio.
+
+        If they are — we adopt the transition points as the new boundary.
+        If not — we keep the original *boundary* and emit a warning that the
+        files likely have different intro/outro lengths.
+        """
+        if not entered_low_entropy:
+            return boundary
+
+        label = "start" if direction == -1 else "end"
+        lhs_keys = sorted(lhs.keys())
+        rhs_keys = sorted(rhs.keys())
+
+        # Find where the entropy transition is in each file
+        lhs_transition = PairMatcher._find_entropy_transition(lhs, boundary[0], direction)
+        predicted_rhs_boundary = int(boundary[1] + (lhs_transition - boundary[0]) / ratio) if lhs_transition is not None else None
+        rhs_transition = PairMatcher._find_entropy_transition(rhs, boundary[1], direction)
+
+        if lhs_transition is None and rhs_transition is None:
+            # Both files are low-entropy all the way to the edge (e.g. both
+            # start/end with black).  Extrapolate to the edge.
+            if direction == -1:
+                ext_lhs = lhs_keys[0]
+            else:
+                ext_lhs = lhs_keys[-1]
+            ext_rhs = int(boundary[1] + (ext_lhs - boundary[0]) / ratio)
+            ext_rhs = PairMatcher._snap_to_nearest_frame(rhs_keys, ext_rhs)
+
+            self.logger.warning(
+                f"Boundary {label}: both files are low-entropy to the edge. "
+                f"Extrapolating {label} boundary from ({boundary[0]}, {boundary[1]}) "
+                f"to ({ext_lhs}, {ext_rhs}). Precision cannot be verified."
+            )
+            return (ext_lhs, ext_rhs)
+
+        if lhs_transition is None or rhs_transition is None:
+            self.logger.warning(
+                f"Boundary {label}: entropy transition found in only one file "
+                f"(LHS={'yes' if lhs_transition else 'no'}, RHS={'yes' if rhs_transition else 'no'}). "
+                f"The files may have different {label} sequences. "
+                f"Keeping boundary at ({boundary[0]}, {boundary[1]})."
+            )
+            return boundary
+
+        # Both transitions found — check if they are consistent with the ratio
+        if predicted_rhs_boundary is not None:
+            transition_error_ms = abs(rhs_transition - predicted_rhs_boundary)
+            # Allow up to 2 seconds of discrepancy for the transition positions
+            max_transition_error_ms = 2000
+
+            if transition_error_ms <= max_transition_error_ms:
+                # Transitions are consistent — use the transition as the boundary
+                # Pick the nearer-to-edge timestamp so we don't crop content
+                if direction == -1:
+                    new_lhs = min(lhs_transition, boundary[0])
+                    new_rhs = int(boundary[1] + (new_lhs - boundary[0]) / ratio)
+                else:
+                    new_lhs = max(lhs_transition, boundary[0])
+                    new_rhs = int(boundary[1] + (new_lhs - boundary[0]) / ratio)
+                new_rhs = PairMatcher._snap_to_nearest_frame(rhs_keys, new_rhs)
+
+                self.logger.info(
+                    f"Boundary {label}: extrapolating through low-entropy zone. "
+                    f"LHS transition at {lhs_transition}ms, RHS transition at {rhs_transition}ms "
+                    f"(predicted {predicted_rhs_boundary}ms, error {transition_error_ms}ms). "
+                    f"Moving boundary from ({boundary[0]}, {boundary[1]}) to ({new_lhs}, {new_rhs})."
+                )
+                return (new_lhs, new_rhs)
+            else:
+                self.logger.warning(
+                    f"Boundary {label}: entropy transitions are inconsistent with time mapping. "
+                    f"LHS transition at {lhs_transition}ms, RHS transition at {rhs_transition}ms "
+                    f"(predicted {predicted_rhs_boundary}ms, error {transition_error_ms}ms > {max_transition_error_ms}ms). "
+                    f"The files likely have different {label} sequences. "
+                    f"Keeping boundary at ({boundary[0]}, {boundary[1]})."
+                )
+                return boundary
+
+        return boundary
 
 
     def create_segments_mapping(self) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo]:
@@ -689,5 +864,29 @@ class PairMatcher:
         self.logger.debug("Status after boundaries lookup:\n")
         self.logger.debug(PairMatcher.summarize_segments(matching_pairs, self.lhs_fps, self.rhs_fps))
         self.logger.debug(PairMatcher.summarize_pairs(phash4normalized, matching_pairs, self.lhs_all_frames, self.rhs_all_frames, verbose = True))
+
+        # Final boundary search on uncropped normalized frames.
+        # The cropped-frame search may fail near edges because the crop
+        # interpolation extrapolates from the nearest known pair, which can
+        # be significantly off when the spatial transformation changes over time.
+        # Searching the uncropped frames avoids this limitation.
+        phash_uncropped = PhashCache()
+        uncropped_cutoff = self._calculate_cutoff(phash_uncropped, matching_pairs, lhs_normalized_frames, rhs_normalized_frames)
+        final_first, final_last = self._look_for_boundaries(
+            lhs_normalized_frames, rhs_normalized_frames,
+            matching_pairs[0], matching_pairs[-1],
+            uncropped_cutoff,
+        )
+        if final_first != matching_pairs[0]:
+            matching_pairs = [final_first, *matching_pairs]
+            self.logger.debug(f"Uncropped search extended first boundary to {final_first}")
+        if final_last != matching_pairs[-1]:
+            matching_pairs = [*matching_pairs, final_last]
+            self.logger.debug(f"Uncropped search extended last boundary to {final_last}")
+
+        debug.dump_matches(matching_pairs, "after uncropped boundary search")
+        self.logger.debug("Final status:\n")
+        self.logger.debug(PairMatcher.summarize_segments(matching_pairs, self.lhs_fps, self.rhs_fps))
+        self.logger.debug(PairMatcher.summarize_pairs(phash_uncropped, matching_pairs, self.lhs_all_frames, self.rhs_all_frames, verbose = True))
 
         return matching_pairs, self.lhs_all_frames, self.rhs_all_frames
