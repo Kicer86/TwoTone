@@ -454,6 +454,16 @@ def write_srt_subtitle(
     return path
 
 
+def run_ffmpeg(args: list[str], expected_path: str | None = None):
+    """Run ffmpeg with *args* and raise on failure or missing output."""
+    status = process_utils.start_process("ffmpeg", args)
+    if status.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {status.stderr}")
+    if expected_path and not os.path.exists(expected_path):
+        raise RuntimeError(f"ffmpeg did not produce expected file: {expected_path}")
+    return status
+
+
 def extract_subtitles(video_path: str, out_path: str):
     process_utils.start_process("ffmpeg", ["-i", video_path, "-map", "0:s:0", out_path])
 

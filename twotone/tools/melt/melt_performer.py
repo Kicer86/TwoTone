@@ -40,6 +40,55 @@ class MeltPerformer:
         required_input_files |= {info[0] for info in attachments}
         return required_input_files
 
+    def _log_coverage(
+        self,
+        lhs_path: str,
+        rhs_path: str,
+        mappings: list[tuple[int, int]],
+        lhs_duration_ms: int,
+        rhs_duration_ms: int,
+    ) -> None:
+        """Log a human-readable coverage report after PairMatcher finishes."""
+        summary = PairMatcher.coverage_summary(mappings, lhs_duration_ms, rhs_duration_ms)
+        lhs_name = os.path.basename(lhs_path)
+        rhs_name = os.path.basename(rhs_path)
+
+        if summary["full_coverage"]:
+            ratio = summary["ratio"]
+            if abs(ratio - 1.0) < 0.001:
+                self.logger.info(
+                    "Files are 100%% visually identical: %s ↔ %s",
+                    lhs_name, rhs_name,
+                )
+            else:
+                self.logger.info(
+                    "Files are 100%% visually identical (speed ratio %.4f): %s ↔ %s",
+                    ratio, lhs_name, rhs_name,
+                )
+        else:
+            parts: list[str] = []
+            lhs_sg = summary["lhs_start_gap_s"]
+            rhs_sg = summary["rhs_start_gap_s"]
+            lhs_eg = summary["lhs_end_gap_s"]
+            rhs_eg = summary["rhs_end_gap_s"]
+
+            if lhs_sg > 0.04 or rhs_sg > 0.04:
+                parts.append(
+                    f"start mismatch: {lhs_sg:.1f}s in {lhs_name}, "
+                    f"{rhs_sg:.1f}s in {rhs_name}"
+                )
+            if lhs_eg > 0.04 or rhs_eg > 0.04:
+                parts.append(
+                    f"end mismatch: {lhs_eg:.1f}s in {lhs_name}, "
+                    f"{rhs_eg:.1f}s in {rhs_name}"
+                )
+
+            detail = "; ".join(parts) if parts else "partial overlap"
+            self.logger.info(
+                "Files are NOT fully identical — %s: %s ↔ %s",
+                detail, lhs_name, rhs_name,
+            )
+
     def _build_mkvmerge_args(
         self,
         output_path: str,
@@ -305,6 +354,9 @@ class MeltPerformer:
                      generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
                     matcher = PairMatcher(self.interruption, mwd, video_path_base, path, self.logger.getChild("PairMatcher"))
                     mapping, lhs_all_frames, rhs_all_frames = matcher.create_segments_mapping()
+
+                    self._log_coverage(video_path_base, path, mapping, base_duration, duration)
+
                     patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.m4a")
                     self._patch_audio_segment(mwd, video_path_base, path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames)
                     path = patched_audio
