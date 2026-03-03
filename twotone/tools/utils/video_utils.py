@@ -1,14 +1,73 @@
 import json
 import logging
 import os
+import platform
 import re
+import subprocess
 import time
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
+
+from tqdm import tqdm
 
 from . import language_utils, process_utils, subtitles_utils
-from .generic_utils import fps_str_to_float, time_to_ms
+from .generic_utils import InterruptibleProcess, fps_str_to_float, get_tqdm_defaults, time_to_ms
 from .subtitles_utils import SubtitleFile
+
+
+def _start_ffmpeg_streaming(
+    args: list[str],
+    interruption: InterruptibleProcess | None = None,
+) -> tuple[subprocess.Popen, list[str]]:
+    """Start an ffmpeg subprocess and read its stderr line-by-line.
+
+    Returns ``(process, stderr_lines)`` after ffmpeg finishes.
+    Checks *interruption* between lines so ctrl+c can terminate the run.
+    Terminates the subprocess on interruption.
+    """
+    defaults = process_utils.DEFAULT_TOOL_OPTIONS.get("ffmpeg", [])
+    full_args = list(args)
+    for opt in reversed(defaults):
+        if opt not in full_args:
+            full_args.insert(0, opt)
+
+    command = ["ffmpeg"] + full_args
+    logging.debug(f"Starting ffmpeg {' '.join(full_args)}")
+
+    popen_kwargs: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "universal_newlines": True,
+        "bufsize": 1,
+    }
+    if platform.system() == "Windows":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["preexec_fn"] = os.setsid
+
+    proc = subprocess.Popen(command, **popen_kwargs)
+
+    stderr_lines: list[str] = []
+    try:
+        assert proc.stderr is not None
+        for line in proc.stderr:
+            stderr_lines.append(line)
+            if interruption is not None and not interruption._work:
+                proc.terminate()
+                proc.wait()
+                interruption.check_for_stop()  # raises SystemExit
+    except Exception:
+        proc.terminate()
+        proc.wait()
+        raise
+
+    # Drain stdout (ffmpeg sends everything to stderr, but be safe)
+    if proc.stdout:
+        proc.stdout.read()
+
+    proc.wait()
+    return proc, stderr_lines
 
 
 def is_video(file: str) -> bool:
@@ -26,10 +85,18 @@ def get_video_frames_count(video_file: str):
         return None
 
 
-def detect_scene_changes(file_path, threshold = 0.4) -> list[int]:
+def detect_scene_changes(
+    file_path: str,
+    threshold: float = 0.4,
+    logger: logging.Logger | None = None,
+    interruption: InterruptibleProcess | None = None,
+) -> list[int]:
     """
         Run ffmpeg with a scene detection filter and extract scene change times.
-        Function returns list of scene changes in milliseconds
+        Function returns list of scene changes in milliseconds.
+
+        When *logger* is given, an indeterminate progress indicator is shown.
+        When *interruption* is given, ctrl+c can cleanly stop the process.
     """
 
     args = [
@@ -42,18 +109,28 @@ def detect_scene_changes(file_path, threshold = 0.4) -> list[int]:
         "-filter_complex", f"select='gt(scene,{threshold})',showinfo",
         "-f", "null", "-"
     ]
-    result = process_utils.start_process("ffmpeg", args = args)
+
+    basename = os.path.basename(file_path)
+    if logger:
+        logger.info(f"Detecting scene changes: {basename}")
+
+    proc, stderr_lines = _start_ffmpeg_streaming(args, interruption)
+
+    if proc.returncode != 0:
+        logging.warning(f"ffmpeg scene detection exited with code {proc.returncode}")
 
     # Look for lines with "pts_time:"; these indicate the timestamp of a scene change.
     scene_times = []
     pattern = re.compile(r"pts_time:(\d+\.\d+)")
-    for line in result.stderr.splitlines():
+    for line in stderr_lines:
         match = pattern.search(line)
         if match:
             time_s = float(match.group(1))
             time_ms = int(round(time_s * 1000))
-
             scene_times.append(time_ms)
+
+    if logger:
+        logger.info(f"Detected {len(scene_times)} scene changes in {basename}")
 
     return sorted(set(scene_times))
 
@@ -94,13 +171,21 @@ def extract_timestamp_frame_mapping(video_path: str) -> dict[int, int]:
     return timestamp_frame_map
 
 
-def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", scale: float | tuple[int, int] = 0.5) -> dict[int, dict]:
+def extract_all_frames(
+    video_path: str,
+    target_dir: str,
+    format: str = "jpeg",
+    scale: float | tuple[int, int] = 0.5,
+    logger: logging.Logger | None = None,
+    interruption: InterruptibleProcess | None = None,
+) -> dict[int, dict]:
     """
         Function extracts all frames into the given directory (should be empty).
         Returns a dict mapping timestamp (ms) -> {'path': frame_path, 'frame': frame_number}
+
+        When *logger* is given, a progress bar is shown.
+        When *interruption* is given, ctrl+c can cleanly stop the process.
     """
-    def run_ffmpeg(args):
-        return process_utils.start_process("ffmpeg", args=args)
 
     # Clear target directory
     def clean_target_dir():
@@ -141,6 +226,11 @@ def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", s
             output_pattern
         ]
 
+    basename = os.path.basename(video_path)
+    total_frames = get_video_frames_count(video_path) if logger else None
+    if logger:
+        logger.info(f"Extracting all frames: {basename}")
+
     fallback_options = [
         ["-fps_mode", "vfr"],
     ]
@@ -148,9 +238,10 @@ def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", s
     for opts in fallback_options:
         clean_target_dir()
         args = build_args(opts)
-        result = run_ffmpeg(args)
 
-        if result.returncode == 0:
+        proc, stderr_lines = _start_ffmpeg_streaming(args, interruption)
+
+        if proc.returncode == 0:
             break
     else:
         raise RuntimeError("ffmpeg failed with all fallback options.")
@@ -160,7 +251,7 @@ def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", s
 
     mapping = {}
     f = 0
-    for line in result.stderr.splitlines():
+    for line in stderr_lines:
         match = frame_pattern.search(line)
         if match:
             frame_number = int(match.group(1))
@@ -170,7 +261,8 @@ def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", s
             mapping[timestamp_ms] = {"path": os.path.join(target_dir, frame_files[f]), "frame": frame_number, "frame_id": frame_id}
             f += 1
 
-    #self.logger.debug(f"Parsed frames: {f}, Frame files: {len(frame_files)}")
+    if logger:
+        logger.info(f"Extracted {len(mapping)} frames from {basename}")
 
     return mapping
 

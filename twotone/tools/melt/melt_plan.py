@@ -13,7 +13,7 @@ class MeltPlan:
     output_dir: str
 
     def is_empty(self) -> bool:
-        return not self.items
+        return not any(item.get("groups") for item in self.items)
 
     def render(self, logger: logging.Logger) -> None:
         if not self.items:

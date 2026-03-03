@@ -1034,15 +1034,17 @@ class PairMatcher:
         return matching_pairs
 
     def create_segments_mapping(self) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo]:
-        lhs_scene_changes = video_utils.detect_scene_changes(self.lhs_path, threshold = 0.3)
-        rhs_scene_changes = video_utils.detect_scene_changes(self.rhs_path, threshold = 0.3)
+        self.logger.info("Phase 1/5: Detecting scene changes")
+        lhs_scene_changes = video_utils.detect_scene_changes(self.lhs_path, threshold=0.3, logger=self.logger, interruption=self.interruption)
+        rhs_scene_changes = video_utils.detect_scene_changes(self.rhs_path, threshold=0.3, logger=self.logger, interruption=self.interruption)
 
         if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
             raise RuntimeError("Not enought scene changes detected")
 
-        # extract all scenes
-        self.lhs_all_frames = video_utils.extract_all_frames(self.lhs_path, self.lhs_all_wd, scale = 0.5, format = "png")
-        self.rhs_all_frames = video_utils.extract_all_frames(self.rhs_path, self.rhs_all_wd, scale = 0.5, format = "png")
+        # extract all frames
+        self.logger.info("Phase 2/5: Extracting all frames")
+        self.lhs_all_frames = video_utils.extract_all_frames(self.lhs_path, self.lhs_all_wd, scale=0.5, format="png", logger=self.logger, interruption=self.interruption)
+        self.rhs_all_frames = video_utils.extract_all_frames(self.rhs_path, self.rhs_all_wd, scale=0.5, format="png", logger=self.logger, interruption=self.interruption)
 
         lhs_key_frames_str = [str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes]
         rhs_key_frames_str = [str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes]
@@ -1051,6 +1053,7 @@ class PairMatcher:
         self.logger.debug(f"rhs key frames: {' '.join(rhs_key_frames_str)}")
 
         # normalize frames. This could have been done in the previous step, however for some videos ffmpeg fails to save some of the frames when using 256x256 resolution. Who knows why...
+        self.logger.info("Phase 3/5: Normalizing frames")
         lhs_normalized_frames = self._normalize_frames(self.lhs_all_frames, self.lhs_normalized_wd)
         rhs_normalized_frames = self._normalize_frames(self.rhs_all_frames, self.rhs_normalized_wd)
 
@@ -1064,6 +1067,7 @@ class PairMatcher:
         debug.dump_frames(rhs_key_frames, "rhs key frames")
 
         # find matching keys
+        self.logger.info("Phase 4/5: Matching key frames")
         matching_pairs = self._make_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames)
         debug.dump_matches(matching_pairs, "initial matching")
         self.logger.debug("Pairs summary after initial matching:")
@@ -1072,6 +1076,7 @@ class PairMatcher:
         if not matching_pairs:
             raise RuntimeError("No matching pairs found between the two files")
 
+        self.logger.info("Phase 5/5: Refining boundaries")
         prev_first, prev_last = None, None
         while True:
             self.interruption.check_for_stop()
