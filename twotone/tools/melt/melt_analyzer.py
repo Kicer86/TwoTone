@@ -288,20 +288,27 @@ class MeltAnalyzer:
             file_id = ids[path]
             length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
             if _is_length_mismatch(base_length, length, self.tolerance_ms):
+                base_fmt = generic_utils.ms_to_time(base_length) if base_length else "?"
+                other_fmt = generic_utils.ms_to_time(length) if length else "?"
                 self.logger.debug(
                     f"Subtitles stream from file #{file_id} has length different than length of video stream from file {v_path}. "
                     "This is not supported yet"
                 )
-                return f"Subtitle length mismatch between #{file_id} and #{base_file_id} (unsupported)."
+                return (
+                    f"Subtitle length mismatch between #{file_id} ({other_fmt}) and #{base_file_id} ({base_fmt}) (unsupported)."
+                )
 
-        # Audio lengths valdiation
+        # Audio lengths validation
         for path, tid, _ in audio_streams:
             file_id = ids[path]
             length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
             if _is_length_mismatch(base_length, length, self.tolerance_ms):
                 base_file_id = ids[v_path]
+                base_fmt = generic_utils.ms_to_time(base_length) if base_length else "?"
+                other_fmt = generic_utils.ms_to_time(length) if length else "?"
                 self.logger.debug(
-                    f"Audio stream from file #{file_id} has length different than length of video stream from file #{base_file_id}. "
+                    f"Audio stream from file #{file_id} ({other_fmt}) has length different than "
+                    f"video stream from file #{base_file_id} ({base_fmt}). "
                     "Check for --allow-length-mismatch option to allow this."
                 )
 
@@ -309,7 +316,10 @@ class MeltAnalyzer:
                     self.logger.debug("Audio length mismatch detected; audio will be time-adjusted during processing.")
 
                 else:
-                    return f"Audio length mismatch between #{file_id} and #{base_file_id} (use --allow-length-mismatch)."
+                    return (
+                        f"Audio length mismatch between #{file_id} ({other_fmt}) and #{base_file_id} ({base_fmt}) "
+                        f"(use --allow-length-mismatch)."
+                    )
 
         return None
 

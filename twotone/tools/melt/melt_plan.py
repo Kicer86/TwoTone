@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 
 from dataclasses import dataclass
 from typing import Any
@@ -182,6 +183,32 @@ class MeltPlan:
                                     logger.info("%s      #%s (%s): %s", prefix, tid, flag, name)
 
         if skipped_sets:
-            logger.info("Skipped candidates: %d set(s), %d file(s).", skipped_sets, skipped_files)
+            logger.warning("Skipped candidates: %d set(s), %d file(s).", skipped_sets, skipped_files)
+
             if has_missing_language:
                 logger.info("Hint: Some candidates were skipped due to missing stream language. Consider running: twotone language_fix")
+
+            for item in skipped_items:
+                title = item.get("title", "<unknown>")
+                skipped = item.get("skipped_groups", [])
+                if not skipped:
+                    continue
+                logger.warning("Title: %s", title)
+                for idx, group in enumerate(skipped, start=1):
+                    issue = group.get("issue", "Unknown issue.")
+                    output_name = group.get("output_name", "output")
+                    output_path = os.path.join(self.output_dir, title, f"{output_name}.mkv")
+                    files = group.get("files", [])
+                    problem_ids = {int(val) for val in re.findall(r"#(\d+)", issue)}
+                    if len(skipped) > 1:
+                        logger.warning("  Candidate %d:", idx)
+                        prefix = "    "
+                    else:
+                        prefix = "  "
+                    logger.warning("%sIssue: %s", prefix, issue)
+                    logger.warning("%sOutput: %s", prefix, output_path)
+                    if files:
+                        logger.warning("%sFiles:", prefix)
+                        for file_idx, path in enumerate(files, start=1):
+                            marker = " (!)" if file_idx in problem_ids else ""
+                            logger.warning("%s  #%d%s: %s", prefix, file_idx, marker, path)
