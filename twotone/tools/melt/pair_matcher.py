@@ -591,6 +591,54 @@ class PairMatcher:
 
         return unique_pairs
 
+    def _edge_content_matches(
+        self,
+        lhs: FramesInfo,
+        rhs: FramesInfo,
+        lhs_keys: list[int],
+        rhs_keys: list[int],
+        phash: "PhashCache",
+        first: tuple[int, int],
+        last: tuple[int, int],
+        ratio: float,
+        cutoff: float,
+        direction: int,
+    ) -> bool:
+        """Check if both videos share the same content at one edge.
+
+        *direction* = -1 checks the video start, +1 checks the video end.
+
+        Compares the edge frame of LHS against the edge frame of RHS (not
+        a prediction-based frame).  Validates with pHash, ratio consistency,
+        and ORB.  Returns ``True`` when the edge pair looks like a valid match,
+        meaning ``find_boundary`` should be able to reach the edge.
+        """
+        edge_lhs_ts = lhs_keys[0] if direction == -1 else lhs_keys[-1]
+        edge_rhs_ts = rhs_keys[0] if direction == -1 else rhs_keys[-1]
+
+        if edge_lhs_ts not in lhs or edge_rhs_ts not in rhs:
+            return False
+
+        d = abs(phash.get(lhs[edge_lhs_ts]["path"]) - phash.get(rhs[edge_rhs_ts]["path"]))
+        if d > cutoff:
+            return False
+
+        # Ratio validation against the farther known pair
+        reference = last if direction == -1 else first
+        edge_pair = (edge_lhs_ts, edge_rhs_ts)
+        if reference != edge_pair:
+            cand_ratio = PairMatcher.calculate_ratio([edge_pair, reference])
+            if not PairMatcher.is_ratio_acceptable(cand_ratio, ratio):
+                return False
+
+        # ORB verification on the half-resolution extracted frames
+        lhs_path = self.lhs_all_frames[edge_lhs_ts]["path"] if edge_lhs_ts in self.lhs_all_frames else lhs[edge_lhs_ts]["path"]
+        rhs_path = self.rhs_all_frames[edge_rhs_ts]["path"] if edge_rhs_ts in self.rhs_all_frames else rhs[edge_rhs_ts]["path"]
+        if not image_utils.are_images_similar(lhs_path, rhs_path):
+            return False
+
+        return True
+
     def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: tuple[int, int], last: tuple[int, int], cutoff: float, max_gap_seconds: float = 15.0):
         """Find the first and last common frame pair by walking outward from known matches.
 
@@ -619,7 +667,43 @@ class PairMatcher:
         # search unable to extend even a single frame.
         cutoff = max(cutoff, 16)
 
-        def find_boundary(anchor: tuple[int, int], reference: tuple[int, int], direction: int) -> tuple[tuple[int, int], bool]:
+        # --- Fast edge pre-check ---
+        # Before the iterative search, check whether both videos share content
+        # at each edge.  When they do, extend the gap budget for find_boundary
+        # so it does not give up before reaching the video edge.  The anchor
+        # and prediction logic are left untouched for maximum precision.
+        lhs_keys = sorted(lhs.keys())
+        rhs_keys = sorted(rhs.keys())
+
+        first_gap_seconds = max_gap_seconds
+        last_gap_seconds = max_gap_seconds
+
+        for direction in [-1, 1]:
+            matches = self._edge_content_matches(
+                lhs, rhs, lhs_keys, rhs_keys, phash,
+                first, last, ratio, cutoff, direction,
+            )
+            if not matches:
+                continue
+
+            anchor = first if direction == -1 else last
+            edge_lhs = lhs_keys[0] if direction == -1 else lhs_keys[-1]
+            distance_s = abs(anchor[0] - edge_lhs) / 1000.0
+
+            if direction == -1:
+                first_gap_seconds = max(max_gap_seconds, distance_s + 2.0)
+                self.logger.debug(
+                    f"Edge pre-check: start edge matches, "
+                    f"extending gap budget to {first_gap_seconds:.1f}s"
+                )
+            else:
+                last_gap_seconds = max(max_gap_seconds, distance_s + 2.0)
+                self.logger.debug(
+                    f"Edge pre-check: end edge matches, "
+                    f"extending gap budget to {last_gap_seconds:.1f}s"
+                )
+
+        def find_boundary(anchor: tuple[int, int], reference: tuple[int, int], direction: int, gap_seconds: float = max_gap_seconds) -> tuple[tuple[int, int], bool]:
             """Walk from *anchor* in *direction*, using linear prediction to find matches.
 
             Returns ``(best_pair, entered_low_entropy)`` where the flag indicates
@@ -630,7 +714,7 @@ class PairMatcher:
             rhs_keys = sorted(rhs.keys())
 
             current_best = anchor
-            max_gap = int(max_gap_seconds * self.lhs_fps)
+            max_gap = int(gap_seconds * self.lhs_fps)
             consecutive_misses = 0
             entered_low_entropy = False
 
@@ -735,11 +819,11 @@ class PairMatcher:
 
             return current_best, entered_low_entropy
 
-        refined_first, first_low_entropy = find_boundary(first, last, direction=-1)
+        refined_first, first_low_entropy = find_boundary(first, last, direction=-1, gap_seconds=first_gap_seconds)
         self.logger.debug(f"Refined First: L: {lhs[refined_first[0]]['path']} R: {rhs[refined_first[1]]['path']}"
                           f"{' (stopped at low-entropy zone)' if first_low_entropy else ''}")
 
-        refined_last, last_low_entropy = find_boundary(last, first, direction=1)
+        refined_last, last_low_entropy = find_boundary(last, first, direction=1, gap_seconds=last_gap_seconds)
         self.logger.debug(f"Refined Last:  L: {lhs[refined_last[0]]['path']} R: {rhs[refined_last[1]]['path']}"
                           f"{' (stopped at low-entropy zone)' if last_low_entropy else ''}")
 
@@ -886,6 +970,68 @@ class PairMatcher:
         )
         return (edge_lhs, new_rhs)
 
+    def _snap_to_edges(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+        snap_frames: int = 3,
+    ) -> list[tuple[int, int]]:
+        """Snap first/last pair timestamps to video edges when within a few frames.
+
+        When the first or last mapping pair is very close to a video edge
+        (within *snap_frames* frames), keeping a tiny head or tail audio
+        segment is pointless and may cause artifacts.  This method extends
+        those pairs to the edge (timestamp 0 for start, video duration for
+        end) so downstream audio patching skips the trivial segments.
+
+        Synthetic entries are added to *lhs_all_frames* / *rhs_all_frames*
+        for any newly created timestamps (pointing to the nearest real frame
+        file) so debug routines remain functional.
+        """
+        lhs_threshold_ms = snap_frames * 1000 / self.lhs_fps
+        rhs_threshold_ms = snap_frames * 1000 / self.rhs_fps
+
+        lhs_duration = video_utils.get_video_duration(self.lhs_path)
+        rhs_duration = video_utils.get_video_duration(self.rhs_path)
+
+        lhs_keys = sorted(lhs_all_frames.keys())
+        rhs_keys = sorted(rhs_all_frames.keys())
+
+        first_l, first_r = matching_pairs[0]
+        last_l, last_r = matching_pairs[-1]
+
+        # --- Start edge ---
+        new_first_l = 0 if first_l <= lhs_threshold_ms else first_l
+        new_first_r = 0 if first_r <= rhs_threshold_ms else first_r
+
+        if (new_first_l, new_first_r) != (first_l, first_r):
+            self.logger.info(
+                f"Edge snap: first pair ({first_l}, {first_r}) → "
+                f"({new_first_l}, {new_first_r})"
+            )
+            matching_pairs[0] = (new_first_l, new_first_r)
+            if new_first_l not in lhs_all_frames:
+                lhs_all_frames[new_first_l] = lhs_all_frames[lhs_keys[0]].copy()
+            if new_first_r not in rhs_all_frames:
+                rhs_all_frames[new_first_r] = rhs_all_frames[rhs_keys[0]].copy()
+
+        # --- End edge ---
+        new_last_l = lhs_duration if (lhs_duration - last_l) <= lhs_threshold_ms else last_l
+        new_last_r = rhs_duration if (rhs_duration - last_r) <= rhs_threshold_ms else last_r
+
+        if (new_last_l, new_last_r) != (last_l, last_r):
+            self.logger.info(
+                f"Edge snap: last pair ({last_l}, {last_r}) → "
+                f"({new_last_l}, {new_last_r})"
+            )
+            matching_pairs[-1] = (new_last_l, new_last_r)
+            if new_last_l not in lhs_all_frames:
+                lhs_all_frames[new_last_l] = lhs_all_frames[lhs_keys[-1]].copy()
+            if new_last_r not in rhs_all_frames:
+                rhs_all_frames[new_last_r] = rhs_all_frames[rhs_keys[-1]].copy()
+
+        return matching_pairs
 
     def create_segments_mapping(self) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo]:
         lhs_scene_changes = video_utils.detect_scene_changes(self.lhs_path, threshold = 0.3)
@@ -995,5 +1141,9 @@ class PairMatcher:
         self.logger.debug("Final status:\n")
         self.logger.debug(PairMatcher.summarize_segments(matching_pairs, self.lhs_fps, self.rhs_fps))
         self.logger.debug(PairMatcher.summarize_pairs(phash_uncropped, matching_pairs, self.lhs_all_frames, self.rhs_all_frames, verbose = True))
+
+        # Snap near-edge pairs to exact video boundaries to avoid trivially
+        # short head/tail audio segments (< 3 frames).
+        matching_pairs = self._snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
 
         return matching_pairs, self.lhs_all_frames, self.rhs_all_frames

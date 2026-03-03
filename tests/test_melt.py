@@ -1098,6 +1098,7 @@ class MeltingTest(TwoToneTestCase):
 
 
     def test_pair_matcher_precision(self):
+        """Multi-scene sample (82.6s) vs VHS degraded version (78.7s, 1.05x speed, crop, blur)."""
         file1 = add_to_test_dir(self.wd.path, self.sample_video_file)
         file2 = add_to_test_dir(self.wd.path, self.sample_vhs_video_file)
 
@@ -1106,7 +1107,7 @@ class MeltingTest(TwoToneTestCase):
         mappings, _, _ = pair_matcher.create_segments_mapping()
 
         self.assertEqual(mappings, [
-            (23, 75),
+            (0, 0),          # ← edge (snapped from 23ms/75ms — within 3 frames)
             (3383, 3245),
             (8663, 8264),
             (10583, 10038),
@@ -1121,8 +1122,16 @@ class MeltingTest(TwoToneTestCase):
             (49263, 46981),
             (69903, 66679),
             (77583, 73962),
-            (82543, 78604),
+            (82582, 78700),  # ← edge (snapped to video duration)
         ])
+
+        # Both edges snapped to video boundaries. Full coverage.
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1),
+            video_utils.get_video_duration(file2),
+        )
+        self.assertTrue(coverage["full_coverage"])
 
     def test_pair_matcher_black_intro_same_length(self):
         """Both files have the same length black intro — boundary should extend through it."""
@@ -1132,17 +1141,25 @@ class MeltingTest(TwoToneTestCase):
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
         mappings, _, _ = pair_matcher.create_segments_mapping()
 
-        # 3s black intro on both files — boundary should extend through black to edge
+        # 3s black intro on both files — boundary extends through black to edge
+        # LHS: bbb_bi3 (65.3s), RHS: bi3_deg103 (63.4s)
         self.assertEqual(mappings, [
-            (23, 38),
+            (0, 0),          # ← edge (snapped from 23ms/38ms — within 3 frames)
             (19063, 18528),
             (24743, 24038),
             (26583, 25849),
             (28743, 27925),
             (45023, 43736),
             (55023, 53434),
-            (65263, 63396),
+            (65337, 63433),  # ← edge (snapped to video duration)
         ])
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        self.assertTrue(coverage["full_coverage"])
 
     def test_pair_matcher_black_intro_different_length(self):
         """Files have different length black intros — algorithm should find content pairs despite offset."""
@@ -1152,36 +1169,58 @@ class MeltingTest(TwoToneTestCase):
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
         mappings, _, _ = pair_matcher.create_segments_mapping()
 
-        # LHS has 2s black intro, RHS has 6s — LHS extends to edge through black
+        # LHS: bbb_bi2 (64.3s, 2s black intro), RHS: bi6_deg103 (66.5s, 6s black intro)
+        # LHS extends to edge through black; RHS starts at 4098ms (inside 6s intro)
         self.assertEqual(mappings, [
-            (23, 4098),
+            (0, 4098),       # ← LHS snapped to edge; RHS 4.1s in (inside the 6s black intro)
             (10383, 14174),
             (18103, 21646),
             (25583, 28891),
             (27743, 31042),
             (44023, 46815),
             (54063, 56551),
-            (64143, 66363),
+            (64143, 66363),  # ← LHS ~edge; RHS ~edge
         ])
 
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        # LHS snapped to 0, RHS inside its 6s black intro — RHS start gap < 6s.
+        # Both ends reach their video boundary.
+        self.assertFalse(coverage["full_coverage"])
+        self.assertEqual(coverage["lhs_start_gap_s"], 0.0)
+        self.assertGreater(coverage["rhs_start_gap_s"], 3.0)
+        self.assertLess(coverage["rhs_start_gap_s"], 6.5)
+        self.assertLess(coverage["lhs_end_gap_s"], 0.5)
+        self.assertLess(coverage["rhs_end_gap_s"], 0.5)
+
     def test_pair_matcher_black_outro(self):
-        """Both files have black outro — last pair should stop at content edge."""
+        """Both files have black outro — last pair should extend through it to edge."""
         file1_path, file2_path = self.edge_fixtures["black_outro"]
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
         mappings, _, _ = pair_matcher.create_segments_mapping()
 
-        # First pair at video edge, last pair extends through black outro to edge
+        # LHS: bbb_bo3 (65.3s, 3s black outro), RHS: bo3_deg103 (63.4s, 3s black outro)
         self.assertEqual(mappings, [
-            (23, 38),
+            (0, 0),          # ← edge (snapped from 23ms/38ms — within 3 frames)
             (16063, 15623),
             (23583, 22906),
             (25743, 25019),
             (42023, 40830),
             (52063, 50566),
-            (65297, 63396),
+            (65337, 63433),  # ← edge (snapped to video duration, through black outro)
         ])
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        self.assertTrue(coverage["full_coverage"])
 
     def test_pair_matcher_both_intro_and_outro_black(self):
         """Files have black intro AND outro — both boundaries should be handled."""
@@ -1191,14 +1230,29 @@ class MeltingTest(TwoToneTestCase):
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
         mappings, _, _ = pair_matcher.create_segments_mapping()
 
-        # 2s black intro + 2s black outro on both, RHS degraded at 1.03x
-        # Coverage limited by initial matching quality (few pairs in narrow range)
+        # LHS: bi2_bo2 (66.3s, 2s black intro + 2s black outro)
+        # RHS: bi2_bo2_deg103 (64.4s, same + 1.03x speed)
+        # Coverage limited by initial matching quality (only 4 pairs found)
         self.assertEqual(mappings, [
-            (27263, 25019),
+            (27263, 25019),  # ← NOT at edge — 27s into a 66s video (38% coverage)
             (38783, 37245),
             (44063, 42792),
-            (52703, 52000),
+            (52703, 52000),  # ← NOT at edge — 14s from end
         ])
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        # Known limitation: algorithm finds only 4 interior pairs (38% coverage).
+        # LHS has 2s black intro + bbb + 2s black outro = 66.3s, but matching
+        # only covers the middle portion. RHS similarly limited.
+        self.assertFalse(coverage["full_coverage"])
+        self.assertGreater(coverage["lhs_start_gap_s"], 25.0)
+        self.assertGreater(coverage["lhs_end_gap_s"], 10.0)
+        self.assertGreater(coverage["rhs_start_gap_s"], 23.0)
+        self.assertGreater(coverage["rhs_end_gap_s"], 10.0)
 
     def test_pair_matcher_no_speed_change(self):
         """Same content with no speed change (ratio ~1.0), only quality degradation."""
@@ -1208,9 +1262,9 @@ class MeltingTest(TwoToneTestCase):
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
         mappings, _, _ = pair_matcher.create_segments_mapping()
 
-        # No speed difference — ratio ≈ 1.0, edges reached via edge-frame check
+        # LHS: bbb (62.3s), RHS: bbb_deg10 (62.3s, same speed, degraded quality)
         self.assertEqual(mappings, [
-            (0, 0),
+            (0, 0),          # ← edge (exact first frame)
             (8360, 8377),
             (12960, 12943),
             (16040, 16038),
@@ -1219,8 +1273,15 @@ class MeltingTest(TwoToneTestCase):
             (42000, 42000),
             (52040, 52038),
             (56160, 56151),
-            (62240, 62226),
+            (62314, 62313),  # ← edge (snapped to video duration)
         ])
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        self.assertTrue(coverage["full_coverage"])
 
     def test_pair_matcher_different_intro_same_length(self):
         """Files have different high-entropy intros of similar length, then shared content."""
@@ -1230,16 +1291,30 @@ class MeltingTest(TwoToneTestCase):
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
         mappings, _, _ = pair_matcher.create_segments_mapping()
 
-        # 3s different intros (grass vs atoms) — first pair at content boundary
+        # LHS: bbb_gi3 (65.3s, 3s grass intro), RHS: atoms_i3_deg (63.5s, 3s atoms intro)
         self.assertEqual(mappings, [
-            (3223, 3208),
+            (3223, 3208),    # ← NOT at edge — content starts at ~3s (after different intros)
             (11383, 11170),
             (16023, 15660),
             (19063, 18604),
             (26583, 25887),
             (46703, 45472),
-            (64943, 63170),
+            (64943, 63170),  # ← edge (last extracted frame of shared content)
         ])
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        # Both files have 3s intros (grass / atoms). Common content starts at ~3s.
+        # Start gaps must match the known intro duration within 1s tolerance.
+        # End gaps must be negligible — last pair reaches near video boundary.
+        self.assertFalse(coverage["full_coverage"])
+        self.assertAlmostEqual(coverage["lhs_start_gap_s"], 3.0, delta=1.0)
+        self.assertAlmostEqual(coverage["rhs_start_gap_s"], 3.0, delta=1.0)
+        self.assertLess(coverage["lhs_end_gap_s"], 0.5)
+        self.assertLess(coverage["rhs_end_gap_s"], 0.5)
 
     def test_pair_matcher_different_intro_different_length(self):
         """Files have different high-entropy intros of DIFFERENT lengths."""
@@ -1249,16 +1324,30 @@ class MeltingTest(TwoToneTestCase):
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
         mappings, _, _ = pair_matcher.create_segments_mapping()
 
-        # LHS 2s grass intro, RHS 5s atoms intro — first pair reflects offset
+        # LHS: bbb_gi2 (64.3s, 2s grass intro), RHS: atoms_i5_deg (65.5s, 5s atoms intro)
         self.assertEqual(mappings, [
-            (2223, 5208),
+            (2223, 5208),    # ← NOT at edge — first pair after different intros (2s vs 5s)
             (10383, 13170),
             (15023, 17660),
             (18063, 20604),
             (25583, 27887),
             (45703, 47472),
-            (63943, 65170),
+            (63943, 65170),  # ← edge
         ])
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        # LHS has 2s grass intro, RHS has 5s atoms intro.
+        # Start gaps must match known intro durations within 1s tolerance.
+        # End gaps must be negligible — last pair reaches near video boundary.
+        self.assertFalse(coverage["full_coverage"])
+        self.assertAlmostEqual(coverage["lhs_start_gap_s"], 2.0, delta=1.0)
+        self.assertAlmostEqual(coverage["rhs_start_gap_s"], 5.0, delta=1.0)
+        self.assertLess(coverage["lhs_end_gap_s"], 0.5)
+        self.assertLess(coverage["rhs_end_gap_s"], 0.5)
 
     def test_pair_matcher_different_outro(self):
         """Files share content but have different high-entropy outros."""
@@ -1268,17 +1357,30 @@ class MeltingTest(TwoToneTestCase):
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
         mappings, _, _ = pair_matcher.create_segments_mapping()
 
-        # First pair at video edge, last pair at content end before different outros
+        # LHS: bbb_wo3 (65.3s, 3s woman outro), RHS: deg103_atoms_o3 (63.5s, 3s atoms outro)
         self.assertEqual(mappings, [
-            (23, 61),
+            (0, 0),          # ← edge (snapped from 23ms/61ms — within 3 frames)
             (8383, 8174),
             (16103, 15646),
             (23583, 22891),
             (25743, 25042),
             (42023, 40815),
             (52063, 50551),
-            (62143, 60363),
+            (62143, 60363),  # ← NOT at edge — content ends at 62s, different outros follow
         ])
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        # Start snapped to edge. Both files have 3s outros (woman / atoms).
+        # End gaps must match the known outro duration within 1s tolerance.
+        self.assertFalse(coverage["full_coverage"])
+        self.assertEqual(coverage["lhs_start_gap_s"], 0.0)
+        self.assertEqual(coverage["rhs_start_gap_s"], 0.0)
+        self.assertAlmostEqual(coverage["lhs_end_gap_s"], 3.0, delta=1.0)
+        self.assertAlmostEqual(coverage["rhs_end_gap_s"], 3.0, delta=1.0)
 
     def test_pair_matcher_different_intro_and_outro(self):
         """Files share content but have BOTH different intros AND different outros."""
@@ -1288,12 +1390,28 @@ class MeltingTest(TwoToneTestCase):
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
         mappings, _, _ = pair_matcher.create_segments_mapping()
 
-        # Most challenging scenario — algorithm finds only interior content pairs
+        # LHS: gi3_wo3 (57.1s, 3s grass intro + 3s woman outro)
+        # RHS: ai3d_swo3 (66.5s, 3s atoms intro + 3s seawaves outro)
+        # Most challenging scenario — only interior content pairs found
         self.assertEqual(mappings, [
-            (12383, 11472),
+            (12383, 11472),  # ← NOT at edge — 12s into a 57s file (26.9% coverage)
             (19103, 18604),
-            (27743, 27736),
+            (27743, 27736),  # ← NOT at edge — 29s from end
         ])
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        # Known limitation: most challenging scenario (different intro AND outro),
+        # only 3 interior pairs found (27% coverage). Both 3s intros and 3s
+        # outros are unmatched, plus most of the common content is missed.
+        self.assertFalse(coverage["full_coverage"])
+        self.assertGreater(coverage["lhs_start_gap_s"], 10.0)
+        self.assertGreater(coverage["lhs_end_gap_s"], 25.0)
+        self.assertGreater(coverage["rhs_start_gap_s"], 10.0)
+        self.assertGreater(coverage["rhs_end_gap_s"], 35.0)
 
     # ---- coverage_summary tests ----
 
@@ -1350,9 +1468,12 @@ class MeltingTest(TwoToneTestCase):
         d1 = video_utils.get_video_duration(file1_path)
         d2 = video_utils.get_video_duration(file2_path)
         result = PairMatcher.coverage_summary(mappings, d1, d2)
+        # Both files have 3s intros. Start gaps must match intro duration.
         self.assertFalse(result["full_coverage"])
-        self.assertGreater(result["lhs_start_gap_s"], 2.0)
-        self.assertGreater(result["rhs_start_gap_s"], 2.0)
+        self.assertAlmostEqual(result["lhs_start_gap_s"], 3.0, delta=1.0)
+        self.assertAlmostEqual(result["rhs_start_gap_s"], 3.0, delta=1.0)
+        self.assertLess(result["lhs_end_gap_s"], 0.5)
+        self.assertLess(result["rhs_end_gap_s"], 0.5)
 
 
     def test_languages_ordering(self):

@@ -197,13 +197,19 @@ class MeltPerformer:
             process_utils.start_process("ffmpeg", ["-y", "-i", source_video, "-map", "0:a:0", "-c:a", "flac", v2_audio])
         )
 
-        # 2. Extract head and tail from base audio
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(seg1_start / 1000), "-i", v1_audio, "-c:a", "flac", head_path])
-        )
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", ["-y", "-ss", str(seg1_end / 1000), "-i", v1_audio, "-c:a", "flac", tail_path])
-        )
+        # 2. Extract head and tail from base audio (skip when at/near edge)
+        has_head = seg1_start > 0
+        if has_head:
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(seg1_start / 1000), "-i", v1_audio, "-c:a", "flac", head_path])
+            )
+
+        base_duration_ms = video_utils.get_video_duration(base_video)
+        has_tail = seg1_end < base_duration_ms
+        if has_tail:
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", ["-y", "-ss", str(seg1_end / 1000), "-i", v1_audio, "-c:a", "flac", tail_path])
+            )
 
         # 3. Generate subsegment split points from provided mapping pairs
         total_left_duration = seg1_end - seg1_start
@@ -285,10 +291,12 @@ class MeltPerformer:
         # 5. Concatenate head + replacement parts + tail
         concat_list = os.path.join(wd, "concat.txt")
         with open(concat_list, "w", encoding="utf-8") as f:
-            f.write(f"file '{head_path}'\n")
+            if has_head:
+                f.write(f"file '{head_path}'\n")
             for seg in temp_segments:
                 f.write(f"file '{seg}'\n")
-            f.write(f"file '{tail_path}'\n")
+            if has_tail:
+                f.write(f"file '{tail_path}'\n")
 
         merged_flac = os.path.join(wd, "merged.flac")
         process_utils.raise_on_error(
