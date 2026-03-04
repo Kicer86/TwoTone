@@ -74,19 +74,19 @@ class MeltPerformer:
 
             if lhs_sg > 0.04 or rhs_sg > 0.04:
                 parts.append(
-                    f"start mismatch: {lhs_sg:.1f}s in {lhs_name}, "
-                    f"{rhs_sg:.1f}s in {rhs_name}"
+                    f"shared content starts at {lhs_sg:.1f}s in {lhs_name} "
+                    f"and {rhs_sg:.1f}s in {rhs_name}"
                 )
             if lhs_eg > 0.04 or rhs_eg > 0.04:
                 parts.append(
-                    f"end mismatch: {lhs_eg:.1f}s in {lhs_name}, "
-                    f"{rhs_eg:.1f}s in {rhs_name}"
+                    f"shared content ends {lhs_eg:.1f}s before end of {lhs_name} "
+                    f"and {rhs_eg:.1f}s before end of {rhs_name}"
                 )
 
             detail = "; ".join(parts) if parts else "partial overlap"
             self.logger.info(
-                "Files are NOT fully identical — %s: %s ↔ %s",
-                detail, lhs_name, rhs_name,
+                "Files are NOT fully identical — %s",
+                detail,
             )
 
     def _build_mkvmerge_args(
