@@ -15,6 +15,8 @@ from typing import Iterator
 from twotone.tools.utils import generic_utils, process_utils, video_utils
 from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, MeltTool, PairMatcher, StaticSource, StreamsPicker
 from twotone.tools.utils.files_utils import ScopedDirectory
+from twotone.tools.melt.phash_cache import PhashCache
+from unittest.mock import patch
 from common import (
     TwoToneTestCase,
     FileCache,
@@ -1108,20 +1110,22 @@ class MeltingTest(TwoToneTestCase):
 
         self.assertEqual(mappings, [
             (0, 0),          # ← edge (snapped from 23ms/75ms — within 3 frames)
-            (3383, 3245),
             (8663, 8264),
-            (10583, 10038),
-            (13943, 13245),
-            (14423, 13660),
-            (14903, 14151),
-            (19223, 18302),
+            (12503, 11925),
+            (15863, 15132),
+            (20663, 19698),
             (25463, 24264),
             (29783, 28377),
             (44463, 42340),
+            (44943, 42830),
             (46863, 44642),
-            (49263, 46981),
-            (69903, 66679),
-            (77583, 73962),
+            (48783, 46491),
+            (54543, 52038),
+            (57903, 55208),
+            (61263, 58377),
+            (65583, 62491),
+            (71823, 68453),
+            (75663, 72075),
             (82582, 78700),  # ← edge (snapped to video duration)
         ])
 
@@ -1144,7 +1148,8 @@ class MeltingTest(TwoToneTestCase):
         # 3s black intro on both files — boundary extends through black to edge
         # LHS: bbb_bi3 (65.3s), RHS: bi3_deg103 (63.4s)
         self.assertEqual(mappings, [
-            (0, 0),          # ← edge (snapped from 23ms/38ms — within 3 frames)
+            (0, 0),          # ← edge (snapped from 23ms/38ms — within 4 frames)
+            (3223, 3132),
             (19063, 18528),
             (24743, 24038),
             (26583, 25849),
@@ -1173,13 +1178,14 @@ class MeltingTest(TwoToneTestCase):
         # LHS extends to edge through black; RHS starts at 4098ms (inside 6s intro)
         self.assertEqual(mappings, [
             (0, 4098),       # ← LHS snapped to edge; RHS 4.1s in (inside the 6s black intro)
+            (2223, 6249),
             (10383, 14174),
-            (18103, 21646),
+            (18063, 21608),
             (25583, 28891),
             (27743, 31042),
-            (44023, 46815),
-            (54063, 56551),
-            (64143, 66363),  # ← LHS ~edge; RHS ~edge
+            (44063, 46853),
+            (54023, 56514),
+            (64103, 66325),  # ← LHS ~edge; RHS ~edge
         ])
 
         coverage = PairMatcher.coverage_summary(
@@ -1208,10 +1214,12 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(mappings, [
             (0, 0),          # ← edge (snapped from 23ms/38ms — within 3 frames)
             (16063, 15623),
-            (23583, 22906),
+            (23623, 22943),
             (25743, 25019),
-            (42023, 40830),
+            (27823, 27019),
+            (42103, 40868),
             (52063, 50566),
+            (62143, 60377),
             (65337, 63433),  # ← edge (snapped to video duration, through black outro)
         ])
 
@@ -1232,12 +1240,20 @@ class MeltingTest(TwoToneTestCase):
 
         # LHS: bi2_bo2 (66.3s, 2s black intro + 2s black outro)
         # RHS: bi2_bo2_deg103 (64.4s, same + 1.03x speed)
-        # Coverage limited by initial matching quality (only 4 pairs found)
+        # Resolution change improved matching — now finds 12 pairs spanning nearly full video
         self.assertEqual(mappings, [
-            (27263, 25019),  # ← NOT at edge — 27s into a 66s video (38% coverage)
-            (38783, 37245),
+            (0, 0),          # ← edge (snapped through black intro)
+            (2263, 2226),
+            (10423, 10113),
+            (18103, 17623),
+            (23823, 23094),
+            (27783, 26981),
+            (29863, 28981),
             (44063, 42792),
-            (52703, 52000),  # ← NOT at edge — 14s from end
+            (45743, 44415),
+            (54063, 52528),
+            (64143, 62302),
+            (66343, 64415),  # ← edge (snapped to video duration, through black outro)
         ])
 
         coverage = PairMatcher.coverage_summary(
@@ -1245,14 +1261,9 @@ class MeltingTest(TwoToneTestCase):
             video_utils.get_video_duration(file1_path),
             video_utils.get_video_duration(file2_path),
         )
-        # Known limitation: algorithm finds only 4 interior pairs (38% coverage).
-        # LHS has 2s black intro + bbb + 2s black outro = 66.3s, but matching
-        # only covers the middle portion. RHS similarly limited.
-        self.assertFalse(coverage["full_coverage"])
-        self.assertGreater(coverage["lhs_start_gap_s"], 25.0)
-        self.assertGreater(coverage["lhs_end_gap_s"], 10.0)
-        self.assertGreater(coverage["rhs_start_gap_s"], 23.0)
-        self.assertGreater(coverage["rhs_end_gap_s"], 10.0)
+        # With improved resolution, algorithm now achieves full coverage.
+        # Both edges snapped through black intro/outro to video boundaries.
+        self.assertTrue(coverage["full_coverage"])
 
     def test_pair_matcher_no_speed_change(self):
         """Same content with no speed change (ratio ~1.0), only quality degradation."""
@@ -1270,9 +1281,10 @@ class MeltingTest(TwoToneTestCase):
             (16040, 16038),
             (23560, 23547),
             (25720, 25736),
+            (27800, 27811),
             (42000, 42000),
-            (52040, 52038),
-            (56160, 56151),
+            (52000, 52000),
+            (56240, 56226),
             (62314, 62313),  # ← edge (snapped to video duration)
         ])
 
@@ -1293,13 +1305,18 @@ class MeltingTest(TwoToneTestCase):
 
         # LHS: bbb_gi3 (65.3s, 3s grass intro), RHS: atoms_i3_deg (63.5s, 3s atoms intro)
         self.assertEqual(mappings, [
-            (3223, 3208),    # ← NOT at edge — content starts at ~3s (after different intros)
-            (11383, 11170),
+            (3263, 3283),    # ← NOT at edge — content starts at ~3s (after different intros)
+            (7583, 7509),
+            (11423, 11245),
             (16023, 15660),
             (19063, 18604),
+            (24703, 24113),
             (26583, 25887),
+            (28743, 28038),
+            (30823, 30038),
             (46703, 45472),
-            (64943, 63170),  # ← edge (last extracted frame of shared content)
+            (55103, 53585),
+            (65302, 63471),  # ← edge (snapped to video duration)
         ])
 
         coverage = PairMatcher.coverage_summary(
@@ -1326,13 +1343,18 @@ class MeltingTest(TwoToneTestCase):
 
         # LHS: bbb_gi2 (64.3s, 2s grass intro), RHS: atoms_i5_deg (65.5s, 5s atoms intro)
         self.assertEqual(mappings, [
-            (2223, 5208),    # ← NOT at edge — first pair after different intros (2s vs 5s)
-            (10383, 13170),
+            (2263, 5283),    # ← NOT at edge — first pair after different intros (2s vs 5s)
+            (6583, 9509),
+            (10423, 13245),
             (15023, 17660),
             (18063, 20604),
+            (23703, 26113),
             (25583, 27887),
+            (27743, 30038),
+            (29823, 32038),
             (45703, 47472),
-            (63943, 65170),  # ← edge
+            (54103, 55585),
+            (64302, 65471),  # ← edge (snapped to video duration)
         ])
 
         coverage = PairMatcher.coverage_summary(
@@ -1361,12 +1383,13 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(mappings, [
             (0, 0),          # ← edge (snapped from 23ms/61ms — within 3 frames)
             (8383, 8174),
-            (16103, 15646),
+            (16063, 15608),
             (23583, 22891),
             (25743, 25042),
-            (42023, 40815),
-            (52063, 50551),
-            (62143, 60363),  # ← NOT at edge — content ends at 62s, different outros follow
+            (42063, 40853),
+            (43703, 42476),
+            (52023, 50514),
+            (62103, 60325),  # ← NOT at edge — content ends at 62s, different outros follow
         ])
 
         coverage = PairMatcher.coverage_summary(
@@ -1392,11 +1415,13 @@ class MeltingTest(TwoToneTestCase):
 
         # LHS: gi3_wo3 (57.1s, 3s grass intro + 3s woman outro)
         # RHS: ai3d_swo3 (66.5s, 3s atoms intro + 3s seawaves outro)
-        # Most challenging scenario — only interior content pairs found
+        # Resolution change improved matching — now finds 5 pairs (vs 3 before)
         self.assertEqual(mappings, [
-            (12383, 11472),  # ← NOT at edge — 12s into a 57s file (26.9% coverage)
+            (3263, 3208),    # ← NOT at edge — content starts at ~3s (after different intros)
             (19103, 18604),
-            (27743, 27736),  # ← NOT at edge — 29s from end
+            (26623, 25887),
+            (46743, 45472),
+            (53463, 52000),  # ← NOT at edge — 4s from end of shared content
         ])
 
         coverage = PairMatcher.coverage_summary(
@@ -1404,14 +1429,13 @@ class MeltingTest(TwoToneTestCase):
             video_utils.get_video_duration(file1_path),
             video_utils.get_video_duration(file2_path),
         )
-        # Known limitation: most challenging scenario (different intro AND outro),
-        # only 3 interior pairs found (27% coverage). Both 3s intros and 3s
-        # outros are unmatched, plus most of the common content is missed.
+        # Improved from 3 to 5 pairs, but still not full coverage.
+        # Both files have 3s intros and 3s outros — start/end gaps expected.
         self.assertFalse(coverage["full_coverage"])
-        self.assertGreater(coverage["lhs_start_gap_s"], 10.0)
-        self.assertGreater(coverage["lhs_end_gap_s"], 25.0)
-        self.assertGreater(coverage["rhs_start_gap_s"], 10.0)
-        self.assertGreater(coverage["rhs_end_gap_s"], 35.0)
+        self.assertAlmostEqual(coverage["lhs_start_gap_s"], 3.0, delta=1.0)
+        self.assertGreater(coverage["lhs_end_gap_s"], 3.0)
+        self.assertAlmostEqual(coverage["rhs_start_gap_s"], 3.0, delta=1.0)
+        self.assertGreater(coverage["rhs_end_gap_s"], 10.0)
 
     # ---- coverage_summary tests ----
 
@@ -1838,6 +1862,437 @@ class MeltPerformerUnitTest(unittest.TestCase):
         track_order_idx = args.index("--track-order")
         track_order = args[track_order_idx + 1]
         self.assertEqual(track_order, "0:0,0:1,0:3,0:4,0:5")
+class PairMatcherUnitTest(unittest.TestCase):
+    """Unit tests for PairMatcher internal methods.
+
+    These tests mock _is_rich and bypass the full constructor to test
+    algorithmic behaviour without needing video files. They target:
+    - _extrapolate_through_low_entropy: 5% noise tolerance
+    - _snap_to_edges: snap_frames=4 threshold
+    - find_boundary (via _look_for_boundaries): look_ahead robustness
+    """
+
+    def _make_pair_matcher(self, lhs_fps: float = 25.0, rhs_fps: float = 25.0) -> PairMatcher:
+        """Create a PairMatcher with minimal init — no video files needed."""
+        pm = object.__new__(PairMatcher)
+        pm.logger = logging.getLogger("test.PairMatcher")
+        pm.lhs_fps = lhs_fps
+        pm.rhs_fps = rhs_fps
+        pm.phash = None  # not used in unit tests
+        pm.lhs_path = "/fake/lhs.mp4"
+        pm.rhs_path = "/fake/rhs.mp4"
+        pm.interruption = generic_utils.InterruptibleProcess()
+        return pm
+
+    @staticmethod
+    def _make_frames(timestamps: list[int], prefix: str = "fake") -> dict[int, dict]:
+        """Build a synthetic FramesInfo dict with dummy paths."""
+        return {ts: {"path": f"/{prefix}/{ts}.png", "frame_id": i} for i, ts in enumerate(timestamps)}
+
+    # ---- _extrapolate_through_low_entropy ----
+
+    def test_extrapolate_pure_low_entropy_lhs_extends(self):
+        """When all frames between boundary and edge are low-entropy, extrapolation happens."""
+        pm = self._make_pair_matcher()
+
+        # 100 frames at 40ms intervals from 0..3960ms
+        lhs_keys = list(range(0, 4000, 40))
+        rhs_keys = list(range(0, 4000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        boundary = (2000, 2000)
+        reference = (3000, 3000)
+
+        with patch.object(PairMatcher, '_is_rich', return_value=False):
+            result = pm._extrapolate_through_low_entropy(
+                lhs, rhs, boundary, reference, ratio=1.0,
+                direction=-1, entered_low_entropy=True,
+            )
+
+        # Should extrapolate to LHS edge (0ms) and snap RHS to nearest frame
+        self.assertEqual(result[0], 0)
+        self.assertEqual(result[1], 0)
+
+    def test_extrapolate_not_entered_low_entropy_noop(self):
+        """When entered_low_entropy=False, boundary is returned unchanged."""
+        pm = self._make_pair_matcher()
+        lhs = self._make_frames([0, 1000, 2000])
+        rhs = self._make_frames([0, 1000, 2000])
+        boundary = (1000, 1000)
+
+        result = pm._extrapolate_through_low_entropy(
+            lhs, rhs, boundary, (2000, 2000), ratio=1.0,
+            direction=-1, entered_low_entropy=False,
+        )
+
+        self.assertEqual(result, boundary)
+
+    def test_extrapolate_all_high_entropy_gap_refuses(self):
+        """When all gap frames are high-entropy, extrapolation is refused."""
+        pm = self._make_pair_matcher()
+        lhs = self._make_frames(list(range(0, 4000, 40)))
+        rhs = self._make_frames(list(range(0, 4000, 40)))
+        boundary = (2000, 2000)
+
+        with patch.object(PairMatcher, '_is_rich', return_value=True):
+            result = pm._extrapolate_through_low_entropy(
+                lhs, rhs, boundary, (3000, 3000), ratio=1.0,
+                direction=-1, entered_low_entropy=True,
+            )
+
+        self.assertEqual(result, boundary)
+
+    def test_extrapolate_noise_below_5pct_accepts(self):
+        """When < 5% of gap frames are high-entropy, extrapolation proceeds."""
+        pm = self._make_pair_matcher()
+
+        # 200 frames from 0..7960ms at 40ms intervals
+        lhs_keys = list(range(0, 8000, 40))
+        rhs_keys = list(range(0, 8000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        boundary = (4000, 4000)
+        # Gap: frames 0..3960 (100 frames), make 3 of them (3%) "rich"
+        noisy_timestamps = {120, 2000, 3600}  # 3 out of 100 = 3%
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts in noisy_timestamps
+
+        with patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich):
+            result = pm._extrapolate_through_low_entropy(
+                lhs, rhs, boundary, (6000, 6000), ratio=1.0,
+                direction=-1, entered_low_entropy=True,
+            )
+
+        # Should extrapolate — 3% noise is below 5% threshold
+        self.assertEqual(result[0], 0)
+
+    def test_extrapolate_noise_above_5pct_refuses(self):
+        """When > 5% of gap frames are high-entropy, extrapolation is refused."""
+        pm = self._make_pair_matcher()
+
+        lhs_keys = list(range(0, 8000, 40))
+        rhs_keys = list(range(0, 8000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        boundary = (4000, 4000)
+        # Gap: frames 0..3960 (100 frames), make 10 of them (10%) "rich"
+        noisy_timestamps = set(range(0, 400, 40))  # 10 out of 100 = 10%
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts in noisy_timestamps
+
+        with patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich):
+            result = pm._extrapolate_through_low_entropy(
+                lhs, rhs, boundary, (6000, 6000), ratio=1.0,
+                direction=-1, entered_low_entropy=True,
+            )
+
+        # Should refuse — 10% noise exceeds 5% threshold
+        self.assertEqual(result, boundary)
+
+    def test_extrapolate_end_direction(self):
+        """Extrapolation works in the forward (end) direction too."""
+        pm = self._make_pair_matcher()
+
+        lhs_keys = list(range(0, 8000, 40))
+        rhs_keys = list(range(0, 8000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        boundary = (4000, 4000)
+        reference = (2000, 2000)
+
+        with patch.object(PairMatcher, '_is_rich', return_value=False):
+            result = pm._extrapolate_through_low_entropy(
+                lhs, rhs, boundary, reference, ratio=1.0,
+                direction=1, entered_low_entropy=True,
+            )
+
+        # Should extrapolate to LHS end edge
+        self.assertEqual(result[0], lhs_keys[-1])
+
+    def test_extrapolate_rhs_high_entropy_refuses(self):
+        """When LHS is low-entropy but RHS gap is high-entropy, extrapolation is refused."""
+        pm = self._make_pair_matcher()
+
+        lhs_keys = list(range(0, 8000, 40))
+        rhs_keys = list(range(0, 8000, 40))
+        lhs = self._make_frames(lhs_keys, prefix="lhs")
+        rhs = self._make_frames(rhs_keys, prefix="rhs")
+
+        boundary = (4000, 4000)
+
+        def smart_mock(path: str) -> bool:
+            if path.startswith("/lhs/"):
+                return False   # LHS gap: all low-entropy
+            if path.startswith("/rhs/"):
+                return True    # RHS gap: all high-entropy
+            return False
+
+        with patch.object(PairMatcher, '_is_rich', side_effect=smart_mock):
+            result = pm._extrapolate_through_low_entropy(
+                lhs, rhs, boundary, (6000, 6000), ratio=1.0,
+                direction=-1, entered_low_entropy=True,
+            )
+
+        # RHS is all high-entropy → should refuse
+        self.assertEqual(result, boundary)
+
+    # ---- _snap_to_edges ----
+
+    def test_snap_within_4_frames_snaps(self):
+        """Pairs within 4 frames of edge should snap to video boundary."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # threshold = 4 * 1000 / 25 = 160ms
+
+        lhs_frames = self._make_frames([0, 40, 80, 100, 5000, 9900, 9960, 10000])
+        rhs_frames = self._make_frames([0, 40, 80, 100, 5000, 9900, 9960, 10000])
+
+        matching_pairs = [(100, 100), (5000, 5000), (9900, 9900)]
+
+        with patch.object(video_utils, 'get_video_duration', return_value=10000):
+            result = pm._snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+
+        # 100ms is within 160ms threshold → snap to 0
+        self.assertEqual(result[0], (0, 0))
+        # 10000 - 9900 = 100ms is within 160ms threshold → snap to duration
+        self.assertEqual(result[-1], (10000, 10000))
+
+    def test_snap_beyond_4_frames_no_snap(self):
+        """Pairs beyond 4 frames of edge should NOT snap."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # threshold = 160ms
+
+        lhs_frames = self._make_frames([0, 200, 5000, 9700, 10000])
+        rhs_frames = self._make_frames([0, 200, 5000, 9700, 10000])
+
+        matching_pairs = [(200, 200), (5000, 5000), (9700, 9700)]
+
+        with patch.object(video_utils, 'get_video_duration', return_value=10000):
+            result = pm._snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+
+        # 200ms > 160ms → no snap
+        self.assertEqual(result[0], (200, 200))
+        # 10000 - 9700 = 300ms > 160ms → no snap
+        self.assertEqual(result[-1], (9700, 9700))
+
+    def test_snap_asymmetric_fps(self):
+        """With different FPS per side, thresholds apply independently."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=50.0)
+        # LHS threshold = 4 * 1000 / 25 = 160ms
+        # RHS threshold = 4 * 1000 / 50 = 80ms
+
+        lhs_frames = self._make_frames([0, 100, 5000, 10000])
+        rhs_frames = self._make_frames([0, 90, 5000, 10000])
+
+        matching_pairs = [(100, 90), (5000, 5000)]
+
+        with patch.object(video_utils, 'get_video_duration', return_value=10000):
+            result = pm._snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+
+        # LHS: 100ms <= 160ms → snaps
+        self.assertEqual(result[0][0], 0)
+        # RHS: 90ms > 80ms → does NOT snap
+        self.assertEqual(result[0][1], 90)
+
+    # ---- _look_for_boundaries: look_ahead robustness ----
+
+    @staticmethod
+    def _mock_phash_always_match():
+        """Return a context manager that replaces PhashCache with an always-matching stub."""
+        class FakeHash:
+            def __sub__(self, other): return 0
+            def __abs__(self): return 0
+        class FakePhashCache:
+            def __init__(self, hash_size=16): pass
+            def get(self, path): return FakeHash()
+        return patch('twotone.tools.melt.pair_matcher.PhashCache', FakePhashCache)
+
+    def test_boundary_search_survives_transient_dark_frame(self):
+        """A single dark frame at a scene cut should not stop boundary search."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        lhs_keys = list(range(0, 10000, 40))
+        rhs_keys = list(range(0, 10000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        dark_timestamps = {3000}
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts not in dark_timestamps
+
+        first = (5000, 5000)
+        last = (8000, 8000)
+
+        with (
+            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
+            patch.object(pm, '_edge_content_matches', return_value=True),
+            self._mock_phash_always_match(),
+        ):
+            result_first, _ = pm._look_for_boundaries(
+                lhs, rhs, first, last, cutoff=16, extrapolate=False,
+            )
+
+        self.assertLess(result_first[0], 3000,
+            "Boundary should extend past the transient dark frame at 3000ms")
+
+    def test_boundary_search_stops_at_sustained_dark_zone(self):
+        """A sustained dark zone (>1.5s of dark frames) should stop the search."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        lhs_keys = list(range(0, 10000, 40))
+        rhs_keys = list(range(0, 10000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        dark_zone = {ts for ts in lhs_keys if ts <= 2500}
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts not in dark_zone
+
+        first = (5000, 5000)
+        last = (8000, 8000)
+
+        with (
+            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
+            patch.object(pm, '_edge_content_matches', return_value=True),
+            self._mock_phash_always_match(),
+        ):
+            result_first, _ = pm._look_for_boundaries(
+                lhs, rhs, first, last, cutoff=16, extrapolate=False,
+            )
+
+        self.assertGreaterEqual(result_first[0], 2500,
+            "Boundary should not extend into a sustained dark zone")
+
+    def test_boundary_search_consecutive_scene_cuts_dont_stop(self):
+        """Two brief dark frames close together should not stop the search."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        lhs_keys = list(range(0, 10000, 40))
+        rhs_keys = list(range(0, 10000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        dark_timestamps = {3000, 3200}
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts not in dark_timestamps
+
+        first = (5000, 5000)
+        last = (8000, 8000)
+
+        with (
+            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
+            patch.object(pm, '_edge_content_matches', return_value=True),
+            self._mock_phash_always_match(),
+        ):
+            result_first, _ = pm._look_for_boundaries(
+                lhs, rhs, first, last, cutoff=16, extrapolate=False,
+            )
+
+        self.assertLess(result_first[0], 3000,
+            "Boundary should extend past two isolated dark frames")
+
+    def test_boundary_search_jumps_over_mid_movie_dark_zone(self):
+        """A dark zone in the middle of matching content should be jumped over.
+
+        This reproduces the Jumanji scenario: content matches before and after
+        a sustained dark zone (scene transition), so the walk should continue
+        past the dark zone rather than declaring it a boundary.
+        """
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        # 500 frames at 40ms intervals: 0..19960ms
+        lhs_keys = list(range(0, 20000, 40))
+        rhs_keys = list(range(0, 20000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        # Sustained dark zone from 8000ms..10000ms (2s, ~50 frames)
+        dark_zone = {ts for ts in lhs_keys if 8000 <= ts <= 10000}
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts not in dark_zone
+
+        first = (14000, 14000)
+        last = (18000, 18000)
+
+        with (
+            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
+            patch.object(pm, '_edge_content_matches', return_value=True),
+            self._mock_phash_always_match(),
+        ):
+            result_first, _ = pm._look_for_boundaries(
+                lhs, rhs, first, last, cutoff=16, extrapolate=False,
+            )
+
+        # The walk should have jumped over the dark zone at 8000-10000ms
+        # and found matches before it, reaching near the video start.
+        self.assertLess(result_first[0], 8000,
+            "Boundary should jump over mid-movie dark zone and find earlier matches")
+
+    def test_boundary_search_stops_when_content_differs_after_dark_zone(self):
+        """When content on the other side of a dark zone does NOT match,
+        the walk should stop (dark zone is the real boundary).
+        """
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        lhs_keys = list(range(0, 20000, 40))
+        rhs_keys = list(range(0, 20000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        # Dark zone from 8000ms..10000ms
+        dark_zone = {ts for ts in lhs_keys if 8000 <= ts <= 10000}
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts not in dark_zone
+
+        first = (14000, 14000)
+        last = (18000, 18000)
+
+        class SelectivePhashCache:
+            """Phash that matches for ts > 10000 but fails for ts <= 8000."""
+            def __init__(self, hash_size=16): pass
+            def get(self, path):
+                ts = int(path.split("/")[-1].replace(".png", ""))
+                return type('Hash', (), {
+                    'value': ts,
+                    '__sub__': lambda s, o: 0 if s.value > 10000 or o.value > 10000 else 99,
+                    '__abs__': lambda s: s,
+                    '__lt__': lambda s, o: s.value < (o if isinstance(o, (int, float)) else o.value),
+                    '__le__': lambda s, o: s.value <= (o if isinstance(o, (int, float)) else o.value),
+                    '__gt__': lambda s, o: s.value > (o if isinstance(o, (int, float)) else o.value),
+                    '__int__': lambda s: s.value,
+                    '__float__': lambda s: float(s.value),
+                })()
+
+        with (
+            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
+            patch.object(pm, '_edge_content_matches', return_value=True),
+            patch('twotone.tools.melt.pair_matcher.PhashCache', SelectivePhashCache),
+        ):
+            result_first, _ = pm._look_for_boundaries(
+                lhs, rhs, first, last, cutoff=16, extrapolate=False,
+            )
+
+        # Content doesn't match after the dark zone — walk should stop at/near it
+        self.assertGreaterEqual(result_first[0], 8000,
+            "Boundary should stop at dark zone when content doesn't match on the other side")
+
 
 if __name__ == '__main__':
     unittest.main()

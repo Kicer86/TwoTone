@@ -105,7 +105,6 @@ def detect_scene_changes(
         "-sn",                                              # Ignore subtitle streams
         "-dn",                                              # Ignore data streams
         "-fps_mode", "auto",
-        "-frame_pts", "true",                               # Ensure correct frame timestamps
         "-filter_complex", f"select='gt(scene,{threshold})',showinfo",
         "-f", "null", "-"
     ]
@@ -180,10 +179,16 @@ def extract_all_frames(
     interruption: InterruptibleProcess | None = None,
 ) -> dict[int, dict]:
     """
-        Function extracts all frames into the given directory (should be empty).
-        Returns a dict mapping timestamp (ms) -> {'path': frame_path, 'frame': frame_number}
+        Extract all frames into *target_dir* (should be empty).
 
-        When *logger* is given, a progress bar is shown.
+        Returns a dict mapping timestamp_ms -> {'path': frame_path, 'frame_id': sequential_number}.
+
+        Frames use sequential numbering (no ``-frame_pts true``) so the
+        file count is always reliable.  Timestamps come from the
+        ``showinfo`` filter's ``pts_time`` output.  If the two counts
+        diverge (extremely rare), the smaller one is used with a warning.
+
+        When *logger* is given, an info message is emitted.
         When *interruption* is given, ctrl+c can cleanly stop the process.
     """
 
@@ -194,72 +199,90 @@ def extract_all_frames(
             if os.path.isfile(file_path):
                 os.unlink(file_path)
 
-    scale_option = ""
+    scale_filter = ""
     if isinstance(scale, float):
         if scale != 1.0:
             rscale = 1 / scale
-            scale_option = f"scale=iw/{rscale}:ih/{rscale}"
+            scale_filter = f"scale=iw/{rscale}:ih/{rscale}"
     elif isinstance(scale, tuple):
-        scale_option = f"scale={scale[0]}:{scale[1]}"
+        scale_filter = f"scale={scale[0]}:{scale[1]}"
     else:
         raise RuntimeError("Invalid type for scale")
 
-    output_pattern = os.path.join(target_dir, f"frame_%06d.{format}")
+    # Sequential numbering — always reliable, no PTS-based naming issues
+    output_pattern = os.path.join(target_dir, f"frame_%08d.{format}")
 
-    def build_args(extra_args):
-        filters = ["showinfo"]
-        if scale_option:
-            filters.append(scale_option)
-        filters_arg = ",".join(filters)
+    def build_args(extra_args: list[str]) -> list[str]:
+        vf_parts = ["showinfo"]
+        if scale_filter:
+            vf_parts.append(scale_filter)
 
         return [
-            "-copyts",
-            "-start_at_zero",
             "-i", video_path,
+            "-map", "0:v:0",           # Explicitly select only the first video stream
             "-an",                      # Ignore audio
             "-sn",                      # Ignore subtitles
             "-dn",                      # Ignore data streams
-            "-frame_pts", "true",
             *extra_args,
             "-q:v", "2",
-            "-vf", filters_arg,
-            output_pattern
+            "-vf", ",".join(vf_parts),
+            output_pattern,
         ]
 
     basename = os.path.basename(video_path)
-    total_frames = get_video_frames_count(video_path) if logger else None
     if logger:
         logger.info(f"Extracting all frames: {basename}")
 
-    fallback_options = [
+    fallback_options: list[list[str]] = [
         ["-fps_mode", "vfr"],
+        ["-fps_mode", "cfr"],
+        [],
     ]
 
+    last_stderr: list[str] = []
     for opts in fallback_options:
         clean_target_dir()
         args = build_args(opts)
-
         proc, stderr_lines = _start_ffmpeg_streaming(args, interruption)
+        last_stderr = stderr_lines
 
         if proc.returncode == 0:
             break
     else:
-        raise RuntimeError("ffmpeg failed with all fallback options.")
+        stderr_tail = "".join(last_stderr[-20:]) if last_stderr else "(no output)"
+        raise RuntimeError(
+            f"ffmpeg frame extraction failed for {basename}. "
+            f"Last output:\n{stderr_tail}"
+        )
 
+    # Parse timestamps from showinfo output
     frame_pattern = re.compile(r"n: *(\d+).*pts_time:([\d.]+)")
-    frame_files = sorted(os.listdir(target_dir))
-
-    mapping = {}
-    f = 0
+    showinfo_entries: list[tuple[int, int]] = []      # (frame_number, timestamp_ms)
     for line in stderr_lines:
         match = frame_pattern.search(line)
         if match:
             frame_number = int(match.group(1))
             timestamp_ms = int(round(float(match.group(2)) * 1000))
-            frame_file = frame_files[f]
-            frame_id = int(frame_file[6:- (len(format) + 1)])
-            mapping[timestamp_ms] = {"path": os.path.join(target_dir, frame_files[f]), "frame": frame_number, "frame_id": frame_id}
-            f += 1
+            showinfo_entries.append((frame_number, timestamp_ms))
+
+    frame_files = sorted(os.listdir(target_dir))
+
+    # Handle count mismatch gracefully — use the smaller count
+    usable = min(len(showinfo_entries), len(frame_files))
+    if len(showinfo_entries) != len(frame_files):
+        logging.warning(
+            f"Frame count mismatch for {basename}: showinfo reported {len(showinfo_entries)} "
+            f"frames but {len(frame_files)} files on disk. Using {usable}."
+        )
+
+    mapping: dict[int, dict] = {}
+    for i in range(usable):
+        frame_number, timestamp_ms = showinfo_entries[i]
+        fname = frame_files[i]
+        mapping[timestamp_ms] = {
+            "path": os.path.join(target_dir, fname),
+            "frame_id": frame_number,
+        }
 
     if logger:
         logger.info(f"Extracted {len(mapping)} frames from {basename}")
