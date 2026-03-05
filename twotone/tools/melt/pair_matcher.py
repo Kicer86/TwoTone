@@ -1052,6 +1052,7 @@ class PairMatcher:
 
         # Both files have consistently low-entropy gaps — extrapolate to edge
         new_rhs = PairMatcher._snap_to_nearest_frame(rhs_keys, clamped_rhs)
+
         self.logger.info(
             f"Boundary {label}: extrapolating through low-entropy zone from "
             f"({boundary[0]}, {boundary[1]}) to ({edge_lhs}, {new_rhs})."
@@ -1093,6 +1094,34 @@ class PairMatcher:
         new_first_l = 0 if first_l <= lhs_threshold_ms else first_l
         new_first_r = 0 if first_r <= rhs_threshold_ms else first_r
 
+        # When one side snapped to edge but the other didn't (e.g. ratio
+        # imprecision after extrapolation through a shared black intro),
+        # check whether the un-snapped side is low-entropy all the way to
+        # its edge AND the residual gap is small (≤ 2s — within ratio
+        # prediction error).  Large gaps indicate genuinely different-length
+        # intros/outros where snapping would be wrong.
+        max_extend_ms = 2000
+        if new_first_l == 0 and new_first_r != 0 and first_r <= max_extend_ms:
+            gap_frames = [k for k in rhs_keys if k < first_r]
+            if gap_frames:
+                non_le = [k for k in gap_frames if PairMatcher._is_rich(rhs_all_frames[k]["path"])]
+                if len(non_le) / len(gap_frames) <= 0.05:
+                    self.logger.info(
+                        f"Edge snap: RHS low-entropy from {first_r}ms to edge "
+                        f"(0ms), extending RHS to 0"
+                    )
+                    new_first_r = 0
+        elif new_first_r == 0 and new_first_l != 0 and first_l <= max_extend_ms:
+            gap_frames = [k for k in lhs_keys if k < first_l]
+            if gap_frames:
+                non_le = [k for k in gap_frames if PairMatcher._is_rich(lhs_all_frames[k]["path"])]
+                if len(non_le) / len(gap_frames) <= 0.05:
+                    self.logger.info(
+                        f"Edge snap: LHS low-entropy from {first_l}ms to edge "
+                        f"(0ms), extending LHS to 0"
+                    )
+                    new_first_l = 0
+
         if (new_first_l, new_first_r) != (first_l, first_r):
             self.logger.info(
                 f"Edge snap: first pair ({first_l}, {first_r}) → "
@@ -1107,6 +1136,28 @@ class PairMatcher:
         # --- End edge ---
         new_last_l = lhs_duration if (lhs_duration - last_l) <= lhs_threshold_ms else last_l
         new_last_r = rhs_duration if (rhs_duration - last_r) <= rhs_threshold_ms else last_r
+
+        # Same low-entropy extension for end edge.
+        if new_last_l == lhs_duration and new_last_r != rhs_duration and (rhs_duration - last_r) <= max_extend_ms:
+            gap_frames = [k for k in rhs_keys if k > last_r]
+            if gap_frames:
+                non_le = [k for k in gap_frames if PairMatcher._is_rich(rhs_all_frames[k]["path"])]
+                if len(non_le) / len(gap_frames) <= 0.05:
+                    self.logger.info(
+                        f"Edge snap: RHS low-entropy from {last_r}ms to edge "
+                        f"({rhs_duration}ms), extending RHS to duration"
+                    )
+                    new_last_r = rhs_duration
+        elif new_last_r == rhs_duration and new_last_l != lhs_duration and (lhs_duration - last_l) <= max_extend_ms:
+            gap_frames = [k for k in lhs_keys if k > last_l]
+            if gap_frames:
+                non_le = [k for k in gap_frames if PairMatcher._is_rich(lhs_all_frames[k]["path"])]
+                if len(non_le) / len(gap_frames) <= 0.05:
+                    self.logger.info(
+                        f"Edge snap: LHS low-entropy from {last_l}ms to edge "
+                        f"({lhs_duration}ms), extending LHS to duration"
+                    )
+                    new_last_l = lhs_duration
 
         if (new_last_l, new_last_r) != (last_l, last_r):
             self.logger.info(

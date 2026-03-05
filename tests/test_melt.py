@@ -2056,7 +2056,10 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         matching_pairs = [(100, 100), (5000, 5000), (9900, 9900)]
 
-        with patch.object(video_utils, 'get_video_duration', return_value=10000):
+        with (
+            patch.object(video_utils, 'get_video_duration', return_value=10000),
+            patch.object(PairMatcher, '_is_rich', return_value=True),
+        ):
             result = pm._snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
 
         # 100ms is within 160ms threshold → snap to 0
@@ -2074,7 +2077,10 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         matching_pairs = [(200, 200), (5000, 5000), (9700, 9700)]
 
-        with patch.object(video_utils, 'get_video_duration', return_value=10000):
+        with (
+            patch.object(video_utils, 'get_video_duration', return_value=10000),
+            patch.object(PairMatcher, '_is_rich', return_value=True),
+        ):
             result = pm._snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
 
         # 200ms > 160ms → no snap
@@ -2093,13 +2099,75 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         matching_pairs = [(100, 90), (5000, 5000)]
 
-        with patch.object(video_utils, 'get_video_duration', return_value=10000):
+        # _is_rich=True (content) prevents the low-entropy extension from
+        # triggering, so the test verifies pure threshold-based snap logic.
+        with (
+            patch.object(video_utils, 'get_video_duration', return_value=10000),
+            patch.object(PairMatcher, '_is_rich', return_value=True),
+        ):
             result = pm._snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
 
         # LHS: 100ms <= 160ms → snaps
         self.assertEqual(result[0][0], 0)
         # RHS: 90ms > 80ms → does NOT snap
         self.assertEqual(result[0][1], 90)
+
+    def test_snap_low_entropy_extension_within_2s(self):
+        """When one side snaps and the other doesn't, extend through low-entropy if gap ≤ 2s."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # threshold = 160ms; LHS at 100ms snaps, RHS at 600ms doesn't
+
+        lhs_frames = self._make_frames([0, 100, 5000, 10000])
+        rhs_frames = self._make_frames([0, 100, 600, 5000, 10000])
+
+        matching_pairs = [(100, 600), (5000, 5000)]
+
+        # RHS gap 0..600 is all low-entropy → should extend to 0
+        with (
+            patch.object(video_utils, 'get_video_duration', return_value=10000),
+            patch.object(PairMatcher, '_is_rich', return_value=False),
+        ):
+            result = pm._snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertEqual(result[0], (0, 0))
+
+    def test_snap_low_entropy_extension_beyond_2s_refused(self):
+        """When the un-snapped side's gap exceeds 2s, don't extend even if low-entropy."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # LHS at 100ms snaps, RHS at 3000ms doesn't (>2s gap)
+
+        lhs_frames = self._make_frames([0, 100, 3000, 5000, 10000])
+        rhs_frames = self._make_frames([0, 100, 3000, 5000, 10000])
+
+        matching_pairs = [(100, 3000), (5000, 5000)]
+
+        with (
+            patch.object(video_utils, 'get_video_duration', return_value=10000),
+            patch.object(PairMatcher, '_is_rich', return_value=False),
+        ):
+            result = pm._snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertEqual(result[0][0], 0)   # LHS snaps normally
+        self.assertEqual(result[0][1], 3000)  # RHS does NOT extend (>2s)
+
+    def test_snap_low_entropy_extension_refused_when_content(self):
+        """When the gap contains content (high-entropy), don't extend."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        lhs_frames = self._make_frames([0, 100, 5000, 10000])
+        rhs_frames = self._make_frames([0, 100, 600, 5000, 10000])
+
+        matching_pairs = [(100, 600), (5000, 5000)]
+
+        # RHS gap has content → should NOT extend
+        with (
+            patch.object(video_utils, 'get_video_duration', return_value=10000),
+            patch.object(PairMatcher, '_is_rich', return_value=True),
+        ):
+            result = pm._snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertEqual(result[0][0], 0)   # LHS snaps normally
+        self.assertEqual(result[0][1], 600)  # RHS stays (content in gap)
 
     # ---- _look_for_boundaries: look_ahead robustness ----
 
