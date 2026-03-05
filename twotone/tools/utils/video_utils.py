@@ -7,7 +7,7 @@ import subprocess
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from tqdm import tqdm
 
@@ -19,12 +19,15 @@ from .subtitles_utils import SubtitleFile
 def _start_ffmpeg_streaming(
     args: list[str],
     interruption: InterruptibleProcess | None = None,
+    on_line: "Callable[[str], None] | None" = None,
 ) -> tuple[subprocess.Popen, list[str]]:
     """Start an ffmpeg subprocess and read its stderr line-by-line.
 
     Returns ``(process, stderr_lines)`` after ffmpeg finishes.
     Checks *interruption* between lines so ctrl+c can terminate the run.
     Terminates the subprocess on interruption.
+    When *on_line* is given, it is called with each stderr line (e.g. for
+    progress updates).
     """
     defaults = process_utils.DEFAULT_TOOL_OPTIONS.get("ffmpeg", [])
     full_args = list(args)
@@ -53,6 +56,8 @@ def _start_ffmpeg_streaming(
         assert proc.stderr is not None
         for line in proc.stderr:
             stderr_lines.append(line)
+            if on_line is not None:
+                on_line(line)
             if interruption is not None and not interruption._work:
                 proc.terminate()
                 proc.wait()
@@ -90,12 +95,14 @@ def detect_scene_changes(
     threshold: float = 0.4,
     logger: logging.Logger | None = None,
     interruption: InterruptibleProcess | None = None,
+    desc: str | None = None,
 ) -> list[int]:
     """
         Run ffmpeg with a scene detection filter and extract scene change times.
         Function returns list of scene changes in milliseconds.
 
-        When *logger* is given, an indeterminate progress indicator is shown.
+        When *desc* is given, it is used as the progress bar description.
+        When *logger* is given (and no *desc*), an info message is emitted.
         When *interruption* is given, ctrl+c can cleanly stop the process.
     """
 
@@ -110,10 +117,31 @@ def detect_scene_changes(
     ]
 
     basename = os.path.basename(file_path)
-    if logger:
-        logger.info(f"Detecting scene changes: {basename}")
+    bar_desc = desc or f"Detecting scenes: {basename}"
 
-    proc, stderr_lines = _start_ffmpeg_streaming(args, interruption)
+    total_frames = get_video_frames_count(file_path)
+    frame_progress_re = re.compile(r"frame=\s*(\d+)")
+
+    pbar = tqdm(
+        total=total_frames,
+        desc=bar_desc,
+        unit="frame",
+        **get_tqdm_defaults(),
+    )
+    last_frame = 0
+
+    def _on_line(line: str) -> None:
+        nonlocal last_frame
+        m = frame_progress_re.search(line)
+        if m:
+            frame_num = int(m.group(1))
+            delta = frame_num - last_frame
+            if delta > 0:
+                pbar.update(delta)
+                last_frame = frame_num
+
+    proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line)
+    pbar.close()
 
     if proc.returncode != 0:
         logging.warning(f"ffmpeg scene detection exited with code {proc.returncode}")
@@ -129,7 +157,7 @@ def detect_scene_changes(
             scene_times.append(time_ms)
 
     if logger:
-        logger.info(f"Detected {len(scene_times)} scene changes in {basename}")
+        logger.debug(f"Detected {len(scene_times)} scene changes in {basename}")
 
     return sorted(set(scene_times))
 
@@ -177,6 +205,7 @@ def extract_all_frames(
     scale: float | tuple[int, int] = 0.5,
     logger: logging.Logger | None = None,
     interruption: InterruptibleProcess | None = None,
+    desc: str | None = None,
 ) -> dict[int, dict]:
     """
         Extract all frames into *target_dir* (should be empty).
@@ -230,8 +259,10 @@ def extract_all_frames(
         ]
 
     basename = os.path.basename(video_path)
-    if logger:
-        logger.info(f"Extracting all frames: {basename}")
+    bar_desc = desc or f"Extracting frames: {basename}"
+
+    # Get total frame count for a real progress bar
+    total_frames = get_video_frames_count(video_path)
 
     fallback_options: list[list[str]] = [
         ["-fps_mode", "vfr"],
@@ -239,11 +270,32 @@ def extract_all_frames(
         [],
     ]
 
+    frame_pattern = re.compile(r"n: *(\d+).*pts_time:([\d.]+)")
+    showinfo_entries: list[tuple[int, int]] = []      # (frame_number, timestamp_ms)
+
     last_stderr: list[str] = []
     for opts in fallback_options:
         clean_target_dir()
+        showinfo_entries.clear()
         args = build_args(opts)
-        proc, stderr_lines = _start_ffmpeg_streaming(args, interruption)
+
+        pbar = tqdm(
+            total=total_frames,
+            desc=bar_desc,
+            unit="frame",
+            **get_tqdm_defaults(),
+        )
+
+        def _on_line(line: str) -> None:
+            match = frame_pattern.search(line)
+            if match:
+                frame_number = int(match.group(1))
+                timestamp_ms = int(round(float(match.group(2)) * 1000))
+                showinfo_entries.append((frame_number, timestamp_ms))
+                pbar.update(1)
+
+        proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line)
+        pbar.close()
         last_stderr = stderr_lines
 
         if proc.returncode == 0:
@@ -254,16 +306,6 @@ def extract_all_frames(
             f"ffmpeg frame extraction failed for {basename}. "
             f"Last output:\n{stderr_tail}"
         )
-
-    # Parse timestamps from showinfo output
-    frame_pattern = re.compile(r"n: *(\d+).*pts_time:([\d.]+)")
-    showinfo_entries: list[tuple[int, int]] = []      # (frame_number, timestamp_ms)
-    for line in stderr_lines:
-        match = frame_pattern.search(line)
-        if match:
-            frame_number = int(match.group(1))
-            timestamp_ms = int(round(float(match.group(2)) * 1000))
-            showinfo_entries.append((frame_number, timestamp_ms))
 
     frame_files = sorted(os.listdir(target_dir))
 
