@@ -151,16 +151,8 @@ class UtilitiesTool(Tool):
 
     @override
     def perform(self, args, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        _ = args
-        _ = working_dir
-
-        if plan.is_empty():
-            logger.info("No analysis results, nothing to perform.")
-            return
-
         if not isinstance(plan, ScenesPlan):
-            logger.info("Unsupported plan type, nothing to perform.")
-            return
+            raise TypeError(f"Expected ScenesPlan, got {type(plan).__name__}")
 
         extract_scenes(
             video_path=plan.video_path,

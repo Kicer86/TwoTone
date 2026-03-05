@@ -2,14 +2,14 @@ import logging
 import os
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any
 
 from ..utils import generic_utils, language_utils
 
 
 @dataclass
 class MeltPlan:
-    items: List[Dict[str, Any]]
+    items: list[dict[str, Any]]
     output_dir: str
 
     def is_empty(self) -> bool:
@@ -31,7 +31,7 @@ class MeltPlan:
         planned_items = [item for item in visible_items if item.get("groups")]
         skipped_items = [item for item in visible_items if item.get("skipped_groups")]
 
-        def stream_short_details(stype: str, stream: Dict[str, Any]) -> str:
+        def stream_short_details(stype: str, stream: dict[str, Any]) -> str:
             if stype == "video":
                 fps = stream.get("fps")
                 width = stream.get("width")
@@ -63,7 +63,7 @@ class MeltPlan:
                 return str(fmt) if fmt else ""
             return ""
 
-        def format_track_line(stype: str, stream: Dict[str, Any], used: bool) -> str:
+        def format_track_line(stype: str, stream: dict[str, Any], used: bool) -> str:
             tid = stream.get("tid", "?")
             name = stream.get("name")
             lang = stream.get("language")
@@ -80,7 +80,7 @@ class MeltPlan:
             flag = "used" if used else "skip"
             return f"#{tid} ({flag}): {suffix}"
 
-        def collect_selected(group: Dict[str, Any]) -> tuple[dict[str, dict[str, set[int]]], dict[str, set[int]]]:
+        def collect_selected(group: dict[str, Any]) -> tuple[dict[str, dict[str, set[int]]], dict[str, set[int]]]:
             selected: dict[str, dict[str, set[int]]] = {
                 "video": {},
                 "audio": {},

@@ -8,7 +8,6 @@ from collections import defaultdict
 from overrides import override
 from tqdm import tqdm
 from pathlib import Path
-from typing import List
 
 from .tool import Plan, Tool
 from twotone.tools.utils import files_utils, generic_utils, subtitles_utils, video_utils
@@ -126,7 +125,7 @@ class Merge(generic_utils.InterruptibleProcess):
             return len(l)
 
     def _sort_subtitles(self, subtitles: list[subtitles_utils.SubtitleFile]) -> list[subtitles_utils.SubtitleFile]:
-        priorities: List[str | None] = list(self.lang_priority)
+        priorities: list[str | None] = list(self.lang_priority)
         priorities.append(None)
         subtitles_sorted = sorted(subtitles, key=lambda s: self._get_index_for(priorities, s.language))
 
@@ -270,14 +269,14 @@ class Merge(generic_utils.InterruptibleProcess):
 
         dir_entries: list[tuple[str, list[str]]] = []
         for cd, _, files in os.walk(path, followlinks = True):
-            self._check_for_stop()
+            self.check_for_stop()
             files_list = list(files)
             dir_entries.append((cd, files_list))
 
         for cd, files in tqdm(dir_entries, desc="Processing files", unit="file", **generic_utils.get_tqdm_defaults()):
             video_files = []
             for file in files:
-                self._check_for_stop()
+                self.check_for_stop()
                 file_path = os.path.join(cd, file)
 
                 if video_utils.is_video(file_path):
@@ -316,7 +315,7 @@ class Merge(generic_utils.InterruptibleProcess):
         self.logger.info("Starting merge")
         failed: list[str] = []
         for video, subtitles in tqdm(videos_and_subtitles.items(), desc="Merging", unit="video", **generic_utils.get_tqdm_defaults()):
-            self._check_for_stop()
+            self.check_for_stop()
             try:
                 self._merge(video, subtitles)
             except Exception as e:
@@ -391,13 +390,8 @@ class MergeTool(Tool):
 
     @override
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        if plan.is_empty():
-            logger.info("No analysis results, nothing to merge.")
-            return
-
         if not isinstance(plan, MergePlan):
-            logger.info("Unsupported plan type, nothing to merge.")
-            return
+            raise TypeError(f"Expected MergePlan, got {type(plan).__name__}")
 
         merger = Merge(logger,
                        language=args.language,

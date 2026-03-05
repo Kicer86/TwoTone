@@ -6,7 +6,6 @@ import requests
 
 from collections import defaultdict
 from overrides import override
-from typing import Dict, List, Tuple, Union
 
 from ..utils import generic_utils, language_utils
 from ..utils.tmdb_cache import TmdbCache
@@ -14,7 +13,7 @@ from .duplicates_source import DuplicatesSource
 
 
 class JellyfinSource(DuplicatesSource):
-    def __init__(self, interruption: generic_utils.InterruptibleProcess, url: str, token: str, path_fix: Tuple[str, str] | None, logger: logging.Logger | None = None) -> None:
+    def __init__(self, interruption: generic_utils.InterruptibleProcess, url: str, token: str, path_fix: tuple[str, str] | None, logger: logging.Logger | None = None) -> None:
         super().__init__(interruption)
 
         self.url = url
@@ -22,7 +21,7 @@ class JellyfinSource(DuplicatesSource):
         self.path_fix = path_fix
         # allow injecting a logger for better control in callers/tests
         self.logger = logger or logging.getLogger(__name__)
-        self.tmdb_id_by_path: Dict[str, str] = {}
+        self.tmdb_id_by_path: dict[str, str] = {}
         self.tmdb_cache = TmdbCache(logger=self.logger)
 
         self.last_tmdb_request: float = 0.0
@@ -43,16 +42,16 @@ class JellyfinSource(DuplicatesSource):
 
 
     @override
-    def collect_duplicates(self) -> Dict[str, Tuple]:
+    def collect_duplicates(self) -> dict[str, tuple]:
         endpoint = f"{self.url}"
         headers = {
             "X-Emby-Token": self.token
         }
 
-        paths_by_id: Dict = defaultdict(lambda: defaultdict(list))
+        paths_by_id: dict = defaultdict(lambda: defaultdict(list))
 
-        def fetchItems(params: Dict[str, str] = {}) -> None:
-            self.interruption._check_for_stop()
+        def fetchItems(params: dict[str, str] = {}) -> None:
+            self.interruption.check_for_stop()
             params.update({"fields": "Path,ProviderIds"})
 
             response = requests.get(endpoint + "/Items", headers=headers, params=params)
@@ -84,7 +83,7 @@ class JellyfinSource(DuplicatesSource):
                             paths_by_id[provider][id].append((name, fixed_path))
 
         fetchItems()
-        duplicates: Dict[str, Tuple] = {}
+        duplicates: dict[str, tuple] = {}
 
         for provider, ids in paths_by_id.items():
             for id, data in ids.items():
@@ -139,7 +138,7 @@ class JellyfinSource(DuplicatesSource):
         return duplicates
 
     @override
-    def get_metadata_for(self, path: str) -> Dict[str, Union[str, None]]:
+    def get_metadata_for(self, path: str) -> dict[str, str | None]:
         tmdb_id = self.tmdb_id_by_path.get(path)
 
         if not tmdb_id:

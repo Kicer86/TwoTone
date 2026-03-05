@@ -178,7 +178,7 @@ class LanguageFixerTool(Tool):
             unit="video",
             **generic_utils.get_tqdm_defaults(),
         ):
-            self._check_for_stop()
+            self.check_for_stop()
             video_path = item["path"]
             subtitles_missing = item["missing_subtitles"]
             audio_missing = item["missing_audio"]
@@ -234,13 +234,8 @@ class LanguageFixerTool(Tool):
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
         self._set_context(logger, working_dir)
 
-        if plan.is_empty():
-            self.logger.info("No analysis results, nothing to fix.")
-            return
-
         if not isinstance(plan, LanguageFixPlan):
-            self.logger.info("Unsupported plan type, nothing to fix.")
-            return
+            raise TypeError(f"Expected LanguageFixPlan, got {type(plan).__name__}")
 
         self._base_path = plan.base_path
         self._apply_plan(plan.items)
@@ -250,7 +245,7 @@ class LanguageFixerTool(Tool):
         self.logger.info("Fixing track languages for %d file(s)", len(items))
 
         for item in tqdm(items, desc="Fixing", unit="video", **generic_utils.get_tqdm_defaults()):
-            self._check_for_stop()
+            self.check_for_stop()
 
             video_path = item.path
             tracks = self._get_tracks(video_path)
@@ -311,7 +306,7 @@ class LanguageFixerTool(Tool):
 
         for cd, _, files in os.walk(path, followlinks=True):
             for file in files:
-                self._check_for_stop()
+                self.check_for_stop()
                 file_path = os.path.join(cd, file)
                 if video_utils.is_video(file_path):
                     video_files.append(file_path)
@@ -320,7 +315,7 @@ class LanguageFixerTool(Tool):
         results: list[dict] = []
         self.logger.debug("Analysing files")
         for video in tqdm(video_files, desc="Analysing videos", unit="video", **generic_utils.get_tqdm_defaults()):
-            self._check_for_stop()
+            self.check_for_stop()
             missing_start = time.perf_counter()
             missing = self._collect_missing_tracks(video, include_audio)
             self._log_if_slow("collect_missing_tracks", video, missing_start)
@@ -334,9 +329,9 @@ class LanguageFixerTool(Tool):
         self.working_dir = working_dir
         self._interruption = generic_utils.InterruptibleProcess()
 
-    def _check_for_stop(self) -> None:
+    def check_for_stop(self) -> None:
         if self._interruption is not None:
-            self._interruption._check_for_stop()
+            self._interruption.check_for_stop()
 
     def _get_tracks(self, video_path: str) -> list[dict]:
         if self._is_mkv(video_path):
@@ -576,7 +571,7 @@ class LanguageFixerTool(Tool):
 
         detected: dict[int, str] = {}
         for tid, path in tid_to_path.items():
-            self._check_for_stop()
+            self.check_for_stop()
             if not os.path.exists(path):
                 self.logger.warning(f"Subtitle track #{tid} extraction failed for {files_utils.format_path(video_path, self._base_path)}")
                 continue
@@ -627,7 +622,7 @@ class LanguageFixerTool(Tool):
         filename_lang = self._guess_audio_language_from_filename(video_path)
 
         for tid in missing_audio:
-            self._check_for_stop()
+            self.check_for_stop()
             track = audio_tracks.get(tid)
             if not track:
                 continue

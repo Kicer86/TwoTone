@@ -2,7 +2,7 @@ import logging
 import os
 import shutil
 
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Iterable, Sequence
 from tqdm import tqdm
 
 from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
@@ -28,10 +28,10 @@ class MeltPerformer:
 
     @staticmethod
     def _collect_required_input_files(
-        video_streams: Sequence[Tuple[str, int, str | None]],
-        audio_streams: Sequence[Tuple[str, int, str | None]],
-        subtitle_streams: Sequence[Tuple[str, int, str | None]],
-        attachments: Sequence[Tuple[str, int]],
+        video_streams: Sequence[tuple[str, int, str | None]],
+        audio_streams: Sequence[tuple[str, int, str | None]],
+        subtitle_streams: Sequence[tuple[str, int, str | None]],
+        attachments: Sequence[tuple[str, int]],
     ) -> set[str]:
         required_input_files: set[str] = set()
         required_input_files |= {p for (p, _, _) in video_streams}
@@ -43,21 +43,21 @@ class MeltPerformer:
     def _build_mkvmerge_args(
         self,
         output_path: str,
-        streams_list_sorted: Sequence[Tuple[str, int, str, str | None]],
-        attachments: Sequence[Tuple[str, int]],
-        preferred_audio: Tuple[str, int, str, str | None] | None,
+        streams_list_sorted: Sequence[tuple[str, int, str, str | None]],
+        attachments: Sequence[tuple[str, int]],
+        preferred_audio: tuple[str, int, str, str | None] | None,
         required_input_files: Iterable[str],
-    ) -> List[str]:
-        generation_args: List[str] = ["-o", output_path]
-        files_opts: Dict[str, Dict[str, Any]] = {
+    ) -> list[str]:
+        generation_args: list[str] = ["-o", output_path]
+        files_opts: dict[str, dict[str, Any]] = {
             path: {"video": [], "audio": [], "subtitle": [], "attachments": [], "languages": {}, "defaults": set()}
             for path in required_input_files
         }
 
         # Collect per-file options and track order
-        track_order: List[str] = []
+        track_order: list[str] = []
         for stream_type, tid, file_path, language in streams_list_sorted:
-            fo: Dict[str, Any] = files_opts[file_path]
+            fo: dict[str, Any] = files_opts[file_path]
             fo[stream_type].append(tid)
             fo["languages"][tid] = language or "und"
             if stream_type in ("audio", "subtitle") and preferred_audio and (stream_type, tid, file_path, language) == preferred_audio:
@@ -279,13 +279,13 @@ class MeltPerformer:
 
     def _prepare_stream_entries(
         self,
-        video_streams: Sequence[Tuple[str, int, str | None]],
-        audio_streams: Sequence[Tuple[str, int, str | None]],
-        subtitle_streams: Sequence[Tuple[str, int, str | None]],
+        video_streams: Sequence[tuple[str, int, str | None]],
+        audio_streams: Sequence[tuple[str, int, str | None]],
+        subtitle_streams: Sequence[tuple[str, int, str | None]],
         required_input_files: set[str],
-        attachments: Sequence[Tuple[str, int]],
-    ) -> List[Tuple[str, int, str, str | None]]:
-        streams_list: List[Tuple[str, int, str, str | None]] = []
+        attachments: Sequence[tuple[str, int]],
+    ) -> list[tuple[str, int, str, str | None]]:
+        streams_list: list[tuple[str, int, str, str | None]] = []
         video_path_base, video_tid, _ = video_streams[0]
         base_duration = video_utils.get_video_duration(video_path_base)
         protected_paths = (
@@ -321,7 +321,7 @@ class MeltPerformer:
 
     def _format_stream_summary(
         self,
-        streams_list: Sequence[Tuple[str, int, str, str | None]],
+        streams_list: Sequence[tuple[str, int, str, str | None]],
     ) -> list[str]:
         def format_lang(lang: str | None) -> str:
             if not lang:
@@ -382,9 +382,9 @@ class MeltPerformer:
     def _choose_preferred_audio(
         self,
         audio_prod_lang: str | None,
-        streams_list_sorted: Sequence[Tuple[str, int, str, str | None]],
+        streams_list_sorted: Sequence[tuple[str, int, str, str | None]],
         default_audio_lang: str | None,
-    ) -> Tuple[str, int, str, str | None] | None:
+    ) -> tuple[str, int, str, str | None] | None:
         preferred_lang = language_utils.unify_lang(audio_prod_lang) if audio_prod_lang else default_audio_lang
 
         preferred_audio = next(
@@ -400,7 +400,7 @@ class MeltPerformer:
 
         return preferred_audio
 
-    def process_duplicates(self, plan: List[Dict[str, Any]]) -> None:
+    def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
         visible_items = [item for item in plan if item.get("groups") or item.get("skipped_groups")]
         planned_items = [item for item in visible_items if item.get("groups")]
         for item in tqdm(planned_items, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
@@ -408,16 +408,16 @@ class MeltPerformer:
             groups = item.get("groups", [])
 
             for group in tqdm(groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
-                self.interruption._check_for_stop()
+                self.interruption.check_for_stop()
 
                 output_name = group["output_name"]
 
                 # Use analysis results
                 streams_info = group.get("streams", {})
                 attachments = group.get("attachments", [])
-                video_streams: List[Tuple[str, int, str | None]] = streams_info.get("video", [])
-                audio_streams: List[Tuple[str, int, str | None]] = streams_info.get("audio", [])
-                subtitle_streams: List[Tuple[str, int, str | None]] = streams_info.get("subtitle", [])
+                video_streams: list[tuple[str, int, str | None]] = streams_info.get("video", [])
+                audio_streams: list[tuple[str, int, str | None]] = streams_info.get("audio", [])
+                subtitle_streams: list[tuple[str, int, str | None]] = streams_info.get("subtitle", [])
                 required_input_files = self._collect_required_input_files(
                     video_streams,
                     audio_streams,

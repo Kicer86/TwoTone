@@ -166,14 +166,8 @@ class MeltTool(Tool):
 
     @override
     def perform(self, args, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        _ = args
-        if plan.is_empty():
-            logger.info("No analysis results, nothing to melt.")
-            return
-
         if not isinstance(plan, MeltPlan):
-            logger.info("Unsupported plan type, nothing to melt.")
-            return
+            raise TypeError(f"Expected MeltPlan, got {type(plan).__name__}")
 
         interruption = generic_utils.InterruptibleProcess()
         performer = MeltPerformer(

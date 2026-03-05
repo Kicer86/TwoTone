@@ -1,14 +1,13 @@
 import os
 import re
 
-from typing import Dict, List
 
-FramesInfo = Dict[int, Dict[str, str]]
+FramesInfo = dict[int, dict[str, str]]
 
 DEFAULT_TOLERANCE_MS = 100
 
 
-def _split_path_fix(value: str) -> List[str]:
+def _split_path_fix(value: str) -> list[str]:
     pattern = r'"((?:[^"\\]|\\.)*?)"'
 
     matches = re.findall(pattern, value)
@@ -16,9 +15,8 @@ def _split_path_fix(value: str) -> List[str]:
 
 
 def _ensure_working_dir(working_dir: str) -> str:
-    wd = os.path.join(working_dir, str(os.getpid()))
-    os.makedirs(wd, exist_ok=True)
-    return wd
+    os.makedirs(working_dir, exist_ok=True)
+    return working_dir
 
 
 def _is_length_mismatch(base_ms: int | None, other_ms: int | None, tolerance_ms: int) -> bool:

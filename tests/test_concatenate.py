@@ -3,14 +3,13 @@ import os
 import shutil
 import unittest
 from pathlib import Path
-from typing import List
 
 from twotone.tools.utils.files_utils import split_path
 from common import TwoToneTestCase, add_test_media, list_files, run_twotone
 
 
 class ConcatenateTests(TwoToneTestCase):
-    def _create_media(self, wd: str, base_file: str, partnames: List[str]):
+    def _create_media(self, wd: str, base_file: str, partnames: list[str]):
         media_file_components = split_path(base_file)
 
         def build_part(part: str) -> str:

@@ -12,7 +12,6 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 from platformdirs import user_cache_dir
-from typing import Dict, List, Union
 from unittest.mock import patch
 
 import pysubs2
@@ -118,7 +117,7 @@ class FileCache:
         return out_path
 
 
-def list_files(path: str) -> List[str]:
+def list_files(path: str) -> list[str]:
     results = []
 
     for root, _, files in os.walk(path):
@@ -144,7 +143,7 @@ def remove_key(obj, key_to_remove):
         return obj
 
 
-def add_test_media(filter: str, test_case_path: str, suffixes: List[str] | None = None, copy: bool = False) -> List[str]:
+def add_test_media(filter: str, test_case_path: str, suffixes: list[str] | None = None, copy: bool = False) -> list[str]:
     suffixes = suffixes or [""]
     filter_regex = re.compile(filter)
     output_files = []
@@ -168,7 +167,7 @@ def add_test_media(filter: str, test_case_path: str, suffixes: List[str] | None 
     return output_files
 
 
-def add_to_test_dir(test_case_path: str, file_path: str, copy: bool = False, dst_file_name: Union[str, None] = None) -> str:
+def add_to_test_dir(test_case_path: str, file_path: str, copy: bool = False, dst_file_name: str | None = None) -> str:
     basename = os.path.basename(file_path) if dst_file_name is None else dst_file_name
     dst = os.path.join(test_case_path, basename)
 
@@ -201,21 +200,21 @@ def build_test_video(
     wd: str,
     video_name: str | None,
     *,
-    audio_name: Union[
-        str,
-        bool,
-        tuple[Union[str, bool], str],
-        List[Union[str, bool, tuple[Union[str, bool], str]]],
-        None,
-    ] = None,
-    subtitle: Union[
-        str,
-        bool,
-        tuple[str, str],
-        List[Union[str, bool, tuple[str, str]]],
-        None,
-    ] = None,
-    thumbnail_name: Union[str, None] = None,
+    audio_name: (
+        str
+        | bool
+        | tuple[str | bool, str]
+        | list[str | bool | tuple[str | bool, str]]
+        | None
+    ) = None,
+    subtitle: (
+        str
+        | bool
+        | tuple[str, str]
+        | list[str | bool | tuple[str, str]]
+        | None
+    ) = None,
+    thumbnail_name: str | None = None,
     duration: int | None = None,
     width: int = 640,
     height: int = 480,
@@ -361,7 +360,7 @@ def assert_video_info(testcase: unittest.TestCase, path: str,
     return tracks
 
 
-def hashes(path: str) -> Dict[str, str]:
+def hashes(path: str) -> dict[str, str]:
     results = {}
 
     files = list_files(path)

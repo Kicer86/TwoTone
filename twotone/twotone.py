@@ -128,7 +128,17 @@ def execute(argv: list[str]) -> None:
                     working_dir=tool_wd,
                 )
 
-                if args.interactive:
+                if args.no_dry_run:
+                    if plan.is_empty():
+                        tool_logger.info("Nothing to do.")
+                    else:
+                        tool.perform(
+                            args,
+                            logger=tool_logger,
+                            working_dir=tool_wd,
+                            plan=plan,
+                        )
+                elif args.interactive:
                     plan.render(tool_logger)
                     if plan.is_empty():
                         tool_logger.info("Analysis complete: nothing to do.")

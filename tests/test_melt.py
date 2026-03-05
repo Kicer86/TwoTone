@@ -8,7 +8,7 @@ from functools import partial
 from itertools import permutations
 from parameterized import parameterized
 from pathlib import Path
-from typing import Dict, Iterator
+from typing import Iterator
 
 from twotone.tools.utils import generic_utils, process_utils, video_utils
 from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, StaticSource, StreamsPicker
@@ -36,7 +36,7 @@ def normalize(obj):
         return obj
 
 
-def all_key_orders(d: Dict) -> Iterator[Dict]:
+def all_key_orders(d: dict) -> Iterator[dict]:
     """
     Yield dictionaries with all possible key orderings (same keys and values).
     """
@@ -52,14 +52,13 @@ def analyze_duplicates_helper(
     allow_length_mismatch: bool = False,
     tolerance_ms: int = DEFAULT_TOLERANCE_MS,
 ):
-    wd = os.path.join(working_dir, str(os.getpid()))
-    os.makedirs(wd, exist_ok=True)
+    os.makedirs(working_dir, exist_ok=True)
     duplicates_raw = duplicates_source.collect_duplicates()
     duplicates = {title: list(files) for title, files in duplicates_raw.items()}
     analyzer = MeltAnalyzer(
         logger,
         duplicates_source,
-        wd,
+        working_dir,
         allow_length_mismatch,
         tolerance_ms,
     )
@@ -84,7 +83,7 @@ def process_duplicates_helper(
     performer.process_duplicates(plan)
 
 
-def _build_path_to_id_map(input: Dict) -> Dict[str, int]:
+def _build_path_to_id_map(input: dict) -> dict[str, int]:
     return {path: idx for idx, path in enumerate(input.keys())}
 
 
