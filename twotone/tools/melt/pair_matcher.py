@@ -145,18 +145,6 @@ class PairMatcher:
         return image_utils.image_entropy(frame_path) > 3.5
 
     @staticmethod
-    def _is_gap_low_entropy(
-        frames: FramesInfo,
-        gap_keys: list[int],
-        noise_threshold: float = 0.05,
-    ) -> bool:
-        """Return True when >= (1 - noise_threshold) fraction of *gap_keys* are low-entropy."""
-        if not gap_keys:
-            return True
-        non_le = [k for k in gap_keys if PairMatcher._is_rich(frames[k]["path"])]
-        return len(non_le) / len(gap_keys) <= noise_threshold
-
-    @staticmethod
     def _get_new_info(info: dict[str, str], path: str) -> dict[str, str]:
         new_info = info.copy()
         new_info["path"] = path
@@ -1142,30 +1130,6 @@ class PairMatcher:
         new_first_l = 0 if first_l <= lhs_threshold_ms else first_l
         new_first_r = 0 if first_r <= rhs_threshold_ms else first_r
 
-        # When one side snapped to edge but the other didn't (e.g. ratio
-        # imprecision after extrapolation through a shared black intro),
-        # check whether the un-snapped side is low-entropy all the way to
-        # its edge AND the residual gap is small (≤ 2s — within ratio
-        # prediction error).  Large gaps indicate genuinely different-length
-        # intros/outros where snapping would be wrong.
-        max_extend_ms = 2000
-        if new_first_l == 0 and new_first_r != 0 and first_r <= max_extend_ms:
-            gap_frames = [k for k in rhs_keys if k < first_r]
-            if PairMatcher._is_gap_low_entropy(rhs_all_frames, gap_frames):
-                self.logger.debug(
-                    f"Edge snap: RHS low-entropy from {first_r}ms to edge "
-                    f"(0ms), extending RHS to 0"
-                )
-                new_first_r = 0
-        elif new_first_r == 0 and new_first_l != 0 and first_l <= max_extend_ms:
-            gap_frames = [k for k in lhs_keys if k < first_l]
-            if PairMatcher._is_gap_low_entropy(lhs_all_frames, gap_frames):
-                self.logger.debug(
-                    f"Edge snap: LHS low-entropy from {first_l}ms to edge "
-                    f"(0ms), extending LHS to 0"
-                )
-                new_first_l = 0
-
         if (new_first_l, new_first_r) != (first_l, first_r):
             self.logger.debug(
                 f"Edge snap: first pair ({first_l}, {first_r}) → "
@@ -1180,24 +1144,6 @@ class PairMatcher:
         # --- End edge ---
         new_last_l = lhs_duration if (lhs_duration - last_l) <= lhs_threshold_ms else last_l
         new_last_r = rhs_duration if (rhs_duration - last_r) <= rhs_threshold_ms else last_r
-
-        # Same low-entropy extension for end edge.
-        if new_last_l == lhs_duration and new_last_r != rhs_duration and (rhs_duration - last_r) <= max_extend_ms:
-            gap_frames = [k for k in rhs_keys if k > last_r]
-            if PairMatcher._is_gap_low_entropy(rhs_all_frames, gap_frames):
-                self.logger.debug(
-                    f"Edge snap: RHS low-entropy from {last_r}ms to edge "
-                    f"({rhs_duration}ms), extending RHS to duration"
-                )
-                new_last_r = rhs_duration
-        elif new_last_r == rhs_duration and new_last_l != lhs_duration and (lhs_duration - last_l) <= max_extend_ms:
-            gap_frames = [k for k in lhs_keys if k > last_l]
-            if PairMatcher._is_gap_low_entropy(lhs_all_frames, gap_frames):
-                self.logger.debug(
-                    f"Edge snap: LHS low-entropy from {last_l}ms to edge "
-                    f"({lhs_duration}ms), extending LHS to duration"
-                )
-                new_last_l = lhs_duration
 
         if (new_last_l, new_last_r) != (last_l, last_r):
             self.logger.debug(
