@@ -341,6 +341,7 @@ class MeltPerformer:
         subtitle_streams: Sequence[tuple[str, int, str | None]],
         required_input_files: set[str],
         attachments: Sequence[tuple[str, int]],
+        file_ids: dict[str, int] | None = None,
     ) -> list[tuple[str, int, str, str | None]]:
         streams_list: list[tuple[str, int, str, str | None]] = []
         video_path_base, video_tid, _ = video_streams[0]
@@ -360,7 +361,13 @@ class MeltPerformer:
                 original_path = path
                 with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
                      generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
-                    matcher = PairMatcher(self.interruption, mwd, video_path_base, path, self.logger.getChild("PairMatcher"))
+                    lhs_id = file_ids.get(video_path_base, 1) if file_ids else 1
+                    rhs_id = file_ids.get(path, 2) if file_ids else 2
+                    matcher = PairMatcher(
+                        self.interruption, mwd, video_path_base, path,
+                        self.logger.getChild("PairMatcher"),
+                        lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
+                    )
                     mapping, lhs_all_frames, rhs_all_frames = matcher.create_segments_mapping()
 
                     self._log_coverage(video_path_base, path, mapping, base_duration, duration)
@@ -439,12 +446,15 @@ class MeltPerformer:
                     self._copy_single_input(first_file_path, output)
                 else:
                     # Convert streams to unified list (and patch audios if needed)
+                    files = group.get("files", [])
+                    file_ids = {f: i + 1 for i, f in enumerate(files)}
                     streams_list = self._prepare_stream_entries(
                         video_streams,
                         audio_streams,
                         subtitle_streams,
                         required_input_files,
                         attachments,
+                        file_ids,
                     )
 
                     # Sort streams by language alphabetically, unknown languages last

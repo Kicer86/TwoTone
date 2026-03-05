@@ -1881,6 +1881,8 @@ class PairMatcherUnitTest(unittest.TestCase):
         pm.phash = None  # not used in unit tests
         pm.lhs_path = "/fake/lhs.mp4"
         pm.rhs_path = "/fake/rhs.mp4"
+        pm.lhs_label = "#1"
+        pm.rhs_label = "#2"
         pm.interruption = generic_utils.InterruptibleProcess()
         return pm
 

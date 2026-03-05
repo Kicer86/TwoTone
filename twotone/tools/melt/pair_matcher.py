@@ -19,11 +19,13 @@ from ..utils import files_utils, generic_utils, image_utils, video_utils
 
 
 class PairMatcher:
-    def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger) -> None:
+    def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2") -> None:
         self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
         self.lhs_path = lhs_path
         self.rhs_path = rhs_path
+        self.lhs_label = lhs_label
+        self.rhs_label = rhs_label
         self.logger = logger
         self.phash = PhashCache()
         self.lhs_fps = generic_utils.fps_str_to_float(video_utils.get_video_data(lhs_path)["video"][0]["fps"])
@@ -216,7 +218,7 @@ class PairMatcher:
         return summary
 
     @staticmethod
-    def summarize_segments(pairs: list[tuple[int, int]], lhs_fps: float, rhs_fps: float, verbose: bool = True) -> str:
+    def summarize_segments(pairs: list[tuple[int, int]], lhs_fps: float, rhs_fps: float, verbose: bool = True, lhs_label: str = "#1", rhs_label: str = "#2") -> str:
         if len(pairs) < 2:
             return "Not enough pairs to build segments."
 
@@ -257,8 +259,8 @@ class PairMatcher:
             out.append("\nDetailed segments:")
             for lhs1, lhs2, rhs1, rhs2, ldelta, rdelta, ratio, err, conf in segments:
                 out.append(
-                    f"  LHS {lhs1}->{lhs2} ({ldelta:4} ms), "
-                    f"RHS {rhs1}->{rhs2} ({rdelta:4} ms), "
+                    f"  {lhs_label} {lhs1}->{lhs2} ({ldelta:4} ms), "
+                    f"{rhs_label} {rhs1}->{rhs2} ({rdelta:4} ms), "
                     f"Ratio: {ratio:.4f}, "
                     f"Error~{err:.2%}, Confidence: {conf}"
                 )
@@ -593,7 +595,7 @@ class PairMatcher:
 
         unique_pairs = sorted(set(final))
 
-        self.logger.debug(PairMatcher.summarize_segments(unique_pairs, self.lhs_fps, self.rhs_fps))
+        self.logger.debug(PairMatcher.summarize_segments(unique_pairs, self.lhs_fps, self.rhs_fps, lhs_label=self.lhs_label, rhs_label=self.rhs_label))
 
         return unique_pairs
 
@@ -1069,7 +1071,7 @@ class PairMatcher:
             return boundary
 
         # Verify LHS gap is low-entropy
-        if not self._verify_gap_is_low_entropy(lhs, lhs_gap, max_skip, direction, label, "LHS"):
+        if not self._verify_gap_is_low_entropy(lhs, lhs_gap, max_skip, direction, label, self.lhs_label):
             return boundary
 
         # Predict RHS edge position and clamp to valid range
@@ -1083,7 +1085,7 @@ class PairMatcher:
             rhs_gap = [k for k in rhs_keys if k > boundary[1] and k <= clamped_rhs]
 
         # Verify RHS gap is low-entropy
-        if rhs_gap and not self._verify_gap_is_low_entropy(rhs, rhs_gap, max_skip, direction, label, "RHS"):
+        if rhs_gap and not self._verify_gap_is_low_entropy(rhs, rhs_gap, max_skip, direction, label, self.rhs_label):
             return boundary
 
         # Both files have consistently low-entropy gaps — extrapolate to edge
@@ -1159,17 +1161,15 @@ class PairMatcher:
         return matching_pairs
 
     def create_segments_mapping(self) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo]:
-        lhs_name = os.path.basename(self.lhs_path)
-        rhs_name = os.path.basename(self.rhs_path)
 
         # Phase 1: Detect scene changes
         lhs_scene_changes = video_utils.detect_scene_changes(
             self.lhs_path, threshold=0.3, logger=self.logger,
-            interruption=self.interruption, desc=f"[1/5] Detecting scenes: {lhs_name}",
+            interruption=self.interruption, desc=f"[1/5] Detecting scenes: {self.lhs_label}",
         )
         rhs_scene_changes = video_utils.detect_scene_changes(
             self.rhs_path, threshold=0.3, logger=self.logger,
-            interruption=self.interruption, desc=f"[1/5] Detecting scenes: {rhs_name}",
+            interruption=self.interruption, desc=f"[1/5] Detecting scenes: {self.rhs_label}",
         )
 
         if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
@@ -1179,28 +1179,28 @@ class PairMatcher:
         self.lhs_all_frames = video_utils.extract_all_frames(
             self.lhs_path, self.lhs_all_wd, scale=(960, -2), format="png",
             logger=self.logger, interruption=self.interruption,
-            desc=f"[2/5] Extracting frames: {lhs_name}",
+            desc=f"[2/5] Extracting frames: {self.lhs_label}",
         )
         self.rhs_all_frames = video_utils.extract_all_frames(
             self.rhs_path, self.rhs_all_wd, scale=(960, -2), format="png",
             logger=self.logger, interruption=self.interruption,
-            desc=f"[2/5] Extracting frames: {rhs_name}",
+            desc=f"[2/5] Extracting frames: {self.rhs_label}",
         )
 
         lhs_key_frames_str = [str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes]
         rhs_key_frames_str = [str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes]
 
-        self.logger.debug(f"lhs key frames: {' '.join(lhs_key_frames_str)}")
-        self.logger.debug(f"rhs key frames: {' '.join(rhs_key_frames_str)}")
+        self.logger.debug(f"{self.lhs_label} key frames: {' '.join(lhs_key_frames_str)}")
+        self.logger.debug(f"{self.rhs_label} key frames: {' '.join(rhs_key_frames_str)}")
 
         # Phase 3: Normalize frames
         lhs_normalized_frames = self._normalize_frames(
             self.lhs_all_frames, self.lhs_normalized_wd,
-            desc=f"[3/5] Normalizing: {lhs_name}",
+            desc=f"[3/5] Normalizing: {self.lhs_label}",
         )
         rhs_normalized_frames = self._normalize_frames(
             self.rhs_all_frames, self.rhs_normalized_wd,
-            desc=f"[3/5] Normalizing: {rhs_name}",
+            desc=f"[3/5] Normalizing: {self.rhs_label}",
         )
 
         # extract key frames (as 'key' a scene change frame is meant)
@@ -1209,8 +1209,8 @@ class PairMatcher:
 
         debug = DebugRoutines(self.debug_wd, self.lhs_all_frames, self.rhs_all_frames)
 
-        debug.dump_frames(lhs_key_frames, "lhs key frames")
-        debug.dump_frames(rhs_key_frames, "rhs key frames")
+        debug.dump_frames(lhs_key_frames, f"{self.lhs_label} key frames")
+        debug.dump_frames(rhs_key_frames, f"{self.rhs_label} key frames")
 
         # Phase 4: Match key frames
         self.logger.info("[4/5] Matching key frames")
@@ -1302,7 +1302,7 @@ class PairMatcher:
 
         self.logger.info(f"Boundary refinement converged after {iteration} iteration(s)")
         self.logger.debug("Status after boundaries lookup:\n")
-        self.logger.debug(PairMatcher.summarize_segments(matching_pairs, self.lhs_fps, self.rhs_fps))
+        self.logger.debug(PairMatcher.summarize_segments(matching_pairs, self.lhs_fps, self.rhs_fps, lhs_label=self.lhs_label, rhs_label=self.rhs_label))
         self.logger.debug(PairMatcher.summarize_pairs(phash4normalized, matching_pairs, self.lhs_all_frames, self.rhs_all_frames, verbose=True))
 
         return matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames
@@ -1331,7 +1331,7 @@ class PairMatcher:
 
         debug.dump_matches(matching_pairs, "after uncropped boundary search")
         self.logger.debug("Final status:\n")
-        self.logger.debug(PairMatcher.summarize_segments(matching_pairs, self.lhs_fps, self.rhs_fps))
+        self.logger.debug(PairMatcher.summarize_segments(matching_pairs, self.lhs_fps, self.rhs_fps, lhs_label=self.lhs_label, rhs_label=self.rhs_label))
         self.logger.debug(PairMatcher.summarize_pairs(phash_uncropped, matching_pairs, self.lhs_all_frames, self.rhs_all_frames, verbose=True))
 
         return matching_pairs
