@@ -119,28 +119,31 @@ def detect_scene_changes(
     basename = os.path.basename(file_path)
     bar_desc = desc or f"Detecting scenes: {basename}"
 
-    total_frames = get_video_frames_count(file_path)
-    frame_progress_re = re.compile(r"frame=\s*(\d+)")
+    duration_ms = get_video_duration(file_path)
+    duration_s = (duration_ms / 1000.0) if duration_ms else None
+    pts_time_re = re.compile(r"pts_time:(\d+\.?\d*)")
 
     pbar = tqdm(
-        total=total_frames,
+        total=duration_s,
         desc=bar_desc,
-        unit="frame",
+        unit="s",
         **get_tqdm_defaults(),
     )
-    last_frame = 0
+    last_time = 0.0
 
     def _on_line(line: str) -> None:
-        nonlocal last_frame
-        m = frame_progress_re.search(line)
+        nonlocal last_time
+        m = pts_time_re.search(line)
         if m:
-            frame_num = int(m.group(1))
-            delta = frame_num - last_frame
+            t = float(m.group(1))
+            delta = t - last_time
             if delta > 0:
                 pbar.update(delta)
-                last_frame = frame_num
+                last_time = t
 
     proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line)
+    if duration_s and last_time < duration_s:
+        pbar.update(duration_s - last_time)
     pbar.close()
 
     if proc.returncode != 0:
