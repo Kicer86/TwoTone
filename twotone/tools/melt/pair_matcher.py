@@ -642,10 +642,7 @@ class PairMatcher:
         # ORB verification on the half-resolution extracted frames
         lhs_path = self.lhs_all_frames[edge_lhs_ts]["path"] if edge_lhs_ts in self.lhs_all_frames else lhs[edge_lhs_ts]["path"]
         rhs_path = self.rhs_all_frames[edge_rhs_ts]["path"] if edge_rhs_ts in self.rhs_all_frames else rhs[edge_rhs_ts]["path"]
-        if not image_utils.are_images_similar(lhs_path, rhs_path):
-            return False
-
-        return True
+        return image_utils.are_images_similar(lhs_path, rhs_path)
 
     def _is_sustained_dark_zone(
         self,
