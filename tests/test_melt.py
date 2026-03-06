@@ -2103,6 +2103,201 @@ class PairMatcherUnitTest(unittest.TestCase):
         # RHS: 90ms > 80ms → does NOT snap
         self.assertEqual(result[0][1], 90)
 
+    # ---- _try_constant_offset_extrapolation ----
+
+    def test_constant_offset_detected_and_extrapolated(self):
+        """When all pairs share a constant frame-number offset, boundaries are extrapolated."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # frame_ms = 40ms, frame offset = 3
+        # Offset: all pairs at +3 frames (+120ms)
+        matching_pairs = [
+            (2120, 2000),
+            (4120, 4000),
+            (6120, 6000),
+            (8120, 8000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        # k=3: first_lhs_frame=3 → ts=120, first_rhs_frame=0 → ts=0
+        self.assertEqual(result[0], (120, 0))
+        # last_lhs_frame=min(250,250+3)=250 → ts=10000, last_rhs_frame=247 → ts=9880
+        self.assertEqual(result[-1], (10000, 9880))
+
+    def test_constant_offset_negative(self):
+        """When offset is negative (rhs ahead of lhs), boundaries are correct."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        matching_pairs = [
+            (2000, 2120),
+            (4000, 4120),
+            (6000, 6120),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        # k=-3: first_lhs_frame=0 → ts=0, first_rhs_frame=3 → ts=120
+        self.assertEqual(result[0], (0, 120))
+        # last_lhs_frame=min(250,250-3)=247 → ts=9880, last_rhs_frame=250 → ts=10000
+        self.assertEqual(result[-1], (9880, 10000))
+
+    def test_constant_offset_zero(self):
+        """When offset is zero (identical timing), boundaries are at edges."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        matching_pairs = [
+            (2000, 2000),
+            (4000, 4000),
+            (6000, 6000),
+            (8000, 8000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], (0, 0))
+        self.assertEqual(result[-1], (10000, 10000))
+
+    def test_constant_offset_rejected_high_std(self):
+        """When frame-number offsets vary too much (std > 1), returns None."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # frame offsets: 3, 5, 1 → std ≈ 1.63 > 1.0
+        matching_pairs = [
+            (2120, 2000),
+            (4200, 4000),
+            (6040, 6000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNone(result)
+
+    def test_constant_offset_rejected_growing_offsets(self):
+        """When frame-number offsets grow (content plays at different rate), returns None."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # frame offsets: 2, 4, 6, 8 → std ≈ 2.24 > 1.0
+        matching_pairs = [
+            (2080, 2000),
+            (4160, 4000),
+            (6240, 6000),
+            (8320, 8000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNone(result)
+
+    def test_constant_offset_too_few_pairs(self):
+        """With fewer than 3 pairs, constant-offset detection is skipped."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        matching_pairs = [(2120, 2000), (4120, 4000)]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNone(result)
+
+    def test_constant_offset_slight_jitter_within_tolerance(self):
+        """Small jitter (< 1 frame) in frame-number offsets should still be accepted."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # frame offsets: 3, 3, 4, 3 → std ≈ 0.43 < 1.0
+        matching_pairs = [
+            (2120, 2000),
+            (4120, 4000),
+            (6160, 6000),
+            (8120, 8000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        # Median frame offset is 3 → first=(120, 0), last=(10000, 9880)
+        self.assertEqual(result[0], (120, 0))
+        self.assertEqual(result[-1], (10000, 9880))
+
+    def test_constant_offset_different_fps(self):
+        """Same content with different FPS (e.g. PAL speedup) is detected correctly."""
+        pm = self._make_pair_matcher(lhs_fps=20.0, rhs_fps=25.0)
+        # lhs_frame_ms=50ms, rhs_frame_ms=40ms
+        # Frame offset k=3: frame N in LHS = frame (N-3) in RHS
+        matching_pairs = [
+            (2500, 1880),   # LHS frame 50, RHS frame 47
+            (5000, 3880),   # LHS frame 100, RHS frame 97
+            (7500, 5880),   # LHS frame 150, RHS frame 147
+        ]
+
+        lhs_keys = list(range(0, 10050, 50))
+        rhs_keys = list(range(0, 8040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        # k=3: first_lhs_frame=3 → ts=150, first_rhs_frame=0 → ts=0
+        self.assertEqual(result[0], (150, 0))
+        # last_lhs_frame=min(200,200+3)=200 → ts=10000, last_rhs_frame=197 → ts=7880
+        self.assertEqual(result[-1], (10000, 7880))
+
+    def test_constant_offset_does_not_duplicate_existing_boundary(self):
+        """If extrapolated boundary matches an existing pair, no duplicate is added."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        matching_pairs = [
+            (120, 0),
+            (4120, 4000),
+            (8120, 8000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        # First pair already matches extrapolated boundary → no duplicate
+        self.assertEqual(result[0], (120, 0))
+        self.assertEqual(len([p for p in result if p == (120, 0)]), 1)
+
     # ---- _look_for_boundaries: look_ahead robustness ----
 
     @staticmethod

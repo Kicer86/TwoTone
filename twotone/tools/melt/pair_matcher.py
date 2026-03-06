@@ -1094,6 +1094,108 @@ class PairMatcher:
         )
         return (edge_lhs, new_rhs)
 
+    def _try_constant_offset_extrapolation(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+    ) -> list[tuple[int, int]] | None:
+        """Extrapolate boundaries when matched pairs share a constant frame-number offset.
+
+        Works in frame-number space: reads ``frame_id`` from *FramesInfo*
+        and checks if ``lhs_frame_id − rhs_frame_id`` is consistent
+        (std dev ≤ 1 frame).  This detects identical content with a small
+        constant shift regardless of whether FPS differs between files
+        (e.g. 23.976 vs 25 — same frames, different timing).
+
+        Returns an updated pair list with extrapolated first/last entries,
+        or ``None`` if the frame-number offset is not sufficiently constant.
+        """
+        if len(matching_pairs) < 3:
+            return None
+
+        # Use frame_id from FramesInfo instead of computing from FPS
+        frame_offsets = np.array([
+            int(lhs_all_frames[l]["frame_id"]) - int(rhs_all_frames[r]["frame_id"])
+            for l, r in matching_pairs
+        ])
+        median_offset = float(np.median(frame_offsets))
+        std_offset = float(np.std(frame_offsets))
+
+        if std_offset > 1.0:
+            self.logger.debug(
+                f"Constant-offset check: frame-number std={std_offset:.2f} "
+                f"exceeds 1-frame threshold — skipping"
+            )
+            return None
+
+        # Verify observed ratio matches expected fps_rhs/fps_lhs
+        ratio = PairMatcher.calculate_ratio(matching_pairs)
+        expected_ratio = self.rhs_fps / self.lhs_fps
+        if not PairMatcher.is_ratio_acceptable(ratio, expected_ratio):
+            self.logger.debug(
+                f"Constant-offset check: ratio={ratio:.4f} too far from "
+                f"expected {expected_ratio:.4f} — skipping"
+            )
+            return None
+
+        k = round(median_offset)  # frame-number offset
+
+        # Build frame_id → timestamp lookup for boundary extrapolation
+        lhs_by_frame = {int(info["frame_id"]): ts for ts, info in lhs_all_frames.items()}
+        rhs_by_frame = {int(info["frame_id"]): ts for ts, info in rhs_all_frames.items()}
+
+        lhs_max_frame = max(lhs_by_frame)
+        rhs_max_frame = max(rhs_by_frame)
+
+        # Common frame range: max(0, k) ≤ lhs_frame ≤ min(lhs_max, rhs_max + k)
+        first_lhs_frame = max(0, k)
+        first_rhs_frame = first_lhs_frame - k  # = max(0, -k)
+        last_lhs_frame = min(lhs_max_frame, rhs_max_frame + k)
+        last_rhs_frame = last_lhs_frame - k
+
+        # Convert frame numbers back to timestamps via lookup (or nearest)
+        lhs_keys = sorted(lhs_all_frames.keys())
+        rhs_keys = sorted(rhs_all_frames.keys())
+
+        first_lhs = lhs_by_frame.get(first_lhs_frame,
+                        PairMatcher._snap_to_nearest_frame(lhs_keys, 0))
+        first_rhs = rhs_by_frame.get(first_rhs_frame,
+                        PairMatcher._snap_to_nearest_frame(rhs_keys, 0))
+        last_lhs = lhs_by_frame.get(last_lhs_frame,
+                        PairMatcher._snap_to_nearest_frame(lhs_keys, lhs_keys[-1]))
+        last_rhs = rhs_by_frame.get(last_rhs_frame,
+                        PairMatcher._snap_to_nearest_frame(rhs_keys, rhs_keys[-1]))
+
+        self.logger.info(
+            f"Constant offset detected: {k} frame(s) "
+            f"(median={median_offset:.1f}, std={std_offset:.2f}). "
+            f"Extrapolated boundaries: ({first_lhs}, {first_rhs}) – ({last_lhs}, {last_rhs})"
+        )
+
+        result = list(matching_pairs)
+
+        if (first_lhs, first_rhs) != result[0]:
+            if first_lhs < result[0][0] or first_rhs < result[0][1]:
+                result.insert(0, (first_lhs, first_rhs))
+
+        if (last_lhs, last_rhs) != result[-1]:
+            if last_lhs > result[-1][0] or last_rhs > result[-1][1]:
+                result.append((last_lhs, last_rhs))
+
+        # Add synthetic frame entries for new timestamps
+        for ts, frames, keys in [
+            (first_lhs, lhs_all_frames, lhs_keys),
+            (first_rhs, rhs_all_frames, rhs_keys),
+            (last_lhs, lhs_all_frames, lhs_keys),
+            (last_rhs, rhs_all_frames, rhs_keys),
+        ]:
+            if ts not in frames and keys:
+                nearest = PairMatcher._snap_to_nearest_frame(keys, ts)
+                frames[ts] = frames[nearest].copy()
+
+        return result
+
     def _snap_to_edges(
         self,
         matching_pairs: list[tuple[int, int]],
@@ -1219,17 +1321,27 @@ class PairMatcher:
         if not matching_pairs:
             raise RuntimeError("No matching pairs found between the two files")
 
-        # Phase 5: Refine boundaries
-        self.logger.info("[5/5] Refining boundaries")
-        matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self._refine_boundary_pairs(
-            matching_pairs, lhs_normalized_frames, rhs_normalized_frames, debug,
+        # Try constant-offset shortcut — when all pairs share a nearly
+        # constant lhs−rhs offset we can extrapolate boundaries directly,
+        # skipping the expensive iterative search.
+        constant_offset_pairs = self._try_constant_offset_extrapolation(
+            matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
         )
+        if constant_offset_pairs is not None:
+            matching_pairs = constant_offset_pairs
+            debug.dump_matches(matching_pairs, "after constant-offset extrapolation")
+        else:
+            # Phase 5: Refine boundaries
+            self.logger.info("[5/5] Refining boundaries")
+            matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self._refine_boundary_pairs(
+                matching_pairs, lhs_normalized_frames, rhs_normalized_frames, debug,
+            )
 
-        # Final boundary search on uncropped normalized frames.
-        self.logger.debug("Final boundary search (uncropped frames, with extrapolation)")
-        matching_pairs = self._final_uncropped_boundary_search(
-            matching_pairs, lhs_normalized_frames, rhs_normalized_frames, debug,
-        )
+            # Final boundary search on uncropped normalized frames.
+            self.logger.debug("Final boundary search (uncropped frames, with extrapolation)")
+            matching_pairs = self._final_uncropped_boundary_search(
+                matching_pairs, lhs_normalized_frames, rhs_normalized_frames, debug,
+            )
 
         # Snap near-edge pairs to exact video boundaries to avoid trivially
         # short head/tail audio segments (< 3 frames).
