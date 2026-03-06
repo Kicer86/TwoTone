@@ -1436,6 +1436,7 @@ class PairMatcher:
         constant_offset_pairs = self._try_constant_offset_extrapolation(
             matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
         )
+        used_constant_offset_extrapolation = constant_offset_pairs is not None
         if constant_offset_pairs is not None:
             matching_pairs = constant_offset_pairs
             debug.dump_matches(matching_pairs, "after constant-offset extrapolation")
@@ -1519,9 +1520,12 @@ class PairMatcher:
                 matching_pairs, lhs_normalized_frames, rhs_normalized_frames, debug,
             )
 
-        # Snap near-edge pairs to exact video boundaries to avoid trivially
-        # short head/tail audio segments (< 3 frames).
-        matching_pairs = self._snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
+        # Snap near-edge pairs only for heuristic boundary search results.
+        # Constant-offset extrapolation already yields exact frame-aligned
+        # boundaries, so applying timestamp-based edge snapping here could
+        # distort the precise offset.
+        if not used_constant_offset_extrapolation:
+            matching_pairs = self._snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
 
         return matching_pairs, self.lhs_all_frames, self.rhs_all_frames
 

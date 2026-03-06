@@ -2298,6 +2298,54 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(result[0], (120, 0))
         self.assertEqual(len([p for p in result if p == (120, 0)]), 1)
 
+    def test_create_segments_mapping_skips_edge_snap_after_constant_offset(self):
+        """Constant-offset extrapolation should bypass timestamp-based edge snapping."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        pm.lhs_all_wd = "/tmp/lhs_all"
+        pm.rhs_all_wd = "/tmp/rhs_all"
+        pm.lhs_boundary_wd = "/tmp/lhs_boundary"
+        pm.rhs_boundary_wd = "/tmp/rhs_boundary"
+        pm.lhs_normalized_wd = "/tmp/lhs_norm"
+        pm.rhs_normalized_wd = "/tmp/rhs_norm"
+        pm.debug_wd = "/tmp/debug"
+
+        class FakePhash:
+            def get(self, path):
+                return 0
+
+        pm.phash = FakePhash()
+
+        lhs_probed = self._make_frames([0, 40, 80], prefix="lhs_raw")
+        rhs_probed = self._make_frames([0, 40, 80], prefix="rhs_raw")
+        extrapolated_pairs = [(120, 0), (10000, 9880)]
+
+        def fake_extract(_video_path, target_dir, _ranges, probed_metadata, **_kwargs):
+            for ts, info in probed_metadata.items():
+                info["path"] = f"{target_dir}/{ts}.png"
+
+        def fake_normalize(frames_info, wd, desc="Normalizing frames", prefix=""):
+            return {
+                ts: {"path": f"{wd}/{prefix}{ts}.png", "frame_id": info["frame_id"]}
+                for ts, info in frames_info.items()
+            }
+
+        with patch.object(video_utils, 'detect_scene_changes', side_effect=[[40], [40]]), \
+             patch.object(video_utils, 'probe_frame_timestamps', side_effect=[lhs_probed, rhs_probed]), \
+             patch.object(video_utils, 'extract_frames_at_ranges', side_effect=fake_extract), \
+             patch('twotone.tools.melt.pair_matcher.DebugRoutines') as debug_cls, \
+             patch.object(PairMatcher, '_normalize_frames', side_effect=fake_normalize), \
+             patch.object(PairMatcher, '_make_pairs', return_value=[(40, 40)]), \
+             patch.object(PairMatcher, '_try_constant_offset_extrapolation', return_value=extrapolated_pairs), \
+             patch.object(PairMatcher, '_snap_to_edges', side_effect=AssertionError("_snap_to_edges should not be called")):
+
+            debug = debug_cls.return_value
+            debug.dump_frames.return_value = None
+            debug.dump_matches.return_value = None
+
+            mappings, _, _ = pm.create_segments_mapping()
+
+        self.assertEqual(mappings, extrapolated_pairs)
+
     # ---- _look_for_boundaries: look_ahead robustness ----
 
     @staticmethod
