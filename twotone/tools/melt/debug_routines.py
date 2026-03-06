@@ -13,7 +13,7 @@ class DebugRoutines:
         self.rhs_all_frames = rhs_all_frames
         self.work = platform.system() != "Windows"
 
-    def dump_frames(self, matches: FramesInfo, phase: str) -> None:     
+    def dump_frames(self, matches: FramesInfo, phase: str) -> None:
         if not self.work:
             return
 
@@ -23,8 +23,9 @@ class DebugRoutines:
         os.makedirs(target_dir)
 
         for i, (ts, info) in enumerate(matches.items()):
-            path = info["path"]
-            os.symlink(path, os.path.join(target_dir, f"{i:06d}_lhs_{ts:08d}"))
+            path = info.get("path")
+            if path:
+                os.symlink(path, os.path.join(target_dir, f"{i:06d}_lhs_{ts:08d}"))
 
     def dump_matches(self, matches: list[tuple[int, int]], phase: str) -> None:
         if not self.work:
@@ -36,10 +37,14 @@ class DebugRoutines:
         os.makedirs(target_dir)
 
         for i, (lhs_ts, rhs_ts) in enumerate(matches):
-            lhs_path = self.lhs_all_frames[lhs_ts]["path"]
-            rhs_path = self.rhs_all_frames[rhs_ts]["path"]
-            os.symlink(lhs_path, os.path.join(target_dir, f"{i:06d}_lhs_{lhs_ts:08d}"))
-            os.symlink(rhs_path, os.path.join(target_dir, f"{i:06d}_rhs_{rhs_ts:08d}"))
+            lhs_info = self.lhs_all_frames.get(lhs_ts)
+            rhs_info = self.rhs_all_frames.get(rhs_ts)
+            lhs_path = lhs_info.get("path") if lhs_info else None
+            rhs_path = rhs_info.get("path") if rhs_info else None
+            if lhs_path:
+                os.symlink(lhs_path, os.path.join(target_dir, f"{i:06d}_lhs_{lhs_ts:08d}"))
+            if rhs_path:
+                os.symlink(rhs_path, os.path.join(target_dir, f"{i:06d}_rhs_{rhs_ts:08d}"))
 
     def dump_pairs(self, matches: list[tuple[int, int, int, int]]) -> None:
         if not self.work:
@@ -51,11 +56,13 @@ class DebugRoutines:
         os.makedirs(target_dir)
 
         for i, (lhs_ts_b, lhs_ts_e, rhs_ts_b, rhs_ts_e) in enumerate(matches):
-            lhs_b_path = self.lhs_all_frames[lhs_ts_b]["path"]
-            lhs_e_path = self.lhs_all_frames[lhs_ts_e]["path"]
-            rhs_b_path = self.rhs_all_frames[rhs_ts_b]["path"]
-            rhs_e_path = self.rhs_all_frames[rhs_ts_e]["path"]
-            os.symlink(lhs_b_path, os.path.join(target_dir, f"{i:06d}_lhs_b_{lhs_ts_b:08d}"))
-            os.symlink(lhs_e_path, os.path.join(target_dir, f"{i:06d}_lhs_e_{lhs_ts_e:08d}"))
-            os.symlink(rhs_b_path, os.path.join(target_dir, f"{i:06d}_rhs_b_{rhs_ts_b:08d}"))
-            os.symlink(rhs_e_path, os.path.join(target_dir, f"{i:06d}_rhs_e_{rhs_ts_e:08d}"))
+            for ts, side, tag in [
+                (lhs_ts_b, self.lhs_all_frames, f"lhs_b_{lhs_ts_b:08d}"),
+                (lhs_ts_e, self.lhs_all_frames, f"lhs_e_{lhs_ts_e:08d}"),
+                (rhs_ts_b, self.rhs_all_frames, f"rhs_b_{rhs_ts_b:08d}"),
+                (rhs_ts_e, self.rhs_all_frames, f"rhs_e_{rhs_ts_e:08d}"),
+            ]:
+                info = side.get(ts)
+                path = info.get("path") if info else None
+                if path:
+                    os.symlink(path, os.path.join(target_dir, f"{i:06d}_{tag}"))

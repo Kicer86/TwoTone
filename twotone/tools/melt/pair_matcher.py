@@ -36,6 +36,8 @@ class PairMatcher:
 
         self.lhs_all_wd = os.path.join(lhs_wd, "all")
         self.rhs_all_wd = os.path.join(rhs_wd, "all")
+        self.lhs_boundary_wd = os.path.join(lhs_wd, "boundary")
+        self.rhs_boundary_wd = os.path.join(rhs_wd, "boundary")
         self.lhs_normalized_wd = os.path.join(lhs_wd, "norm")
         self.rhs_normalized_wd = os.path.join(rhs_wd, "norm")
         self.lhs_normalized_cropped_wd = os.path.join(lhs_wd, "norm_cropped")
@@ -46,6 +48,8 @@ class PairMatcher:
                   rhs_wd,
                   self.lhs_all_wd,
                   self.rhs_all_wd,
+                  self.lhs_boundary_wd,
+                  self.rhs_boundary_wd,
                   self.lhs_normalized_wd,
                   self.rhs_normalized_wd,
                   self.lhs_normalized_cropped_wd,
@@ -54,7 +58,9 @@ class PairMatcher:
         ]:
             os.makedirs(d)
 
-    def _normalize_frames(self, frames_info: FramesInfo, wd: str, desc: str = "Normalizing frames") -> FramesInfo:
+    def _normalize_frames(self, frames_info: FramesInfo, wd: str, desc: str = "Normalizing frames", prefix: str = "") -> FramesInfo:
+        PairMatcher._assert_frames_extracted(frames_info, f"_normalize_frames({desc})")
+
         def crop_5_percent(image: cv.typing.MatLike) -> cv.typing.MatLike:
             height, width = image.shape
             dx = int(width * 0.05)
@@ -74,7 +80,7 @@ class PairMatcher:
             img = crop_5_percent(img)
             img = cv.resize(img, (256, 256), interpolation=cv.INTER_AREA)
             _, file, ext = files_utils.split_path(path)
-            new_path = os.path.join(wd, file + "." + ext)
+            new_path = os.path.join(wd, prefix + file + "." + ext)
             cv.imwrite(new_path, img)
 
             return timestamp, PairMatcher._get_new_info(info, new_path)
@@ -153,6 +159,25 @@ class PairMatcher:
         return new_info
 
     @staticmethod
+    def _assert_frames_extracted(frames: FramesInfo, context: str = "") -> None:
+        """Validate that every entry in *frames* has a non-None path on disk.
+
+        Raises ``AssertionError`` with a detailed message when a frame
+        was probed but never extracted — this indicates a bug in the
+        extraction-range computation.
+        """
+        for ts, info in frames.items():
+            path = info.get("path")
+            if path is None:
+                frame_id = info.get("frame_id", "?")
+                raise AssertionError(
+                    f"Frame at {ts}ms (frame_id={frame_id}) has not been "
+                    f"extracted to disk.  This is a bug — the frame should "
+                    f"have been included in the extraction range.  "
+                    f"Context: {context}"
+                )
+
+    @staticmethod
     def _filter_low_detailed(scenes: FramesInfo) -> FramesInfo:
         valuable_scenes = {timestamp: info for timestamp, info in scenes.items() if PairMatcher._is_rich(info["path"])}
         return valuable_scenes
@@ -183,8 +208,15 @@ class PairMatcher:
 
         distances = []
         for lhs_ts, rhs_ts in pairs:
-            d = abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"]))
+            lhs_path = lhs.get(lhs_ts, {}).get("path") if lhs_ts in lhs else None
+            rhs_path = rhs.get(rhs_ts, {}).get("path") if rhs_ts in rhs else None
+            if lhs_path is None or rhs_path is None:
+                continue
+            d = abs(phash.get(lhs_path) - phash.get(rhs_path))
             distances.append((d, lhs_ts, rhs_ts))
+
+        if not distances:
+            return f"Pairs: {len(pairs)} (no extracted paths for summary)"
 
         arr = np.array([d[0] for d in distances])
         median = np.median(arr)
@@ -195,8 +227,8 @@ class PairMatcher:
 
         # Identify the max pair
         max_entry = max(distances, key=lambda x: x[0])
-        max_lhs_path = lhs[max_entry[1]]["path"]
-        max_rhs_path = rhs[max_entry[2]]["path"]
+        max_lhs_path = lhs.get(max_entry[1], {}).get("path", "?")
+        max_rhs_path = rhs.get(max_entry[2], {}).get("path", "?")
 
         summary = (
             f"Pairs: {len(pairs)} | "
@@ -209,10 +241,11 @@ class PairMatcher:
         )
 
         if verbose:
-            details = [
-                f"  {lhs[lhs_ts]['path']} <-> {rhs[rhs_ts]['path']} | Diff: {dist}"
-                for dist, lhs_ts, rhs_ts in distances
-            ]
+            details = []
+            for dist, lhs_ts, rhs_ts in distances:
+                lp = lhs.get(lhs_ts, {}).get("path", "?")
+                rp = rhs.get(rhs_ts, {}).get("path", "?")
+                details.append(f"  {lp} <-> {rp} | Diff: {dist}")
             summary += "\nDetailed pairs:" + "\n" + "\n".join(details)
 
         return summary
@@ -523,6 +556,9 @@ class PairMatcher:
         lhs_cropped_dir: str,
         rhs_cropped_dir: str
     ) -> tuple[FramesInfo, FramesInfo]:
+        PairMatcher._assert_frames_extracted(lhs_frames, "_crop_both_sets(lhs)")
+        PairMatcher._assert_frames_extracted(rhs_frames, "_crop_both_sets(rhs)")
+
         # Step 1: Get interpolated crop functions for both sets
         lhs_crop_fn, rhs_crop_fn = PairMatcher._find_interpolated_crop(pairs_with_timestamps, lhs_frames, rhs_frames)
 
@@ -873,6 +909,9 @@ class PairMatcher:
         extrapolated linearly from well-matched pairs, but only if both files
         show a consistent entropy transition at the predicted position.
         """
+        PairMatcher._assert_frames_extracted(lhs, "_look_for_boundaries(lhs)")
+        PairMatcher._assert_frames_extracted(rhs, "_look_for_boundaries(rhs)")
+
         self.logger.debug("Improving boundaries")
         self.logger.debug(f"Current first: {first} and last: {last}")
         phash = PhashCache()
@@ -1259,6 +1298,49 @@ class PairMatcher:
 
         return matching_pairs
 
+    @staticmethod
+    def _compute_frame_ranges(
+        scene_timestamps: list[int],
+        all_frames: FramesInfo,
+        margin: int = 5,
+    ) -> list[tuple[int, int]]:
+        """Compute merged frame-number ranges around scene-change timestamps.
+
+        For each *scene_timestamp*, looks up the ``frame_id`` in
+        *all_frames* and creates a ``(frame_id − margin, frame_id + margin)``
+        range.  Overlapping/adjacent ranges are merged and clamped to
+        ``[0, max_frame_id]``.
+
+        Returns a sorted list of ``(start, end)`` inclusive ranges.
+        """
+        max_frame = max(int(info["frame_id"]) for info in all_frames.values())
+        frame_ids: list[int] = []
+        for ts in scene_timestamps:
+            if ts in all_frames:
+                frame_ids.append(int(all_frames[ts]["frame_id"]))
+
+        if not frame_ids:
+            return [(0, max_frame)]
+
+        raw = sorted(set(
+            (max(0, fid - margin), min(max_frame, fid + margin))
+            for fid in frame_ids
+        ))
+
+        merged: list[tuple[int, int]] = [raw[0]]
+        for start, end in raw[1:]:
+            if start <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+
+        return merged
+
+    @staticmethod
+    def _extracted_subset(all_frames: FramesInfo) -> FramesInfo:
+        """Return only entries from *all_frames* that have been extracted (path is not None)."""
+        return {ts: info for ts, info in all_frames.items() if info.get("path") is not None}
+
     def create_segments_mapping(self) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo]:
 
         # Phase 1: Detect scene changes
@@ -1274,31 +1356,58 @@ class PairMatcher:
         if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
             raise RuntimeError("Not enought scene changes detected")
 
-        # Phase 2: Extract all frames
-        self.lhs_all_frames = video_utils.extract_all_frames(
-            self.lhs_path, self.lhs_all_wd, scale=(960, -2), format="png",
-            logger=self.logger, interruption=self.interruption,
-            desc=f"[2/5] Extracting frames: {self.lhs_label}",
+        # Phase 2: Probe all frame timestamps (fast — no images written)
+        self.lhs_all_frames = video_utils.probe_frame_timestamps(
+            self.lhs_path, interruption=self.interruption,
+            desc=f"[2/5] Probing frames: {self.lhs_label}",
         )
-        self.rhs_all_frames = video_utils.extract_all_frames(
-            self.rhs_path, self.rhs_all_wd, scale=(960, -2), format="png",
-            logger=self.logger, interruption=self.interruption,
-            desc=f"[2/5] Extracting frames: {self.rhs_label}",
+        self.rhs_all_frames = video_utils.probe_frame_timestamps(
+            self.rhs_path, interruption=self.interruption,
+            desc=f"[2/5] Probing frames: {self.rhs_label}",
         )
 
-        lhs_key_frames_str = [str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes]
-        rhs_key_frames_str = [str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes]
+        # Phase 2b: Extract only frames around scene changes.
+        # _best_phash_match needs ±1 neighbours and _check_history
+        # needs 3 frames before each key frame.  A margin of 5 covers
+        # both with a small safety buffer.
+        scene_margin = 5
+        lhs_scene_ranges = self._compute_frame_ranges(lhs_scene_changes, self.lhs_all_frames, margin=scene_margin)
+        rhs_scene_ranges = self._compute_frame_ranges(rhs_scene_changes, self.rhs_all_frames, margin=scene_margin)
+
+        lhs_scene_frame_count = sum(e - s + 1 for s, e in lhs_scene_ranges)
+        rhs_scene_frame_count = sum(e - s + 1 for s, e in rhs_scene_ranges)
+        self.logger.info(
+            f"Selective extraction: {lhs_scene_frame_count}/{len(self.lhs_all_frames)} frames for {self.lhs_label}, "
+            f"{rhs_scene_frame_count}/{len(self.rhs_all_frames)} frames for {self.rhs_label}"
+        )
+
+        video_utils.extract_frames_at_ranges(
+            self.lhs_path, self.lhs_all_wd, lhs_scene_ranges, self.lhs_all_frames,
+            scale=(960, -2), format="png", interruption=self.interruption,
+            desc=f"[2/5] Extracting scene frames: {self.lhs_label}",
+        )
+        video_utils.extract_frames_at_ranges(
+            self.rhs_path, self.rhs_all_wd, rhs_scene_ranges, self.rhs_all_frames,
+            scale=(960, -2), format="png", interruption=self.interruption,
+            desc=f"[2/5] Extracting scene frames: {self.rhs_label}",
+        )
+
+        lhs_key_frames_str = [str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes if lhs in self.lhs_all_frames]
+        rhs_key_frames_str = [str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes if rhs in self.rhs_all_frames]
 
         self.logger.debug(f"{self.lhs_label} key frames: {' '.join(lhs_key_frames_str)}")
         self.logger.debug(f"{self.rhs_label} key frames: {' '.join(rhs_key_frames_str)}")
 
-        # Phase 3: Normalize frames
+        # Phase 3: Normalize only extracted frames
+        lhs_extracted = self._extracted_subset(self.lhs_all_frames)
+        rhs_extracted = self._extracted_subset(self.rhs_all_frames)
+
         lhs_normalized_frames = self._normalize_frames(
-            self.lhs_all_frames, self.lhs_normalized_wd,
+            lhs_extracted, self.lhs_normalized_wd,
             desc=f"[3/5] Normalizing: {self.lhs_label}",
         )
         rhs_normalized_frames = self._normalize_frames(
-            self.rhs_all_frames, self.rhs_normalized_wd,
+            rhs_extracted, self.rhs_normalized_wd,
             desc=f"[3/5] Normalizing: {self.rhs_label}",
         )
 
@@ -1316,7 +1425,7 @@ class PairMatcher:
         matching_pairs = self._make_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames)
         debug.dump_matches(matching_pairs, "initial matching")
         self.logger.debug("Pairs summary after initial matching:")
-        self.logger.debug(PairMatcher.summarize_pairs(self.phash, matching_pairs, self.lhs_all_frames, self.rhs_all_frames, verbose = True))
+        self.logger.debug(PairMatcher.summarize_pairs(self.phash, matching_pairs, lhs_extracted, rhs_extracted, verbose = True))
 
         if not matching_pairs:
             raise RuntimeError("No matching pairs found between the two files")
@@ -1331,8 +1440,75 @@ class PairMatcher:
             matching_pairs = constant_offset_pairs
             debug.dump_matches(matching_pairs, "after constant-offset extrapolation")
         else:
-            # Phase 5: Refine boundaries
+            # Phase 5: Extract boundary-range frames for dense search
             self.logger.info("[5/5] Refining boundaries")
+
+            first_lhs_frame = int(self.lhs_all_frames[matching_pairs[0][0]]["frame_id"])
+            last_lhs_frame = int(self.lhs_all_frames[matching_pairs[-1][0]]["frame_id"])
+            first_rhs_frame = int(self.rhs_all_frames[matching_pairs[0][1]]["frame_id"])
+            last_rhs_frame = int(self.rhs_all_frames[matching_pairs[-1][1]]["frame_id"])
+
+            lhs_max_frame = max(int(info["frame_id"]) for info in self.lhs_all_frames.values())
+            rhs_max_frame = max(int(info["frame_id"]) for info in self.rhs_all_frames.values())
+
+            # Extract all frames not yet extracted by scene-margin pass.
+            # Compute the complement of scene ranges within [0, max].
+            def _complement_ranges(
+                scene_ranges: list[tuple[int, int]], max_frame: int,
+            ) -> list[tuple[int, int]]:
+                """Return frame ranges NOT covered by *scene_ranges*."""
+                merged = sorted(scene_ranges)
+                gaps: list[tuple[int, int]] = []
+                cursor = 0
+                for start, end in merged:
+                    if cursor < start:
+                        gaps.append((cursor, start - 1))
+                    cursor = max(cursor, end + 1)
+                if cursor <= max_frame:
+                    gaps.append((cursor, max_frame))
+                return gaps
+
+            lhs_boundary_ranges = _complement_ranges(lhs_scene_ranges, lhs_max_frame)
+            rhs_boundary_ranges = _complement_ranges(rhs_scene_ranges, rhs_max_frame)
+
+            lhs_boundary_count = sum(e - s + 1 for s, e in lhs_boundary_ranges)
+            rhs_boundary_count = sum(e - s + 1 for s, e in rhs_boundary_ranges)
+            self.logger.info(
+                f"Extracting boundary frames: {lhs_boundary_count} for {self.lhs_label}, "
+                f"{rhs_boundary_count} for {self.rhs_label}"
+            )
+
+            video_utils.extract_frames_at_ranges(
+                self.lhs_path, self.lhs_boundary_wd, lhs_boundary_ranges, self.lhs_all_frames,
+                scale=(960, -2), format="png", interruption=self.interruption,
+                desc=f"[5/5] Extracting boundary frames: {self.lhs_label}",
+            )
+            video_utils.extract_frames_at_ranges(
+                self.rhs_path, self.rhs_boundary_wd, rhs_boundary_ranges, self.rhs_all_frames,
+                scale=(960, -2), format="png", interruption=self.interruption,
+                desc=f"[5/5] Extracting boundary frames: {self.rhs_label}",
+            )
+
+            # Normalize the newly extracted boundary frames and merge
+            lhs_new = {ts: info for ts, info in self.lhs_all_frames.items()
+                       if info.get("path") is not None and ts not in lhs_normalized_frames}
+            rhs_new = {ts: info for ts, info in self.rhs_all_frames.items()
+                       if info.get("path") is not None and ts not in rhs_normalized_frames}
+
+            if lhs_new:
+                lhs_boundary_normalized = self._normalize_frames(
+                    lhs_new, self.lhs_normalized_wd, prefix="b_",
+                    desc=f"[5/5] Normalizing boundary: {self.lhs_label}",
+                )
+                lhs_normalized_frames.update(lhs_boundary_normalized)
+
+            if rhs_new:
+                rhs_boundary_normalized = self._normalize_frames(
+                    rhs_new, self.rhs_normalized_wd, prefix="b_",
+                    desc=f"[5/5] Normalizing boundary: {self.rhs_label}",
+                )
+                rhs_normalized_frames.update(rhs_boundary_normalized)
+
             matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self._refine_boundary_pairs(
                 matching_pairs, lhs_normalized_frames, rhs_normalized_frames, debug,
             )
