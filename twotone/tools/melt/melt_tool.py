@@ -39,6 +39,15 @@ class PerInputMetadataAction(argparse.Action):
         entries[-1][self.dest] = values
 
 
+class PerInputFlagAction(argparse.Action):
+    """Attaches a boolean metadata flag to the most recently added -i/--input entry."""
+    def __call__(self, parser, namespace, values, option_string=None):
+        entries = getattr(namespace, 'input_entries', None)
+        if not entries:
+            parser.error(f"{option_string} must be specified after -i/--input")
+        entries[-1][self.dest] = True
+
+
 class MeltTool(Tool):
     def __init__(self) -> None:
         super().__init__()
@@ -90,6 +99,12 @@ class MeltTool(Tool):
                                   default=argparse.SUPPRESS,
                                   help='Subtitle language for the preceding -i input.\n'
                                        'Can be specified after each -i to set different languages per input.')
+        manual_group.add_argument('--force-all-streams', dest='force_all_streams', action=PerInputFlagAction,
+                                  nargs=0,
+                                  default=argparse.SUPPRESS,
+                                  help='Force all audio and subtitle streams from the preceding -i input to be kept,\n'
+                                       'even if their language is unknown. Streams from non-forced inputs are\n'
+                                       'only used when forced inputs do not already cover the same language.')
 
         # global options
         parser.add_argument('-o', '--output-dir',
@@ -141,9 +156,9 @@ class MeltTool(Tool):
 
                 src.add_entry(title, path)
 
-                for key in ('audio_lang', 'audio_prod_lang', 'subtitle_lang'):
+                for key in ('audio_lang', 'audio_prod_lang', 'subtitle_lang', 'force_all_streams'):
                     value = entry.get(key)
-                    if value:
+                    if value is not None:
                         src.add_metadata(path, key, value)
 
             data_source = src

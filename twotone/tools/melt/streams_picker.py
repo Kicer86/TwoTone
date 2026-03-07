@@ -7,11 +7,26 @@ from typing import Any, Generator
 from ..utils import generic_utils, language_utils
 from .duplicates_source import DuplicatesSource
 
+
+_UNDEFINED_LANGUAGE = "undefined"
+
 class StreamsPicker:
     def __init__(self, logger: logging.Logger, duplicates_source: DuplicatesSource, wd: str):
         self.logger = logger
         self.duplicates_source = duplicates_source
         self.wd = wd
+
+    @staticmethod
+    def _metadata_flag_is_enabled(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return False
+
+    def _path_forces_all_streams(self, path: str) -> bool:
+        metadata = self.duplicates_source.get_metadata_for(path)
+        return self._metadata_flag_is_enabled(metadata.get("force_all_streams"))
 
 
     @staticmethod
@@ -69,15 +84,20 @@ class StreamsPicker:
         """
 
         stream_index: defaultdict[tuple[Any, ...], defaultdict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+        forced_streams: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        forced_keys: set[tuple[Any, ...]] = set()
 
         # organize all streams by unique_key and file
         for path, details in StreamsPicker._iter_starting_with(files_details, best_file):
+            force_all_streams = stream_type in ("audio", "subtitle") and self._path_forces_all_streams(path)
             for stream in details.get(stream_type, []):
                 # Build a modified copy of the stream for comparison
                 stream_view = stream.copy()
 
                 # Determine language if available
                 lang = get_language(stream, stream_type, path)
+                if force_all_streams:
+                    lang = lang or _UNDEFINED_LANGUAGE
                 stream_view["language"] = lang
 
                 # Build unique key based on stream view
@@ -98,12 +118,17 @@ class StreamsPicker:
                 tid = stream_view["tid"]
 
                 current = {"file": path, "tid": tid, "details": stream_view}
-
-                stream_index[unique_key][path].append(current)
+                if force_all_streams:
+                    forced_streams.append((unique_key, current))
+                    forced_keys.add(unique_key)
+                else:
+                    stream_index[unique_key][path].append(current)
 
         # process collected streams
-        picked_streams: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        picked_streams: list[tuple[tuple[Any, ...], dict[str, Any]]] = list(forced_streams)
         for key, file_streams in stream_index.items():
+            if key in forced_keys:
+                continue
 
             # from all files providing streams with given 'key' use those with most entries
             max_entries = max(len(details) for details in file_streams.values())
@@ -141,6 +166,8 @@ class StreamsPicker:
             tid = entry["tid"]
             path = entry["file"]
             language = entry["details"].get("language")
+            if language == _UNDEFINED_LANGUAGE:
+                language = None
             result.append((path, tid, language))
 
         return result

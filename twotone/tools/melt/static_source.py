@@ -15,7 +15,7 @@ class StaticSource(DuplicatesSource):
     def add_entry(self, title: str, path: str):
         self._entries[title].append(path)
 
-    def add_metadata(self, path: str, key: str, value: str):
+    def add_metadata(self, path: str, key: str, value: str | bool):
         self._metadata[path][key] = value
 
     @override
@@ -23,7 +23,7 @@ class StaticSource(DuplicatesSource):
         return self._entries
 
     @override
-    def get_metadata_for(self, path: str) -> dict[str, str | None]:
+    def get_metadata_for(self, path: str) -> dict[str, str | bool | None]:
         path_obj = Path(path)
 
         while path_obj != path_obj.parent:

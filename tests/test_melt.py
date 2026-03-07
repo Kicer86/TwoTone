@@ -3,6 +3,7 @@ import logging
 import unittest
 import os
 import platform
+import argparse
 
 from functools import partial
 from itertools import permutations
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Iterator
 
 from twotone.tools.utils import generic_utils, process_utils, video_utils
-from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, StaticSource, StreamsPicker
+from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, MeltTool, StaticSource, StreamsPicker
 from twotone.tools.utils.files_utils import ScopedDirectory
 from common import (
     TwoToneTestCase,
@@ -358,6 +359,92 @@ class MeltingTest(TwoToneTestCase):
         _, audio_streams, _ = sp.pick_streams(files_details, ids)
 
         self.assertEqual(audio_streams[0][0], file1)
+
+    def test_melt_tool_parses_force_all_streams_as_per_input_flag(self):
+        parser = argparse.ArgumentParser()
+        MeltTool().setup_parser(parser)
+
+        args = parser.parse_args([
+            "-o", "/tmp/out",
+            "-t", "Example",
+            "-i", "/tmp/a.mkv",
+            "--force-all-streams",
+            "-i", "/tmp/b.mkv",
+        ])
+
+        self.assertTrue(args.input_entries[0]["force_all_streams"])
+        self.assertNotIn("force_all_streams", args.input_entries[1])
+
+    def test_streams_picker_keeps_forced_streams_including_unknown_language(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+
+        file_forced = os.path.join(self.wd.path, "forced.mkv")
+        file_other = os.path.join(self.wd.path, "other.mkv")
+
+        duplicates.add_metadata(file_forced, "force_all_streams", True)
+
+        files_details = {
+            file_forced: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "24000/1001"}],
+                "audio": [
+                    {"tid": 1, "language": None, "channels": 2, "sample_rate": 24000},
+                    {"tid": 2, "language": "eng", "channels": 2, "sample_rate": 24000},
+                ],
+                "subtitle": [
+                    {"tid": 3, "language": None},
+                ],
+            },
+            file_other: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "24000/1001"}],
+                "audio": [
+                    {"tid": 5, "language": "pol", "channels": 2, "sample_rate": 48000},
+                    {"tid": 6, "language": "eng", "channels": 2, "sample_rate": 96000},
+                ],
+                "subtitle": [
+                    {"tid": 8, "language": "deu"},
+                ],
+            },
+        }
+        ids = {file_forced: 1, file_other: 2}
+
+        _, audio_streams, subtitle_streams = sp.pick_streams(files_details, ids)
+
+        self.assertEqual(audio_streams, [
+            (file_forced, 1, None),
+            (file_forced, 2, "eng"),
+            (file_other, 5, "pol"),
+        ])
+        self.assertEqual(subtitle_streams, [
+            (file_forced, 3, None),
+            (file_other, 8, "deu"),
+        ])
+
+    def test_streams_picker_raises_on_unknown_language_without_force_flag(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+
+        file1 = os.path.join(self.wd.path, "unknown_audio_1.mkv")
+        file2 = os.path.join(self.wd.path, "unknown_audio_2.mkv")
+
+        files_details = {
+            file1: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "24000/1001"}],
+                "audio": [{"tid": 1, "language": None, "channels": 2, "sample_rate": 48000}],
+                "subtitle": [],
+            },
+            file2: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "24000/1001"}],
+                "audio": [{"tid": 1, "language": "eng", "channels": 2, "sample_rate": 48000}],
+                "subtitle": [],
+            },
+        }
+        ids = {file1: 1, file2: 2}
+
+        with self.assertRaises(RuntimeError):
+            sp.pick_streams(files_details, ids)
 
     def test_streams_picker_prefers_higher_resolution_video(self):
         interruption = generic_utils.InterruptibleProcess()

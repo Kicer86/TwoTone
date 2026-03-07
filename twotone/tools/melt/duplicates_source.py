@@ -10,5 +10,5 @@ class DuplicatesSource:
     def collect_duplicates(self) -> dict[str, tuple]:
         return {}
 
-    def get_metadata_for(self, path: str) -> dict[str, str | None]:
+    def get_metadata_for(self, path: str) -> dict[str, str | bool | None]:
         return {}
