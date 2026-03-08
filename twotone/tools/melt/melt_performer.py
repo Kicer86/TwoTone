@@ -119,26 +119,19 @@ class MeltPerformer:
             fo["attachments"].append(tid)
 
         # Serialize options into mkvmerge args, file by file
+        _STREAM_TYPE_OPTS = {
+            "video":       ("--video-tracks",    "--no-video"),
+            "audio":       ("--audio-tracks",    "--no-audio"),
+            "subtitle":    ("--subtitle-tracks",  "--no-subtitles"),
+            "attachments": ("--attachments",      "--no-attachments"),
+        }
+
         for file_path, fo in files_opts.items():
-            if fo["video"]:
-                generation_args.extend(["--video-tracks", ",".join(str(i) for i in fo["video"])])
-            else:
-                generation_args.append("--no-video")
-
-            if fo["audio"]:
-                generation_args.extend(["--audio-tracks", ",".join(str(i) for i in fo["audio"])])
-            else:
-                generation_args.append("--no-audio")
-
-            if fo["subtitle"]:
-                generation_args.extend(["--subtitle-tracks", ",".join(str(i) for i in fo["subtitle"])])
-            else:
-                generation_args.append("--no-subtitles")
-
-            if fo["attachments"]:
-                generation_args.extend(["--attachments", ",".join(str(i) for i in fo["attachments"])])
-            else:
-                generation_args.append("--no-attachments")
+            for stype, (include_flag, exclude_flag) in _STREAM_TYPE_OPTS.items():
+                if fo[stype]:
+                    generation_args.extend([include_flag, ",".join(str(i) for i in fo[stype])])
+                else:
+                    generation_args.append(exclude_flag)
 
             for tid, lang in fo["languages"].items():
                 generation_args.extend(["--language", f"{tid}:{lang}"])
@@ -154,6 +147,79 @@ class MeltPerformer:
             generation_args.extend(["--track-order", ",".join(track_order)])
 
         return generation_args
+
+    @staticmethod
+    def _extract_audio_to_flac(video_path: str, output_path: str) -> None:
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", ["-y", "-i", video_path, "-map", "0:a:0", "-c:a", "flac", output_path])
+        )
+
+    @staticmethod
+    def _extract_head_tail(
+        base_audio: str,
+        base_video: str,
+        seg_start_ms: int,
+        seg_end_ms: int,
+        head_path: str,
+        tail_path: str,
+    ) -> tuple[bool, bool]:
+        """Extract head/tail segments from the base audio track.
+
+        Returns (has_head, has_tail) indicating which parts were extracted.
+        """
+        has_head = seg_start_ms > 0
+        if has_head:
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", [
+                    "-y", "-ss", "0", "-to", str(seg_start_ms / 1000),
+                    "-i", base_audio, "-c:a", "flac", head_path,
+                ])
+            )
+
+        base_duration_ms = video_utils.get_video_duration(base_video)
+        has_tail = seg_end_ms < base_duration_ms
+        if has_tail:
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", [
+                    "-y", "-ss", str(seg_end_ms / 1000),
+                    "-i", base_audio, "-c:a", "flac", tail_path,
+                ])
+            )
+
+        return has_head, has_tail
+
+    @staticmethod
+    def _concat_and_encode(
+        parts: list[str],
+        has_head: bool,
+        head_path: str,
+        has_tail: bool,
+        tail_path: str,
+        concat_list_path: str,
+        merged_flac_path: str,
+        output_path: str,
+    ) -> None:
+        """Concatenate audio parts (head + middle segments + tail) and encode to AAC."""
+        with open(concat_list_path, "w", encoding="utf-8") as f:
+            if has_head:
+                f.write(f"file '{head_path}'\n")
+            for seg in parts:
+                f.write(f"file '{seg}'\n")
+            if has_tail:
+                f.write(f"file '{tail_path}'\n")
+
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", [
+                "-y", "-f", "concat", "-safe", "0",
+                "-i", concat_list_path, "-c:a", "flac", merged_flac_path,
+            ])
+        )
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", [
+                "-y", "-i", merged_flac_path, "-c:a", "aac",
+                "-movflags", "+faststart", output_path,
+            ])
+        )
 
     def _patch_audio_segment(
         self,
@@ -186,30 +252,16 @@ class MeltPerformer:
 
         # Compute global segment range (milliseconds)
         left_points = [p[0] for p in segment_pairs]
-        right_points = [p[1] for p in segment_pairs]
         seg1_start, seg1_end = min(left_points), max(left_points)
 
         # 1. Extract main audio tracks
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", ["-y", "-i", base_video, "-map", "0:a:0", "-c:a", "flac", v1_audio])
-        )
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", ["-y", "-i", source_video, "-map", "0:a:0", "-c:a", "flac", v2_audio])
-        )
+        self._extract_audio_to_flac(base_video, v1_audio)
+        self._extract_audio_to_flac(source_video, v2_audio)
 
-        # 2. Extract head and tail from base audio (skip when at/near edge)
-        has_head = seg1_start > 0
-        if has_head:
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(seg1_start / 1000), "-i", v1_audio, "-c:a", "flac", head_path])
-            )
-
-        base_duration_ms = video_utils.get_video_duration(base_video)
-        has_tail = seg1_end < base_duration_ms
-        if has_tail:
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", ["-y", "-ss", str(seg1_end / 1000), "-i", v1_audio, "-c:a", "flac", tail_path])
-            )
+        # 2. Extract head and tail from base audio
+        has_head, has_tail = self._extract_head_tail(
+            v1_audio, base_video, seg1_start, seg1_end, head_path, tail_path,
+        )
 
         # 3. Generate subsegment split points from provided mapping pairs
         total_left_duration = seg1_end - seg1_start
@@ -288,35 +340,10 @@ class MeltPerformer:
 
             temp_segments.append(scaled_cut)
 
-        # 5. Concatenate head + replacement parts + tail
-        concat_list = os.path.join(wd, "concat.txt")
-        with open(concat_list, "w", encoding="utf-8") as f:
-            if has_head:
-                f.write(f"file '{head_path}'\n")
-            for seg in temp_segments:
-                f.write(f"file '{seg}'\n")
-            if has_tail:
-                f.write(f"file '{tail_path}'\n")
-
-        merged_flac = os.path.join(wd, "merged.flac")
-        process_utils.raise_on_error(
-            process_utils.start_process(
-                "ffmpeg", [
-                    "-y",
-                    "-f", "concat",
-                    "-safe", "0",
-                    "-i", concat_list,
-                    "-c:a", "flac", merged_flac
-                ],
-            )
-        )
-
-        # 6. Encode to final audio format
-        process_utils.raise_on_error(
-            process_utils.start_process(
-                "ffmpeg",
-                ["-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path],
-            )
+        # 5. Concatenate and encode
+        self._concat_and_encode(
+            temp_segments, has_head, head_path, has_tail, tail_path,
+            os.path.join(wd, "concat.txt"), os.path.join(wd, "merged.flac"), output_path,
         )
 
     def _patch_audio_constant_offset(
@@ -350,26 +377,13 @@ class MeltPerformer:
         seg2_start, seg2_end = min(right_points), max(right_points)
 
         # 1. Extract main audio tracks
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", ["-y", "-i", base_video, "-map", "0:a:0", "-c:a", "flac", v1_audio])
-        )
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", ["-y", "-i", source_video, "-map", "0:a:0", "-c:a", "flac", v2_audio])
-        )
+        self._extract_audio_to_flac(base_video, v1_audio)
+        self._extract_audio_to_flac(source_video, v2_audio)
 
-        # 2. Extract head and tail from base audio (skip when at/near edge)
-        has_head = seg1_start > 0
-        if has_head:
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(seg1_start / 1000), "-i", v1_audio, "-c:a", "flac", head_path])
-            )
-
-        base_duration_ms = video_utils.get_video_duration(base_video)
-        has_tail = seg1_end < base_duration_ms
-        if has_tail:
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", ["-y", "-ss", str(seg1_end / 1000), "-i", v1_audio, "-c:a", "flac", tail_path])
-            )
+        # 2. Extract head and tail from base audio
+        has_head, has_tail = self._extract_head_tail(
+            v1_audio, base_video, seg1_start, seg1_end, head_path, tail_path,
+        )
 
         # 3. Trim source audio to matching range
         source_trimmed = os.path.join(wd, "source_trimmed.flac")
@@ -390,7 +404,6 @@ class MeltPerformer:
         ratio = source_dur / target_dur if target_dur else 1.0
 
         if abs(ratio - 1.0) < 0.001:
-            # Durations match — no re-encoding needed
             scaled_audio = source_trimmed
         else:
             scaled_audio = os.path.join(wd, "scaled.flac")
@@ -406,29 +419,10 @@ class MeltPerformer:
                 ])
             )
 
-        # 5. Concatenate head + scaled audio + tail
-        concat_list = os.path.join(wd, "concat.txt")
-        with open(concat_list, "w", encoding="utf-8") as f:
-            if has_head:
-                f.write(f"file '{head_path}'\n")
-            f.write(f"file '{scaled_audio}'\n")
-            if has_tail:
-                f.write(f"file '{tail_path}'\n")
-
-        merged_flac = os.path.join(wd, "merged.flac")
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", [
-                "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", concat_list,
-                "-c:a", "flac", merged_flac,
-            ])
-        )
-
-        # 6. Encode to final audio format
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", ["-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path])
+        # 5. Concatenate and encode
+        self._concat_and_encode(
+            [scaled_audio], has_head, head_path, has_tail, tail_path,
+            os.path.join(wd, "concat.txt"), os.path.join(wd, "merged.flac"), output_path,
         )
 
     def _build_output_path(self, title: str, output_name: str) -> str:
@@ -445,6 +439,41 @@ class MeltPerformer:
             f"File {self._display_path(input_path)} is superior. Using it whole as output {self._display_path(output_path)}."
         )
         shutil.copy2(input_path, output_path)
+
+    def _patch_mismatched_audio(
+        self,
+        video_path_base: str,
+        audio_path: str,
+        video_tid: int,
+        stream_index: int,
+        base_duration: int,
+        file_ids: dict[str, int] | None,
+    ) -> tuple[str, int]:
+        """Run PairMatcher and apply the appropriate audio patching strategy.
+
+        Returns (patched_path, new_stream_index).
+        """
+        duration = video_utils.get_video_duration(audio_path)
+        with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
+             generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
+            lhs_id = file_ids.get(video_path_base, 1) if file_ids else 1
+            rhs_id = file_ids.get(audio_path, 2) if file_ids else 2
+            matcher = PairMatcher(
+                self.interruption, mwd, video_path_base, audio_path,
+                self.logger.getChild("PairMatcher"),
+                lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
+            )
+            mapping, lhs_all_frames, rhs_all_frames, constant_offset = matcher.create_segments_mapping()
+
+            self._log_coverage(video_path_base, audio_path, mapping, base_duration, duration)
+
+            patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.m4a")
+            if constant_offset:
+                self._patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping)
+            else:
+                self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames)
+
+        return patched_audio, 0
 
     def _prepare_stream_entries(
         self,
@@ -471,29 +500,12 @@ class MeltPerformer:
             duration = video_utils.get_video_duration(path)
             if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
                 original_path = path
-                with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
-                     generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
-                    lhs_id = file_ids.get(video_path_base, 1) if file_ids else 1
-                    rhs_id = file_ids.get(path, 2) if file_ids else 2
-                    matcher = PairMatcher(
-                        self.interruption, mwd, video_path_base, path,
-                        self.logger.getChild("PairMatcher"),
-                        lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
-                    )
-                    mapping, lhs_all_frames, rhs_all_frames, constant_offset = matcher.create_segments_mapping()
-
-                    self._log_coverage(video_path_base, path, mapping, base_duration, duration)
-
-                    patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.m4a")
-                    if constant_offset:
-                        self._patch_audio_constant_offset(mwd, video_path_base, path, patched_audio, mapping)
-                    else:
-                        self._patch_audio_segment(mwd, video_path_base, path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames)
-                    path = patched_audio
-                    stream_index = 0
-                    required_input_files.add(path)
-                    if original_path not in protected_paths:
-                        required_input_files.discard(original_path)
+                path, stream_index = self._patch_mismatched_audio(
+                    video_path_base, path, video_tid, stream_index, base_duration, file_ids,
+                )
+                required_input_files.add(path)
+                if original_path not in protected_paths:
+                    required_input_files.discard(original_path)
             streams_list.append(("audio", stream_index, path, language))
 
         for (path, stream_index, language) in subtitle_streams:

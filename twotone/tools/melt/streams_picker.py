@@ -173,76 +173,81 @@ class StreamsPicker:
         return result
 
 
-    def pick_streams(self, files_details: dict, ids: dict[str, int]):
-        # video preference comparator
-        def video_cmp(lhs: dict[str, Any], rhs: dict[str, Any]) -> int:
-            lhs_w = int(lhs["width"])
-            lhs_h = int(lhs["height"])
-            rhs_w = int(rhs["width"])
-            rhs_h = int(rhs["height"])
+    @staticmethod
+    def _video_cmp(lhs: dict[str, Any], rhs: dict[str, Any]) -> int:
+        """Compare two video streams by resolution (area, then width, then height) and FPS."""
+        lhs_w = int(lhs["width"])
+        lhs_h = int(lhs["height"])
+        rhs_w = int(rhs["width"])
+        rhs_h = int(rhs["height"])
 
-            lhs_area = lhs_w * lhs_h
-            rhs_area = rhs_w * rhs_h
+        lhs_area = lhs_w * lhs_h
+        rhs_area = rhs_w * rhs_h
 
-            if lhs_area > rhs_area:
-                return 1
-            if lhs_area < rhs_area:
-                return -1
-            if lhs_w > rhs_w:
-                return 1
-            if lhs_w < rhs_w:
-                return -1
-            if lhs_h > rhs_h:
-                return 1
-            if lhs_h < rhs_h:
-                return -1
+        if lhs_area > rhs_area:
+            return 1
+        if lhs_area < rhs_area:
+            return -1
+        if lhs_w > rhs_w:
+            return 1
+        if lhs_w < rhs_w:
+            return -1
+        if lhs_h > rhs_h:
+            return 1
+        if lhs_h < rhs_h:
+            return -1
 
-            lhs_fps = generic_utils.fps_str_to_float(str(lhs.get("fps", "0")))
-            rhs_fps = generic_utils.fps_str_to_float(str(rhs.get("fps", "0")))
+        lhs_fps = generic_utils.fps_str_to_float(str(lhs.get("fps", "0")))
+        rhs_fps = generic_utils.fps_str_to_float(str(rhs.get("fps", "0")))
 
-            if lhs_fps > rhs_fps:
-                return 1
-            if lhs_fps < rhs_fps:
-                return -1
+        if lhs_fps > rhs_fps:
+            return 1
+        if lhs_fps < rhs_fps:
+            return -1
 
+        return 0
+
+    @staticmethod
+    def _cmp_by_keys(keys: list[str]):
+        """Return a comparator that compares two dicts by the given keys in order."""
+        def _cmp(lhs: dict, rhs: dict) -> int:
+            for key in keys:
+                lhs_value = lhs.get(key)
+                rhs_value = rhs.get(key)
+                if lhs_value is None or rhs_value is None:
+                    continue
+                if lhs_value > rhs_value:
+                    return 1
+                if lhs_value < rhs_value:
+                    return -1
             return 0
+        return _cmp
 
-        # comparator based on keys
-        def cmp_by_keys(keys):
-            def _cmp(lhs: dict, rhs: dict) -> int:
-                for key in keys:
-                    lhs_value = lhs.get(key)
-                    rhs_value = rhs.get(key)
-                    if lhs_value is None or rhs_value is None:
-                        continue
-                    if lhs_value > rhs_value:
-                        return 1
-                    if lhs_value < rhs_value:
-                        return -1
-                return 0
-            return _cmp
+    def _get_language(
+        self,
+        stream: dict[str, Any],
+        stream_type: str,
+        path: str,
+        ids: dict[str, int],
+        override_languages: dict[str, str] | None = None,
+    ) -> str | None:
+        file_id = ids[path]
+        lang = stream.get("language")
 
-        def get_language(
-                stream,
-                stream_type,
-                path,
-                override_languages : dict[str, str] | None = None) -> str | None:
-            id = ids[path]
-            lang = stream.get("language")
+        if lang == "und":
+            lang = None
 
-            if lang == "und":
-                lang = None
+        if override_languages and path in override_languages:
+            original_lang = lang
+            lang = override_languages[path]
+            tid = stream.get("tid")
+            if original_lang:
+                self.logger.info(f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file #{file_id}")
+            else:
+                self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file #{file_id}")
+        return lang
 
-            if override_languages and path in override_languages:
-                original_lang = lang
-                lang = override_languages[path]
-                tid = stream.get("tid")
-                if original_lang:
-                    self.logger.info(f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file #{id}")
-                else:
-                    self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file #{id}")
-            return lang
-
+    def pick_streams(self, files_details: dict, ids: dict[str, int]):
         #collect video streams (path and tid) which are attached_pics so we can drop them later as not handled now
         attached_pics = [
             (file_path, vd.get("tid"))
@@ -258,8 +263,8 @@ class StreamsPicker:
             ids,
             "video",
             [],
-            video_cmp,
-            get_language = lambda stream, stream_type, file: get_language(stream, stream_type, file)
+            self._video_cmp,
+            get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids)
         )
         video_streams = [video_stream for video_stream in video_streams if (video_stream[0], video_stream[1]) not in attached_pics]
         video_stream = video_streams[0]
@@ -277,8 +282,8 @@ class StreamsPicker:
             ids,
             "audio",
             ["language", "channels"],
-            cmp_by_keys(["sample_rate"]),
-            get_language = lambda stream, stream_type, file: get_language(stream, stream_type, file, override_languages = forced_audio_language)
+            self._cmp_by_keys(["sample_rate"]),
+            get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids, override_languages = forced_audio_language)
         )
 
         # pick subtitle streams
@@ -294,7 +299,7 @@ class StreamsPicker:
             "subtitle",
             ["language"],
             lambda a, b: 0,
-            get_language = lambda stream, stream_type, file: get_language(stream, stream_type, file, override_languages = forced_subtitle_language)
+            get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids, override_languages = forced_subtitle_language)
         )
 
         # results
