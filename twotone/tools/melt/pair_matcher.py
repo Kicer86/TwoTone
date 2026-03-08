@@ -58,44 +58,6 @@ class PairMatcher:
         ]:
             os.makedirs(d)
 
-    def _normalize_frames(self, frames_info: FramesInfo, wd: str, desc: str = "Normalizing frames", prefix: str = "") -> FramesInfo:
-        PairMatcher._assert_frames_extracted(frames_info, f"_normalize_frames({desc})")
-
-        def crop_5_percent(image: cv.typing.MatLike) -> cv.typing.MatLike:
-            height, width = image.shape
-            dx = int(width * 0.05)
-            dy = int(height * 0.05)
-
-            image_cropped = image[dy:height - dy, dx:width - dx]
-
-            return image_cropped
-
-        def process_frame(item):
-            timestamp, info = item
-            self.interruption.check_for_stop()
-            path = info["path"]
-            img = cv.imread(path, cv.IMREAD_GRAYSCALE)
-            if img is None:
-                raise RuntimeError(f"Failed to read frame from {path}")
-            img = crop_5_percent(img)
-            img = cv.resize(img, (256, 256), interpolation=cv.INTER_AREA)
-            _, file, ext = files_utils.split_path(path)
-            new_path = os.path.join(wd, prefix + file + "." + ext)
-            cv.imwrite(new_path, img)
-
-            return timestamp, PairMatcher._get_new_info(info, new_path)
-
-        with ThreadPoolExecutor() as executor:
-            results_iter = executor.map(process_frame, frames_info.items())
-            results = []
-            with tqdm(total=len(frames_info), desc=desc, unit="frame",
-                      **generic_utils.get_tqdm_defaults()) as pbar:
-                for result in results_iter:
-                    results.append(result)
-                    pbar.update(1)
-
-        return dict(results)
-
     @staticmethod
     def calculate_ratio(pairs: list[tuple[int, int]]) -> float:
         ratios = [(r[0] - l[0]) / (r[1] - l[1]) for l, r in zip(pairs[:-1], pairs[1:]) if (r[1] - l[1]) != 0]
@@ -147,46 +109,6 @@ class PairMatcher:
             "rhs_end_gap_s": rhs_end_gap / 1000,
             "ratio": PairMatcher.calculate_ratio(mappings),
         }
-
-    @staticmethod
-    def _is_rich(frame_path: str) -> bool:
-        return image_utils.image_entropy(frame_path) > 3.5
-
-    @staticmethod
-    def _get_new_info(info: dict[str, str], path: str) -> dict[str, str]:
-        new_info = info.copy()
-        new_info["path"] = path
-        return new_info
-
-    @staticmethod
-    def _assert_frames_extracted(frames: FramesInfo, context: str = "") -> None:
-        """Validate that every entry in *frames* has a non-None path on disk.
-
-        Raises ``AssertionError`` with a detailed message when a frame
-        was probed but never extracted — this indicates a bug in the
-        extraction-range computation.
-        """
-        for ts, info in frames.items():
-            path = info.get("path")
-            if path is None:
-                frame_id = info.get("frame_id", "?")
-                raise AssertionError(
-                    f"Frame at {ts}ms (frame_id={frame_id}) has not been "
-                    f"extracted to disk.  This is a bug — the frame should "
-                    f"have been included in the extraction range.  "
-                    f"Context: {context}"
-                )
-
-    @staticmethod
-    def _filter_low_detailed(scenes: FramesInfo) -> FramesInfo:
-        valuable_scenes = {timestamp: info for timestamp, info in scenes.items() if PairMatcher._is_rich(info["path"])}
-        return valuable_scenes
-
-    @staticmethod
-    def _get_frames_for_timestamps(timestamps: list[int], frames_info: FramesInfo) -> FramesInfo:
-        frame_files = {timestamp: info for timestamp, info in frames_info.items() if timestamp in timestamps}
-
-        return frame_files
 
     @staticmethod
     def filter_phash_outliers(phash: PhashCache, pairs: list[tuple[int, int]], lhs_set: FramesInfo, rhs_set: FramesInfo) -> list[tuple[int, int]]:
@@ -299,6 +221,468 @@ class PairMatcher:
                 )
 
         return '\n'.join(out)
+
+    def look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: tuple[int, int], last: tuple[int, int], cutoff: float, max_gap_seconds: float = 15.0, extrapolate: bool = True):
+        """Find the first and last common frame pair by walking outward from known matches.
+
+        Uses the linear time mapping derived from *first* and *last* to predict
+        where each LHS frame should appear in RHS, then walks from the current
+        boundaries toward the edges of the video.  Allows configurable gaps of
+        non-matching frames before giving up, instead of stopping on first miss.
+
+        When the search enters a low-entropy region (dark frames, end credits),
+        phash matching becomes unreliable.  In that case the boundary is
+        extrapolated linearly from well-matched pairs, but only if both files
+        show a consistent entropy transition at the predicted position.
+        """
+        PairMatcher._assert_frames_extracted(lhs, "look_for_boundaries(lhs)")
+        PairMatcher._assert_frames_extracted(rhs, "look_for_boundaries(rhs)")
+
+        self.logger.debug("Improving boundaries")
+        self.logger.debug(f"Current first: {first} and last: {last}")
+        phash = PhashCache()
+        ratio = PairMatcher.calculate_ratio([first, last])
+
+        # When first == last (single pair) the ratio is NaN;
+        # fall back to fps-based ratio.
+        if np.isnan(ratio):
+            ratio = self.lhs_fps / self.rhs_fps
+
+        # Ensure cutoff is not absurdly tight — with few calibration pairs or
+        # cropped frames the computed cutoff can be as low as 4, which makes the
+        # search unable to extend even a single frame.
+        cutoff = max(cutoff, 16)
+
+        # --- Fast edge pre-check ---
+        # Before the iterative search, check whether both videos share content
+        # at each edge.  When they do, extend the gap budget for find_boundary
+        # so it does not give up before reaching the video edge.  The anchor
+        # and prediction logic are left untouched for maximum precision.
+        lhs_keys = sorted(lhs.keys())
+        rhs_keys = sorted(rhs.keys())
+
+        first_gap_seconds = max_gap_seconds
+        last_gap_seconds = max_gap_seconds
+
+        for direction in [-1, 1]:
+            label = "start" if direction == -1 else "end"
+            matches = self._edge_content_matches(
+                lhs, rhs, lhs_keys, rhs_keys, phash,
+                first, last, ratio, cutoff, direction,
+            )
+            if not matches:
+                self.logger.debug(
+                    f"Edge pre-check ({label}): edges do NOT visually match "
+                    f"— using default gap budget {max_gap_seconds}s"
+                )
+                continue
+
+            anchor = first if direction == -1 else last
+            edge_lhs = lhs_keys[0] if direction == -1 else lhs_keys[-1]
+            distance_s = abs(anchor[0] - edge_lhs) / 1000.0
+
+            if direction == -1:
+                first_gap_seconds = max(max_gap_seconds, distance_s + 2.0)
+                self.logger.debug(
+                    f"Edge pre-check ({label}): edges match, "
+                    f"extending gap budget to {first_gap_seconds:.1f}s "
+                    f"(anchor={anchor[0]}ms, edge={edge_lhs}ms, distance={distance_s:.1f}s)"
+                )
+            else:
+                last_gap_seconds = max(max_gap_seconds, distance_s + 2.0)
+                self.logger.debug(
+                    f"Edge pre-check ({label}): edges match, "
+                    f"extending gap budget to {last_gap_seconds:.1f}s "
+                    f"(anchor={anchor[0]}ms, edge={edge_lhs}ms, distance={distance_s:.1f}s)"
+                )
+
+        refined_first, first_low_entropy = self._find_boundary(
+            lhs, rhs, first, last, -1, first_gap_seconds, ratio, cutoff, phash,
+        )
+        self.logger.debug(
+            f"Boundary start: walked {first[0]}ms → {refined_first[0]}ms "
+            f"({'entered low-entropy zone' if first_low_entropy else 'gap budget or edge reached'}, "
+            f"budget={first_gap_seconds:.1f}s)"
+        )
+
+        refined_last, last_low_entropy = self._find_boundary(
+            lhs, rhs, last, first, 1, last_gap_seconds, ratio, cutoff, phash,
+        )
+        self.logger.debug(
+            f"Boundary end: walked {last[0]}ms → {refined_last[0]}ms "
+            f"({'entered low-entropy zone' if last_low_entropy else 'gap budget or edge reached'}, "
+            f"budget={last_gap_seconds:.1f}s)"
+        )
+
+        if extrapolate:
+            # Extrapolate through low-entropy regions when possible
+            refined_first = self.extrapolate_through_low_entropy(
+                lhs, rhs, refined_first, refined_last, ratio, direction=-1,
+                entered_low_entropy=first_low_entropy,
+            )
+            refined_last = self.extrapolate_through_low_entropy(
+                lhs, rhs, refined_last, refined_first, ratio, direction=1,
+                entered_low_entropy=last_low_entropy,
+            )
+
+        return refined_first, refined_last
+
+    def extrapolate_through_low_entropy(
+        self,
+        lhs: FramesInfo,
+        rhs: FramesInfo,
+        boundary: tuple[int, int],
+        reference: tuple[int, int],
+        ratio: float,
+        direction: int,
+        entered_low_entropy: bool,
+    ) -> tuple[int, int]:
+        """Extend *boundary* through a low-entropy zone to the video edge.
+
+        When the boundary search stops at a low-entropy zone (black frames,
+        end credits, etc.), this method checks whether the region between the
+        current boundary and the video edge is consistently low-entropy in
+        *both* files.  If so, the boundary is linearly extrapolated to the
+        edge; otherwise it is kept unchanged (the files likely have different
+        intro/outro content).
+
+        The coarse step used by ``find_boundary`` may overshoot the exact
+        content→dark transition by a few frames.  To compensate, this method
+        walks from the boundary toward the edge, skips any high-entropy frames
+        near the boundary (at most ``step * 3``), and then verifies that the
+        remaining zone to the edge is entirely low-entropy.  The tolerance is
+        ``step * 3`` rather than ``step`` because the RHS boundary is predicted
+        via the linear ratio and may be off by more than the walk stride.
+        """
+        if not entered_low_entropy:
+            return boundary
+
+        label = "start" if direction == -1 else "end"
+        lhs_keys = sorted(lhs.keys())
+        rhs_keys = sorted(rhs.keys())
+        step = max(1, int(self.lhs_fps * 0.5))
+        max_skip = step * 3
+
+        # Determine LHS edge and gap frames between boundary and edge
+        if direction == -1:
+            edge_lhs = lhs_keys[0]
+            lhs_gap = [k for k in lhs_keys if k < boundary[0]]
+        else:
+            edge_lhs = lhs_keys[-1]
+            lhs_gap = [k for k in lhs_keys if k > boundary[0]]
+
+        if not lhs_gap:
+            return boundary
+
+        # Verify LHS gap is low-entropy
+        if not self._verify_gap_is_low_entropy(lhs, lhs_gap, max_skip, direction, label, self.lhs_label):
+            return boundary
+
+        # Predict RHS edge position and clamp to valid range
+        predicted_rhs = int(boundary[1] + (edge_lhs - boundary[0]) / ratio)
+        clamped_rhs = max(rhs_keys[0], min(rhs_keys[-1], predicted_rhs))
+
+        # Determine RHS gap between boundary and predicted edge
+        if direction == -1:
+            rhs_gap = [k for k in rhs_keys if k < boundary[1] and k >= clamped_rhs]
+        else:
+            rhs_gap = [k for k in rhs_keys if k > boundary[1] and k <= clamped_rhs]
+
+        # Verify RHS gap is low-entropy
+        if rhs_gap and not self._verify_gap_is_low_entropy(rhs, rhs_gap, max_skip, direction, label, self.rhs_label):
+            return boundary
+
+        # Both files have consistently low-entropy gaps — extrapolate to edge
+        new_rhs = PairMatcher._snap_to_nearest_frame(rhs_keys, clamped_rhs)
+
+        self.logger.debug(
+            f"Boundary {label}: extrapolating through low-entropy zone from "
+            f"({boundary[0]}, {boundary[1]}) to ({edge_lhs}, {new_rhs})."
+        )
+        return (edge_lhs, new_rhs)
+
+    def try_constant_offset_extrapolation(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+    ) -> list[tuple[int, int]] | None:
+        """Extrapolate boundaries when matched pairs share a constant frame-number offset.
+
+        Works in frame-number space: reads ``frame_id`` from *FramesInfo*
+        and checks if ``lhs_frame_id − rhs_frame_id`` is consistent
+        (std dev ≤ 1 frame).  This detects identical content with a small
+        constant shift regardless of whether FPS differs between files
+        (e.g. 23.976 vs 25 — same frames, different timing).
+
+        Returns an updated pair list with extrapolated first/last entries,
+        or ``None`` if the frame-number offset is not sufficiently constant.
+        """
+        if len(matching_pairs) < 3:
+            return None
+
+        # Use frame_id from FramesInfo instead of computing from FPS
+        frame_offsets = np.array([
+            int(lhs_all_frames[l]["frame_id"]) - int(rhs_all_frames[r]["frame_id"])
+            for l, r in matching_pairs
+        ])
+        median_offset = float(np.median(frame_offsets))
+        std_offset = float(np.std(frame_offsets))
+
+        if std_offset > 1.0:
+            self.logger.debug(
+                f"Constant-offset check: frame-number std={std_offset:.2f} "
+                f"exceeds 1-frame threshold — skipping"
+            )
+            return None
+
+        # Verify observed ratio matches expected fps_rhs/fps_lhs
+        ratio = PairMatcher.calculate_ratio(matching_pairs)
+        expected_ratio = self.rhs_fps / self.lhs_fps
+        if not PairMatcher.is_ratio_acceptable(ratio, expected_ratio):
+            self.logger.debug(
+                f"Constant-offset check: ratio={ratio:.4f} too far from "
+                f"expected {expected_ratio:.4f} — skipping"
+            )
+            return None
+
+        k = round(median_offset)  # frame-number offset
+
+        # Build frame_id → timestamp lookup for boundary extrapolation
+        lhs_by_frame = {int(info["frame_id"]): ts for ts, info in lhs_all_frames.items()}
+        rhs_by_frame = {int(info["frame_id"]): ts for ts, info in rhs_all_frames.items()}
+
+        lhs_max_frame = max(lhs_by_frame)
+        rhs_max_frame = max(rhs_by_frame)
+
+        # Common frame range: max(0, k) ≤ lhs_frame ≤ min(lhs_max, rhs_max + k)
+        first_lhs_frame = max(0, k)
+        first_rhs_frame = first_lhs_frame - k  # = max(0, -k)
+        last_lhs_frame = min(lhs_max_frame, rhs_max_frame + k)
+        last_rhs_frame = last_lhs_frame - k
+
+        # Convert frame numbers back to timestamps via lookup (or nearest)
+        lhs_keys = sorted(lhs_all_frames.keys())
+        rhs_keys = sorted(rhs_all_frames.keys())
+
+        first_lhs = lhs_by_frame.get(first_lhs_frame,
+                        PairMatcher._snap_to_nearest_frame(lhs_keys, 0))
+        first_rhs = rhs_by_frame.get(first_rhs_frame,
+                        PairMatcher._snap_to_nearest_frame(rhs_keys, 0))
+        last_lhs = lhs_by_frame.get(last_lhs_frame,
+                        PairMatcher._snap_to_nearest_frame(lhs_keys, lhs_keys[-1]))
+        last_rhs = rhs_by_frame.get(last_rhs_frame,
+                        PairMatcher._snap_to_nearest_frame(rhs_keys, rhs_keys[-1]))
+
+        self.logger.info(
+            f"Constant offset detected: {k} frame(s) "
+            f"(median={median_offset:.1f}, std={std_offset:.2f}). "
+            f"Extrapolated boundaries: ({first_lhs}, {first_rhs}) – ({last_lhs}, {last_rhs})"
+        )
+
+        result = list(matching_pairs)
+
+        if (first_lhs, first_rhs) != result[0]:
+            if first_lhs < result[0][0] or first_rhs < result[0][1]:
+                result.insert(0, (first_lhs, first_rhs))
+
+        if (last_lhs, last_rhs) != result[-1]:
+            if last_lhs > result[-1][0] or last_rhs > result[-1][1]:
+                result.append((last_lhs, last_rhs))
+
+        # Add synthetic frame entries for new timestamps
+        for ts, frames, keys in [
+            (first_lhs, lhs_all_frames, lhs_keys),
+            (first_rhs, rhs_all_frames, rhs_keys),
+            (last_lhs, lhs_all_frames, lhs_keys),
+            (last_rhs, rhs_all_frames, rhs_keys),
+        ]:
+            if ts not in frames and keys:
+                nearest = PairMatcher._snap_to_nearest_frame(keys, ts)
+                frames[ts] = frames[nearest].copy()
+
+        return result
+
+    def snap_to_edges(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+        snap_frames: int = 4,
+    ) -> list[tuple[int, int]]:
+        """Snap first/last pair timestamps to video edges when within a few frames.
+
+        When the first or last mapping pair is very close to a video edge
+        (within *snap_frames* frames), keeping a tiny head or tail audio
+        segment is pointless and may cause artifacts.  This method extends
+        those pairs to the edge (timestamp 0 for start, video duration for
+        end) so downstream audio patching skips the trivial segments.
+
+        Synthetic entries are added to *lhs_all_frames* / *rhs_all_frames*
+        for any newly created timestamps (pointing to the nearest real frame
+        file) so debug routines remain functional.
+        """
+        lhs_threshold_ms = snap_frames * 1000 / self.lhs_fps
+        rhs_threshold_ms = snap_frames * 1000 / self.rhs_fps
+
+        lhs_duration = video_utils.get_video_duration(self.lhs_path)
+        rhs_duration = video_utils.get_video_duration(self.rhs_path)
+
+        lhs_keys = sorted(lhs_all_frames.keys())
+        rhs_keys = sorted(rhs_all_frames.keys())
+
+        first_l, first_r = matching_pairs[0]
+        last_l, last_r = matching_pairs[-1]
+
+        # --- Start edge ---
+        new_first_l = 0 if first_l <= lhs_threshold_ms else first_l
+        new_first_r = 0 if first_r <= rhs_threshold_ms else first_r
+
+        if (new_first_l, new_first_r) != (first_l, first_r):
+            self.logger.debug(
+                f"Edge snap: first pair ({first_l}, {first_r}) → "
+                f"({new_first_l}, {new_first_r})"
+            )
+            matching_pairs[0] = (new_first_l, new_first_r)
+            if new_first_l not in lhs_all_frames:
+                lhs_all_frames[new_first_l] = lhs_all_frames[lhs_keys[0]].copy()
+            if new_first_r not in rhs_all_frames:
+                rhs_all_frames[new_first_r] = rhs_all_frames[rhs_keys[0]].copy()
+
+        # --- End edge ---
+        new_last_l = lhs_duration if (lhs_duration - last_l) <= lhs_threshold_ms else last_l
+        new_last_r = rhs_duration if (rhs_duration - last_r) <= rhs_threshold_ms else last_r
+
+        if (new_last_l, new_last_r) != (last_l, last_r):
+            self.logger.debug(
+                f"Edge snap: last pair ({last_l}, {last_r}) → "
+                f"({new_last_l}, {new_last_r})"
+            )
+            matching_pairs[-1] = (new_last_l, new_last_r)
+            if new_last_l not in lhs_all_frames:
+                lhs_all_frames[new_last_l] = lhs_all_frames[lhs_keys[-1]].copy()
+            if new_last_r not in rhs_all_frames:
+                rhs_all_frames[new_last_r] = rhs_all_frames[rhs_keys[-1]].copy()
+
+        return matching_pairs
+
+    def create_segments_mapping(self) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo]:
+
+        lhs_scene_changes, rhs_scene_changes = self._detect_scenes()
+        self._probe_frames()
+        lhs_scene_ranges, rhs_scene_ranges = self._extract_scene_frames(lhs_scene_changes, rhs_scene_changes)
+        lhs_normalized_frames, rhs_normalized_frames, lhs_key_frames, rhs_key_frames = self._normalize_extracted(
+            lhs_scene_changes, rhs_scene_changes,
+        )
+
+        debug = DebugRoutines(self.debug_wd, self.lhs_all_frames, self.rhs_all_frames)
+        debug.dump_frames(lhs_key_frames, f"{self.lhs_label} key frames")
+        debug.dump_frames(rhs_key_frames, f"{self.rhs_label} key frames")
+
+        matching_pairs = self._match_key_frames(
+            lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames, debug,
+        )
+
+        # Try constant-offset shortcut — when all pairs share a nearly
+        # constant lhs−rhs offset we can extrapolate boundaries directly,
+        # skipping the expensive iterative search.
+        constant_offset_pairs = self.try_constant_offset_extrapolation(
+            matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
+        )
+        used_constant_offset_extrapolation = constant_offset_pairs is not None
+        if constant_offset_pairs is not None:
+            matching_pairs = constant_offset_pairs
+            debug.dump_matches(matching_pairs, "after constant-offset extrapolation")
+        else:
+            matching_pairs = self._extract_and_refine_boundaries(
+                matching_pairs, lhs_scene_ranges, rhs_scene_ranges,
+                lhs_normalized_frames, rhs_normalized_frames, debug,
+            )
+
+        # Snap near-edge pairs only for heuristic boundary search results.
+        # Constant-offset extrapolation already yields exact frame-aligned
+        # boundaries, so applying timestamp-based edge snapping here could
+        # distort the precise offset.
+        if not used_constant_offset_extrapolation:
+            matching_pairs = self.snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
+
+        return matching_pairs, self.lhs_all_frames, self.rhs_all_frames, used_constant_offset_extrapolation
+
+    def _normalize_frames(self, frames_info: FramesInfo, wd: str, desc: str = "Normalizing frames", prefix: str = "") -> FramesInfo:
+        PairMatcher._assert_frames_extracted(frames_info, f"_normalize_frames({desc})")
+
+        def crop_5_percent(image: cv.typing.MatLike) -> cv.typing.MatLike:
+            height, width = image.shape
+            dx = int(width * 0.05)
+            dy = int(height * 0.05)
+
+            image_cropped = image[dy:height - dy, dx:width - dx]
+
+            return image_cropped
+
+        def process_frame(item):
+            timestamp, info = item
+            self.interruption.check_for_stop()
+            path = info["path"]
+            img = cv.imread(path, cv.IMREAD_GRAYSCALE)
+            if img is None:
+                raise RuntimeError(f"Failed to read frame from {path}")
+            img = crop_5_percent(img)
+            img = cv.resize(img, (256, 256), interpolation=cv.INTER_AREA)
+            _, file, ext = files_utils.split_path(path)
+            new_path = os.path.join(wd, prefix + file + "." + ext)
+            cv.imwrite(new_path, img)
+
+            return timestamp, PairMatcher._get_new_info(info, new_path)
+
+        with ThreadPoolExecutor() as executor:
+            results_iter = executor.map(process_frame, frames_info.items())
+            results = []
+            with tqdm(total=len(frames_info), desc=desc, unit="frame",
+                      **generic_utils.get_tqdm_defaults()) as pbar:
+                for result in results_iter:
+                    results.append(result)
+                    pbar.update(1)
+
+        return dict(results)
+
+    @staticmethod
+    def _is_rich(frame_path: str) -> bool:
+        return image_utils.image_entropy(frame_path) > 3.5
+
+    @staticmethod
+    def _get_new_info(info: dict[str, str], path: str) -> dict[str, str]:
+        new_info = info.copy()
+        new_info["path"] = path
+        return new_info
+
+    @staticmethod
+    def _assert_frames_extracted(frames: FramesInfo, context: str = "") -> None:
+        """Validate that every entry in *frames* has a non-None path on disk.
+        Raises ``AssertionError`` with a detailed message when a frame
+        was probed but never extracted — this indicates a bug in the
+        extraction-range computation.
+        """
+        for ts, info in frames.items():
+            path = info.get("path")
+            if path is None:
+                frame_id = info.get("frame_id", "?")
+                raise AssertionError(
+                    f"Frame at {ts}ms (frame_id={frame_id}) has not been "
+                    f"extracted to disk.  This is a bug — the frame should "
+                    f"have been included in the extraction range.  "
+                    f"Context: {context}"
+                )
+
+    @staticmethod
+    def _filter_low_detailed(scenes: FramesInfo) -> FramesInfo:
+        valuable_scenes = {timestamp: info for timestamp, info in scenes.items() if PairMatcher._is_rich(info["path"])}
+        return valuable_scenes
+
+    @staticmethod
+    def _get_frames_for_timestamps(timestamps: list[int], frames_info: FramesInfo) -> FramesInfo:
+        frame_files = {timestamp: info for timestamp, info in frames_info.items() if timestamp in timestamps}
+        return frame_files
 
     @staticmethod
     def _compute_overlap(lhs_img: cv.typing.MatLike, rhs_img: cv.typing.MatLike, h) -> tuple[int, int, int, int]:
@@ -896,111 +1280,6 @@ class PairMatcher:
 
         return current_best, entered_low_entropy
 
-    def _look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: tuple[int, int], last: tuple[int, int], cutoff: float, max_gap_seconds: float = 15.0, extrapolate: bool = True):
-        """Find the first and last common frame pair by walking outward from known matches.
-
-        Uses the linear time mapping derived from *first* and *last* to predict
-        where each LHS frame should appear in RHS, then walks from the current
-        boundaries toward the edges of the video.  Allows configurable gaps of
-        non-matching frames before giving up, instead of stopping on first miss.
-
-        When the search enters a low-entropy region (dark frames, end credits),
-        phash matching becomes unreliable.  In that case the boundary is
-        extrapolated linearly from well-matched pairs, but only if both files
-        show a consistent entropy transition at the predicted position.
-        """
-        PairMatcher._assert_frames_extracted(lhs, "_look_for_boundaries(lhs)")
-        PairMatcher._assert_frames_extracted(rhs, "_look_for_boundaries(rhs)")
-
-        self.logger.debug("Improving boundaries")
-        self.logger.debug(f"Current first: {first} and last: {last}")
-        phash = PhashCache()
-        ratio = PairMatcher.calculate_ratio([first, last])
-
-        # When first == last (single pair) the ratio is NaN;
-        # fall back to fps-based ratio.
-        if np.isnan(ratio):
-            ratio = self.lhs_fps / self.rhs_fps
-
-        # Ensure cutoff is not absurdly tight — with few calibration pairs or
-        # cropped frames the computed cutoff can be as low as 4, which makes the
-        # search unable to extend even a single frame.
-        cutoff = max(cutoff, 16)
-
-        # --- Fast edge pre-check ---
-        # Before the iterative search, check whether both videos share content
-        # at each edge.  When they do, extend the gap budget for find_boundary
-        # so it does not give up before reaching the video edge.  The anchor
-        # and prediction logic are left untouched for maximum precision.
-        lhs_keys = sorted(lhs.keys())
-        rhs_keys = sorted(rhs.keys())
-
-        first_gap_seconds = max_gap_seconds
-        last_gap_seconds = max_gap_seconds
-
-        for direction in [-1, 1]:
-            label = "start" if direction == -1 else "end"
-            matches = self._edge_content_matches(
-                lhs, rhs, lhs_keys, rhs_keys, phash,
-                first, last, ratio, cutoff, direction,
-            )
-            if not matches:
-                self.logger.debug(
-                    f"Edge pre-check ({label}): edges do NOT visually match "
-                    f"— using default gap budget {max_gap_seconds}s"
-                )
-                continue
-
-            anchor = first if direction == -1 else last
-            edge_lhs = lhs_keys[0] if direction == -1 else lhs_keys[-1]
-            distance_s = abs(anchor[0] - edge_lhs) / 1000.0
-
-            if direction == -1:
-                first_gap_seconds = max(max_gap_seconds, distance_s + 2.0)
-                self.logger.debug(
-                    f"Edge pre-check ({label}): edges match, "
-                    f"extending gap budget to {first_gap_seconds:.1f}s "
-                    f"(anchor={anchor[0]}ms, edge={edge_lhs}ms, distance={distance_s:.1f}s)"
-                )
-            else:
-                last_gap_seconds = max(max_gap_seconds, distance_s + 2.0)
-                self.logger.debug(
-                    f"Edge pre-check ({label}): edges match, "
-                    f"extending gap budget to {last_gap_seconds:.1f}s "
-                    f"(anchor={anchor[0]}ms, edge={edge_lhs}ms, distance={distance_s:.1f}s)"
-                )
-
-        refined_first, first_low_entropy = self._find_boundary(
-            lhs, rhs, first, last, -1, first_gap_seconds, ratio, cutoff, phash,
-        )
-        self.logger.debug(
-            f"Boundary start: walked {first[0]}ms → {refined_first[0]}ms "
-            f"({'entered low-entropy zone' if first_low_entropy else 'gap budget or edge reached'}, "
-            f"budget={first_gap_seconds:.1f}s)"
-        )
-
-        refined_last, last_low_entropy = self._find_boundary(
-            lhs, rhs, last, first, 1, last_gap_seconds, ratio, cutoff, phash,
-        )
-        self.logger.debug(
-            f"Boundary end: walked {last[0]}ms → {refined_last[0]}ms "
-            f"({'entered low-entropy zone' if last_low_entropy else 'gap budget or edge reached'}, "
-            f"budget={last_gap_seconds:.1f}s)"
-        )
-
-        if extrapolate:
-            # Extrapolate through low-entropy regions when possible
-            refined_first = self._extrapolate_through_low_entropy(
-                lhs, rhs, refined_first, refined_last, ratio, direction=-1,
-                entered_low_entropy=first_low_entropy,
-            )
-            refined_last = self._extrapolate_through_low_entropy(
-                lhs, rhs, refined_last, refined_first, ratio, direction=1,
-                entered_low_entropy=last_low_entropy,
-            )
-
-        return refined_first, refined_last
-
     def _verify_gap_is_low_entropy(
         self,
         frames: FramesInfo,
@@ -1058,245 +1337,6 @@ class PairMatcher:
             )
 
         return True
-
-    def _extrapolate_through_low_entropy(
-        self,
-        lhs: FramesInfo,
-        rhs: FramesInfo,
-        boundary: tuple[int, int],
-        reference: tuple[int, int],
-        ratio: float,
-        direction: int,
-        entered_low_entropy: bool,
-    ) -> tuple[int, int]:
-        """Extend *boundary* through a low-entropy zone to the video edge.
-
-        When the boundary search stops at a low-entropy zone (black frames,
-        end credits, etc.), this method checks whether the region between the
-        current boundary and the video edge is consistently low-entropy in
-        *both* files.  If so, the boundary is linearly extrapolated to the
-        edge; otherwise it is kept unchanged (the files likely have different
-        intro/outro content).
-
-        The coarse step used by ``find_boundary`` may overshoot the exact
-        content→dark transition by a few frames.  To compensate, this method
-        walks from the boundary toward the edge, skips any high-entropy frames
-        near the boundary (at most ``step * 3``), and then verifies that the
-        remaining zone to the edge is entirely low-entropy.  The tolerance is
-        ``step * 3`` rather than ``step`` because the RHS boundary is predicted
-        via the linear ratio and may be off by more than the walk stride.
-        """
-        if not entered_low_entropy:
-            return boundary
-
-        label = "start" if direction == -1 else "end"
-        lhs_keys = sorted(lhs.keys())
-        rhs_keys = sorted(rhs.keys())
-        step = max(1, int(self.lhs_fps * 0.5))
-        max_skip = step * 3
-
-        # Determine LHS edge and gap frames between boundary and edge
-        if direction == -1:
-            edge_lhs = lhs_keys[0]
-            lhs_gap = [k for k in lhs_keys if k < boundary[0]]
-        else:
-            edge_lhs = lhs_keys[-1]
-            lhs_gap = [k for k in lhs_keys if k > boundary[0]]
-
-        if not lhs_gap:
-            return boundary
-
-        # Verify LHS gap is low-entropy
-        if not self._verify_gap_is_low_entropy(lhs, lhs_gap, max_skip, direction, label, self.lhs_label):
-            return boundary
-
-        # Predict RHS edge position and clamp to valid range
-        predicted_rhs = int(boundary[1] + (edge_lhs - boundary[0]) / ratio)
-        clamped_rhs = max(rhs_keys[0], min(rhs_keys[-1], predicted_rhs))
-
-        # Determine RHS gap between boundary and predicted edge
-        if direction == -1:
-            rhs_gap = [k for k in rhs_keys if k < boundary[1] and k >= clamped_rhs]
-        else:
-            rhs_gap = [k for k in rhs_keys if k > boundary[1] and k <= clamped_rhs]
-
-        # Verify RHS gap is low-entropy
-        if rhs_gap and not self._verify_gap_is_low_entropy(rhs, rhs_gap, max_skip, direction, label, self.rhs_label):
-            return boundary
-
-        # Both files have consistently low-entropy gaps — extrapolate to edge
-        new_rhs = PairMatcher._snap_to_nearest_frame(rhs_keys, clamped_rhs)
-
-        self.logger.debug(
-            f"Boundary {label}: extrapolating through low-entropy zone from "
-            f"({boundary[0]}, {boundary[1]}) to ({edge_lhs}, {new_rhs})."
-        )
-        return (edge_lhs, new_rhs)
-
-    def _try_constant_offset_extrapolation(
-        self,
-        matching_pairs: list[tuple[int, int]],
-        lhs_all_frames: FramesInfo,
-        rhs_all_frames: FramesInfo,
-    ) -> list[tuple[int, int]] | None:
-        """Extrapolate boundaries when matched pairs share a constant frame-number offset.
-
-        Works in frame-number space: reads ``frame_id`` from *FramesInfo*
-        and checks if ``lhs_frame_id − rhs_frame_id`` is consistent
-        (std dev ≤ 1 frame).  This detects identical content with a small
-        constant shift regardless of whether FPS differs between files
-        (e.g. 23.976 vs 25 — same frames, different timing).
-
-        Returns an updated pair list with extrapolated first/last entries,
-        or ``None`` if the frame-number offset is not sufficiently constant.
-        """
-        if len(matching_pairs) < 3:
-            return None
-
-        # Use frame_id from FramesInfo instead of computing from FPS
-        frame_offsets = np.array([
-            int(lhs_all_frames[l]["frame_id"]) - int(rhs_all_frames[r]["frame_id"])
-            for l, r in matching_pairs
-        ])
-        median_offset = float(np.median(frame_offsets))
-        std_offset = float(np.std(frame_offsets))
-
-        if std_offset > 1.0:
-            self.logger.debug(
-                f"Constant-offset check: frame-number std={std_offset:.2f} "
-                f"exceeds 1-frame threshold — skipping"
-            )
-            return None
-
-        # Verify observed ratio matches expected fps_rhs/fps_lhs
-        ratio = PairMatcher.calculate_ratio(matching_pairs)
-        expected_ratio = self.rhs_fps / self.lhs_fps
-        if not PairMatcher.is_ratio_acceptable(ratio, expected_ratio):
-            self.logger.debug(
-                f"Constant-offset check: ratio={ratio:.4f} too far from "
-                f"expected {expected_ratio:.4f} — skipping"
-            )
-            return None
-
-        k = round(median_offset)  # frame-number offset
-
-        # Build frame_id → timestamp lookup for boundary extrapolation
-        lhs_by_frame = {int(info["frame_id"]): ts for ts, info in lhs_all_frames.items()}
-        rhs_by_frame = {int(info["frame_id"]): ts for ts, info in rhs_all_frames.items()}
-
-        lhs_max_frame = max(lhs_by_frame)
-        rhs_max_frame = max(rhs_by_frame)
-
-        # Common frame range: max(0, k) ≤ lhs_frame ≤ min(lhs_max, rhs_max + k)
-        first_lhs_frame = max(0, k)
-        first_rhs_frame = first_lhs_frame - k  # = max(0, -k)
-        last_lhs_frame = min(lhs_max_frame, rhs_max_frame + k)
-        last_rhs_frame = last_lhs_frame - k
-
-        # Convert frame numbers back to timestamps via lookup (or nearest)
-        lhs_keys = sorted(lhs_all_frames.keys())
-        rhs_keys = sorted(rhs_all_frames.keys())
-
-        first_lhs = lhs_by_frame.get(first_lhs_frame,
-                        PairMatcher._snap_to_nearest_frame(lhs_keys, 0))
-        first_rhs = rhs_by_frame.get(first_rhs_frame,
-                        PairMatcher._snap_to_nearest_frame(rhs_keys, 0))
-        last_lhs = lhs_by_frame.get(last_lhs_frame,
-                        PairMatcher._snap_to_nearest_frame(lhs_keys, lhs_keys[-1]))
-        last_rhs = rhs_by_frame.get(last_rhs_frame,
-                        PairMatcher._snap_to_nearest_frame(rhs_keys, rhs_keys[-1]))
-
-        self.logger.info(
-            f"Constant offset detected: {k} frame(s) "
-            f"(median={median_offset:.1f}, std={std_offset:.2f}). "
-            f"Extrapolated boundaries: ({first_lhs}, {first_rhs}) – ({last_lhs}, {last_rhs})"
-        )
-
-        result = list(matching_pairs)
-
-        if (first_lhs, first_rhs) != result[0]:
-            if first_lhs < result[0][0] or first_rhs < result[0][1]:
-                result.insert(0, (first_lhs, first_rhs))
-
-        if (last_lhs, last_rhs) != result[-1]:
-            if last_lhs > result[-1][0] or last_rhs > result[-1][1]:
-                result.append((last_lhs, last_rhs))
-
-        # Add synthetic frame entries for new timestamps
-        for ts, frames, keys in [
-            (first_lhs, lhs_all_frames, lhs_keys),
-            (first_rhs, rhs_all_frames, rhs_keys),
-            (last_lhs, lhs_all_frames, lhs_keys),
-            (last_rhs, rhs_all_frames, rhs_keys),
-        ]:
-            if ts not in frames and keys:
-                nearest = PairMatcher._snap_to_nearest_frame(keys, ts)
-                frames[ts] = frames[nearest].copy()
-
-        return result
-
-    def _snap_to_edges(
-        self,
-        matching_pairs: list[tuple[int, int]],
-        lhs_all_frames: FramesInfo,
-        rhs_all_frames: FramesInfo,
-        snap_frames: int = 4,
-    ) -> list[tuple[int, int]]:
-        """Snap first/last pair timestamps to video edges when within a few frames.
-
-        When the first or last mapping pair is very close to a video edge
-        (within *snap_frames* frames), keeping a tiny head or tail audio
-        segment is pointless and may cause artifacts.  This method extends
-        those pairs to the edge (timestamp 0 for start, video duration for
-        end) so downstream audio patching skips the trivial segments.
-
-        Synthetic entries are added to *lhs_all_frames* / *rhs_all_frames*
-        for any newly created timestamps (pointing to the nearest real frame
-        file) so debug routines remain functional.
-        """
-        lhs_threshold_ms = snap_frames * 1000 / self.lhs_fps
-        rhs_threshold_ms = snap_frames * 1000 / self.rhs_fps
-
-        lhs_duration = video_utils.get_video_duration(self.lhs_path)
-        rhs_duration = video_utils.get_video_duration(self.rhs_path)
-
-        lhs_keys = sorted(lhs_all_frames.keys())
-        rhs_keys = sorted(rhs_all_frames.keys())
-
-        first_l, first_r = matching_pairs[0]
-        last_l, last_r = matching_pairs[-1]
-
-        # --- Start edge ---
-        new_first_l = 0 if first_l <= lhs_threshold_ms else first_l
-        new_first_r = 0 if first_r <= rhs_threshold_ms else first_r
-
-        if (new_first_l, new_first_r) != (first_l, first_r):
-            self.logger.debug(
-                f"Edge snap: first pair ({first_l}, {first_r}) → "
-                f"({new_first_l}, {new_first_r})"
-            )
-            matching_pairs[0] = (new_first_l, new_first_r)
-            if new_first_l not in lhs_all_frames:
-                lhs_all_frames[new_first_l] = lhs_all_frames[lhs_keys[0]].copy()
-            if new_first_r not in rhs_all_frames:
-                rhs_all_frames[new_first_r] = rhs_all_frames[rhs_keys[0]].copy()
-
-        # --- End edge ---
-        new_last_l = lhs_duration if (lhs_duration - last_l) <= lhs_threshold_ms else last_l
-        new_last_r = rhs_duration if (rhs_duration - last_r) <= rhs_threshold_ms else last_r
-
-        if (new_last_l, new_last_r) != (last_l, last_r):
-            self.logger.debug(
-                f"Edge snap: last pair ({last_l}, {last_r}) → "
-                f"({new_last_l}, {new_last_r})"
-            )
-            matching_pairs[-1] = (new_last_l, new_last_r)
-            if new_last_l not in lhs_all_frames:
-                lhs_all_frames[new_last_l] = lhs_all_frames[lhs_keys[-1]].copy()
-            if new_last_r not in rhs_all_frames:
-                rhs_all_frames[new_last_r] = rhs_all_frames[rhs_keys[-1]].copy()
-
-        return matching_pairs
 
     @staticmethod
     def _compute_frame_ranges(
@@ -1537,48 +1577,6 @@ class PairMatcher:
 
         return matching_pairs
 
-    def create_segments_mapping(self) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo]:
-
-        lhs_scene_changes, rhs_scene_changes = self._detect_scenes()
-        self._probe_frames()
-        lhs_scene_ranges, rhs_scene_ranges = self._extract_scene_frames(lhs_scene_changes, rhs_scene_changes)
-        lhs_normalized_frames, rhs_normalized_frames, lhs_key_frames, rhs_key_frames = self._normalize_extracted(
-            lhs_scene_changes, rhs_scene_changes,
-        )
-
-        debug = DebugRoutines(self.debug_wd, self.lhs_all_frames, self.rhs_all_frames)
-        debug.dump_frames(lhs_key_frames, f"{self.lhs_label} key frames")
-        debug.dump_frames(rhs_key_frames, f"{self.rhs_label} key frames")
-
-        matching_pairs = self._match_key_frames(
-            lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames, debug,
-        )
-
-        # Try constant-offset shortcut — when all pairs share a nearly
-        # constant lhs−rhs offset we can extrapolate boundaries directly,
-        # skipping the expensive iterative search.
-        constant_offset_pairs = self._try_constant_offset_extrapolation(
-            matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
-        )
-        used_constant_offset_extrapolation = constant_offset_pairs is not None
-        if constant_offset_pairs is not None:
-            matching_pairs = constant_offset_pairs
-            debug.dump_matches(matching_pairs, "after constant-offset extrapolation")
-        else:
-            matching_pairs = self._extract_and_refine_boundaries(
-                matching_pairs, lhs_scene_ranges, rhs_scene_ranges,
-                lhs_normalized_frames, rhs_normalized_frames, debug,
-            )
-
-        # Snap near-edge pairs only for heuristic boundary search results.
-        # Constant-offset extrapolation already yields exact frame-aligned
-        # boundaries, so applying timestamp-based edge snapping here could
-        # distort the precise offset.
-        if not used_constant_offset_extrapolation:
-            matching_pairs = self._snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
-
-        return matching_pairs, self.lhs_all_frames, self.rhs_all_frames, used_constant_offset_extrapolation
-
     def _refine_boundary_pairs(
         self,
         matching_pairs: list[tuple[int, int]],
@@ -1622,7 +1620,7 @@ class PairMatcher:
 
             cutoff = self._calculate_cutoff(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
 
-            first, last = self._look_for_boundaries(
+            first, last = self.look_for_boundaries(
                 lhs_normalized_cropped_frames, rhs_normalized_cropped_frames,
                 matching_pairs[0], matching_pairs[-1], cutoff, extrapolate=False,
             )
@@ -1656,7 +1654,7 @@ class PairMatcher:
         """Run a final boundary search on uncropped normalized frames."""
         phash_uncropped = PhashCache()
         uncropped_cutoff = self._calculate_cutoff(phash_uncropped, matching_pairs, lhs_normalized_frames, rhs_normalized_frames)
-        final_first, final_last = self._look_for_boundaries(
+        final_first, final_last = self.look_for_boundaries(
             lhs_normalized_frames, rhs_normalized_frames,
             matching_pairs[0], matching_pairs[-1],
             uncropped_cutoff,

@@ -26,6 +26,222 @@ class MeltPerformer:
         self.tolerance_ms = tolerance_ms
         self.wd = _ensure_working_dir(working_dir)
 
+    def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
+        visible_items = [item for item in plan if item.get("groups") or item.get("skipped_groups")]
+        planned_items = [item for item in visible_items if item.get("groups")]
+        for item in tqdm(planned_items, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
+            title = item["title"]
+            groups = item.get("groups", [])
+
+            for group in tqdm(groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
+                self.interruption.check_for_stop()
+
+                output_name = group["output_name"]
+
+                # Use analysis results
+                streams_info = group.get("streams", {})
+                attachments = group.get("attachments", [])
+                video_streams: list[tuple[str, int, str | None]] = streams_info.get("video", [])
+                audio_streams: list[tuple[str, int, str | None]] = streams_info.get("audio", [])
+                subtitle_streams: list[tuple[str, int, str | None]] = streams_info.get("subtitle", [])
+                required_input_files = self._collect_required_input_files(
+                    video_streams,
+                    audio_streams,
+                    subtitle_streams,
+                    attachments,
+                )
+
+                output = self._build_output_path(title, output_name)
+                if os.path.exists(output):
+                    self.logger.info(f"Output file {output} exists, removing it.")
+                    os.remove(output)
+
+                output_parent = os.path.dirname(output)
+                os.makedirs(output_parent, exist_ok=True)
+
+                if len(required_input_files) == 1:
+                    # only one file is being used, just copy it to the output dir
+                    first_file_path = list(required_input_files)[0]
+                    self._copy_single_input(first_file_path, output)
+                else:
+                    # Convert streams to unified list (and patch audios if needed)
+                    files = group.get("files", [])
+                    file_ids = {f: i + 1 for i, f in enumerate(files)}
+                    streams_list = self._prepare_stream_entries(
+                        video_streams,
+                        audio_streams,
+                        subtitle_streams,
+                        required_input_files,
+                        attachments,
+                        file_ids,
+                    )
+
+                    # Sort streams by language alphabetically, unknown languages last
+                    streams_list_sorted = sorted(streams_list, key=lambda stream: (stream[3] is None, stream[3] or ""))
+
+                    # Decide which track should be default
+                    default_audio_stream = next((s for s in streams_list if s[0] == "audio"), None)
+                    default_audio_lang = default_audio_stream[3] if default_audio_stream else None
+                    preferred_audio = self._choose_preferred_audio(
+                        group.get("audio_prod_lang"),
+                        streams_list_sorted,
+                        default_audio_lang,
+                    )
+
+                    generation_args = self.build_mkvmerge_args(
+                        output,
+                        streams_list_sorted,
+                        attachments,
+                        preferred_audio,
+                        required_input_files,
+                    )
+
+                    self.logger.info(f"Generating file: {self._display_path(output)}")
+
+                    process_utils.raise_on_error(
+                        process_utils.start_process("mkvmerge", generation_args, show_progress=True)
+                    )
+
+                    self.logger.info(f"{output} saved.")
+
+    def build_mkvmerge_args(
+        self,
+        output_path: str,
+        streams_list_sorted: Sequence[tuple[str, int, str, str | None]],
+        attachments: Sequence[tuple[str, int]],
+        preferred_audio: tuple[str, int, str, str | None] | None,
+        required_input_files: Iterable[str],
+    ) -> list[str]:
+        generation_args: list[str] = ["-o", output_path]
+        files_opts: dict[str, dict[str, Any]] = {
+            path: {"video": [], "audio": [], "subtitle": [], "attachments": [], "languages": {}, "defaults": set()}
+            for path in required_input_files
+        }
+
+        # Collect per-file options and track order
+        track_order: list[str] = []
+        for stream_type, tid, file_path, language in streams_list_sorted:
+            fo: dict[str, Any] = files_opts[file_path]
+            fo[stream_type].append(tid)
+            fo["languages"][tid] = language or "und"
+            if stream_type in ("audio", "subtitle") and preferred_audio and (stream_type, tid, file_path, language) == preferred_audio:
+                fo["defaults"].add(tid)
+            file_index = generic_utils.get_key_position(files_opts, file_path)
+            track_order.append(f"{file_index}:{tid}")
+
+        for file_path, tid in attachments:
+            fo = files_opts[file_path]
+            fo["attachments"].append(tid)
+
+        # Serialize options into mkvmerge args, file by file
+        _STREAM_TYPE_OPTS = {
+            "video":       ("--video-tracks",    "--no-video"),
+            "audio":       ("--audio-tracks",    "--no-audio"),
+            "subtitle":    ("--subtitle-tracks",  "--no-subtitles"),
+            "attachments": ("--attachments",      "--no-attachments"),
+        }
+
+        for file_path, fo in files_opts.items():
+            for stype, (include_flag, exclude_flag) in _STREAM_TYPE_OPTS.items():
+                if fo[stype]:
+                    generation_args.extend([include_flag, ",".join(str(i) for i in fo[stype])])
+                else:
+                    generation_args.append(exclude_flag)
+
+            for tid, lang in fo["languages"].items():
+                generation_args.extend(["--language", f"{tid}:{lang}"])
+
+            if preferred_audio:
+                for tid in fo["audio"] + fo["subtitle"]:
+                    flag = "yes" if tid in fo["defaults"] else "no"
+                    generation_args.extend(["--default-track", f"{tid}:{flag}"])
+
+            generation_args.append(file_path)
+
+        if track_order:
+            generation_args.extend(["--track-order", ",".join(track_order)])
+
+        return generation_args
+
+    def patch_audio_constant_offset(
+        self,
+        wd: str,
+        base_video: str,
+        source_video: str,
+        output_path: str,
+        segment_pairs: list[tuple[int, int]],
+    ) -> None:
+        """Replace audio using a single global time-scale for constant-offset cases.
+
+        Instead of splitting into many subsegments and applying per-segment atempo,
+        this extracts the matching range as one piece and uses asetrate+aresample
+        for sample-accurate duration adjustment. When the durations already match
+        (ratio ≈ 1.0), the audio is copied without re-encoding.
+        """
+
+        wd = os.path.join(wd, "audio_extraction")
+        os.makedirs(wd, exist_ok=True)
+
+        v1_audio = os.path.join(wd, "v1_audio.flac")
+        v2_audio = os.path.join(wd, "v2_audio.flac")
+        head_path = os.path.join(wd, "head.flac")
+        tail_path = os.path.join(wd, "tail.flac")
+
+        # Compute global segment range (milliseconds)
+        left_points = [p[0] for p in segment_pairs]
+        right_points = [p[1] for p in segment_pairs]
+        seg1_start, seg1_end = min(left_points), max(left_points)
+        seg2_start, seg2_end = min(right_points), max(right_points)
+
+        # 1. Extract main audio tracks
+        self._extract_audio_to_flac(base_video, v1_audio)
+        self._extract_audio_to_flac(source_video, v2_audio)
+
+        # 2. Extract head and tail from base audio
+        has_head, has_tail = self._extract_head_tail(
+            v1_audio, base_video, seg1_start, seg1_end, head_path, tail_path,
+        )
+
+        # 3. Trim source audio to matching range
+        source_trimmed = os.path.join(wd, "source_trimmed.flac")
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", [
+                "-y",
+                "-ss", str(seg2_start / 1000),
+                "-to", str(seg2_end / 1000),
+                "-i", v2_audio,
+                "-c:a", "flac",
+                source_trimmed,
+            ])
+        )
+
+        # 4. Time-scale the trimmed audio if needed
+        source_dur = seg2_end - seg2_start
+        target_dur = seg1_end - seg1_start
+        ratio = source_dur / target_dur if target_dur else 1.0
+
+        if abs(ratio - 1.0) < 0.001:
+            scaled_audio = source_trimmed
+        else:
+            scaled_audio = os.path.join(wd, "scaled.flac")
+            sample_rate = video_utils.get_video_data(v2_audio)["audio"][0]["sample_rate"]
+            adjusted_rate = sample_rate * source_dur / target_dur
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", [
+                    "-y",
+                    "-i", source_trimmed,
+                    "-filter:a", f"asetrate={adjusted_rate:.6f},aresample={sample_rate}",
+                    "-c:a", "flac",
+                    scaled_audio,
+                ])
+            )
+
+        # 5. Concatenate and encode
+        self._concat_and_encode(
+            [scaled_audio], has_head, head_path, has_tail, tail_path,
+            os.path.join(wd, "concat.txt"), os.path.join(wd, "merged.flac"), output_path,
+        )
+
     @staticmethod
     def _collect_required_input_files(
         video_streams: Sequence[tuple[str, int, str | None]],
@@ -88,65 +304,6 @@ class MeltPerformer:
                 "Files are NOT fully identical — %s",
                 detail,
             )
-
-    def _build_mkvmerge_args(
-        self,
-        output_path: str,
-        streams_list_sorted: Sequence[tuple[str, int, str, str | None]],
-        attachments: Sequence[tuple[str, int]],
-        preferred_audio: tuple[str, int, str, str | None] | None,
-        required_input_files: Iterable[str],
-    ) -> list[str]:
-        generation_args: list[str] = ["-o", output_path]
-        files_opts: dict[str, dict[str, Any]] = {
-            path: {"video": [], "audio": [], "subtitle": [], "attachments": [], "languages": {}, "defaults": set()}
-            for path in required_input_files
-        }
-
-        # Collect per-file options and track order
-        track_order: list[str] = []
-        for stream_type, tid, file_path, language in streams_list_sorted:
-            fo: dict[str, Any] = files_opts[file_path]
-            fo[stream_type].append(tid)
-            fo["languages"][tid] = language or "und"
-            if stream_type in ("audio", "subtitle") and preferred_audio and (stream_type, tid, file_path, language) == preferred_audio:
-                fo["defaults"].add(tid)
-            file_index = generic_utils.get_key_position(files_opts, file_path)
-            track_order.append(f"{file_index}:{tid}")
-
-        for file_path, tid in attachments:
-            fo = files_opts[file_path]
-            fo["attachments"].append(tid)
-
-        # Serialize options into mkvmerge args, file by file
-        _STREAM_TYPE_OPTS = {
-            "video":       ("--video-tracks",    "--no-video"),
-            "audio":       ("--audio-tracks",    "--no-audio"),
-            "subtitle":    ("--subtitle-tracks",  "--no-subtitles"),
-            "attachments": ("--attachments",      "--no-attachments"),
-        }
-
-        for file_path, fo in files_opts.items():
-            for stype, (include_flag, exclude_flag) in _STREAM_TYPE_OPTS.items():
-                if fo[stype]:
-                    generation_args.extend([include_flag, ",".join(str(i) for i in fo[stype])])
-                else:
-                    generation_args.append(exclude_flag)
-
-            for tid, lang in fo["languages"].items():
-                generation_args.extend(["--language", f"{tid}:{lang}"])
-
-            if preferred_audio:
-                for tid in fo["audio"] + fo["subtitle"]:
-                    flag = "yes" if tid in fo["defaults"] else "no"
-                    generation_args.extend(["--default-track", f"{tid}:{flag}"])
-
-            generation_args.append(file_path)
-
-        if track_order:
-            generation_args.extend(["--track-order", ",".join(track_order)])
-
-        return generation_args
 
     @staticmethod
     def _extract_audio_to_flac(video_path: str, output_path: str) -> None:
@@ -346,85 +503,6 @@ class MeltPerformer:
             os.path.join(wd, "concat.txt"), os.path.join(wd, "merged.flac"), output_path,
         )
 
-    def _patch_audio_constant_offset(
-        self,
-        wd: str,
-        base_video: str,
-        source_video: str,
-        output_path: str,
-        segment_pairs: list[tuple[int, int]],
-    ) -> None:
-        """Replace audio using a single global time-scale for constant-offset cases.
-
-        Instead of splitting into many subsegments and applying per-segment atempo,
-        this extracts the matching range as one piece and uses asetrate+aresample
-        for sample-accurate duration adjustment. When the durations already match
-        (ratio ≈ 1.0), the audio is copied without re-encoding.
-        """
-
-        wd = os.path.join(wd, "audio_extraction")
-        os.makedirs(wd, exist_ok=True)
-
-        v1_audio = os.path.join(wd, "v1_audio.flac")
-        v2_audio = os.path.join(wd, "v2_audio.flac")
-        head_path = os.path.join(wd, "head.flac")
-        tail_path = os.path.join(wd, "tail.flac")
-
-        # Compute global segment range (milliseconds)
-        left_points = [p[0] for p in segment_pairs]
-        right_points = [p[1] for p in segment_pairs]
-        seg1_start, seg1_end = min(left_points), max(left_points)
-        seg2_start, seg2_end = min(right_points), max(right_points)
-
-        # 1. Extract main audio tracks
-        self._extract_audio_to_flac(base_video, v1_audio)
-        self._extract_audio_to_flac(source_video, v2_audio)
-
-        # 2. Extract head and tail from base audio
-        has_head, has_tail = self._extract_head_tail(
-            v1_audio, base_video, seg1_start, seg1_end, head_path, tail_path,
-        )
-
-        # 3. Trim source audio to matching range
-        source_trimmed = os.path.join(wd, "source_trimmed.flac")
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", [
-                "-y",
-                "-ss", str(seg2_start / 1000),
-                "-to", str(seg2_end / 1000),
-                "-i", v2_audio,
-                "-c:a", "flac",
-                source_trimmed,
-            ])
-        )
-
-        # 4. Time-scale the trimmed audio if needed
-        source_dur = seg2_end - seg2_start
-        target_dur = seg1_end - seg1_start
-        ratio = source_dur / target_dur if target_dur else 1.0
-
-        if abs(ratio - 1.0) < 0.001:
-            scaled_audio = source_trimmed
-        else:
-            scaled_audio = os.path.join(wd, "scaled.flac")
-            sample_rate = video_utils.get_video_data(v2_audio)["audio"][0]["sample_rate"]
-            adjusted_rate = sample_rate * source_dur / target_dur
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y",
-                    "-i", source_trimmed,
-                    "-filter:a", f"asetrate={adjusted_rate:.6f},aresample={sample_rate}",
-                    "-c:a", "flac",
-                    scaled_audio,
-                ])
-            )
-
-        # 5. Concatenate and encode
-        self._concat_and_encode(
-            [scaled_audio], has_head, head_path, has_tail, tail_path,
-            os.path.join(wd, "concat.txt"), os.path.join(wd, "merged.flac"), output_path,
-        )
-
     def _build_output_path(self, title: str, output_name: str) -> str:
         return os.path.join(self.output_dir, title, output_name + ".mkv")
 
@@ -469,7 +547,7 @@ class MeltPerformer:
 
             patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.m4a")
             if constant_offset:
-                self._patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping)
+                self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping)
             else:
                 self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames)
 
@@ -533,81 +611,3 @@ class MeltPerformer:
                 self.logger.warning(f"Production audio language '{language_name}' not found among audio streams.")
 
         return preferred_audio
-
-    def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
-        visible_items = [item for item in plan if item.get("groups") or item.get("skipped_groups")]
-        planned_items = [item for item in visible_items if item.get("groups")]
-        for item in tqdm(planned_items, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
-            title = item["title"]
-            groups = item.get("groups", [])
-
-            for group in tqdm(groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
-                self.interruption.check_for_stop()
-
-                output_name = group["output_name"]
-
-                # Use analysis results
-                streams_info = group.get("streams", {})
-                attachments = group.get("attachments", [])
-                video_streams: list[tuple[str, int, str | None]] = streams_info.get("video", [])
-                audio_streams: list[tuple[str, int, str | None]] = streams_info.get("audio", [])
-                subtitle_streams: list[tuple[str, int, str | None]] = streams_info.get("subtitle", [])
-                required_input_files = self._collect_required_input_files(
-                    video_streams,
-                    audio_streams,
-                    subtitle_streams,
-                    attachments,
-                )
-
-                output = self._build_output_path(title, output_name)
-                if os.path.exists(output):
-                    self.logger.info(f"Output file {output} exists, removing it.")
-                    os.remove(output)
-
-                output_parent = os.path.dirname(output)
-                os.makedirs(output_parent, exist_ok=True)
-
-                if len(required_input_files) == 1:
-                    # only one file is being used, just copy it to the output dir
-                    first_file_path = list(required_input_files)[0]
-                    self._copy_single_input(first_file_path, output)
-                else:
-                    # Convert streams to unified list (and patch audios if needed)
-                    files = group.get("files", [])
-                    file_ids = {f: i + 1 for i, f in enumerate(files)}
-                    streams_list = self._prepare_stream_entries(
-                        video_streams,
-                        audio_streams,
-                        subtitle_streams,
-                        required_input_files,
-                        attachments,
-                        file_ids,
-                    )
-
-                    # Sort streams by language alphabetically, unknown languages last
-                    streams_list_sorted = sorted(streams_list, key=lambda stream: (stream[3] is None, stream[3] or ""))
-
-                    # Decide which track should be default
-                    default_audio_stream = next((s for s in streams_list if s[0] == "audio"), None)
-                    default_audio_lang = default_audio_stream[3] if default_audio_stream else None
-                    preferred_audio = self._choose_preferred_audio(
-                        group.get("audio_prod_lang"),
-                        streams_list_sorted,
-                        default_audio_lang,
-                    )
-
-                    generation_args = self._build_mkvmerge_args(
-                        output,
-                        streams_list_sorted,
-                        attachments,
-                        preferred_audio,
-                        required_input_files,
-                    )
-
-                    self.logger.info(f"Generating file: {self._display_path(output)}")
-
-                    process_utils.raise_on_error(
-                        process_utils.start_process("mkvmerge", generation_args, show_progress=True)
-                    )
-
-                    self.logger.info(f"{output} saved.")

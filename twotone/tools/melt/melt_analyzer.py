@@ -28,6 +28,51 @@ class MeltAnalyzer:
         self.tolerance_ms = tolerance_ms
         self.base_path: str | None = None
 
+    def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
+        base_plan = self._prepare_duplicates_set(duplicates)
+
+        analysis_plan: list[dict[str, Any]] = []
+        for item in tqdm(base_plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults()):
+            title = item["title"]
+            groups = item["groups"]
+
+            analyzed_groups: list[dict[str, Any]] = []
+            skipped_groups: list[dict[str, Any]] = []
+            if len(groups) > 1:
+                groups_iter = tqdm(groups, desc="Candidates", unit="set", position=1, **generic_utils.get_tqdm_defaults())
+            else:
+                groups_iter = groups
+            for group in groups_iter:
+                files = group["files"]
+                output_name = group["output_name"]
+
+                ids = {file: i + 1 for i, file in enumerate(files)}
+
+                # analysis for group
+                plan_details, issue, files_details = self._analyze_group(files, ids, title)
+                if plan_details is None:
+                    self._log_group_issue(title, issue or "Unknown issue.", files)
+                    skipped_groups.append({
+                        "files": files,
+                        "output_name": output_name,
+                        "issue": issue or "Unknown issue.",
+                        "files_details": files_details,
+                    })
+                else:
+                    analyzed_groups.append({
+                        "files": files,
+                        "output_name": output_name,
+                        **plan_details,
+                    })
+
+            analysis_plan.append({
+                "title": title,
+                "groups": analyzed_groups,
+                "skipped_groups": skipped_groups,
+            })
+
+        return analysis_plan
+
     @staticmethod
     def _stream_short_details(stype: str, stream: dict[str, Any]) -> str:
         def fmt_fps(value: str) -> str | None:
@@ -434,48 +479,3 @@ class MeltAnalyzer:
             "audio_prod_lang": audio_prod_lang,
             "files_details": details_full,
         }, None, details_full
-
-    def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
-        base_plan = self._prepare_duplicates_set(duplicates)
-
-        analysis_plan: list[dict[str, Any]] = []
-        for item in tqdm(base_plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults()):
-            title = item["title"]
-            groups = item["groups"]
-
-            analyzed_groups: list[dict[str, Any]] = []
-            skipped_groups: list[dict[str, Any]] = []
-            if len(groups) > 1:
-                groups_iter = tqdm(groups, desc="Candidates", unit="set", position=1, **generic_utils.get_tqdm_defaults())
-            else:
-                groups_iter = groups
-            for group in groups_iter:
-                files = group["files"]
-                output_name = group["output_name"]
-
-                ids = {file: i + 1 for i, file in enumerate(files)}
-
-                # analysis for group
-                plan_details, issue, files_details = self._analyze_group(files, ids, title)
-                if plan_details is None:
-                    self._log_group_issue(title, issue or "Unknown issue.", files)
-                    skipped_groups.append({
-                        "files": files,
-                        "output_name": output_name,
-                        "issue": issue or "Unknown issue.",
-                        "files_details": files_details,
-                    })
-                else:
-                    analyzed_groups.append({
-                        "files": files,
-                        "output_name": output_name,
-                        **plan_details,
-                    })
-
-            analysis_plan.append({
-                "title": title,
-                "groups": analyzed_groups,
-                "skipped_groups": skipped_groups,
-            })
-
-        return analysis_plan

@@ -16,6 +16,51 @@ class MeltPlan:
     def is_empty(self) -> bool:
         return not any(item.get("groups") for item in self.items)
 
+    def render(self, logger: logging.Logger) -> None:
+        if not self.items:
+            logger.info("No titles to melt.")
+            return
+
+        visible_items = [
+            item for item in self.items
+            if item.get("groups") or item.get("skipped_groups")
+        ]
+        if not visible_items:
+            logger.info("No suitable candidates found for melting.")
+            return
+
+        planned_items = [item for item in visible_items if item.get("groups")]
+        skipped_items = [item for item in visible_items if item.get("skipped_groups")]
+
+        total_outputs = sum(len(item.get("groups", [])) for item in planned_items)
+        total_files = sum(
+            len(group.get("files", []))
+            for item in planned_items
+            for group in item.get("groups", [])
+        )
+        has_missing_language = any(
+            "missing properties" in (group.get("issue") or "").lower()
+            and "language" in (group.get("issue") or "").lower()
+            for item in skipped_items
+            for group in item.get("skipped_groups", [])
+        )
+
+        if planned_items:
+            logger.info(
+                "Planned melt: %d output(s) from %d input file(s).",
+                total_outputs,
+                total_files,
+            )
+        else:
+            logger.info("No outputs planned.")
+        logger.info("Output directory: %s", self.output_dir)
+
+        if planned_items:
+            self._render_planned(logger, planned_items)
+
+        if skipped_items:
+            self._render_skipped(logger, skipped_items, has_missing_language)
+
     @staticmethod
     def _stream_short_details(stype: str, stream: dict[str, Any]) -> str:
         if stype == "video":
@@ -188,48 +233,3 @@ class MeltPlan:
                     for file_idx, path in enumerate(files, start=1):
                         marker = " (!)" if file_idx in problem_ids else ""
                         logger.warning("%s  #%d%s: %s", prefix, file_idx, marker, path)
-
-    def render(self, logger: logging.Logger) -> None:
-        if not self.items:
-            logger.info("No titles to melt.")
-            return
-
-        visible_items = [
-            item for item in self.items
-            if item.get("groups") or item.get("skipped_groups")
-        ]
-        if not visible_items:
-            logger.info("No suitable candidates found for melting.")
-            return
-
-        planned_items = [item for item in visible_items if item.get("groups")]
-        skipped_items = [item for item in visible_items if item.get("skipped_groups")]
-
-        total_outputs = sum(len(item.get("groups", [])) for item in planned_items)
-        total_files = sum(
-            len(group.get("files", []))
-            for item in planned_items
-            for group in item.get("groups", [])
-        )
-        has_missing_language = any(
-            "missing properties" in (group.get("issue") or "").lower()
-            and "language" in (group.get("issue") or "").lower()
-            for item in skipped_items
-            for group in item.get("skipped_groups", [])
-        )
-
-        if planned_items:
-            logger.info(
-                "Planned melt: %d output(s) from %d input file(s).",
-                total_outputs,
-                total_files,
-            )
-        else:
-            logger.info("No outputs planned.")
-        logger.info("Output directory: %s", self.output_dir)
-
-        if planned_items:
-            self._render_planned(logger, planned_items)
-
-        if skipped_items:
-            self._render_skipped(logger, skipped_items, has_missing_language)

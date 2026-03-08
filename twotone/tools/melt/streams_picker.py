@@ -16,6 +16,64 @@ class StreamsPicker:
         self.duplicates_source = duplicates_source
         self.wd = wd
 
+    def pick_streams(self, files_details: dict, ids: dict[str, int]):
+        #collect video streams (path and tid) which are attached_pics so we can drop them later as not handled now
+        attached_pics = [
+            (file_path, vd.get("tid"))
+            for (file_path, details) in files_details.items()
+            for vd in details["video"]
+            if vd.get("attached_pic", False)
+        ]
+
+        best_file_candidate = StreamsPicker._pick_best_file_candidate(files_details)
+        video_streams = self._pick_streams(
+            files_details,
+            best_file_candidate,
+            ids,
+            "video",
+            [],
+            self._video_cmp,
+            get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids)
+        )
+        video_streams = [video_stream for video_stream in video_streams if (video_stream[0], video_stream[1]) not in attached_pics]
+        video_stream = video_streams[0]
+        video_stream_path = video_stream[0]
+
+        # pick audio streams
+        forced_audio_language_raw = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in files_details}
+        forced_audio_language: dict[str, str] = {}
+        for path, lang in forced_audio_language_raw.items():
+            if lang:
+                forced_audio_language[path] = language_utils.unify_lang(lang)
+        audio_streams = self._pick_streams(
+            files_details,
+            video_stream_path,
+            ids,
+            "audio",
+            ["language", "channels"],
+            self._cmp_by_keys(["sample_rate"]),
+            get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids, override_languages = forced_audio_language)
+        )
+
+        # pick subtitle streams
+        forced_subtitle_language_raw = {path: self.duplicates_source.get_metadata_for(path).get("subtitle_lang") for path in files_details}
+        forced_subtitle_language: dict[str, str] = {}
+        for path, lang in forced_subtitle_language_raw.items():
+            if lang:
+                forced_subtitle_language[path] = lang
+        subtitle_streams = self._pick_streams(
+            files_details,
+            video_stream_path,
+            ids,
+            "subtitle",
+            ["language"],
+            lambda a, b: 0,
+            get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids, override_languages = forced_subtitle_language)
+        )
+
+        # results
+        return video_streams, audio_streams, subtitle_streams
+
     @staticmethod
     def _metadata_flag_is_enabled(value: object) -> bool:
         if isinstance(value, bool):
@@ -246,61 +304,3 @@ class StreamsPicker:
             else:
                 self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file #{file_id}")
         return lang
-
-    def pick_streams(self, files_details: dict, ids: dict[str, int]):
-        #collect video streams (path and tid) which are attached_pics so we can drop them later as not handled now
-        attached_pics = [
-            (file_path, vd.get("tid"))
-            for (file_path, details) in files_details.items()
-            for vd in details["video"]
-            if vd.get("attached_pic", False)
-        ]
-
-        best_file_candidate = StreamsPicker._pick_best_file_candidate(files_details)
-        video_streams = self._pick_streams(
-            files_details,
-            best_file_candidate,
-            ids,
-            "video",
-            [],
-            self._video_cmp,
-            get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids)
-        )
-        video_streams = [video_stream for video_stream in video_streams if (video_stream[0], video_stream[1]) not in attached_pics]
-        video_stream = video_streams[0]
-        video_stream_path = video_stream[0]
-
-        # pick audio streams
-        forced_audio_language_raw = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in files_details}
-        forced_audio_language: dict[str, str] = {}
-        for path, lang in forced_audio_language_raw.items():
-            if isinstance(lang, str):
-                forced_audio_language[path] = language_utils.unify_lang(lang)
-        audio_streams = self._pick_streams(
-            files_details,
-            video_stream_path,
-            ids,
-            "audio",
-            ["language", "channels"],
-            self._cmp_by_keys(["sample_rate"]),
-            get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids, override_languages = forced_audio_language)
-        )
-
-        # pick subtitle streams
-        forced_subtitle_language_raw = {path: self.duplicates_source.get_metadata_for(path).get("subtitle_lang") for path in files_details}
-        forced_subtitle_language: dict[str, str] = {}
-        for path, lang in forced_subtitle_language_raw.items():
-            if isinstance(lang, str):
-                forced_subtitle_language[path] = lang
-        subtitle_streams = self._pick_streams(
-            files_details,
-            video_stream_path,
-            ids,
-            "subtitle",
-            ["language"],
-            lambda a, b: 0,
-            get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids, override_languages = forced_subtitle_language)
-        )
-
-        # results
-        return video_streams, audio_streams, subtitle_streams

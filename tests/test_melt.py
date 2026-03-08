@@ -1850,7 +1850,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             ("subtitle", 5, file_a, None),
         ]
 
-        args = performer._build_mkvmerge_args(
+        args = performer.build_mkvmerge_args(
             "/tmp/out.mkv",
             streams_list_sorted,
             attachments=[],
@@ -1885,7 +1885,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                  patch.object(process_utils, 'raise_on_error', side_effect=fake_raise_on_error), \
                  patch.object(video_utils, 'get_video_duration', return_value=base_duration_ms), \
                  patch.object(video_utils, 'get_video_data', return_value={"audio": [{"sample_rate": source_sample_rate}]}):
-                performer._patch_audio_constant_offset(
+                performer.patch_audio_constant_offset(
                     wd, "/base.mkv", "/source.mkv", output_path, segment_pairs,
                 )
 
@@ -1959,7 +1959,7 @@ class PairMatcherUnitTest(unittest.TestCase):
     These tests mock _is_rich and bypass the full constructor to test
     algorithmic behaviour without needing video files. They target:
     - _extrapolate_through_low_entropy: 5% noise tolerance
-    - _snap_to_edges: snap_frames=4 threshold
+    - snap_to_edges: snap_frames=4 threshold
     - find_boundary (via _look_for_boundaries): look_ahead robustness
     """
 
@@ -1998,7 +1998,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         reference = (3000, 3000)
 
         with patch.object(PairMatcher, '_is_rich', return_value=False):
-            result = pm._extrapolate_through_low_entropy(
+            result = pm.extrapolate_through_low_entropy(
                 lhs, rhs, boundary, reference, ratio=1.0,
                 direction=-1, entered_low_entropy=True,
             )
@@ -2014,7 +2014,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         rhs = self._make_frames([0, 1000, 2000])
         boundary = (1000, 1000)
 
-        result = pm._extrapolate_through_low_entropy(
+        result = pm.extrapolate_through_low_entropy(
             lhs, rhs, boundary, (2000, 2000), ratio=1.0,
             direction=-1, entered_low_entropy=False,
         )
@@ -2029,7 +2029,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         boundary = (2000, 2000)
 
         with patch.object(PairMatcher, '_is_rich', return_value=True):
-            result = pm._extrapolate_through_low_entropy(
+            result = pm.extrapolate_through_low_entropy(
                 lhs, rhs, boundary, (3000, 3000), ratio=1.0,
                 direction=-1, entered_low_entropy=True,
             )
@@ -2055,7 +2055,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             return ts in noisy_timestamps
 
         with patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich):
-            result = pm._extrapolate_through_low_entropy(
+            result = pm.extrapolate_through_low_entropy(
                 lhs, rhs, boundary, (6000, 6000), ratio=1.0,
                 direction=-1, entered_low_entropy=True,
             )
@@ -2081,7 +2081,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             return ts in noisy_timestamps
 
         with patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich):
-            result = pm._extrapolate_through_low_entropy(
+            result = pm.extrapolate_through_low_entropy(
                 lhs, rhs, boundary, (6000, 6000), ratio=1.0,
                 direction=-1, entered_low_entropy=True,
             )
@@ -2102,7 +2102,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         reference = (2000, 2000)
 
         with patch.object(PairMatcher, '_is_rich', return_value=False):
-            result = pm._extrapolate_through_low_entropy(
+            result = pm.extrapolate_through_low_entropy(
                 lhs, rhs, boundary, reference, ratio=1.0,
                 direction=1, entered_low_entropy=True,
             )
@@ -2129,7 +2129,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             return False
 
         with patch.object(PairMatcher, '_is_rich', side_effect=smart_mock):
-            result = pm._extrapolate_through_low_entropy(
+            result = pm.extrapolate_through_low_entropy(
                 lhs, rhs, boundary, (6000, 6000), ratio=1.0,
                 direction=-1, entered_low_entropy=True,
             )
@@ -2137,7 +2137,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         # RHS is all high-entropy → should refuse
         self.assertEqual(result, boundary)
 
-    # ---- _snap_to_edges ----
+    # ---- snap_to_edges ----
 
     def test_snap_within_4_frames_snaps(self):
         """Pairs within 4 frames of edge should snap to video boundary."""
@@ -2150,7 +2150,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(100, 100), (5000, 5000), (9900, 9900)]
 
         with patch.object(video_utils, 'get_video_duration', return_value=10000):
-            result = pm._snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
 
         # 100ms is within 160ms threshold → snap to 0
         self.assertEqual(result[0], (0, 0))
@@ -2168,7 +2168,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(200, 200), (5000, 5000), (9700, 9700)]
 
         with patch.object(video_utils, 'get_video_duration', return_value=10000):
-            result = pm._snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
 
         # 200ms > 160ms → no snap
         self.assertEqual(result[0], (200, 200))
@@ -2187,14 +2187,14 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(100, 90), (5000, 5000)]
 
         with patch.object(video_utils, 'get_video_duration', return_value=10000):
-            result = pm._snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
 
         # LHS: 100ms <= 160ms → snaps
         self.assertEqual(result[0][0], 0)
         # RHS: 90ms > 80ms → does NOT snap
         self.assertEqual(result[0][1], 90)
 
-    # ---- _try_constant_offset_extrapolation ----
+    # ---- try_constant_offset_extrapolation ----
 
     def test_constant_offset_detected_and_extrapolated(self):
         """When all pairs share a constant frame-number offset, boundaries are extrapolated."""
@@ -2213,7 +2213,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         # k=3: first_lhs_frame=3 → ts=120, first_rhs_frame=0 → ts=0
@@ -2236,7 +2236,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         # k=-3: first_lhs_frame=0 → ts=0, first_rhs_frame=3 → ts=120
@@ -2260,7 +2260,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         self.assertEqual(result[0], (0, 0))
@@ -2281,7 +2281,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNone(result)
 
@@ -2301,7 +2301,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNone(result)
 
@@ -2316,7 +2316,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNone(result)
 
@@ -2336,7 +2336,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         # Median frame offset is 3 → first=(120, 0), last=(10000, 9880)
@@ -2359,7 +2359,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         # k=3: first_lhs_frame=3 → ts=150, first_rhs_frame=0 → ts=0
@@ -2382,7 +2382,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm._try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         # First pair already matches extrapolated boundary → no duplicate
@@ -2426,8 +2426,8 @@ class PairMatcherUnitTest(unittest.TestCase):
              patch('twotone.tools.melt.pair_matcher.DebugRoutines') as debug_cls, \
              patch.object(PairMatcher, '_normalize_frames', side_effect=fake_normalize), \
              patch.object(PairMatcher, '_make_pairs', return_value=[(40, 40)]), \
-             patch.object(PairMatcher, '_try_constant_offset_extrapolation', return_value=extrapolated_pairs), \
-             patch.object(PairMatcher, '_snap_to_edges', side_effect=AssertionError("_snap_to_edges should not be called")):
+             patch.object(PairMatcher, 'try_constant_offset_extrapolation', return_value=extrapolated_pairs), \
+             patch.object(PairMatcher, 'snap_to_edges', side_effect=AssertionError("snap_to_edges should not be called")):
 
             debug = debug_cls.return_value
             debug.dump_frames.return_value = None
@@ -2474,7 +2474,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             patch.object(pm, '_edge_content_matches', return_value=True),
             self._mock_phash_always_match(),
         ):
-            result_first, _ = pm._look_for_boundaries(
+            result_first, _ = pm.look_for_boundaries(
                 lhs, rhs, first, last, cutoff=16, extrapolate=False,
             )
 
@@ -2504,7 +2504,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             patch.object(pm, '_edge_content_matches', return_value=True),
             self._mock_phash_always_match(),
         ):
-            result_first, _ = pm._look_for_boundaries(
+            result_first, _ = pm.look_for_boundaries(
                 lhs, rhs, first, last, cutoff=16, extrapolate=False,
             )
 
@@ -2534,7 +2534,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             patch.object(pm, '_edge_content_matches', return_value=True),
             self._mock_phash_always_match(),
         ):
-            result_first, _ = pm._look_for_boundaries(
+            result_first, _ = pm.look_for_boundaries(
                 lhs, rhs, first, last, cutoff=16, extrapolate=False,
             )
 
@@ -2571,7 +2571,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             patch.object(pm, '_edge_content_matches', return_value=True),
             self._mock_phash_always_match(),
         ):
-            result_first, _ = pm._look_for_boundaries(
+            result_first, _ = pm.look_for_boundaries(
                 lhs, rhs, first, last, cutoff=16, extrapolate=False,
             )
 
@@ -2622,7 +2622,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             patch.object(pm, '_edge_content_matches', return_value=True),
             patch('twotone.tools.melt.pair_matcher.PhashCache', SelectivePhashCache),
         ):
-            result_first, _ = pm._look_for_boundaries(
+            result_first, _ = pm.look_for_boundaries(
                 lhs, rhs, first, last, cutoff=16, extrapolate=False,
             )
 
