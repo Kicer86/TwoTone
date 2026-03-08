@@ -566,7 +566,7 @@ class PairMatcher:
 
         return matching_pairs
 
-    def create_segments_mapping(self) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo]:
+    def create_segments_mapping(self) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo, bool]:
 
         lhs_scene_changes, rhs_scene_changes = self._detect_scenes()
         self._probe_frames()

@@ -1969,7 +1969,6 @@ class PairMatcherUnitTest(unittest.TestCase):
         pm.logger = logging.getLogger("test.PairMatcher")
         pm.lhs_fps = lhs_fps
         pm.rhs_fps = rhs_fps
-        pm.phash = None  # not used in unit tests
         pm.lhs_path = "/fake/lhs.mp4"
         pm.rhs_path = "/fake/rhs.mp4"
         pm.lhs_label = "#1"

@@ -70,6 +70,10 @@ def _start_ffmpeg_streaming(
     # Drain stdout (ffmpeg sends everything to stderr, but be safe)
     if proc.stdout:
         proc.stdout.read()
+        proc.stdout.close()
+
+    if proc.stderr:
+        proc.stderr.close()
 
     proc.wait()
     return proc, stderr_lines
