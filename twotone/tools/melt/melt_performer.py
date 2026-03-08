@@ -467,13 +467,10 @@ class MeltPerformer:
                         required_input_files,
                     )
 
-                    inputs_preview = ", ".join(self._display_path(path) for path in sorted(required_input_files))
-                    self.logger.info(
-                        f"Generating file: {self._display_path(output)} from files: {inputs_preview}"
-                    )
-                    for line in self._format_stream_summary(streams_list_sorted):
-                        self.logger.info(f"  {line}")
+                    self.logger.info(f"Generating file: {self._display_path(output)}")
+
                     process_utils.raise_on_error(
                         process_utils.start_process("mkvmerge", generation_args, show_progress=True)
                     )
+
                     self.logger.info(f"{output} saved.")
