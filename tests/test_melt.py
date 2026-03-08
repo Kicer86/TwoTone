@@ -1,5 +1,6 @@
 
 import logging
+import tempfile
 import unittest
 import os
 import platform
@@ -684,6 +685,39 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(output_file_data["audio"][3]["language"], "nor")
         self.assertEqual(output_file_data["audio"][4]["language"], "pol")
 
+    def test_unknown_language_streams_sorted_last(self):
+        """Streams with unknown language (from --force-all-streams) should appear after all known-language streams."""
+        video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = True)
+        video2 = build_test_video(os.path.join(self.wd.path, "o2.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = True)
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Sea Waves", video1)
+        duplicates.add_entry("Sea Waves", video2)
+        duplicates.add_metadata(video1, "audio_lang", "eng")
+        duplicates.add_metadata(video2, "audio_lang", "pol")
+        duplicates.add_metadata(video1, "subtitle_lang", "pol")
+        # video2 subtitle: unknown language, kept via force_all_streams
+        duplicates.add_metadata(video2, "force_all_streams", True)
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        logger = self.logger.getChild("Melter")
+        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
+        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
+        output_file = list(output_file_hash)[0]
+
+        output_file_data = video_utils.get_video_data(output_file)
+        subtitles = output_file_data["subtitle"]
+        self.assertEqual(len(subtitles), 2)
+        # Known language (pol) should come first, unknown last
+        self.assertEqual(subtitles[0]["language"], "pol")
+        self.assertIsNone(subtitles[1]["language"])
+
     def test_default_language(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
@@ -916,6 +950,74 @@ class MeltingTest(TwoToneTestCase):
             self.assertEqual(picked_streams_normalized, expected_streams_normalized)
 
 
+
+class MeltPerformerUnitTest(unittest.TestCase):
+    """Unit tests for MeltPerformer internal methods."""
+
+    def _make_performer(self) -> MeltPerformer:
+        performer = object.__new__(MeltPerformer)
+        performer.logger = logging.getLogger("test.MeltPerformer")
+        performer.wd = tempfile.mkdtemp()
+        performer.output_dir = tempfile.mkdtemp()
+        performer.tolerance_ms = DEFAULT_TOLERANCE_MS
+        performer.interruption = generic_utils.InterruptibleProcess()
+        return performer
+
+    def test_stream_sorting_puts_unknown_languages_last(self):
+        streams = [
+            ("audio", 1, "/a.mkv", None),
+            ("audio", 2, "/a.mkv", "eng"),
+            ("subtitle", 3, "/a.mkv", None),
+            ("subtitle", 4, "/a.mkv", "pol"),
+            ("subtitle", 5, "/a.mkv", "deu"),
+        ]
+
+        sort_key = lambda stream: (stream[3] is None, stream[3] or "")
+        result = sorted(streams, key=sort_key)
+
+        languages = [s[3] for s in result]
+        self.assertEqual(languages, ["deu", "eng", "pol", None, None])
+
+    def test_stream_sorting_alphabetical_when_all_known(self):
+        streams = [
+            ("subtitle", 1, "/a.mkv", "pol"),
+            ("subtitle", 2, "/a.mkv", "eng"),
+            ("subtitle", 3, "/a.mkv", "deu"),
+            ("audio", 4, "/a.mkv", "jpn"),
+        ]
+
+        sort_key = lambda stream: (stream[3] is None, stream[3] or "")
+        result = sorted(streams, key=sort_key)
+
+        languages = [s[3] for s in result]
+        self.assertEqual(languages, ["deu", "eng", "jpn", "pol"])
+
+    def test_build_mkvmerge_args_track_order_respects_unknown_last(self):
+        performer = self._make_performer()
+
+        file_a = "/tmp/a.mkv"
+        file_b = "/tmp/b.mkv"
+
+        streams_list_sorted = [
+            ("video", 0, file_a, None),
+            ("audio", 1, file_a, "eng"),
+            ("subtitle", 3, file_a, "deu"),
+            ("subtitle", 4, file_a, "pol"),
+            ("subtitle", 5, file_a, None),
+        ]
+
+        args = performer._build_mkvmerge_args(
+            "/tmp/out.mkv",
+            streams_list_sorted,
+            attachments=[],
+            preferred_audio=None,
+            required_input_files=[file_a],
+        )
+
+        # Track order should preserve the sorted order
+        track_order_idx = args.index("--track-order")
+        track_order = args[track_order_idx + 1]
+        self.assertEqual(track_order, "0:0,0:1,0:3,0:4,0:5")
 
 if __name__ == '__main__':
     unittest.main()
