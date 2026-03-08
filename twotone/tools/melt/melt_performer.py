@@ -447,8 +447,8 @@ class MeltPerformer:
                         attachments,
                     )
 
-                    # Sort streams by language alphabetically
-                    streams_list_sorted = sorted(streams_list, key=lambda stream: stream[3] if stream[3] else "")
+                    # Sort streams by language alphabetically, unknown languages last
+                    streams_list_sorted = sorted(streams_list, key=lambda stream: (stream[3] is None, stream[3] or ""))
 
                     # Decide which track should be default
                     default_audio_stream = next((s for s in streams_list if s[0] == "audio"), None)
