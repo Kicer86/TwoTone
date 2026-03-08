@@ -1527,7 +1527,7 @@ class PairMatcher:
         if not used_constant_offset_extrapolation:
             matching_pairs = self._snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
 
-        return matching_pairs, self.lhs_all_frames, self.rhs_all_frames
+        return matching_pairs, self.lhs_all_frames, self.rhs_all_frames, used_constant_offset_extrapolation
 
     def _refine_boundary_pairs(
         self,

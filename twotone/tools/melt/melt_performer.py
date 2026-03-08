@@ -319,6 +319,118 @@ class MeltPerformer:
             )
         )
 
+    def _patch_audio_constant_offset(
+        self,
+        wd: str,
+        base_video: str,
+        source_video: str,
+        output_path: str,
+        segment_pairs: list[tuple[int, int]],
+    ) -> None:
+        """Replace audio using a single global time-scale for constant-offset cases.
+
+        Instead of splitting into many subsegments and applying per-segment atempo,
+        this extracts the matching range as one piece and uses asetrate+aresample
+        for sample-accurate duration adjustment. When the durations already match
+        (ratio ≈ 1.0), the audio is copied without re-encoding.
+        """
+
+        wd = os.path.join(wd, "audio_extraction")
+        os.makedirs(wd, exist_ok=True)
+
+        v1_audio = os.path.join(wd, "v1_audio.flac")
+        v2_audio = os.path.join(wd, "v2_audio.flac")
+        head_path = os.path.join(wd, "head.flac")
+        tail_path = os.path.join(wd, "tail.flac")
+
+        # Compute global segment range (milliseconds)
+        left_points = [p[0] for p in segment_pairs]
+        right_points = [p[1] for p in segment_pairs]
+        seg1_start, seg1_end = min(left_points), max(left_points)
+        seg2_start, seg2_end = min(right_points), max(right_points)
+
+        # 1. Extract main audio tracks
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", ["-y", "-i", base_video, "-map", "0:a:0", "-c:a", "flac", v1_audio])
+        )
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", ["-y", "-i", source_video, "-map", "0:a:0", "-c:a", "flac", v2_audio])
+        )
+
+        # 2. Extract head and tail from base audio (skip when at/near edge)
+        has_head = seg1_start > 0
+        if has_head:
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", ["-y", "-ss", "0", "-to", str(seg1_start / 1000), "-i", v1_audio, "-c:a", "flac", head_path])
+            )
+
+        base_duration_ms = video_utils.get_video_duration(base_video)
+        has_tail = seg1_end < base_duration_ms
+        if has_tail:
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", ["-y", "-ss", str(seg1_end / 1000), "-i", v1_audio, "-c:a", "flac", tail_path])
+            )
+
+        # 3. Trim source audio to matching range
+        source_trimmed = os.path.join(wd, "source_trimmed.flac")
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", [
+                "-y",
+                "-ss", str(seg2_start / 1000),
+                "-to", str(seg2_end / 1000),
+                "-i", v2_audio,
+                "-c:a", "flac",
+                source_trimmed,
+            ])
+        )
+
+        # 4. Time-scale the trimmed audio if needed
+        source_dur = seg2_end - seg2_start
+        target_dur = seg1_end - seg1_start
+        ratio = source_dur / target_dur if target_dur else 1.0
+
+        if abs(ratio - 1.0) < 0.001:
+            # Durations match — no re-encoding needed
+            scaled_audio = source_trimmed
+        else:
+            scaled_audio = os.path.join(wd, "scaled.flac")
+            sample_rate = video_utils.get_video_data(v2_audio)["audio"][0]["sample_rate"]
+            adjusted_rate = sample_rate * source_dur / target_dur
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", [
+                    "-y",
+                    "-i", source_trimmed,
+                    "-filter:a", f"asetrate={adjusted_rate:.6f},aresample={sample_rate}",
+                    "-c:a", "flac",
+                    scaled_audio,
+                ])
+            )
+
+        # 5. Concatenate head + scaled audio + tail
+        concat_list = os.path.join(wd, "concat.txt")
+        with open(concat_list, "w", encoding="utf-8") as f:
+            if has_head:
+                f.write(f"file '{head_path}'\n")
+            f.write(f"file '{scaled_audio}'\n")
+            if has_tail:
+                f.write(f"file '{tail_path}'\n")
+
+        merged_flac = os.path.join(wd, "merged.flac")
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", [
+                "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", concat_list,
+                "-c:a", "flac", merged_flac,
+            ])
+        )
+
+        # 6. Encode to final audio format
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", ["-y", "-i", merged_flac, "-c:a", "aac", "-movflags", "+faststart", output_path])
+        )
+
     def _build_output_path(self, title: str, output_name: str) -> str:
         return os.path.join(self.output_dir, title, output_name + ".mkv")
 
@@ -368,12 +480,15 @@ class MeltPerformer:
                         self.logger.getChild("PairMatcher"),
                         lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
                     )
-                    mapping, lhs_all_frames, rhs_all_frames = matcher.create_segments_mapping()
+                    mapping, lhs_all_frames, rhs_all_frames, constant_offset = matcher.create_segments_mapping()
 
                     self._log_coverage(video_path_base, path, mapping, base_duration, duration)
 
                     patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.m4a")
-                    self._patch_audio_segment(mwd, video_path_base, path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames)
+                    if constant_offset:
+                        self._patch_audio_constant_offset(mwd, video_path_base, path, patched_audio, mapping)
+                    else:
+                        self._patch_audio_segment(mwd, video_path_base, path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames)
                     path = patched_audio
                     stream_index = 0
                     required_input_files.add(path)

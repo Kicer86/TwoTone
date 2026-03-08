@@ -1106,7 +1106,7 @@ class MeltingTest(TwoToneTestCase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1, file2, logging.getLogger("PM"))
-        mappings, _, _ = pair_matcher.create_segments_mapping()
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
 
         self.assertEqual(mappings, [
             (0, 0),          # ← edge (snapped from 23ms/75ms — within 3 frames)
@@ -1143,7 +1143,7 @@ class MeltingTest(TwoToneTestCase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _ = pair_matcher.create_segments_mapping()
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
 
         # 3s black intro on both files — boundary extends through black to edge
         # LHS: bbb_bi3 (65.3s), RHS: bi3_deg103 (63.4s)
@@ -1172,7 +1172,7 @@ class MeltingTest(TwoToneTestCase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _ = pair_matcher.create_segments_mapping()
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
 
         # LHS: bbb_bi2 (64.3s, 2s black intro), RHS: bi6_deg103 (66.5s, 6s black intro)
         # LHS extends to edge through black; RHS starts at 4098ms (inside 6s intro)
@@ -1208,7 +1208,7 @@ class MeltingTest(TwoToneTestCase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _ = pair_matcher.create_segments_mapping()
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
 
         # LHS: bbb_bo3 (65.3s, 3s black outro), RHS: bo3_deg103 (63.4s, 3s black outro)
         self.assertEqual(mappings, [
@@ -1236,7 +1236,7 @@ class MeltingTest(TwoToneTestCase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _ = pair_matcher.create_segments_mapping()
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
 
         # LHS: bi2_bo2 (66.3s, 2s black intro + 2s black outro)
         # RHS: bi2_bo2_deg103 (64.4s, same + 1.03x speed)
@@ -1271,7 +1271,7 @@ class MeltingTest(TwoToneTestCase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _ = pair_matcher.create_segments_mapping()
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
 
         # LHS: bbb (62.3s), RHS: bbb_deg10 (62.3s, same speed, degraded quality)
         self.assertEqual(mappings, [
@@ -1301,7 +1301,7 @@ class MeltingTest(TwoToneTestCase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _ = pair_matcher.create_segments_mapping()
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
 
         # LHS: bbb_gi3 (65.3s, 3s grass intro), RHS: atoms_i3_deg (63.5s, 3s atoms intro)
         self.assertEqual(mappings, [
@@ -1339,7 +1339,7 @@ class MeltingTest(TwoToneTestCase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _ = pair_matcher.create_segments_mapping()
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
 
         # LHS: bbb_gi2 (64.3s, 2s grass intro), RHS: atoms_i5_deg (65.5s, 5s atoms intro)
         self.assertEqual(mappings, [
@@ -1377,7 +1377,7 @@ class MeltingTest(TwoToneTestCase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _ = pair_matcher.create_segments_mapping()
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
 
         # LHS: bbb_wo3 (65.3s, 3s woman outro), RHS: deg103_atoms_o3 (63.5s, 3s atoms outro)
         self.assertEqual(mappings, [
@@ -1411,7 +1411,7 @@ class MeltingTest(TwoToneTestCase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _ = pair_matcher.create_segments_mapping()
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
 
         # LHS: gi3_wo3 (57.1s, 3s grass intro + 3s woman outro)
         # RHS: ai3d_swo3 (66.5s, 3s atoms intro + 3s seawaves outro)
@@ -1474,7 +1474,7 @@ class MeltingTest(TwoToneTestCase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _ = pair_matcher.create_segments_mapping()
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
 
         d1 = video_utils.get_video_duration(file1_path)
         d2 = video_utils.get_video_duration(file2_path)
@@ -1487,7 +1487,7 @@ class MeltingTest(TwoToneTestCase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _ = pair_matcher.create_segments_mapping()
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
 
         d1 = video_utils.get_video_duration(file1_path)
         d2 = video_utils.get_video_duration(file2_path)
@@ -1862,6 +1862,97 @@ class MeltPerformerUnitTest(unittest.TestCase):
         track_order_idx = args.index("--track-order")
         track_order = args[track_order_idx + 1]
         self.assertEqual(track_order, "0:0,0:1,0:3,0:4,0:5")
+
+    # ---- _patch_audio_constant_offset ----
+
+    def _collect_ffmpeg_calls(self, performer, segment_pairs, base_duration_ms, source_sample_rate=48000):
+        """Run _patch_audio_constant_offset with mocked externals and return captured ffmpeg calls."""
+        calls = []
+
+        def fake_start_process(tool, args, **kwargs):
+            calls.append((tool, list(args)))
+            result = type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+            return result
+
+        def fake_raise_on_error(result):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "out.m4a")
+            wd = os.path.join(tmpdir, "work")
+
+            with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
+                 patch.object(process_utils, 'raise_on_error', side_effect=fake_raise_on_error), \
+                 patch.object(video_utils, 'get_video_duration', return_value=base_duration_ms), \
+                 patch.object(video_utils, 'get_video_data', return_value={"audio": [{"sample_rate": source_sample_rate}]}):
+                performer._patch_audio_constant_offset(
+                    wd, "/base.mkv", "/source.mkv", output_path, segment_pairs,
+                )
+
+        return calls
+
+    def test_patch_audio_constant_offset_copy_when_ratio_near_one(self):
+        """When source and target durations match, no asetrate filter should be applied."""
+        performer = self._make_performer()
+        # seg1: 1000..5000 (4s), seg2: 500..4500 (4s) — ratio = 1.0
+        pairs = [(1000, 500), (5000, 4500)]
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=6000)
+
+        # Should NOT contain any asetrate/aresample filter call
+        filter_calls = [c for c in calls if any("asetrate" in str(a) for a in c[1])]
+        self.assertEqual(filter_calls, [], "asetrate should not be used when ratio ≈ 1.0")
+
+    def test_patch_audio_constant_offset_asetrate_when_ratio_differs(self):
+        """When durations differ, asetrate+aresample should be applied."""
+        performer = self._make_performer()
+        # seg1: 0..4000 (4s), seg2: 0..4100 (4.1s) — ratio ≈ 1.025
+        pairs = [(0, 0), (4000, 4100)]
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=4000, source_sample_rate=48000)
+
+        filter_calls = [c for c in calls if any("asetrate" in str(a) for a in c[1])]
+        self.assertEqual(len(filter_calls), 1, "asetrate should be used once")
+
+        filter_arg = next(a for a in filter_calls[0][1] if "asetrate" in str(a))
+        # adjusted_rate = 48000 * 4100 / 4000 = 49200
+        self.assertIn("asetrate=49200", filter_arg)
+        self.assertIn("aresample=48000", filter_arg)
+
+    def test_patch_audio_constant_offset_head_and_tail_extraction(self):
+        """Head and tail segments should be extracted from base audio."""
+        performer = self._make_performer()
+        # Matching region: 2000..8000 in base, so head=[0..2s] and tail=[8s..10s]
+        pairs = [(2000, 1000), (8000, 7000)]
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=10000)
+
+        ffmpeg_args_strs = [" ".join(str(a) for a in c[1]) for c in calls if c[0] == "ffmpeg"]
+
+        head_calls = [s for s in ffmpeg_args_strs if "head" in s and "-to" in s]
+        self.assertTrue(len(head_calls) >= 1, "Head segment should be extracted")
+        self.assertIn("2.0", head_calls[0])
+
+        tail_calls = [s for s in ffmpeg_args_strs if "tail" in s and "-ss" in s]
+        self.assertTrue(len(tail_calls) >= 1, "Tail segment should be extracted")
+        self.assertIn("8.0", tail_calls[0])
+
+    def test_patch_audio_constant_offset_no_head_when_at_start(self):
+        """When matching starts at 0, no head should be extracted."""
+        performer = self._make_performer()
+        pairs = [(0, 500), (4000, 4500)]
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=6000)
+
+        head_calls = [c for c in calls if any("head" in str(a) for a in c[1])]
+        self.assertEqual(head_calls, [], "No head should be extracted when seg1 starts at 0")
+
+    def test_patch_audio_constant_offset_no_tail_when_at_end(self):
+        """When matching ends at base duration, no tail should be extracted."""
+        performer = self._make_performer()
+        pairs = [(1000, 500), (6000, 5500)]
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=6000)
+
+        tail_calls = [c for c in calls if any("tail" in str(a) for a in c[1])]
+        self.assertEqual(tail_calls, [], "No tail should be extracted when seg1 ends at base duration")
+
+
 class PairMatcherUnitTest(unittest.TestCase):
     """Unit tests for PairMatcher internal methods.
 
@@ -2342,8 +2433,9 @@ class PairMatcherUnitTest(unittest.TestCase):
             debug.dump_frames.return_value = None
             debug.dump_matches.return_value = None
 
-            mappings, _, _ = pm.create_segments_mapping()
+            mappings, _, _, is_constant = pm.create_segments_mapping()
 
+        self.assertTrue(is_constant)
         self.assertEqual(mappings, extrapolated_pairs)
 
     # ---- _look_for_boundaries: look_ahead robustness ----
