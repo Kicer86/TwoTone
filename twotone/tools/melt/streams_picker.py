@@ -269,7 +269,7 @@ class StreamsPicker:
         forced_audio_language_raw = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in files_details}
         forced_audio_language: dict[str, str] = {}
         for path, lang in forced_audio_language_raw.items():
-            if lang:
+            if isinstance(lang, str):
                 forced_audio_language[path] = language_utils.unify_lang(lang)
         audio_streams = self._pick_streams(
             files_details,
@@ -285,7 +285,7 @@ class StreamsPicker:
         forced_subtitle_language_raw = {path: self.duplicates_source.get_metadata_for(path).get("subtitle_lang") for path in files_details}
         forced_subtitle_language: dict[str, str] = {}
         for path, lang in forced_subtitle_language_raw.items():
-            if lang:
+            if isinstance(lang, str):
                 forced_subtitle_language[path] = lang
         subtitle_streams = self._pick_streams(
             files_details,
