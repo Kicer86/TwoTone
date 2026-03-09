@@ -1,0 +1,37 @@
+name: python-compile
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'twotone/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - '.github/workflows/python-compile.yml'
+  pull_request:
+    paths:
+      - 'twotone/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - '.github/workflows/python-compile.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile Python sources
+        run: |
+          python -m compileall -q twotone tests scripts
