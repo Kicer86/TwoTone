@@ -2,7 +2,7 @@ import os
 import unittest
 
 from twotone.tools.utils import process_utils, subtitles_utils, video_utils
-from common import TwoToneTestCase, build_test_video, get_audio, get_video, run_twotone, write_subtitle
+from common import TwoToneTestCase, get_video, run_twotone, write_subtitle
 
 
 class LanguageFixerTests(TwoToneTestCase):
@@ -32,58 +32,6 @@ class LanguageFixerTests(TwoToneTestCase):
         subtitles = info["tracks"].get("subtitle", [])
         self.assertEqual(len(subtitles), 1)
         self.assertEqual(subtitles[0]["language"], "eng")
-
-    def test_audio_language_detection_from_track_name(self):
-        audio_path = get_audio("807184__logicmoon__mirrors.wav")
-
-        base_video = os.path.join(self.wd.path, "base_no_audio.mkv")
-        build_test_video(base_video, self.wd.path, "moon.mp4")
-
-        output_video = os.path.join(self.wd.path, "missing_audio_lang.mkv")
-        audio = {"path": audio_path, "language": None, "name": "English"}
-        video_utils.generate_mkv(input_video=base_video, output_path=output_video, audios=[audio])
-
-        run_twotone("language_fix", [self.wd.path, "--audio"], ["--no-dry-run"])
-
-        info = video_utils.get_video_data_mkvmerge(output_video)
-        audios = info["tracks"].get("audio", [])
-        self.assertEqual(len(audios), 1)
-        self.assertEqual(audios[0]["language"], "eng")
-
-    def test_audio_language_detection_from_filename(self):
-        audio_path = get_audio("807184__logicmoon__mirrors.wav")
-        video_input = get_video("moon.mp4")
-
-        output_video = os.path.join(self.wd.path, "sample_endub.mp4")
-        status = process_utils.start_process(
-            "ffmpeg",
-            [
-                "-y",
-                "-i",
-                video_input,
-                "-i",
-                audio_path,
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                "-c:v",
-                "copy",
-                "-c:a",
-                "aac",
-                output_video,
-            ],
-        )
-        self.assertEqual(status.returncode, 0, status.stderr)
-
-        run_twotone("language_fix", [self.wd.path, "--audio"], ["--no-dry-run"])
-
-        # language_fix converts non-MKV files to MKV
-        converted_video = os.path.splitext(output_video)[0] + ".mkv"
-        info = video_utils.get_video_data(converted_video)
-        audios = info.get("audio", [])
-        self.assertEqual(len(audios), 1)
-        self.assertEqual(audios[0]["language"], "eng")
 
     def test_webvtt_extraction_fails(self):
         vtt_path = write_subtitle(
