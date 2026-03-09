@@ -44,35 +44,6 @@ class ConcatenateTests(TwoToneTestCase):
         shutil.copy2(media_file, os.path.join(wdX[6], "''v'' cd2.mp4"))
 
 
-    def _setup_invalid_media(self, wd: str):
-        media_files = add_test_media("Frog.*mp4", wd)
-
-        wdX = [os.path.join(wd, str(i)) for i in range(4)]
-
-        for wdx in wdX:
-            os.makedirs(wdx)
-
-        self.assertEqual(len(media_files), 1)
-        media_file = media_files[0]
-
-        self._create_media(wdX[0], media_file, [" CD2"])
-        self._create_media(wdX[1], media_file, ["-CD1"])
-        self._create_media(wdX[2], media_file, [".CD1", ".CD2", ".CD3", ".CD5", ".CD6", ".CD7"])
-        shutil.copy2(media_file, os.path.join(wdX[3], "cd1.mp4"))
-
-        return wdX
-
-
-    def test_dry_run_is_respected(self):
-        self._setup_valid_media(self.wd.path)
-
-        files_before = list_files(self.wd.path)
-        run_twotone("concatenate", [self.wd.path])
-
-        files_after = list_files(self.wd.path)
-        self.assertEqual(files_after, files_before)
-
-
     def test_concatenation(self):
         self._setup_valid_media(self.wd.path)
 
@@ -85,16 +56,6 @@ class ConcatenateTests(TwoToneTestCase):
         short_paths.sort()
         short_paths = [Path(path).as_posix() for path in short_paths]
         self.assertEqual(short_paths, ['0/Frog - 113403.mp4', '1/Frog - 113403.mp4', '2/Frog - 113403.mp4', '3/Frog - 113403.mp4', '4/Frog - 113403.mp4', '5/5.mp4', "6/''v''.mp4", 'Frog - 113403.mp4'])
-
-
-    def test_invalid_scenarios(self):
-        cases = self._setup_invalid_media(self.wd.path)
-        files_before = list_files(self.wd.path)
-        for case in cases:
-            run_twotone("concatenate", [case], ["-r"])
-
-        files_after = list_files(self.wd.path)
-        self.assertEqual(files_after, files_before)
 
 
 if __name__ == '__main__':

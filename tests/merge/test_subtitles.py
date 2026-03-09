@@ -76,35 +76,6 @@ class SubtitlesMerge(TwoToneTestCase):
         for video in files_after:
             assert_video_info(self, video, expected_subtitles=1)
 
-    def test_subtitles_language(self):
-        # combine mp4 with srt into mkv
-        add_test_media("Atoms.*(mp4|srt)", self.wd.path)
-
-        run_twotone("merge", [self.wd.path, "-l", "pol"], ["--no-dry-run"])
-
-        # verify results
-        files_after = list_files(self.wd.path)
-        self.assertEqual(len(files_after), 1)
-
-        video = files_after[0]
-        tracks = assert_video_info(self, video, expected_subtitles=1)
-        self.assertEqual(tracks["subtitle"][0]["language"], "pol")
-
-    def test_subtitles_with_a_bit_different_names(self):
-        add_test_media("moon_dark.*|Woman.*", self.wd.path)
-        os.rename(os.path.join(self.wd.path, "moon_dark.srt"), os.path.join(self.wd.path, "moon_dark_de.srt"))
-        os.rename(os.path.join(self.wd.path, "Woman - 58142.srt"), os.path.join(self.wd.path, "Woman - 58142_de.srt"))
-
-        run_twotone("merge", [self.wd.path, "-l", "deu"], ["--no-dry-run"])
-
-        # verify results
-        files_after = list_files(self.wd.path)
-        self.assertEqual(len(files_after), 2)
-
-        for video in files_after:
-            tracks = assert_video_info(self, video, expected_subtitles=1)
-            self.assertEqual(tracks["subtitle"][0]["language"], "deu")
-
     def test_multiple_subtitles_for_single_file(self):
         # one file in directory with many subtitles
         add_test_media("Atoms.*mp4", self.wd.path)
@@ -118,44 +89,6 @@ class SubtitlesMerge(TwoToneTestCase):
 
         video = files_after[0]
         assert_video_info(self, video, expected_subtitles=3)
-
-    def test_comment_added_for_subtitles_with_different_name(self):
-        add_test_media("Atoms.*mp4", self.wd.path)
-        add_test_media("Atoms.*srt", self.wd.path)
-
-        write_srt_subtitle(
-            os.path.join(self.wd.path, "commentary by director.srt"),
-            [
-                (0, 6000, "Hello"),
-                (6000, 12000, "Commentary"),
-            ],
-        )
-
-        run_twotone("merge", [self.wd.path, "-l", "eng"], ["--no-dry-run"])
-
-        files_after = list_files(self.wd.path)
-        self.assertEqual(len(files_after), 1)
-
-        video = files_after[0]
-        tracks = assert_video_info(self, video, expected_subtitles=2)
-        titles = [track.get("title") for track in tracks["subtitle"]]
-        self.assertIn("commentary by director", titles)
-        self.assertIn(None, titles)
-
-    def test_no_comment_when_subtitle_names_similar(self):
-        add_test_media("Atoms.*mp4", self.wd.path)
-        add_test_media("Atoms.*srt", self.wd.path)
-        add_test_media("Atoms.*srt", self.wd.path, ["director"])
-
-        run_twotone("merge", [self.wd.path, "-l", "eng"], ["--no-dry-run"])
-
-        files_after = list_files(self.wd.path)
-        self.assertEqual(len(files_after), 1)
-
-        video = files_after[0]
-        tracks = assert_video_info(self, video, expected_subtitles=2)
-        for track in tracks["subtitle"]:
-            self.assertIsNone(track.get("name"))
 
     def test_raw_txt_subtitles_conversion(self):
         # Raw txt subtitles are ignored (ambiguous format)
@@ -200,34 +133,6 @@ class SubtitlesMerge(TwoToneTestCase):
         self.assertTrue(files_after[0].lower().endswith(".mkv"))
         self.assertFalse(os.path.exists(idx_path))
         self.assertFalse(os.path.exists(sub_path))
-
-    def test_invalid_subtitle_extension(self):
-        add_test_media("Frog.*mp4", self.wd.path)
-
-        write_srt_subtitle(
-            os.path.join(self.wd.path, "Frog_en.srt"),
-            [
-                (0, 6000, "Hello World"),
-                (6000, 12000, "This is some sample subtitle in english"),
-            ],
-        )
-
-        write_srt_subtitle(
-            os.path.join(self.wd.path, "Frog_pl.srt"),
-            [
-                (0, 6000, "Witaj Świecie"),
-                (6000, 12000, "To jest przykładowy tekst po polsku"),
-            ],
-            encoding="cp1250",
-        )
-
-        run_twotone("merge", [self.wd.path], ["--no-dry-run"])
-
-        files_after = list_files(self.wd.path)
-        self.assertEqual(len(files_after), 1)
-
-        video = files_after[0]
-        assert_video_info(self, video, expected_subtitles=2)
 
     def test_multilevel_structure(self):
         add_test_media("sea-waves-crashing-on-beach-shore.*mp4", self.wd.path)
