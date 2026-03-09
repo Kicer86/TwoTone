@@ -1,8 +1,10 @@
 
 import logging
+import tempfile
 import unittest
 import os
 import platform
+import argparse
 
 from functools import partial
 from itertools import permutations
@@ -11,7 +13,7 @@ from pathlib import Path
 from typing import Iterator
 
 from twotone.tools.utils import generic_utils, process_utils, video_utils
-from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, StaticSource, StreamsPicker
+from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, MeltTool, StaticSource, StreamsPicker
 from twotone.tools.utils.files_utils import ScopedDirectory
 from common import (
     TwoToneTestCase,
@@ -359,6 +361,232 @@ class MeltingTest(TwoToneTestCase):
 
         self.assertEqual(audio_streams[0][0], file1)
 
+    def test_melt_tool_parses_force_all_streams_as_per_input_flag(self):
+        parser = argparse.ArgumentParser()
+        MeltTool().setup_parser(parser)
+
+        args = parser.parse_args([
+            "-o", "/tmp/out",
+            "-t", "Example",
+            "-i", "/tmp/a.mkv",
+            "--force-all-streams",
+            "-i", "/tmp/b.mkv",
+        ])
+
+        self.assertTrue(args.input_entries[0]["force_all_streams"])
+        self.assertNotIn("force_all_streams", args.input_entries[1])
+
+    def test_streams_picker_keeps_forced_streams_including_unknown_language(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+
+        file_forced = os.path.join(self.wd.path, "forced.mkv")
+        file_other = os.path.join(self.wd.path, "other.mkv")
+
+        duplicates.add_metadata(file_forced, "force_all_streams", True)
+
+        files_details = {
+            file_forced: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "24000/1001"}],
+                "audio": [
+                    {"tid": 1, "language": None, "channels": 2, "sample_rate": 24000},
+                    {"tid": 2, "language": "eng", "channels": 2, "sample_rate": 24000},
+                ],
+                "subtitle": [
+                    {"tid": 3, "language": None},
+                ],
+            },
+            file_other: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "24000/1001"}],
+                "audio": [
+                    {"tid": 5, "language": "pol", "channels": 2, "sample_rate": 48000},
+                    {"tid": 6, "language": "eng", "channels": 2, "sample_rate": 96000},
+                ],
+                "subtitle": [
+                    {"tid": 8, "language": "deu"},
+                ],
+            },
+        }
+        ids = {file_forced: 1, file_other: 2}
+
+        _, audio_streams, subtitle_streams = sp.pick_streams(files_details, ids)
+
+        self.assertEqual(audio_streams, [
+            (file_forced, 1, None),
+            (file_forced, 2, "eng"),
+            (file_other, 5, "pol"),
+        ])
+        self.assertEqual(subtitle_streams, [
+            (file_forced, 3, None),
+            (file_other, 8, "deu"),
+        ])
+
+    def test_streams_picker_raises_on_unknown_language_without_force_flag(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+
+        file1 = os.path.join(self.wd.path, "unknown_audio_1.mkv")
+        file2 = os.path.join(self.wd.path, "unknown_audio_2.mkv")
+
+        files_details = {
+            file1: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "24000/1001"}],
+                "audio": [{"tid": 1, "language": None, "channels": 2, "sample_rate": 48000}],
+                "subtitle": [],
+            },
+            file2: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "24000/1001"}],
+                "audio": [{"tid": 1, "language": "eng", "channels": 2, "sample_rate": 48000}],
+                "subtitle": [],
+            },
+        }
+        ids = {file1: 1, file2: 2}
+
+        with self.assertRaises(RuntimeError):
+            sp.pick_streams(files_details, ids)
+
+    def test_force_all_streams_does_not_affect_video_selection(self):
+        """Force flag only applies to audio/subtitle — video uses normal preference."""
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+
+        file_forced = os.path.join(self.wd.path, "forced_lo.mkv")
+        file_other = os.path.join(self.wd.path, "other_hi.mkv")
+
+        duplicates.add_metadata(file_forced, "force_all_streams", True)
+
+        files_details = {
+            file_forced: {
+                "video": [{"tid": 0, "width": 640, "height": 480, "fps": "25"}],
+                "audio": [{"tid": 1, "language": "eng", "channels": 2, "sample_rate": 48000}],
+                "subtitle": [],
+            },
+            file_other: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "25"}],
+                "audio": [{"tid": 1, "language": "eng", "channels": 2, "sample_rate": 48000}],
+                "subtitle": [],
+            },
+        }
+        ids = {file_forced: 1, file_other: 2}
+
+        video_streams, _, _ = sp.pick_streams(files_details, ids)
+
+        # Higher resolution from non-forced file should be preferred
+        self.assertEqual(video_streams[0][0], file_other)
+
+    def test_force_all_streams_treats_und_as_unknown(self):
+        """'und' language is normalized to None, then treated as undefined for forced inputs."""
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+
+        file_forced = os.path.join(self.wd.path, "forced_und.mkv")
+
+        duplicates.add_metadata(file_forced, "force_all_streams", True)
+
+        files_details = {
+            file_forced: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "25"}],
+                "audio": [{"tid": 1, "language": "und", "channels": 2, "sample_rate": 48000}],
+                "subtitle": [],
+            },
+        }
+        ids = {file_forced: 1}
+
+        _, audio_streams, _ = sp.pick_streams(files_details, ids)
+
+        # 'und' → None in output (normalized through undefined bucket)
+        self.assertEqual(len(audio_streams), 1)
+        self.assertIsNone(audio_streams[0][2])
+
+    def test_force_all_streams_parser_requires_preceding_input(self):
+        """--force-all-streams before any -i should fail."""
+        parser = argparse.ArgumentParser()
+        MeltTool().setup_parser(parser)
+
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["--force-all-streams", "-i", "/tmp/a.mkv", "-o", "/out", "-t", "X"])
+
+    def test_force_all_streams_both_inputs_forced_same_language(self):
+        """Two forced inputs with the same language keep all streams from both."""
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+
+        file_a = os.path.join(self.wd.path, "forced_a.mkv")
+        file_b = os.path.join(self.wd.path, "forced_b.mkv")
+
+        duplicates.add_metadata(file_a, "force_all_streams", True)
+        duplicates.add_metadata(file_b, "force_all_streams", True)
+
+        files_details = {
+            file_a: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "25"}],
+                "audio": [{"tid": 1, "language": "eng", "channels": 2, "sample_rate": 48000}],
+                "subtitle": [],
+            },
+            file_b: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "25"}],
+                "audio": [{"tid": 2, "language": "eng", "channels": 2, "sample_rate": 96000}],
+                "subtitle": [],
+            },
+        }
+        ids = {file_a: 1, file_b: 2}
+
+        _, audio_streams, _ = sp.pick_streams(files_details, ids)
+
+        # Both forced — both eng streams kept
+        self.assertEqual(len(audio_streams), 2)
+        paths = {s[0] for s in audio_streams}
+        self.assertEqual(paths, {file_a, file_b})
+
+    def test_force_all_streams_covers_all_languages_non_forced_skipped(self):
+        """When forced input covers all unique keys, non-forced contributes nothing."""
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+
+        file_forced = os.path.join(self.wd.path, "forced_full.mkv")
+        file_other = os.path.join(self.wd.path, "other.mkv")
+
+        duplicates.add_metadata(file_forced, "force_all_streams", True)
+
+        files_details = {
+            file_forced: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "25"}],
+                "audio": [
+                    {"tid": 1, "language": "eng", "channels": 6, "sample_rate": 48000},
+                    {"tid": 2, "language": "pol", "channels": 6, "sample_rate": 48000},
+                ],
+                "subtitle": [{"tid": 3, "language": "eng"}],
+            },
+            file_other: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "25"}],
+                "audio": [
+                    {"tid": 4, "language": "eng", "channels": 6, "sample_rate": 96000},
+                    {"tid": 5, "language": "pol", "channels": 6, "sample_rate": 96000},
+                ],
+                "subtitle": [{"tid": 6, "language": "eng"}],
+            },
+        }
+        ids = {file_forced: 1, file_other: 2}
+
+        _, audio_streams, subtitle_streams = sp.pick_streams(files_details, ids)
+
+        # All from forced, nothing from other (same language+channels = same key)
+        forced_audio = [s for s in audio_streams if s[0] == file_forced]
+        other_audio = [s for s in audio_streams if s[0] == file_other]
+        self.assertEqual(len(forced_audio), 2)
+        self.assertEqual(len(other_audio), 0)
+
+        forced_subs = [s for s in subtitle_streams if s[0] == file_forced]
+        other_subs = [s for s in subtitle_streams if s[0] == file_other]
+        self.assertEqual(len(forced_subs), 1)
+        self.assertEqual(len(other_subs), 0)
+
     def test_streams_picker_prefers_higher_resolution_video(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
@@ -597,6 +825,39 @@ class MeltingTest(TwoToneTestCase):
         self.assertEqual(output_file_data["audio"][3]["language"], "nor")
         self.assertEqual(output_file_data["audio"][4]["language"], "pol")
 
+    def test_unknown_language_streams_sorted_last(self):
+        """Streams with unknown language (from --force-all-streams) should appear after all known-language streams."""
+        video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = True)
+        video2 = build_test_video(os.path.join(self.wd.path, "o2.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = True)
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Sea Waves", video1)
+        duplicates.add_entry("Sea Waves", video2)
+        duplicates.add_metadata(video1, "audio_lang", "eng")
+        duplicates.add_metadata(video2, "audio_lang", "pol")
+        duplicates.add_metadata(video1, "subtitle_lang", "pol")
+        # video2 subtitle: unknown language, kept via force_all_streams
+        duplicates.add_metadata(video2, "force_all_streams", True)
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        logger = self.logger.getChild("Melter")
+        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
+        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+
+        output_file_hash = hashes(output_dir)
+        self.assertEqual(len(output_file_hash), 1)
+        output_file = list(output_file_hash)[0]
+
+        output_file_data = video_utils.get_video_data(output_file)
+        subtitles = output_file_data["subtitle"]
+        self.assertEqual(len(subtitles), 2)
+        # Known language (pol) should come first, unknown last
+        self.assertEqual(subtitles[0]["language"], "pol")
+        self.assertIsNone(subtitles[1]["language"])
+
     def test_default_language(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
@@ -829,6 +1090,74 @@ class MeltingTest(TwoToneTestCase):
             self.assertEqual(picked_streams_normalized, expected_streams_normalized)
 
 
+
+class MeltPerformerUnitTest(unittest.TestCase):
+    """Unit tests for MeltPerformer internal methods."""
+
+    def _make_performer(self) -> MeltPerformer:
+        performer = object.__new__(MeltPerformer)
+        performer.logger = logging.getLogger("test.MeltPerformer")
+        performer.wd = tempfile.mkdtemp()
+        performer.output_dir = tempfile.mkdtemp()
+        performer.tolerance_ms = DEFAULT_TOLERANCE_MS
+        performer.interruption = generic_utils.InterruptibleProcess()
+        return performer
+
+    def test_stream_sorting_puts_unknown_languages_last(self):
+        streams = [
+            ("audio", 1, "/a.mkv", None),
+            ("audio", 2, "/a.mkv", "eng"),
+            ("subtitle", 3, "/a.mkv", None),
+            ("subtitle", 4, "/a.mkv", "pol"),
+            ("subtitle", 5, "/a.mkv", "deu"),
+        ]
+
+        sort_key = lambda stream: (stream[3] is None, stream[3] or "")
+        result = sorted(streams, key=sort_key)
+
+        languages = [s[3] for s in result]
+        self.assertEqual(languages, ["deu", "eng", "pol", None, None])
+
+    def test_stream_sorting_alphabetical_when_all_known(self):
+        streams = [
+            ("subtitle", 1, "/a.mkv", "pol"),
+            ("subtitle", 2, "/a.mkv", "eng"),
+            ("subtitle", 3, "/a.mkv", "deu"),
+            ("audio", 4, "/a.mkv", "jpn"),
+        ]
+
+        sort_key = lambda stream: (stream[3] is None, stream[3] or "")
+        result = sorted(streams, key=sort_key)
+
+        languages = [s[3] for s in result]
+        self.assertEqual(languages, ["deu", "eng", "jpn", "pol"])
+
+    def test_build_mkvmerge_args_track_order_respects_unknown_last(self):
+        performer = self._make_performer()
+
+        file_a = "/tmp/a.mkv"
+        file_b = "/tmp/b.mkv"
+
+        streams_list_sorted = [
+            ("video", 0, file_a, None),
+            ("audio", 1, file_a, "eng"),
+            ("subtitle", 3, file_a, "deu"),
+            ("subtitle", 4, file_a, "pol"),
+            ("subtitle", 5, file_a, None),
+        ]
+
+        args = performer._build_mkvmerge_args(
+            "/tmp/out.mkv",
+            streams_list_sorted,
+            attachments=[],
+            preferred_audio=None,
+            required_input_files=[file_a],
+        )
+
+        # Track order should preserve the sorted order
+        track_order_idx = args.index("--track-order")
+        track_order = args[track_order_idx + 1]
+        self.assertEqual(track_order, "0:0,0:1,0:3,0:4,0:5")
 
 if __name__ == '__main__':
     unittest.main()

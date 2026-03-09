@@ -1,7 +1,6 @@
 import argparse
 import logging
 import os
-import re
 
 from overrides import override
 
@@ -21,6 +20,32 @@ class RequireJellyfinServer(argparse.Action):
         if getattr(namespace, "jellyfin_server", None) is None:
             parser.error(f"{option_string} requires --jellyfin-server to be specified")
         setattr(namespace, self.dest, values)
+
+
+class InputAction(argparse.Action):
+    """Appends a new input entry dict to namespace.input_entries."""
+    def __call__(self, parser, namespace, values, option_string=None):
+        entries = getattr(namespace, self.dest, None) or []
+        entries.append({'path': values})
+        setattr(namespace, self.dest, entries)
+
+
+class PerInputMetadataAction(argparse.Action):
+    """Attaches a metadata value to the most recently added -i/--input entry."""
+    def __call__(self, parser, namespace, values, option_string=None):
+        entries = getattr(namespace, 'input_entries', None)
+        if not entries:
+            parser.error(f"{option_string} must be specified after -i/--input")
+        entries[-1][self.dest] = values
+
+
+class PerInputFlagAction(argparse.Action):
+    """Attaches a boolean metadata flag to the most recently added -i/--input entry."""
+    def __call__(self, parser, namespace, values, option_string=None):
+        entries = getattr(namespace, 'input_entries', None)
+        if not entries:
+            parser.error(f"{option_string} must be specified after -i/--input")
+        entries[-1][self.dest] = True
 
 
 class MeltTool(Tool):
@@ -52,18 +77,34 @@ class MeltTool(Tool):
         manual_group = parser.add_argument_group("Manual input source")
         manual_group.add_argument('-t', '--title',
                                   help='Video (movie or series when directory is provided as an input) title.')
-        manual_group.add_argument('-i', '--input', dest='input_files', action='append',
+        manual_group.add_argument('-i', '--input', dest='input_entries', action=InputAction,
                                   help='Add an input video file or directory with video files (can be specified multiple times).\n'
-                                       'path can be followed with a comma and some additional parameters:\n'
-                                       'audio_lang:XXX       - information about audio language (like eng, de or pl).\n'
-                                       'audio_prod_lang:XXX - original/production audio language.\n\n'
+                                       'Per-input metadata can be specified with --audio-lang, --audio-prod-lang, --subtitle-lang\n'
+                                       'flags placed after each -i.\n\n'
                                        'Example of usage:\n'
-                                       '--input some/path/file.mp4,audio_lang:jp --input some/path/file.mp4,audio_lang:eng\n\n'
+                                       '-i some/path/file.mp4 --audio-lang jp -i some/path/file2.mp4 --audio-lang eng\n\n'
                                        'If files are provided with this option, all of them are treated as duplicates of given title.\n'
-                                       'If directoriess are provided, a \'series\' mode is being used and melt will list and sort files from each dir, and corresponding '
+                                       'If directories are provided, a \'series\' mode is being used and melt will list and sort files from each dir, and corresponding '
                                        'files from provided directories will be grouped as duplicates.\n'
                                        'If only one directory is provided as input, all files found inside will be treated as duplicates of the title.\n'
                                        'No other scenarios and combinations of inputs are supported.')
+        manual_group.add_argument('--audio-lang', dest='audio_lang', action=PerInputMetadataAction,
+                                  default=argparse.SUPPRESS,
+                                  help='Audio language for the preceding -i input (e.g., eng, de, pl).\n'
+                                       'Can be specified after each -i to set different languages per input.')
+        manual_group.add_argument('--audio-prod-lang', dest='audio_prod_lang', action=PerInputMetadataAction,
+                                  default=argparse.SUPPRESS,
+                                  help='Original/production audio language for the preceding -i input.')
+        manual_group.add_argument('--subtitle-lang', dest='subtitle_lang', action=PerInputMetadataAction,
+                                  default=argparse.SUPPRESS,
+                                  help='Subtitle language for the preceding -i input.\n'
+                                       'Can be specified after each -i to set different languages per input.')
+        manual_group.add_argument('--force-all-streams', dest='force_all_streams', action=PerInputFlagAction,
+                                  nargs=0,
+                                  default=argparse.SUPPRESS,
+                                  help='Force all audio and subtitle streams from the preceding -i input to be kept,\n'
+                                       'even if their language is unknown. Streams from non-forced inputs are\n'
+                                       'only used when forced inputs do not already cover the same language.')
 
         # global options
         parser.add_argument('-o', '--output-dir',
@@ -83,13 +124,13 @@ class MeltTool(Tool):
             raise RuntimeError("Parser not initialized. Call setup_parser before analyze.")
 
         # Build data source based on arguments
+        path_fix: tuple[str, str] | None = None
         if args.jellyfin_server:
             path_fix_list = _split_path_fix(args.jellyfin_path_fix) if args.jellyfin_path_fix else None
 
             if path_fix_list and len(path_fix_list) != 2:
                 parser.error(f"Invalid content for --jellyfin-path-fix argument. Got: {path_fix_list}")
 
-            path_fix: tuple[str, str] | None = None
             if path_fix_list:
                 path_fix = (path_fix_list[0], path_fix_list[1])
 
@@ -98,39 +139,27 @@ class MeltTool(Tool):
                                          token = args.jellyfin_token,
                                          path_fix = path_fix,
                                          logger = logger.getChild("JellyfinSource"))
-        elif args.input_files:
+        elif args.input_entries:
             title = args.title
-            input_entries = args.input_files
+            input_entries = args.input_entries
 
             if not title:
                 parser.error("Missing required option: --title")
 
             src = StaticSource(interruption=interruption)
 
-            for input in input_entries:
-                # split by ',' but respect ""
-                input_split = re.findall(r'(?:[^,"]|"(?:\\"|[^"])*")+', input)
-                path = input_split[0]
+            for entry in input_entries:
+                path = entry['path']
 
                 if not os.path.exists(path):
                     raise ValueError(f"Path {path} does not exist")
 
-                audio_lang = ""
-                audio_prod_lang = ""
-
-                if len(input_split) > 1:
-                    for extra_arg in input_split[1:]:
-                        if extra_arg[:11] == "audio_lang:":
-                            audio_lang = extra_arg[11:]
-                        if extra_arg[:15] == "audio_prod_lang:":
-                            audio_prod_lang = extra_arg[15:]
-
                 src.add_entry(title, path)
 
-                if audio_lang:
-                    src.add_metadata(path, "audio_lang", audio_lang)
-                if audio_prod_lang:
-                    src.add_metadata(path, "audio_prod_lang", audio_prod_lang)
+                for key in ('audio_lang', 'audio_prod_lang', 'subtitle_lang', 'force_all_streams'):
+                    value = entry.get(key)
+                    if value is not None:
+                        src.add_metadata(path, key, value)
 
             data_source = src
 

@@ -138,7 +138,7 @@ class JellyfinSource(DuplicatesSource):
         return duplicates
 
     @override
-    def get_metadata_for(self, path: str) -> dict[str, str | None]:
+    def get_metadata_for(self, path: str) -> dict[str, str | bool | None]:
         tmdb_id = self.tmdb_id_by_path.get(path)
 
         if not tmdb_id:
