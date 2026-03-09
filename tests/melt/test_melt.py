@@ -24,7 +24,7 @@ from common import (
     hashes,
     run_ffmpeg,
 )
-from helpers import normalize, all_key_orders, analyze_duplicates_helper, process_duplicates_helper, build_path_to_id_map
+from melt.helpers import normalize, all_key_orders, analyze_duplicates_helper, process_duplicates_helper, build_path_to_id_map
 
 
 class MeltingTest(TwoToneTestCase):
