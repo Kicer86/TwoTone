@@ -319,66 +319,6 @@ class MeltPerformer:
 
         return streams_list
 
-    def _format_stream_summary(
-        self,
-        streams_list: Sequence[tuple[str, int, str, str | None]],
-    ) -> list[str]:
-        def format_lang(lang: str | None) -> str:
-            if not lang:
-                return "unknown"
-            return language_utils.language_name(lang)
-
-        def stream_details(stype: str, path: str, tid: int) -> str:
-            if stype == "video":
-                info = video_utils.get_video_data(path)
-                video = info.get("video", [{}])[0]
-                parts: list[str] = []
-                width = video.get("width")
-                height = video.get("height")
-                if width and height:
-                    parts.append(f"{width}x{height}")
-                fps = video.get("fps")
-                if fps:
-                    try:
-                        fps_val = generic_utils.fps_str_to_float(str(fps))
-                        parts.append(f"{fps_val:.3f}fps")
-                    except Exception:
-                        parts.append(f"{fps}fps")
-                codec = video.get("codec")
-                if codec:
-                    parts.append(str(codec))
-                return ", ".join(parts) if parts else "-"
-            if stype == "audio":
-                info = video_utils.get_video_data(path)
-                audio = info.get("audio", [{}])[0]
-                parts = []
-                channels = audio.get("channels")
-                if channels:
-                    parts.append(f"{channels}ch")
-                sample_rate = audio.get("sample_rate")
-                if sample_rate:
-                    parts.append(f"{sample_rate}Hz")
-                codec = audio.get("codec")
-                if codec:
-                    parts.append(str(codec))
-                return ", ".join(parts) if parts else "-"
-            if stype == "subtitle":
-                info = video_utils.get_video_data(path)
-                subs = info.get("subtitle", [])
-                match = next((s for s in subs if s.get("tid") == tid), None)
-                fmt = match.get("format") if match else None
-                codec = match.get("codec") if match else None
-                return str(fmt or codec or "-")
-            return "-"
-
-        summaries = []
-        for stype, tid, path, lang in streams_list:
-            details = stream_details(stype, path, tid)
-            summaries.append(
-                f"{stype} #{tid} [{format_lang(lang)}] {details} <- {self._display_path(path)}"
-            )
-        return summaries
-
     def _choose_preferred_audio(
         self,
         audio_prod_lang: str | None,
