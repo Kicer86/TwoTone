@@ -4,6 +4,7 @@ pull_request_rules:
       - check-success="tests (windows-latest)"
       - check-success="tests (macos-latest)"
       - check-success="tests (ubuntu-latest)"
+      - check-success=compile
       - check-success=mypy
       - "#commits=1"
       - or:
@@ -20,6 +21,7 @@ pull_request_rules:
       - check-success="tests (windows-latest)"
       - check-success="tests (macos-latest)"
       - check-success="tests (ubuntu-latest)"
+      - check-success=compile
       - check-success=mypy
       - "#commits>1"
       - "#commits-behind=0"
