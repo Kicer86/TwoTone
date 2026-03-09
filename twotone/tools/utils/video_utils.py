@@ -1,14 +1,82 @@
 import json
 import logging
 import os
+import platform
 import re
+import subprocess
 import time
 from collections import defaultdict
 from pathlib import Path
+from typing import Any, Callable
+
+from tqdm import tqdm
 
 from . import language_utils, process_utils, subtitles_utils
-from .generic_utils import fps_str_to_float, time_to_ms
+from .generic_utils import InterruptibleProcess, fps_str_to_float, get_tqdm_defaults, time_to_ms
 from .subtitles_utils import SubtitleFile
+
+
+def _start_ffmpeg_streaming(
+    args: list[str],
+    interruption: InterruptibleProcess | None = None,
+    on_line: "Callable[[str], None] | None" = None,
+) -> tuple[subprocess.Popen, list[str]]:
+    """Start an ffmpeg subprocess and read its stderr line-by-line.
+
+    Returns ``(process, stderr_lines)`` after ffmpeg finishes.
+    Checks *interruption* between lines so ctrl+c can terminate the run.
+    Terminates the subprocess on interruption.
+    When *on_line* is given, it is called with each stderr line (e.g. for
+    progress updates).
+    """
+    defaults = process_utils.DEFAULT_TOOL_OPTIONS.get("ffmpeg", [])
+    full_args = list(args)
+    for opt in reversed(defaults):
+        if opt not in full_args:
+            full_args.insert(0, opt)
+
+    command = ["ffmpeg"] + full_args
+    logging.debug(f"Starting ffmpeg {' '.join(full_args)}")
+
+    popen_kwargs: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "universal_newlines": True,
+        "bufsize": 1,
+    }
+    if platform.system() == "Windows":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["preexec_fn"] = os.setsid
+
+    proc = subprocess.Popen(command, **popen_kwargs)
+
+    stderr_lines: list[str] = []
+    try:
+        assert proc.stderr is not None
+        for line in proc.stderr:
+            stderr_lines.append(line)
+            if on_line is not None:
+                on_line(line)
+            if interruption is not None and not interruption._work:
+                proc.terminate()
+                proc.wait()
+                interruption.check_for_stop()  # raises SystemExit
+    except Exception:
+        proc.terminate()
+        proc.wait()
+        raise
+
+    # Drain stdout (ffmpeg sends everything to stderr, but be safe)
+    if proc.stdout:
+        proc.stdout.read()
+        proc.stdout.close()
+
+    if proc.stderr:
+        proc.stderr.close()
+
+    proc.wait()
+    return proc, stderr_lines
 
 
 def is_video(file: str) -> bool:
@@ -26,10 +94,20 @@ def get_video_frames_count(video_file: str):
         return None
 
 
-def detect_scene_changes(file_path, threshold = 0.4) -> list[int]:
+def detect_scene_changes(
+    file_path: str,
+    threshold: float = 0.4,
+    logger: logging.Logger | None = None,
+    interruption: InterruptibleProcess | None = None,
+    desc: str | None = None,
+) -> list[int]:
     """
         Run ffmpeg with a scene detection filter and extract scene change times.
-        Function returns list of scene changes in milliseconds
+        Function returns list of scene changes in milliseconds.
+
+        When *desc* is given, it is used as the progress bar description.
+        When *logger* is given (and no *desc*), an info message is emitted.
+        When *interruption* is given, ctrl+c can cleanly stop the process.
     """
 
     args = [
@@ -38,22 +116,55 @@ def detect_scene_changes(file_path, threshold = 0.4) -> list[int]:
         "-sn",                                              # Ignore subtitle streams
         "-dn",                                              # Ignore data streams
         "-fps_mode", "auto",
-        "-frame_pts", "true",                               # Ensure correct frame timestamps
         "-filter_complex", f"select='gt(scene,{threshold})',showinfo",
         "-f", "null", "-"
     ]
-    result = process_utils.start_process("ffmpeg", args = args)
+
+    basename = os.path.basename(file_path)
+    bar_desc = desc or f"Detecting scenes: {basename}"
+
+    duration_ms = get_video_duration(file_path)
+    duration_s = (duration_ms / 1000.0) if duration_ms else None
+    pts_time_re = re.compile(r"pts_time:(\d+\.?\d*)")
+
+    pbar = tqdm(
+        total=duration_s,
+        desc=bar_desc,
+        unit="s",
+        **get_tqdm_defaults(),
+    )
+    last_time = 0.0
+
+    def _on_line(line: str) -> None:
+        nonlocal last_time
+        m = pts_time_re.search(line)
+        if m:
+            t = float(m.group(1))
+            delta = t - last_time
+            if delta > 0:
+                pbar.update(delta)
+                last_time = t
+
+    proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line)
+    if duration_s and last_time < duration_s:
+        pbar.update(duration_s - last_time)
+    pbar.close()
+
+    if proc.returncode != 0:
+        logging.warning(f"ffmpeg scene detection exited with code {proc.returncode}")
 
     # Look for lines with "pts_time:"; these indicate the timestamp of a scene change.
     scene_times = []
-    pattern = re.compile(r"pts_time:(\d+\.\d+)")
-    for line in result.stderr.splitlines():
+    pattern = re.compile(r"pts_time:(\d+\.?\d*)")
+    for line in stderr_lines:
         match = pattern.search(line)
         if match:
             time_s = float(match.group(1))
             time_ms = int(round(time_s * 1000))
-
             scene_times.append(time_ms)
+
+    if logger:
+        logger.debug(f"Detected {len(scene_times)} scene changes in {basename}")
 
     return sorted(set(scene_times))
 
@@ -94,13 +205,28 @@ def extract_timestamp_frame_mapping(video_path: str) -> dict[int, int]:
     return timestamp_frame_map
 
 
-def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", scale: float | tuple[int, int] = 0.5) -> dict[int, dict]:
+def extract_all_frames(
+    video_path: str,
+    target_dir: str,
+    format: str = "jpeg",
+    scale: float | tuple[int, int] = 0.5,
+    logger: logging.Logger | None = None,
+    interruption: InterruptibleProcess | None = None,
+    desc: str | None = None,
+) -> dict[int, dict]:
     """
-        Function extracts all frames into the given directory (should be empty).
-        Returns a dict mapping timestamp (ms) -> {'path': frame_path, 'frame': frame_number}
+        Extract all frames into *target_dir* (should be empty).
+
+        Returns a dict mapping timestamp_ms -> {'path': frame_path, 'frame_id': sequential_number}.
+
+        Frames use sequential numbering (no ``-frame_pts true``) so the
+        file count is always reliable.  Timestamps come from the
+        ``showinfo`` filter's ``pts_time`` output.  If the two counts
+        diverge (extremely rare), the smaller one is used with a warning.
+
+        When *logger* is given, an info message is emitted.
+        When *interruption* is given, ctrl+c can cleanly stop the process.
     """
-    def run_ffmpeg(args):
-        return process_utils.start_process("ffmpeg", args=args)
 
     # Clear target directory
     def clean_target_dir():
@@ -109,70 +235,299 @@ def extract_all_frames(video_path: str, target_dir: str, format: str = "jpeg", s
             if os.path.isfile(file_path):
                 os.unlink(file_path)
 
-    scale_option = ""
+    scale_filter = ""
     if isinstance(scale, float):
         if scale != 1.0:
             rscale = 1 / scale
-            scale_option = f"scale=iw/{rscale}:ih/{rscale}"
+            scale_filter = f"scale=iw/{rscale}:ih/{rscale}"
     elif isinstance(scale, tuple):
-        scale_option = f"scale={scale[0]}:{scale[1]}"
+        scale_filter = f"scale={scale[0]}:{scale[1]}"
     else:
         raise RuntimeError("Invalid type for scale")
 
-    output_pattern = os.path.join(target_dir, f"frame_%06d.{format}")
+    # Sequential numbering — always reliable, no PTS-based naming issues
+    output_pattern = os.path.join(target_dir, f"frame_%08d.{format}")
 
-    def build_args(extra_args):
-        filters = ["showinfo"]
-        if scale_option:
-            filters.append(scale_option)
-        filters_arg = ",".join(filters)
+    def build_args(extra_args: list[str]) -> list[str]:
+        vf_parts = ["showinfo"]
+        if scale_filter:
+            vf_parts.append(scale_filter)
 
         return [
-            "-copyts",
-            "-start_at_zero",
             "-i", video_path,
+            "-map", "0:v:0",           # Explicitly select only the first video stream
             "-an",                      # Ignore audio
             "-sn",                      # Ignore subtitles
             "-dn",                      # Ignore data streams
-            "-frame_pts", "true",
             *extra_args,
             "-q:v", "2",
-            "-vf", filters_arg,
-            output_pattern
+            "-vf", ",".join(vf_parts),
+            output_pattern,
         ]
 
-    fallback_options = [
+    basename = os.path.basename(video_path)
+    bar_desc = desc or f"Extracting frames: {basename}"
+
+    # Get total frame count for a real progress bar
+    total_frames = get_video_frames_count(video_path)
+
+    fallback_options: list[list[str]] = [
         ["-fps_mode", "vfr"],
+        ["-fps_mode", "cfr"],
+        [],
     ]
 
+    frame_pattern = re.compile(r"n: *(\d+).*pts_time:([\d.]+)")
+    showinfo_entries: list[tuple[int, int]] = []      # (frame_number, timestamp_ms)
+
+    last_stderr: list[str] = []
     for opts in fallback_options:
         clean_target_dir()
+        showinfo_entries.clear()
         args = build_args(opts)
-        result = run_ffmpeg(args)
 
-        if result.returncode == 0:
+        pbar = tqdm(
+            total=total_frames,
+            desc=bar_desc,
+            unit="frame",
+            **get_tqdm_defaults(),
+        )
+
+        def _on_line(line: str) -> None:
+            match = frame_pattern.search(line)
+            if match:
+                frame_number = int(match.group(1))
+                timestamp_ms = int(round(float(match.group(2)) * 1000))
+                showinfo_entries.append((frame_number, timestamp_ms))
+                pbar.update(1)
+
+        proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line)
+        pbar.close()
+        last_stderr = stderr_lines
+
+        if proc.returncode == 0:
             break
     else:
-        raise RuntimeError("ffmpeg failed with all fallback options.")
+        stderr_tail = "".join(last_stderr[-20:]) if last_stderr else "(no output)"
+        raise RuntimeError(
+            f"ffmpeg frame extraction failed for {basename}. "
+            f"Last output:\n{stderr_tail}"
+        )
 
-    frame_pattern = re.compile(r"n: *(\d+).*pts_time:([\d.]+)")
     frame_files = sorted(os.listdir(target_dir))
 
-    mapping = {}
-    f = 0
-    for line in result.stderr.splitlines():
+    # Handle count mismatch gracefully — use the smaller count
+    usable = min(len(showinfo_entries), len(frame_files))
+    if len(showinfo_entries) != len(frame_files):
+        logging.warning(
+            f"Frame count mismatch for {basename}: showinfo reported {len(showinfo_entries)} "
+            f"frames but {len(frame_files)} files on disk. Using {usable}."
+        )
+
+    mapping: dict[int, dict] = {}
+    for i in range(usable):
+        frame_number, timestamp_ms = showinfo_entries[i]
+        fname = frame_files[i]
+        mapping[timestamp_ms] = {
+            "path": os.path.join(target_dir, fname),
+            "frame_id": frame_number,
+        }
+
+    if logger:
+        logger.info(f"Extracted {len(mapping)} frames from {basename}")
+
+    return mapping
+
+
+def probe_frame_timestamps(
+    video_path: str,
+    interruption: InterruptibleProcess | None = None,
+    desc: str | None = None,
+) -> dict[int, dict]:
+    """Probe all frame timestamps without writing image files.
+
+    Returns ``{timestamp_ms: {"frame_id": N, "path": None}}`` for every
+    frame in the video.  Uses ffmpeg's ``showinfo`` filter with null
+    output so that frame numbering (``n:``) is guaranteed to match the
+    ``n`` variable used by ffmpeg's ``select`` filter.
+    """
+    args = [
+        "-i", video_path,
+        "-map", "0:v:0",
+        "-an", "-sn", "-dn",
+        "-vf", "showinfo",
+        "-f", "null", "-",
+    ]
+
+    basename = os.path.basename(video_path)
+    bar_desc = desc or f"Probing frames: {basename}"
+
+    total_frames = get_video_frames_count(video_path)
+
+    frame_pattern = re.compile(r"n: *(\d+).*pts_time:([\d.]+)")
+    entries: list[tuple[int, int]] = []
+
+    pbar = tqdm(
+        total=total_frames,
+        desc=bar_desc,
+        unit="frame",
+        **get_tqdm_defaults(),
+    )
+
+    def _on_line(line: str) -> None:
         match = frame_pattern.search(line)
         if match:
             frame_number = int(match.group(1))
             timestamp_ms = int(round(float(match.group(2)) * 1000))
-            frame_file = frame_files[f]
-            frame_id = int(frame_file[6:- (len(format) + 1)])
-            mapping[timestamp_ms] = {"path": os.path.join(target_dir, frame_files[f]), "frame": frame_number, "frame_id": frame_id}
-            f += 1
+            entries.append((frame_number, timestamp_ms))
+            pbar.update(1)
 
-    #self.logger.debug(f"Parsed frames: {f}, Frame files: {len(frame_files)}")
+    proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line)
+    pbar.close()
+
+    if proc.returncode != 0:
+        stderr_tail = "".join(stderr_lines[-20:]) if stderr_lines else "(no output)"
+        raise RuntimeError(
+            f"ffmpeg probe failed for {basename}. Last output:\n{stderr_tail}"
+        )
+
+    mapping: dict[int, dict] = {}
+    for frame_number, timestamp_ms in entries:
+        mapping[timestamp_ms] = {"frame_id": frame_number, "path": None}
 
     return mapping
+
+
+def extract_frames_at_ranges(
+    video_path: str,
+    target_dir: str,
+    frame_ranges: list[tuple[int, int]],
+    probed_metadata: dict[int, dict],
+    format: str = "jpeg",
+    scale: float | tuple[int, int] = 0.5,
+    interruption: InterruptibleProcess | None = None,
+    desc: str | None = None,
+) -> None:
+    """Extract frames from specific frame-number ranges and update *probed_metadata* paths.
+
+    *frame_ranges* is a list of ``(first_frame_id, last_frame_id)`` inclusive
+    ranges where frame IDs correspond to ffmpeg's sequential ``n`` variable.
+
+    *probed_metadata* is the dict returned by :func:`probe_frame_timestamps`.
+    For each extracted frame, the ``"path"`` value at the matching timestamp
+    key is set to the written file on disk.
+
+    Uses ffmpeg's ``select='between(n,a,b)+…'`` filter so only the
+    requested frames are encoded and written.
+    """
+    if not frame_ranges:
+        return
+
+    # Build select expression.  With -vf, commas separate filters in the
+    # chain; commas inside the select expression need escaping with \.
+    select_parts = [f"between(n\\,{start}\\,{end})" for start, end in frame_ranges]
+    select_expr = "+".join(select_parts)
+
+    scale_filter = ""
+    if isinstance(scale, float):
+        if scale != 1.0:
+            rscale = 1 / scale
+            scale_filter = f"scale=iw/{rscale}:ih/{rscale}"
+    elif isinstance(scale, tuple):
+        scale_filter = f"scale={scale[0]}:{scale[1]}"
+
+    output_pattern = os.path.join(target_dir, f"frame_%08d.{format}")
+
+    vf_parts = [f"select='{select_expr}'", "showinfo"]
+    if scale_filter:
+        vf_parts.append(scale_filter)
+
+    total_frames = sum(end - start + 1 for start, end in frame_ranges)
+
+    basename = os.path.basename(video_path)
+    bar_desc = desc or f"Extracting frames: {basename}"
+
+    frame_pattern = re.compile(r"n: *(\d+).*pts_time:([\d.]+)")
+    showinfo_entries: list[tuple[int, int]] = []  # (output_seq, timestamp_ms)
+
+    pbar = tqdm(
+        total=total_frames,
+        desc=bar_desc,
+        unit="frame",
+        **get_tqdm_defaults(),
+    )
+
+    def _on_line(line: str) -> None:
+        match = frame_pattern.search(line)
+        if match:
+            output_seq = int(match.group(1))
+            timestamp_ms = int(round(float(match.group(2)) * 1000))
+            showinfo_entries.append((output_seq, timestamp_ms))
+            pbar.update(1)
+
+    fallback_options: list[list[str]] = [
+        ["-fps_mode", "vfr"],
+        ["-fps_mode", "cfr"],
+        [],
+    ]
+
+    def _clean_target_dir():
+        for filename in os.listdir(target_dir):
+            fp = os.path.join(target_dir, filename)
+            if os.path.isfile(fp):
+                os.unlink(fp)
+
+    last_stderr: list[str] = []
+    for opts in fallback_options:
+        _clean_target_dir()
+        showinfo_entries.clear()
+        pbar.reset()
+
+        args = [
+            "-i", video_path,
+            "-map", "0:v:0",
+            "-an", "-sn", "-dn",
+            *opts,
+            "-q:v", "2",
+            "-vf", ",".join(vf_parts),
+            output_pattern,
+        ]
+
+        proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line)
+        last_stderr = stderr_lines
+
+        if proc.returncode == 0:
+            break
+    else:
+        pbar.close()
+        stderr_tail = "".join(last_stderr[-20:]) if last_stderr else "(no output)"
+        raise RuntimeError(
+            f"ffmpeg selective extraction failed for {basename}. "
+            f"Last output:\n{stderr_tail}"
+        )
+
+    pbar.close()
+
+    frame_files = sorted(os.listdir(target_dir))
+
+    usable = min(len(showinfo_entries), len(frame_files))
+    if len(showinfo_entries) != len(frame_files):
+        logging.warning(
+            f"Frame count mismatch for {basename}: showinfo reported "
+            f"{len(showinfo_entries)} frames but {len(frame_files)} files "
+            f"on disk. Using {usable}."
+        )
+
+    for i in range(usable):
+        _, timestamp_ms = showinfo_entries[i]
+        fname = frame_files[i]
+        if timestamp_ms in probed_metadata:
+            probed_metadata[timestamp_ms]["path"] = os.path.join(target_dir, fname)
+        else:
+            logging.warning(
+                f"Extracted frame at {timestamp_ms}ms has no matching "
+                f"entry in probed metadata — skipping."
+            )
 
 
 def get_video_duration(video_file):

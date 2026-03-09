@@ -129,6 +129,7 @@ def execute(argv: list[str]) -> None:
                 )
 
                 if args.no_dry_run:
+                    plan.render(tool_logger)
                     if plan.is_empty():
                         tool_logger.info("Nothing to do.")
                     else:

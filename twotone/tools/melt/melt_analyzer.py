@@ -28,6 +28,51 @@ class MeltAnalyzer:
         self.tolerance_ms = tolerance_ms
         self.base_path: str | None = None
 
+    def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
+        base_plan = self._prepare_duplicates_set(duplicates)
+
+        analysis_plan: list[dict[str, Any]] = []
+        for item in tqdm(base_plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults()):
+            title = item["title"]
+            groups = item["groups"]
+
+            analyzed_groups: list[dict[str, Any]] = []
+            skipped_groups: list[dict[str, Any]] = []
+            if len(groups) > 1:
+                groups_iter = tqdm(groups, desc="Candidates", unit="set", position=1, **generic_utils.get_tqdm_defaults())
+            else:
+                groups_iter = groups
+            for group in groups_iter:
+                files = group["files"]
+                output_name = group["output_name"]
+
+                ids = {file: i + 1 for i, file in enumerate(files)}
+
+                # analysis for group
+                plan_details, issue, files_details = self._analyze_group(files, ids, title)
+                if plan_details is None:
+                    self._log_group_issue(title, issue or "Unknown issue.", files)
+                    skipped_groups.append({
+                        "files": files,
+                        "output_name": output_name,
+                        "issue": issue or "Unknown issue.",
+                        "files_details": files_details,
+                    })
+                else:
+                    analyzed_groups.append({
+                        "files": files,
+                        "output_name": output_name,
+                        **plan_details,
+                    })
+
+            analysis_plan.append({
+                "title": title,
+                "groups": analyzed_groups,
+                "skipped_groups": skipped_groups,
+            })
+
+        return analysis_plan
+
     @staticmethod
     def _stream_short_details(stype: str, stream: dict[str, Any]) -> str:
         def fmt_fps(value: str) -> str | None:
@@ -288,20 +333,27 @@ class MeltAnalyzer:
             file_id = ids[path]
             length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
             if _is_length_mismatch(base_length, length, self.tolerance_ms):
+                base_fmt = generic_utils.ms_to_time(base_length) if base_length else "?"
+                other_fmt = generic_utils.ms_to_time(length) if length else "?"
                 self.logger.debug(
                     f"Subtitles stream from file #{file_id} has length different than length of video stream from file {v_path}. "
                     "This is not supported yet"
                 )
-                return f"Subtitle length mismatch between #{file_id} and #{base_file_id} (unsupported)."
+                return (
+                    f"Subtitle length mismatch between #{file_id} ({other_fmt}) and #{base_file_id} ({base_fmt}) (unsupported)."
+                )
 
-        # Audio lengths valdiation
+        # Audio lengths validation
         for path, tid, _ in audio_streams:
             file_id = ids[path]
             length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
             if _is_length_mismatch(base_length, length, self.tolerance_ms):
                 base_file_id = ids[v_path]
+                base_fmt = generic_utils.ms_to_time(base_length) if base_length else "?"
+                other_fmt = generic_utils.ms_to_time(length) if length else "?"
                 self.logger.debug(
-                    f"Audio stream from file #{file_id} has length different than length of video stream from file #{base_file_id}. "
+                    f"Audio stream from file #{file_id} ({other_fmt}) has length different than "
+                    f"video stream from file #{base_file_id} ({base_fmt}). "
                     "Check for --allow-length-mismatch option to allow this."
                 )
 
@@ -309,7 +361,10 @@ class MeltAnalyzer:
                     self.logger.debug("Audio length mismatch detected; audio will be time-adjusted during processing.")
 
                 else:
-                    return f"Audio length mismatch between #{file_id} and #{base_file_id} (use --allow-length-mismatch)."
+                    return (
+                        f"Audio length mismatch between #{file_id} ({other_fmt}) and #{base_file_id} ({base_fmt}) "
+                        f"(use --allow-length-mismatch)."
+                    )
 
         return None
 
@@ -424,48 +479,3 @@ class MeltAnalyzer:
             "audio_prod_lang": audio_prod_lang,
             "files_details": details_full,
         }, None, details_full
-
-    def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
-        base_plan = self._prepare_duplicates_set(duplicates)
-
-        analysis_plan: list[dict[str, Any]] = []
-        for item in tqdm(base_plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults()):
-            title = item["title"]
-            groups = item["groups"]
-
-            analyzed_groups: list[dict[str, Any]] = []
-            skipped_groups: list[dict[str, Any]] = []
-            if len(groups) > 1:
-                groups_iter = tqdm(groups, desc="Candidates", unit="set", position=1, **generic_utils.get_tqdm_defaults())
-            else:
-                groups_iter = groups
-            for group in groups_iter:
-                files = group["files"]
-                output_name = group["output_name"]
-
-                ids = {file: i + 1 for i, file in enumerate(files)}
-
-                # analysis for group
-                plan_details, issue, files_details = self._analyze_group(files, ids, title)
-                if plan_details is None:
-                    self._log_group_issue(title, issue or "Unknown issue.", files)
-                    skipped_groups.append({
-                        "files": files,
-                        "output_name": output_name,
-                        "issue": issue or "Unknown issue.",
-                        "files_details": files_details,
-                    })
-                else:
-                    analyzed_groups.append({
-                        "files": files,
-                        "output_name": output_name,
-                        **plan_details,
-                    })
-
-            analysis_plan.append({
-                "title": title,
-                "groups": analyzed_groups,
-                "skipped_groups": skipped_groups,
-            })
-
-        return analysis_plan

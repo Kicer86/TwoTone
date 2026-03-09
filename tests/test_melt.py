@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Iterator
 
 from twotone.tools.utils import generic_utils, process_utils, video_utils
-from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, MeltTool, StaticSource, StreamsPicker
+from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, MeltTool, PairMatcher, StaticSource, StreamsPicker
 from twotone.tools.utils.files_utils import ScopedDirectory
+from twotone.tools.melt.phash_cache import PhashCache
+from unittest.mock import patch
 from common import (
     TwoToneTestCase,
     FileCache,
@@ -24,6 +26,7 @@ from common import (
     get_audio,
     get_video,
     hashes,
+    run_ffmpeg,
 )
 
 
@@ -94,14 +97,6 @@ class MeltingTest(TwoToneTestCase):
     def setUp(self):
         super().setUp()
 
-        def run_ffmpeg(args, expected_path: str | None = None):
-            status = process_utils.start_process("ffmpeg", args)
-            if status.returncode != 0:
-                raise RuntimeError(f"ffmpeg failed: {status.stderr}")
-            if expected_path and not os.path.exists(expected_path):
-                raise RuntimeError(f"ffmpeg did not produce expected file: {expected_path}")
-            return status
-
         def gen_sample(out_path: Path):
             videos = ["Atoms - 8579.mp4",
                       "Blue_Sky_and_Clouds_Timelapse_0892__Videvo.mov",
@@ -110,7 +105,8 @@ class MeltingTest(TwoToneTestCase):
             audios = ["806912__kevp888__250510_122217_fr_large_crowd_in_palais_garnier.wav",
                       "807385__josefpres__piano-loops-066-efect-4-octave-long-loop-120-bpm.wav",
                       "807184__logicmoon__mirrors.wav",
-                      "807419__kvgarlic__light-spring-rain-and-kids-and-birds-may-13-2025-vtwo.wav"]
+                      "807419__kvgarlic__light-spring-rain-and-kids-and-birds-may-13-2025-vtwo.wav",
+                      "806912__kevp888__250510_122217_fr_large_crowd_in_palais_garnier.wav"]
 
             #unify fps and add audio path
             output_dir = os.path.join(self.wd.path, "gen_sample")
@@ -193,9 +189,316 @@ class MeltingTest(TwoToneTestCase):
 
         file_cache = FileCache("TwoToneTests")
 
-        self.sample_video_file = str(file_cache.get_or_generate("melter_tests_sample", "1", "mp4", gen_sample))
-        self.sample_vhs_video_file = str(file_cache.get_or_generate("melter_tests_vhs", "1", "mp4", partial(gen_vhs, input = self.sample_video_file)))
+        self.sample_video_file = str(file_cache.get_or_generate("melter_tests_sample", "2", "mp4", gen_sample))
+        self.sample_vhs_video_file = str(file_cache.get_or_generate("melter_tests_vhs", "2", "mp4", partial(gen_vhs, input = self.sample_video_file)))
 
+        self._setup_edge_fixtures(file_cache)
+
+    def _setup_edge_fixtures(self, file_cache: FileCache):
+        """Pre-generate and cache all edge-case PairMatcher test fixtures.
+
+        Builds a layered dependency tree so shared intermediates (like
+        the degraded big_buck_bunny) are generated once and reused.
+        """
+        V = "1"  # bump to invalidate all edge fixtures
+
+        bbb = get_video("big_buck_bunny_720p_10mb.mp4")
+        grass = get_video("Grass - 66810.mp4")
+        atoms = get_video("Atoms - 8579.mp4")
+        woman = get_video("Woman - 58142.mp4")
+        seawaves = get_video("sea-waves-crashing-on-beach-shore-4793288.mp4")
+
+        # --- Level 1: single-operation transforms on bbb ---
+
+        def gen_deg103(out: Path):
+            self._degrade_video(bbb, str(out), speed=1.03)
+
+        def gen_deg10(out: Path):
+            self._degrade_video(bbb, str(out), speed=1.0)
+
+        def gen_black_intro_3s(out: Path):
+            with tempfile.TemporaryDirectory() as td:
+                self._prepend_black(bbb, str(out), 3.0, tmp_dir=td)
+
+        def gen_black_intro_2s(out: Path):
+            with tempfile.TemporaryDirectory() as td:
+                self._prepend_black(bbb, str(out), 2.0, tmp_dir=td)
+
+        def gen_black_outro_3s(out: Path):
+            with tempfile.TemporaryDirectory() as td:
+                self._append_black(bbb, str(out), 3.0, tmp_dir=td)
+
+        def gen_grass_intro_3s(out: Path):
+            with tempfile.TemporaryDirectory() as td:
+                self._prepend_video(grass, bbb, str(out), intro_seconds=3.0, tmp_dir=td)
+
+        def gen_grass_intro_2s(out: Path):
+            with tempfile.TemporaryDirectory() as td:
+                self._prepend_video(grass, bbb, str(out), intro_seconds=2.0, tmp_dir=td)
+
+        def gen_woman_outro_3s(out: Path):
+            with tempfile.TemporaryDirectory() as td:
+                self._append_video(bbb, woman, str(out), outro_seconds=3.0, tmp_dir=td)
+
+        bbb_deg103 = str(file_cache.get_or_generate("pm_bbb_deg103", V, "mp4", gen_deg103))
+        bbb_deg10 = str(file_cache.get_or_generate("pm_bbb_deg10", V, "mp4", gen_deg10))
+        bbb_bi3 = str(file_cache.get_or_generate("pm_bbb_bi3", V, "mp4", gen_black_intro_3s))
+        bbb_bi2 = str(file_cache.get_or_generate("pm_bbb_bi2", V, "mp4", gen_black_intro_2s))
+        bbb_bo3 = str(file_cache.get_or_generate("pm_bbb_bo3", V, "mp4", gen_black_outro_3s))
+        bbb_gi3 = str(file_cache.get_or_generate("pm_bbb_gi3", V, "mp4", gen_grass_intro_3s))
+        bbb_gi2 = str(file_cache.get_or_generate("pm_bbb_gi2", V, "mp4", gen_grass_intro_2s))
+        bbb_wo3 = str(file_cache.get_or_generate("pm_bbb_wo3", V, "mp4", gen_woman_outro_3s))
+
+        # --- Level 2: transforms depending on level 1 ---
+
+        def gen_bi3_deg103(out: Path):
+            self._degrade_video(bbb_bi3, str(out), speed=1.03)
+
+        def gen_bi6_from_deg103(out: Path):
+            with tempfile.TemporaryDirectory() as td:
+                self._prepend_black(bbb_deg103, str(out), 6.0, tmp_dir=td)
+
+        def gen_bo3_deg103(out: Path):
+            self._degrade_video(bbb_bo3, str(out), speed=1.03)
+
+        def gen_bi2_bo2(out: Path):
+            with tempfile.TemporaryDirectory() as td:
+                self._append_black(bbb_bi2, str(out), 2.0, tmp_dir=td)
+
+        def gen_atoms_i3_deg(out: Path):
+            with tempfile.TemporaryDirectory() as td:
+                self._prepend_video(atoms, bbb_deg103, str(out), intro_seconds=3.0, tmp_dir=td)
+
+        def gen_atoms_i5_deg(out: Path):
+            with tempfile.TemporaryDirectory() as td:
+                self._prepend_video(atoms, bbb_deg103, str(out), intro_seconds=5.0, tmp_dir=td)
+
+        def gen_deg103_atoms_o3(out: Path):
+            with tempfile.TemporaryDirectory() as td:
+                self._append_video(bbb_deg103, atoms, str(out), outro_seconds=3.0, tmp_dir=td)
+
+        bi3_deg103 = str(file_cache.get_or_generate("pm_bi3_deg103", V, "mp4", gen_bi3_deg103))
+        bi6_deg103 = str(file_cache.get_or_generate("pm_bi6_deg103", V, "mp4", gen_bi6_from_deg103))
+        bo3_deg103 = str(file_cache.get_or_generate("pm_bo3_deg103", V, "mp4", gen_bo3_deg103))
+        bi2_bo2 = str(file_cache.get_or_generate("pm_bi2_bo2", V, "mp4", gen_bi2_bo2))
+        atoms_i3_deg = str(file_cache.get_or_generate("pm_atoms_i3_deg", V, "mp4", gen_atoms_i3_deg))
+        atoms_i5_deg = str(file_cache.get_or_generate("pm_atoms_i5_deg", V, "mp4", gen_atoms_i5_deg))
+        deg103_atoms_o3 = str(file_cache.get_or_generate("pm_deg103_atoms_o3", V, "mp4", gen_deg103_atoms_o3))
+
+        # --- Level 3: complex composites ---
+
+        def gen_bi2_bo2_deg103(out: Path):
+            self._degrade_video(bi2_bo2, str(out), speed=1.03)
+
+        def gen_gi3_wo3(out: Path):
+            with tempfile.TemporaryDirectory() as td:
+                self._append_video(bbb_gi3, woman, str(out), outro_seconds=3.0, tmp_dir=td)
+
+        def gen_ai3d_swo3(out: Path):
+            with tempfile.TemporaryDirectory() as td:
+                self._append_video(atoms_i3_deg, seawaves, str(out), outro_seconds=3.0, tmp_dir=td)
+
+        bi2_bo2_deg103 = str(file_cache.get_or_generate("pm_bi2_bo2_deg103", V, "mp4", gen_bi2_bo2_deg103))
+        gi3_wo3 = str(file_cache.get_or_generate("pm_gi3_wo3", V, "mp4", gen_gi3_wo3))
+        ai3d_swo3 = str(file_cache.get_or_generate("pm_ai3d_swo3", V, "mp4", gen_ai3d_swo3))
+
+        # Expose as fixture pairs: (file_a, file_b) per test scenario
+        self.bbb = bbb
+        self.edge_fixtures = {
+            "black_intro_same":  (bbb_bi3, bi3_deg103),
+            "black_intro_diff":  (bbb_bi2, bi6_deg103),
+            "black_outro":       (bbb_bo3, bo3_deg103),
+            "both_black":        (bi2_bo2, bi2_bo2_deg103),
+            "no_speed":          (bbb, bbb_deg10),
+            "diff_intro_same":   (bbb_gi3, atoms_i3_deg),
+            "diff_intro_diff":   (bbb_gi2, atoms_i5_deg),
+            "diff_outro":        (bbb_wo3, deg103_atoms_o3),
+            "diff_both":         (gi3_wo3, ai3d_swo3),
+        }
+
+    # ---- Private helpers for edge-case fixture generation ----
+
+    def _prepend_black(self, input_path: str, output_path: str, black_seconds: float, tmp_dir: str | None = None) -> str:
+        """Prepend *black_seconds* of black video+silence before *input_path*."""
+        td = tmp_dir or self.wd.path
+        # Get input properties
+        data = video_utils.get_video_data(input_path)
+        width = int(data["video"][0]["width"])
+        height = int(data["video"][0]["height"])
+        fps = data["video"][0]["fps"]
+        fps_float = generic_utils.fps_str_to_float(fps)
+        has_audio = len(data.get("audio", [])) > 0
+
+        black_path = os.path.join(td, "black_intro.mp4")
+        args = [
+            "-y",
+            "-f", "lavfi", "-i", f"color=c=black:s={width}x{height}:r={fps_float}:d={black_seconds}",
+        ]
+        if has_audio:
+            args += ["-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={black_seconds}"]
+            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", black_path]
+        else:
+            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", black_path]
+        run_ffmpeg(args, expected_path=black_path)
+
+        # Reencode input to match codec/fps for concat
+        reencoded_path = os.path.join(td, "reencoded_input.mp4")
+        args = ["-y", "-i", input_path, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                "-r", str(fps_float), "-vf", f"fps={fps_float},scale={width}:{height}"]
+        if has_audio:
+            args += ["-c:a", "aac", "-ar", "44100"]
+        else:
+            args += ["-an"]
+        args.append(reencoded_path)
+        run_ffmpeg(args, expected_path=reencoded_path)
+
+        # Concat
+        filelist = os.path.join(td, "concat_list.txt")
+        with open(filelist, "w") as f:
+            f.write(f"file '{black_path}'\nfile '{reencoded_path}'\n")
+
+        run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", filelist, "-c", "copy", output_path],
+                         expected_path=output_path)
+        return output_path
+
+    def _append_black(self, input_path: str, output_path: str, black_seconds: float, tmp_dir: str | None = None) -> str:
+        """Append *black_seconds* of black video+silence after *input_path*."""
+        td = tmp_dir or self.wd.path
+        data = video_utils.get_video_data(input_path)
+        width = int(data["video"][0]["width"])
+        height = int(data["video"][0]["height"])
+        fps = data["video"][0]["fps"]
+        fps_float = generic_utils.fps_str_to_float(fps)
+        has_audio = len(data.get("audio", [])) > 0
+
+        black_path = os.path.join(td, "black_outro.mp4")
+        args = [
+            "-y",
+            "-f", "lavfi", "-i", f"color=c=black:s={width}x{height}:r={fps_float}:d={black_seconds}",
+        ]
+        if has_audio:
+            args += ["-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={black_seconds}"]
+            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", black_path]
+        else:
+            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", black_path]
+        run_ffmpeg(args, expected_path=black_path)
+
+        reencoded_path = os.path.join(td, "reencoded_input_outro.mp4")
+        args = ["-y", "-i", input_path, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                "-r", str(fps_float), "-vf", f"fps={fps_float},scale={width}:{height}"]
+        if has_audio:
+            args += ["-c:a", "aac", "-ar", "44100"]
+        else:
+            args += ["-an"]
+        args.append(reencoded_path)
+        run_ffmpeg(args, expected_path=reencoded_path)
+
+        filelist = os.path.join(td, "concat_list_outro.txt")
+        with open(filelist, "w") as f:
+            f.write(f"file '{reencoded_path}'\nfile '{black_path}'\n")
+
+        run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", filelist, "-c", "copy", output_path],
+                         expected_path=output_path)
+        return output_path
+
+    def _degrade_video(self, input_path: str, output_path: str, speed: float = 1.0) -> str:
+        """Create a degraded copy: lower quality, optional speed change."""
+        duration = video_utils.get_video_duration(input_path) / 1000
+
+        vf_parts = ["fps=26.5", f"scale=640:480", "boxblur=lr=1"]
+        if speed != 1.0:
+            vf_parts.insert(1, f"setpts=PTS/{speed}")
+
+        af = f"atempo={speed}" if speed != 1.0 else "aresample=44100"
+
+        args = [
+            "-y", "-i", input_path,
+            "-vf", ",".join(vf_parts),
+            "-af", af,
+            "-c:v", "libx264", "-crf", "35", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            output_path,
+        ]
+        run_ffmpeg(args, expected_path=output_path)
+        return output_path
+
+    def _reencode_for_concat(self, input_path: str, output_path: str, width: int, height: int, fps: float) -> str:
+        """Reencode a video to specific resolution/fps so it can be concatenated with concat demuxer."""
+        args = [
+            "-y", "-i", input_path,
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-r", str(fps), "-vf", f"fps={fps},scale={width}:{height}",
+            "-c:a", "aac", "-ar", "44100",
+            "-shortest",
+            output_path,
+        ]
+        run_ffmpeg(args, expected_path=output_path)
+        return output_path
+
+    def _concat_videos(self, parts: list[str], output_path: str, tmp_dir: str | None = None) -> str:
+        """Concatenate video files using ffmpeg concat demuxer."""
+        td = tmp_dir or self.wd.path
+        filelist = os.path.join(td, f"concat_{os.path.basename(output_path)}.txt")
+        with open(filelist, "w") as f:
+            for part in parts:
+                f.write(f"file '{part}'\n")
+        run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", filelist, "-c", "copy", output_path],
+                         expected_path=output_path)
+        return output_path
+
+    def _prepend_video(self, intro_source: str, content_path: str, output_path: str, intro_seconds: float | None = None, tmp_dir: str | None = None) -> str:
+        """Prepend content from *intro_source* before *content_path*.
+
+        If *intro_seconds* is given, the intro is trimmed to that duration.
+        Both parts are reencoded to matching format before concat.
+        """
+        td = tmp_dir or self.wd.path
+        data = video_utils.get_video_data(content_path)
+        width = int(data["video"][0]["width"])
+        height = int(data["video"][0]["height"])
+        fps = generic_utils.fps_str_to_float(data["video"][0]["fps"])
+
+        # Reencode intro
+        intro_reenc = os.path.join(td, f"intro_reenc_{os.path.basename(output_path)}")
+        trim_args = ["-t", str(intro_seconds)] if intro_seconds else []
+        args = ["-y", "-i", intro_source] + trim_args + [
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-r", str(fps), "-vf", f"fps={fps},scale={width}:{height}",
+            "-c:a", "aac", "-ar", "44100", "-shortest",
+            intro_reenc,
+        ]
+        run_ffmpeg(args, expected_path=intro_reenc)
+
+        # Reencode content
+        content_reenc = os.path.join(td, f"content_reenc_{os.path.basename(output_path)}")
+        self._reencode_for_concat(content_path, content_reenc, width, height, fps)
+
+        return self._concat_videos([intro_reenc, content_reenc], output_path, tmp_dir=td)
+
+    def _append_video(self, content_path: str, outro_source: str, output_path: str, outro_seconds: float | None = None, tmp_dir: str | None = None) -> str:
+        """Append content from *outro_source* after *content_path*."""
+        td = tmp_dir or self.wd.path
+        data = video_utils.get_video_data(content_path)
+        width = int(data["video"][0]["width"])
+        height = int(data["video"][0]["height"])
+        fps = generic_utils.fps_str_to_float(data["video"][0]["fps"])
+
+        content_reenc = os.path.join(td, f"content_reenc_outro_{os.path.basename(output_path)}")
+        self._reencode_for_concat(content_path, content_reenc, width, height, fps)
+
+        outro_reenc = os.path.join(td, f"outro_reenc_{os.path.basename(output_path)}")
+        trim_args = ["-t", str(outro_seconds)] if outro_seconds else []
+        args = ["-y", "-i", outro_source] + trim_args + [
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-r", str(fps), "-vf", f"fps={fps},scale={width}:{height}",
+            "-c:a", "aac", "-ar", "44100", "-shortest",
+            outro_reenc,
+        ]
+        run_ffmpeg(args, expected_path=outro_reenc)
+
+        return self._concat_videos([content_reenc, outro_reenc], output_path, tmp_dir=td)
+
+    # ---- Test methods ----
 
     def test_simple_duplicate_detection(self):
         file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = ["v1"])[0]
@@ -707,8 +1010,8 @@ class MeltingTest(TwoToneTestCase):
 
 
     def test_same_multiscene_video_duplicate_detection(self):
-        file1 = add_to_test_dir(self.wd.path, str(self.sample_video_file))
-        file2 = add_to_test_dir(self.wd.path, str(self.sample_vhs_video_file))
+        file1 = add_to_test_dir(self.wd.path, self.sample_video_file)
+        file2 = add_to_test_dir(self.wd.path, self.sample_vhs_video_file)
 
         files = [file1, file2]
 
@@ -794,6 +1097,344 @@ class MeltingTest(TwoToneTestCase):
             self.assertEqual(len(output_file_data["audio"]), 2)
             self.assertEqual(output_file_data["audio"][0]["language"], "deu")
             self.assertEqual(output_file_data["audio"][1]["language"], "nor")
+
+
+    def test_pair_matcher_precision(self):
+        """Multi-scene sample (82.6s) vs VHS degraded version (78.7s, 1.05x speed, crop, blur)."""
+        file1 = add_to_test_dir(self.wd.path, self.sample_video_file)
+        file2 = add_to_test_dir(self.wd.path, self.sample_vhs_video_file)
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1, file2, logging.getLogger("PM"))
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+
+        # At least 6 pairs across the 82s video
+        self.assertGreaterEqual(len(mappings), 6)
+        # Edge: first pair snapped to (0, 0)
+        self.assertEqual(mappings[0], (0, 0))
+        # Edge: last pair near video duration
+        self.assertAlmostEqual(mappings[-1][0], 82582, delta=500)
+        self.assertAlmostEqual(mappings[-1][1], 78700, delta=500)
+        # Monotonicity
+        for i in range(1, len(mappings)):
+            self.assertGreaterEqual(mappings[i][0], mappings[i-1][0])
+            self.assertGreaterEqual(mappings[i][1], mappings[i-1][1])
+
+        # Both edges snapped to video boundaries. Full coverage.
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1),
+            video_utils.get_video_duration(file2),
+        )
+        self.assertTrue(coverage["full_coverage"])
+
+    def test_pair_matcher_black_intro_same_length(self):
+        """Both files have the same length black intro — boundary should extend through it."""
+        file1_path, file2_path = self.edge_fixtures["black_intro_same"]
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+
+        # 3s black intro on both files — boundary extends through black to edge
+        # LHS: bbb_bi3 (65.3s), RHS: bi3_deg103 (63.4s)
+        self.assertGreaterEqual(len(mappings), 3)
+        # Edge: first pair snapped to (0, 0) through black intro
+        self.assertEqual(mappings[0], (0, 0))
+        # Edge: last pair near video duration
+        self.assertAlmostEqual(mappings[-1][0], 65337, delta=500)
+        self.assertAlmostEqual(mappings[-1][1], 63433, delta=500)
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        self.assertTrue(coverage["full_coverage"])
+
+    def test_pair_matcher_black_intro_different_length(self):
+        """Files have different length black intros — algorithm should find content pairs despite offset."""
+        file1_path, file2_path = self.edge_fixtures["black_intro_diff"]
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+
+        # LHS: bbb_bi2 (64.3s, 2s black intro), RHS: bi6_deg103 (66.5s, 6s black intro)
+        # LHS extends to edge through black; RHS starts inside its 6s intro
+        self.assertGreaterEqual(len(mappings), 3)
+        # Edge: LHS snapped to 0; RHS somewhere inside its 6s black intro (3-6.5s)
+        self.assertEqual(mappings[0][0], 0)
+        self.assertGreater(mappings[0][1], 3000)
+        self.assertLess(mappings[0][1], 6500)
+        # Edge: both near video duration
+        self.assertAlmostEqual(mappings[-1][0], 64103, delta=500)
+        self.assertAlmostEqual(mappings[-1][1], 66325, delta=500)
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        # LHS snapped to 0, RHS inside its 6s black intro — RHS start gap < 6s.
+        # Both ends reach their video boundary.
+        self.assertFalse(coverage["full_coverage"])
+        self.assertEqual(coverage["lhs_start_gap_s"], 0.0)
+        self.assertGreater(coverage["rhs_start_gap_s"], 3.0)
+        self.assertLess(coverage["rhs_start_gap_s"], 6.5)
+        self.assertLess(coverage["lhs_end_gap_s"], 0.5)
+        self.assertLess(coverage["rhs_end_gap_s"], 0.5)
+
+    def test_pair_matcher_black_outro(self):
+        """Both files have black outro — last pair should extend through it to edge."""
+        file1_path, file2_path = self.edge_fixtures["black_outro"]
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+
+        # LHS: bbb_bo3 (65.3s, 3s black outro), RHS: bo3_deg103 (63.4s, 3s black outro)
+        self.assertGreaterEqual(len(mappings), 3)
+        # Edge: first pair snapped to (0, 0)
+        self.assertEqual(mappings[0], (0, 0))
+        # Edge: last pair snapped to video duration (through black outro)
+        self.assertAlmostEqual(mappings[-1][0], 65337, delta=500)
+        self.assertAlmostEqual(mappings[-1][1], 63433, delta=500)
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        self.assertTrue(coverage["full_coverage"])
+
+    def test_pair_matcher_both_intro_and_outro_black(self):
+        """Files have black intro AND outro — both boundaries should be handled."""
+        file1_path, file2_path = self.edge_fixtures["both_black"]
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+
+        # LHS: bi2_bo2 (66.3s, 2s black intro + 2s black outro)
+        # RHS: bi2_bo2_deg103 (64.4s, same + 1.03x speed)
+        self.assertGreaterEqual(len(mappings), 3)
+        # Edge: first pair snapped to (0, 0) through black intro
+        self.assertEqual(mappings[0], (0, 0))
+        # Edge: last pair snapped to video duration through black outro
+        self.assertAlmostEqual(mappings[-1][0], 66343, delta=500)
+        self.assertAlmostEqual(mappings[-1][1], 64415, delta=500)
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        # Both edges snapped through black intro/outro to video boundaries.
+        self.assertTrue(coverage["full_coverage"])
+
+    def test_pair_matcher_no_speed_change(self):
+        """Same content with no speed change (ratio ~1.0), only quality degradation."""
+        file1_path, file2_path = self.edge_fixtures["no_speed"]
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+
+        # LHS: bbb (62.3s), RHS: bbb_deg10 (62.3s, same speed, degraded quality)
+        self.assertGreaterEqual(len(mappings), 3)
+        # Edge: first pair at (0, 0)
+        self.assertEqual(mappings[0], (0, 0))
+        # Edge: last pair near video duration (~62.3s)
+        self.assertAlmostEqual(mappings[-1][0], 62314, delta=500)
+        self.assertAlmostEqual(mappings[-1][1], 62313, delta=500)
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        self.assertTrue(coverage["full_coverage"])
+
+    def test_pair_matcher_different_intro_same_length(self):
+        """Files have different high-entropy intros of similar length, then shared content."""
+        file1_path, file2_path = self.edge_fixtures["diff_intro_same"]
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+
+        # LHS: bbb_gi3 (65.3s, 3s grass intro), RHS: atoms_i3_deg (63.5s, 3s atoms intro)
+        self.assertGreaterEqual(len(mappings), 3)
+        # First pair NOT at edge — content starts at ~3s (after different intros)
+        self.assertAlmostEqual(mappings[0][0], 3263, delta=500)
+        self.assertAlmostEqual(mappings[0][1], 3283, delta=500)
+        # Last pair near video duration
+        self.assertAlmostEqual(mappings[-1][0], 65302, delta=500)
+        self.assertAlmostEqual(mappings[-1][1], 63471, delta=500)
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        # Both files have 3s intros (grass / atoms). Common content starts at ~3s.
+        # Start gaps must match the known intro duration within 1s tolerance.
+        # End gaps must be negligible — last pair reaches near video boundary.
+        self.assertFalse(coverage["full_coverage"])
+        self.assertAlmostEqual(coverage["lhs_start_gap_s"], 3.0, delta=1.0)
+        self.assertAlmostEqual(coverage["rhs_start_gap_s"], 3.0, delta=1.0)
+        self.assertLess(coverage["lhs_end_gap_s"], 0.5)
+        self.assertLess(coverage["rhs_end_gap_s"], 0.5)
+
+    def test_pair_matcher_different_intro_different_length(self):
+        """Files have different high-entropy intros of DIFFERENT lengths."""
+        file1_path, file2_path = self.edge_fixtures["diff_intro_diff"]
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+
+        # LHS: bbb_gi2 (64.3s, 2s grass intro), RHS: atoms_i5_deg (65.5s, 5s atoms intro)
+        self.assertGreaterEqual(len(mappings), 3)
+        # First pair NOT at edge — after different intros (2s vs 5s)
+        self.assertAlmostEqual(mappings[0][0], 2263, delta=500)
+        self.assertAlmostEqual(mappings[0][1], 5283, delta=500)
+        # Last pair near video duration
+        self.assertAlmostEqual(mappings[-1][0], 64302, delta=500)
+        self.assertAlmostEqual(mappings[-1][1], 65471, delta=500)
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        # LHS has 2s grass intro, RHS has 5s atoms intro.
+        # Start gaps must match known intro durations within 1s tolerance.
+        # End gaps must be negligible — last pair reaches near video boundary.
+        self.assertFalse(coverage["full_coverage"])
+        self.assertAlmostEqual(coverage["lhs_start_gap_s"], 2.0, delta=1.0)
+        self.assertAlmostEqual(coverage["rhs_start_gap_s"], 5.0, delta=1.0)
+        self.assertLess(coverage["lhs_end_gap_s"], 0.5)
+        self.assertLess(coverage["rhs_end_gap_s"], 0.5)
+
+    def test_pair_matcher_different_outro(self):
+        """Files share content but have different high-entropy outros."""
+        file1_path, file2_path = self.edge_fixtures["diff_outro"]
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+
+        # LHS: bbb_wo3 (65.3s, 3s woman outro), RHS: deg103_atoms_o3 (63.5s, 3s atoms outro)
+        self.assertGreaterEqual(len(mappings), 3)
+        # Edge: first pair snapped to (0, 0)
+        self.assertEqual(mappings[0], (0, 0))
+        # Last pair NOT at edge — content ends before outros (~62s lhs, ~60s rhs)
+        self.assertAlmostEqual(mappings[-1][0], 62103, delta=1000)
+        self.assertAlmostEqual(mappings[-1][1], 60325, delta=1000)
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        # Start snapped to edge. Both files have 3s outros (woman / atoms).
+        # End gaps must match the known outro duration within 1s tolerance.
+        self.assertFalse(coverage["full_coverage"])
+        self.assertEqual(coverage["lhs_start_gap_s"], 0.0)
+        self.assertEqual(coverage["rhs_start_gap_s"], 0.0)
+        self.assertAlmostEqual(coverage["lhs_end_gap_s"], 3.0, delta=1.0)
+        self.assertAlmostEqual(coverage["rhs_end_gap_s"], 3.0, delta=1.0)
+
+    def test_pair_matcher_different_intro_and_outro(self):
+        """Files share content but have BOTH different intros AND different outros."""
+        file1_path, file2_path = self.edge_fixtures["diff_both"]
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+
+        # LHS: gi3_wo3 (57.1s, 3s grass intro + 3s woman outro)
+        # RHS: ai3d_swo3 (66.5s, 3s atoms intro + 3s seawaves outro)
+        self.assertGreaterEqual(len(mappings), 3)
+        # First pair NOT at edge — content starts at ~3s (after different intros)
+        self.assertAlmostEqual(mappings[0][0], 3263, delta=500)
+        self.assertAlmostEqual(mappings[0][1], 3208, delta=500)
+
+        coverage = PairMatcher.coverage_summary(
+            mappings,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+        )
+        # Both files have 3s intros and 3s outros — start/end gaps expected.
+        self.assertFalse(coverage["full_coverage"])
+        self.assertAlmostEqual(coverage["lhs_start_gap_s"], 3.0, delta=1.0)
+        self.assertGreater(coverage["lhs_end_gap_s"], 3.0)
+        self.assertAlmostEqual(coverage["rhs_start_gap_s"], 3.0, delta=1.0)
+        self.assertGreater(coverage["rhs_end_gap_s"], 10.0)
+
+    # ---- coverage_summary tests ----
+
+    def test_coverage_summary_full_coverage(self):
+        """Pairs touching both edges → full_coverage=True."""
+        mappings = [(10, 5), (50000, 47500), (99910, 99920)]
+        result = PairMatcher.coverage_summary(mappings, 100000, 100000)
+        self.assertTrue(result["full_coverage"])
+        self.assertAlmostEqual(result["lhs_start_gap_s"], 0.01, places=3)
+        self.assertAlmostEqual(result["rhs_start_gap_s"], 0.005, places=3)
+        self.assertAlmostEqual(result["lhs_end_gap_s"], 0.09, places=3)
+        self.assertAlmostEqual(result["rhs_end_gap_s"], 0.08, places=3)
+
+    def test_coverage_summary_start_mismatch(self):
+        """First pair far from start → full_coverage=False, start gaps reported."""
+        mappings = [(3000, 5000), (60000, 58000)]
+        result = PairMatcher.coverage_summary(mappings, 62000, 60000)
+        self.assertFalse(result["full_coverage"])
+        self.assertAlmostEqual(result["lhs_start_gap_s"], 3.0, places=1)
+        self.assertAlmostEqual(result["rhs_start_gap_s"], 5.0, places=1)
+        # End gaps should be small
+        self.assertAlmostEqual(result["lhs_end_gap_s"], 2.0, places=1)
+        self.assertAlmostEqual(result["rhs_end_gap_s"], 2.0, places=1)
+
+    def test_coverage_summary_end_mismatch(self):
+        """Last pair far from end → full_coverage=False, end gaps reported."""
+        mappings = [(20, 15), (55000, 53000)]
+        result = PairMatcher.coverage_summary(mappings, 62000, 60000)
+        self.assertFalse(result["full_coverage"])
+        self.assertAlmostEqual(result["lhs_end_gap_s"], 7.0, places=1)
+        self.assertAlmostEqual(result["rhs_end_gap_s"], 7.0, places=1)
+
+    def test_coverage_summary_with_real_no_speed(self):
+        """Use actual no_speed fixture — should be full_coverage."""
+        file1_path, file2_path = self.edge_fixtures["no_speed"]
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+
+        d1 = video_utils.get_video_duration(file1_path)
+        d2 = video_utils.get_video_duration(file2_path)
+        result = PairMatcher.coverage_summary(mappings, d1, d2)
+        self.assertTrue(result["full_coverage"])
+
+    def test_coverage_summary_with_real_diff_intro(self):
+        """Use actual diff_intro_same fixture — should NOT be full_coverage (start gap)."""
+        file1_path, file2_path = self.edge_fixtures["diff_intro_same"]
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+
+        d1 = video_utils.get_video_duration(file1_path)
+        d2 = video_utils.get_video_duration(file2_path)
+        result = PairMatcher.coverage_summary(mappings, d1, d2)
+        # Both files have 3s intros. Start gaps must match intro duration.
+        self.assertFalse(result["full_coverage"])
+        self.assertAlmostEqual(result["lhs_start_gap_s"], 3.0, delta=1.0)
+        self.assertAlmostEqual(result["rhs_start_gap_s"], 3.0, delta=1.0)
+        self.assertLess(result["lhs_end_gap_s"], 0.5)
+        self.assertLess(result["rhs_end_gap_s"], 0.5)
 
 
     def test_languages_ordering(self):
@@ -1146,7 +1787,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             ("subtitle", 5, file_a, None),
         ]
 
-        args = performer._build_mkvmerge_args(
+        args = performer.build_mkvmerge_args(
             "/tmp/out.mkv",
             streams_list_sorted,
             attachments=[],
@@ -1158,6 +1799,773 @@ class MeltPerformerUnitTest(unittest.TestCase):
         track_order_idx = args.index("--track-order")
         track_order = args[track_order_idx + 1]
         self.assertEqual(track_order, "0:0,0:1,0:3,0:4,0:5")
+
+    # ---- _patch_audio_constant_offset ----
+
+    def _collect_ffmpeg_calls(self, performer, segment_pairs, base_duration_ms, source_sample_rate=48000):
+        """Run _patch_audio_constant_offset with mocked externals and return captured ffmpeg calls."""
+        calls = []
+
+        def fake_start_process(tool, args, **kwargs):
+            calls.append((tool, list(args)))
+            result = type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+            return result
+
+        def fake_raise_on_error(result):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "out.m4a")
+            wd = os.path.join(tmpdir, "work")
+
+            with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
+                 patch.object(process_utils, 'raise_on_error', side_effect=fake_raise_on_error), \
+                 patch.object(video_utils, 'get_video_duration', return_value=base_duration_ms), \
+                 patch.object(video_utils, 'get_video_data', return_value={"audio": [{"sample_rate": source_sample_rate}]}):
+                performer.patch_audio_constant_offset(
+                    wd, "/base.mkv", "/source.mkv", output_path, segment_pairs,
+                )
+
+        return calls
+
+    def test_patch_audio_constant_offset_copy_when_ratio_near_one(self):
+        """When source and target durations match, no asetrate filter should be applied."""
+        performer = self._make_performer()
+        # seg1: 1000..5000 (4s), seg2: 500..4500 (4s) — ratio = 1.0
+        pairs = [(1000, 500), (5000, 4500)]
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=6000)
+
+        # Should NOT contain any asetrate/aresample filter call
+        filter_calls = [c for c in calls if any("asetrate" in str(a) for a in c[1])]
+        self.assertEqual(filter_calls, [], "asetrate should not be used when ratio ≈ 1.0")
+
+    def test_patch_audio_constant_offset_asetrate_when_ratio_differs(self):
+        """When durations differ, asetrate+aresample should be applied."""
+        performer = self._make_performer()
+        # seg1: 0..4000 (4s), seg2: 0..4100 (4.1s) — ratio ≈ 1.025
+        pairs = [(0, 0), (4000, 4100)]
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=4000, source_sample_rate=48000)
+
+        filter_calls = [c for c in calls if any("asetrate" in str(a) for a in c[1])]
+        self.assertEqual(len(filter_calls), 1, "asetrate should be used once")
+
+        filter_arg = next(a for a in filter_calls[0][1] if "asetrate" in str(a))
+        # adjusted_rate = 48000 * 4100 / 4000 = 49200
+        self.assertIn("asetrate=49200", filter_arg)
+        self.assertIn("aresample=48000", filter_arg)
+
+    def test_patch_audio_constant_offset_head_and_tail_extraction(self):
+        """Head and tail segments should be extracted from base audio."""
+        performer = self._make_performer()
+        # Matching region: 2000..8000 in base, so head=[0..2s] and tail=[8s..10s]
+        pairs = [(2000, 1000), (8000, 7000)]
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=10000)
+
+        ffmpeg_args_strs = [" ".join(str(a) for a in c[1]) for c in calls if c[0] == "ffmpeg"]
+
+        head_calls = [s for s in ffmpeg_args_strs if "head" in s and "-to" in s]
+        self.assertTrue(len(head_calls) >= 1, "Head segment should be extracted")
+        self.assertIn("2.0", head_calls[0])
+
+        tail_calls = [s for s in ffmpeg_args_strs if "tail" in s and "-ss" in s]
+        self.assertTrue(len(tail_calls) >= 1, "Tail segment should be extracted")
+        self.assertIn("8.0", tail_calls[0])
+
+    def test_patch_audio_constant_offset_no_head_when_at_start(self):
+        """When matching starts at 0, no head should be extracted."""
+        performer = self._make_performer()
+        pairs = [(0, 500), (4000, 4500)]
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=6000)
+
+        head_calls = [c for c in calls if any("head" in str(a) for a in c[1])]
+        self.assertEqual(head_calls, [], "No head should be extracted when seg1 starts at 0")
+
+    def test_patch_audio_constant_offset_no_tail_when_at_end(self):
+        """When matching ends at base duration, no tail should be extracted."""
+        performer = self._make_performer()
+        pairs = [(1000, 500), (6000, 5500)]
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=6000)
+
+        tail_calls = [c for c in calls if any("tail" in str(a) for a in c[1])]
+        self.assertEqual(tail_calls, [], "No tail should be extracted when seg1 ends at base duration")
+
+
+class PairMatcherUnitTest(unittest.TestCase):
+    """Unit tests for PairMatcher internal methods.
+
+    These tests mock _is_rich and bypass the full constructor to test
+    algorithmic behaviour without needing video files. They target:
+    - _extrapolate_through_low_entropy: 5% noise tolerance
+    - snap_to_edges: snap_frames=4 threshold
+    - find_boundary (via _look_for_boundaries): look_ahead robustness
+    """
+
+    def _make_pair_matcher(self, lhs_fps: float = 25.0, rhs_fps: float = 25.0) -> PairMatcher:
+        """Create a PairMatcher with minimal init — no video files needed."""
+        pm = object.__new__(PairMatcher)
+        pm.logger = logging.getLogger("test.PairMatcher")
+        pm.lhs_fps = lhs_fps
+        pm.rhs_fps = rhs_fps
+        pm.lhs_path = "/fake/lhs.mp4"
+        pm.rhs_path = "/fake/rhs.mp4"
+        pm.lhs_label = "#1"
+        pm.rhs_label = "#2"
+        pm.interruption = generic_utils.InterruptibleProcess()
+        return pm
+
+    @staticmethod
+    def _make_frames(timestamps: list[int], prefix: str = "fake") -> dict[int, dict]:
+        """Build a synthetic FramesInfo dict with dummy paths."""
+        return {ts: {"path": f"/{prefix}/{ts}.png", "frame_id": i} for i, ts in enumerate(timestamps)}
+
+    # ---- _extrapolate_through_low_entropy ----
+
+    def test_extrapolate_pure_low_entropy_lhs_extends(self):
+        """When all frames between boundary and edge are low-entropy, extrapolation happens."""
+        pm = self._make_pair_matcher()
+
+        # 100 frames at 40ms intervals from 0..3960ms
+        lhs_keys = list(range(0, 4000, 40))
+        rhs_keys = list(range(0, 4000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        boundary = (2000, 2000)
+        reference = (3000, 3000)
+
+        with patch.object(PairMatcher, '_is_rich', return_value=False):
+            result = pm.extrapolate_through_low_entropy(
+                lhs, rhs, boundary, reference, ratio=1.0,
+                direction=-1, entered_low_entropy=True,
+            )
+
+        # Should extrapolate to LHS edge (0ms) and snap RHS to nearest frame
+        self.assertEqual(result[0], 0)
+        self.assertEqual(result[1], 0)
+
+    def test_extrapolate_not_entered_low_entropy_noop(self):
+        """When entered_low_entropy=False, boundary is returned unchanged."""
+        pm = self._make_pair_matcher()
+        lhs = self._make_frames([0, 1000, 2000])
+        rhs = self._make_frames([0, 1000, 2000])
+        boundary = (1000, 1000)
+
+        result = pm.extrapolate_through_low_entropy(
+            lhs, rhs, boundary, (2000, 2000), ratio=1.0,
+            direction=-1, entered_low_entropy=False,
+        )
+
+        self.assertEqual(result, boundary)
+
+    def test_extrapolate_all_high_entropy_gap_refuses(self):
+        """When all gap frames are high-entropy, extrapolation is refused."""
+        pm = self._make_pair_matcher()
+        lhs = self._make_frames(list(range(0, 4000, 40)))
+        rhs = self._make_frames(list(range(0, 4000, 40)))
+        boundary = (2000, 2000)
+
+        with patch.object(PairMatcher, '_is_rich', return_value=True):
+            result = pm.extrapolate_through_low_entropy(
+                lhs, rhs, boundary, (3000, 3000), ratio=1.0,
+                direction=-1, entered_low_entropy=True,
+            )
+
+        self.assertEqual(result, boundary)
+
+    def test_extrapolate_noise_below_5pct_accepts(self):
+        """When < 5% of gap frames are high-entropy, extrapolation proceeds."""
+        pm = self._make_pair_matcher()
+
+        # 200 frames from 0..7960ms at 40ms intervals
+        lhs_keys = list(range(0, 8000, 40))
+        rhs_keys = list(range(0, 8000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        boundary = (4000, 4000)
+        # Gap: frames 0..3960 (100 frames), make 3 of them (3%) "rich"
+        noisy_timestamps = {120, 2000, 3600}  # 3 out of 100 = 3%
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts in noisy_timestamps
+
+        with patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich):
+            result = pm.extrapolate_through_low_entropy(
+                lhs, rhs, boundary, (6000, 6000), ratio=1.0,
+                direction=-1, entered_low_entropy=True,
+            )
+
+        # Should extrapolate — 3% noise is below 5% threshold
+        self.assertEqual(result[0], 0)
+
+    def test_extrapolate_noise_above_5pct_refuses(self):
+        """When > 5% of gap frames are high-entropy, extrapolation is refused."""
+        pm = self._make_pair_matcher()
+
+        lhs_keys = list(range(0, 8000, 40))
+        rhs_keys = list(range(0, 8000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        boundary = (4000, 4000)
+        # Gap: frames 0..3960 (100 frames), make 10 of them (10%) "rich"
+        noisy_timestamps = set(range(0, 400, 40))  # 10 out of 100 = 10%
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts in noisy_timestamps
+
+        with patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich):
+            result = pm.extrapolate_through_low_entropy(
+                lhs, rhs, boundary, (6000, 6000), ratio=1.0,
+                direction=-1, entered_low_entropy=True,
+            )
+
+        # Should refuse — 10% noise exceeds 5% threshold
+        self.assertEqual(result, boundary)
+
+    def test_extrapolate_end_direction(self):
+        """Extrapolation works in the forward (end) direction too."""
+        pm = self._make_pair_matcher()
+
+        lhs_keys = list(range(0, 8000, 40))
+        rhs_keys = list(range(0, 8000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        boundary = (4000, 4000)
+        reference = (2000, 2000)
+
+        with patch.object(PairMatcher, '_is_rich', return_value=False):
+            result = pm.extrapolate_through_low_entropy(
+                lhs, rhs, boundary, reference, ratio=1.0,
+                direction=1, entered_low_entropy=True,
+            )
+
+        # Should extrapolate to LHS end edge
+        self.assertEqual(result[0], lhs_keys[-1])
+
+    def test_extrapolate_rhs_high_entropy_refuses(self):
+        """When LHS is low-entropy but RHS gap is high-entropy, extrapolation is refused."""
+        pm = self._make_pair_matcher()
+
+        lhs_keys = list(range(0, 8000, 40))
+        rhs_keys = list(range(0, 8000, 40))
+        lhs = self._make_frames(lhs_keys, prefix="lhs")
+        rhs = self._make_frames(rhs_keys, prefix="rhs")
+
+        boundary = (4000, 4000)
+
+        def smart_mock(path: str) -> bool:
+            if path.startswith("/lhs/"):
+                return False   # LHS gap: all low-entropy
+            if path.startswith("/rhs/"):
+                return True    # RHS gap: all high-entropy
+            return False
+
+        with patch.object(PairMatcher, '_is_rich', side_effect=smart_mock):
+            result = pm.extrapolate_through_low_entropy(
+                lhs, rhs, boundary, (6000, 6000), ratio=1.0,
+                direction=-1, entered_low_entropy=True,
+            )
+
+        # RHS is all high-entropy → should refuse
+        self.assertEqual(result, boundary)
+
+    # ---- snap_to_edges ----
+
+    def test_snap_within_4_frames_snaps(self):
+        """Pairs within 4 frames of edge should snap to video boundary."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # threshold = 4 * 1000 / 25 = 160ms
+
+        lhs_frames = self._make_frames([0, 40, 80, 100, 5000, 9900, 9960, 10000])
+        rhs_frames = self._make_frames([0, 40, 80, 100, 5000, 9900, 9960, 10000])
+
+        matching_pairs = [(100, 100), (5000, 5000), (9900, 9900)]
+
+        with patch.object(video_utils, 'get_video_duration', return_value=10000):
+            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+
+        # 100ms is within 160ms threshold → snap to 0
+        self.assertEqual(result[0], (0, 0))
+        # 10000 - 9900 = 100ms is within 160ms threshold → snap to duration
+        self.assertEqual(result[-1], (10000, 10000))
+
+    def test_snap_beyond_4_frames_no_snap(self):
+        """Pairs beyond 4 frames of edge should NOT snap."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # threshold = 160ms
+
+        lhs_frames = self._make_frames([0, 200, 5000, 9700, 10000])
+        rhs_frames = self._make_frames([0, 200, 5000, 9700, 10000])
+
+        matching_pairs = [(200, 200), (5000, 5000), (9700, 9700)]
+
+        with patch.object(video_utils, 'get_video_duration', return_value=10000):
+            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+
+        # 200ms > 160ms → no snap
+        self.assertEqual(result[0], (200, 200))
+        # 10000 - 9700 = 300ms > 160ms → no snap
+        self.assertEqual(result[-1], (9700, 9700))
+
+    def test_snap_asymmetric_fps(self):
+        """With different FPS per side, thresholds apply independently."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=50.0)
+        # LHS threshold = 4 * 1000 / 25 = 160ms
+        # RHS threshold = 4 * 1000 / 50 = 80ms
+
+        lhs_frames = self._make_frames([0, 100, 5000, 10000])
+        rhs_frames = self._make_frames([0, 90, 5000, 10000])
+
+        matching_pairs = [(100, 90), (5000, 5000)]
+
+        with patch.object(video_utils, 'get_video_duration', return_value=10000):
+            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+
+        # LHS: 100ms <= 160ms → snaps
+        self.assertEqual(result[0][0], 0)
+        # RHS: 90ms > 80ms → does NOT snap
+        self.assertEqual(result[0][1], 90)
+
+    # ---- try_constant_offset_extrapolation ----
+
+    def test_constant_offset_detected_and_extrapolated(self):
+        """When all pairs share a constant frame-number offset, boundaries are extrapolated."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # frame_ms = 40ms, frame offset = 3
+        # Offset: all pairs at +3 frames (+120ms)
+        matching_pairs = [
+            (2120, 2000),
+            (4120, 4000),
+            (6120, 6000),
+            (8120, 8000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        # k=3: first_lhs_frame=3 → ts=120, first_rhs_frame=0 → ts=0
+        self.assertEqual(result[0], (120, 0))
+        # last_lhs_frame=min(250,250+3)=250 → ts=10000, last_rhs_frame=247 → ts=9880
+        self.assertEqual(result[-1], (10000, 9880))
+
+    def test_constant_offset_negative(self):
+        """When offset is negative (rhs ahead of lhs), boundaries are correct."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        matching_pairs = [
+            (2000, 2120),
+            (4000, 4120),
+            (6000, 6120),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        # k=-3: first_lhs_frame=0 → ts=0, first_rhs_frame=3 → ts=120
+        self.assertEqual(result[0], (0, 120))
+        # last_lhs_frame=min(250,250-3)=247 → ts=9880, last_rhs_frame=250 → ts=10000
+        self.assertEqual(result[-1], (9880, 10000))
+
+    def test_constant_offset_zero(self):
+        """When offset is zero (identical timing), boundaries are at edges."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        matching_pairs = [
+            (2000, 2000),
+            (4000, 4000),
+            (6000, 6000),
+            (8000, 8000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], (0, 0))
+        self.assertEqual(result[-1], (10000, 10000))
+
+    def test_constant_offset_rejected_high_std(self):
+        """When frame-number offsets vary too much (std > 1), returns None."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # frame offsets: 3, 5, 1 → std ≈ 1.63 > 1.0
+        matching_pairs = [
+            (2120, 2000),
+            (4200, 4000),
+            (6040, 6000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNone(result)
+
+    def test_constant_offset_rejected_growing_offsets(self):
+        """When frame-number offsets grow (content plays at different rate), returns None."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # frame offsets: 2, 4, 6, 8 → std ≈ 2.24 > 1.0
+        matching_pairs = [
+            (2080, 2000),
+            (4160, 4000),
+            (6240, 6000),
+            (8320, 8000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNone(result)
+
+    def test_constant_offset_too_few_pairs(self):
+        """With fewer than 3 pairs, constant-offset detection is skipped."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        matching_pairs = [(2120, 2000), (4120, 4000)]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNone(result)
+
+    def test_constant_offset_slight_jitter_within_tolerance(self):
+        """Small jitter (< 1 frame) in frame-number offsets should still be accepted."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        # frame offsets: 3, 3, 4, 3 → std ≈ 0.43 < 1.0
+        matching_pairs = [
+            (2120, 2000),
+            (4120, 4000),
+            (6160, 6000),
+            (8120, 8000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        # Median frame offset is 3 → first=(120, 0), last=(10000, 9880)
+        self.assertEqual(result[0], (120, 0))
+        self.assertEqual(result[-1], (10000, 9880))
+
+    def test_constant_offset_different_fps(self):
+        """Same content with different FPS (e.g. PAL speedup) is detected correctly."""
+        pm = self._make_pair_matcher(lhs_fps=20.0, rhs_fps=25.0)
+        # lhs_frame_ms=50ms, rhs_frame_ms=40ms
+        # Frame offset k=3: frame N in LHS = frame (N-3) in RHS
+        matching_pairs = [
+            (2500, 1880),   # LHS frame 50, RHS frame 47
+            (5000, 3880),   # LHS frame 100, RHS frame 97
+            (7500, 5880),   # LHS frame 150, RHS frame 147
+        ]
+
+        lhs_keys = list(range(0, 10050, 50))
+        rhs_keys = list(range(0, 8040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        # k=3: first_lhs_frame=3 → ts=150, first_rhs_frame=0 → ts=0
+        self.assertEqual(result[0], (150, 0))
+        # last_lhs_frame=min(200,200+3)=200 → ts=10000, last_rhs_frame=197 → ts=7880
+        self.assertEqual(result[-1], (10000, 7880))
+
+    def test_constant_offset_does_not_duplicate_existing_boundary(self):
+        """If extrapolated boundary matches an existing pair, no duplicate is added."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        matching_pairs = [
+            (120, 0),
+            (4120, 4000),
+            (8120, 8000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        # First pair already matches extrapolated boundary → no duplicate
+        self.assertEqual(result[0], (120, 0))
+        self.assertEqual(len([p for p in result if p == (120, 0)]), 1)
+
+    def test_create_segments_mapping_skips_edge_snap_after_constant_offset(self):
+        """Constant-offset extrapolation should bypass timestamp-based edge snapping."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        pm.lhs_all_wd = "/tmp/lhs_all"
+        pm.rhs_all_wd = "/tmp/rhs_all"
+        pm.lhs_boundary_wd = "/tmp/lhs_boundary"
+        pm.rhs_boundary_wd = "/tmp/rhs_boundary"
+        pm.lhs_normalized_wd = "/tmp/lhs_norm"
+        pm.rhs_normalized_wd = "/tmp/rhs_norm"
+        pm.debug_wd = "/tmp/debug"
+
+        class FakePhash:
+            def get(self, path):
+                return 0
+
+        pm.phash = FakePhash()
+
+        lhs_probed = self._make_frames([0, 40, 80], prefix="lhs_raw")
+        rhs_probed = self._make_frames([0, 40, 80], prefix="rhs_raw")
+        extrapolated_pairs = [(120, 0), (10000, 9880)]
+
+        def fake_extract(_video_path, target_dir, _ranges, probed_metadata, **_kwargs):
+            for ts, info in probed_metadata.items():
+                info["path"] = f"{target_dir}/{ts}.png"
+
+        def fake_normalize(frames_info, wd, desc="Normalizing frames", prefix=""):
+            return {
+                ts: {"path": f"{wd}/{prefix}{ts}.png", "frame_id": info["frame_id"]}
+                for ts, info in frames_info.items()
+            }
+
+        with patch.object(video_utils, 'detect_scene_changes', side_effect=[[40], [40]]), \
+             patch.object(video_utils, 'probe_frame_timestamps', side_effect=[lhs_probed, rhs_probed]), \
+             patch.object(video_utils, 'extract_frames_at_ranges', side_effect=fake_extract), \
+             patch('twotone.tools.melt.pair_matcher.DebugRoutines') as debug_cls, \
+             patch.object(PairMatcher, '_normalize_frames', side_effect=fake_normalize), \
+             patch.object(PairMatcher, '_make_pairs', return_value=[(40, 40)]), \
+             patch.object(PairMatcher, 'try_constant_offset_extrapolation', return_value=extrapolated_pairs), \
+             patch.object(PairMatcher, 'snap_to_edges', side_effect=AssertionError("snap_to_edges should not be called")):
+
+            debug = debug_cls.return_value
+            debug.dump_frames.return_value = None
+            debug.dump_matches.return_value = None
+
+            mappings, _, _, is_constant = pm.create_segments_mapping()
+
+        self.assertTrue(is_constant)
+        self.assertEqual(mappings, extrapolated_pairs)
+
+    # ---- _look_for_boundaries: look_ahead robustness ----
+
+    @staticmethod
+    def _mock_phash_always_match():
+        """Return a context manager that replaces PhashCache with an always-matching stub."""
+        class FakeHash:
+            def __sub__(self, other): return 0
+            def __abs__(self): return 0
+        class FakePhashCache:
+            def __init__(self, hash_size=16): pass
+            def get(self, path): return FakeHash()
+        return patch('twotone.tools.melt.pair_matcher.PhashCache', FakePhashCache)
+
+    def test_boundary_search_survives_transient_dark_frame(self):
+        """A single dark frame at a scene cut should not stop boundary search."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        lhs_keys = list(range(0, 10000, 40))
+        rhs_keys = list(range(0, 10000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        dark_timestamps = {3000}
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts not in dark_timestamps
+
+        first = (5000, 5000)
+        last = (8000, 8000)
+
+        with (
+            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
+            patch.object(pm, '_edge_content_matches', return_value=True),
+            self._mock_phash_always_match(),
+        ):
+            result_first, _ = pm.look_for_boundaries(
+                lhs, rhs, first, last, cutoff=16, extrapolate=False,
+            )
+
+        self.assertLess(result_first[0], 3000,
+            "Boundary should extend past the transient dark frame at 3000ms")
+
+    def test_boundary_search_stops_at_sustained_dark_zone(self):
+        """A sustained dark zone (>1.5s of dark frames) should stop the search."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        lhs_keys = list(range(0, 10000, 40))
+        rhs_keys = list(range(0, 10000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        dark_zone = {ts for ts in lhs_keys if ts <= 2500}
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts not in dark_zone
+
+        first = (5000, 5000)
+        last = (8000, 8000)
+
+        with (
+            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
+            patch.object(pm, '_edge_content_matches', return_value=True),
+            self._mock_phash_always_match(),
+        ):
+            result_first, _ = pm.look_for_boundaries(
+                lhs, rhs, first, last, cutoff=16, extrapolate=False,
+            )
+
+        self.assertGreaterEqual(result_first[0], 2500,
+            "Boundary should not extend into a sustained dark zone")
+
+    def test_boundary_search_consecutive_scene_cuts_dont_stop(self):
+        """Two brief dark frames close together should not stop the search."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        lhs_keys = list(range(0, 10000, 40))
+        rhs_keys = list(range(0, 10000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        dark_timestamps = {3000, 3200}
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts not in dark_timestamps
+
+        first = (5000, 5000)
+        last = (8000, 8000)
+
+        with (
+            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
+            patch.object(pm, '_edge_content_matches', return_value=True),
+            self._mock_phash_always_match(),
+        ):
+            result_first, _ = pm.look_for_boundaries(
+                lhs, rhs, first, last, cutoff=16, extrapolate=False,
+            )
+
+        self.assertLess(result_first[0], 3000,
+            "Boundary should extend past two isolated dark frames")
+
+    def test_boundary_search_jumps_over_mid_movie_dark_zone(self):
+        """A dark zone in the middle of matching content should be jumped over.
+
+        This reproduces the Jumanji scenario: content matches before and after
+        a sustained dark zone (scene transition), so the walk should continue
+        past the dark zone rather than declaring it a boundary.
+        """
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        # 500 frames at 40ms intervals: 0..19960ms
+        lhs_keys = list(range(0, 20000, 40))
+        rhs_keys = list(range(0, 20000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        # Sustained dark zone from 8000ms..10000ms (2s, ~50 frames)
+        dark_zone = {ts for ts in lhs_keys if 8000 <= ts <= 10000}
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts not in dark_zone
+
+        first = (14000, 14000)
+        last = (18000, 18000)
+
+        with (
+            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
+            patch.object(pm, '_edge_content_matches', return_value=True),
+            self._mock_phash_always_match(),
+        ):
+            result_first, _ = pm.look_for_boundaries(
+                lhs, rhs, first, last, cutoff=16, extrapolate=False,
+            )
+
+        # The walk should have jumped over the dark zone at 8000-10000ms
+        # and found matches before it, reaching near the video start.
+        self.assertLess(result_first[0], 8000,
+            "Boundary should jump over mid-movie dark zone and find earlier matches")
+
+    def test_boundary_search_stops_when_content_differs_after_dark_zone(self):
+        """When content on the other side of a dark zone does NOT match,
+        the walk should stop (dark zone is the real boundary).
+        """
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        lhs_keys = list(range(0, 20000, 40))
+        rhs_keys = list(range(0, 20000, 40))
+        lhs = self._make_frames(lhs_keys)
+        rhs = self._make_frames(rhs_keys)
+
+        # Dark zone from 8000ms..10000ms
+        dark_zone = {ts for ts in lhs_keys if 8000 <= ts <= 10000}
+
+        def mock_is_rich(path: str) -> bool:
+            ts = int(path.split("/")[-1].replace(".png", ""))
+            return ts not in dark_zone
+
+        first = (14000, 14000)
+        last = (18000, 18000)
+
+        class SelectivePhashCache:
+            """Phash that matches for ts > 10000 but fails for ts <= 8000."""
+            def __init__(self, hash_size=16): pass
+            def get(self, path):
+                ts = int(path.split("/")[-1].replace(".png", ""))
+                return type('Hash', (), {
+                    'value': ts,
+                    '__sub__': lambda s, o: 0 if s.value > 10000 or o.value > 10000 else 99,
+                    '__abs__': lambda s: s,
+                    '__lt__': lambda s, o: s.value < (o if isinstance(o, (int, float)) else o.value),
+                    '__le__': lambda s, o: s.value <= (o if isinstance(o, (int, float)) else o.value),
+                    '__gt__': lambda s, o: s.value > (o if isinstance(o, (int, float)) else o.value),
+                    '__int__': lambda s: s.value,
+                    '__float__': lambda s: float(s.value),
+                })()
+
+        with (
+            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
+            patch.object(pm, '_edge_content_matches', return_value=True),
+            patch('twotone.tools.melt.pair_matcher.PhashCache', SelectivePhashCache),
+        ):
+            result_first, _ = pm.look_for_boundaries(
+                lhs, rhs, first, last, cutoff=16, extrapolate=False,
+            )
+
+        # Content doesn't match after the dark zone — walk should stop at/near it
+        self.assertGreaterEqual(result_first[0], 8000,
+            "Boundary should stop at dark zone when content doesn't match on the other side")
+
 
 if __name__ == '__main__':
     unittest.main()
