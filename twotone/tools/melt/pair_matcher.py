@@ -877,8 +877,7 @@ class PairMatcher:
         if len(lhs_three) < 3 and len(rhs_three) < 3:
             return True
         elif len(lhs_three) < 3 or len(rhs_three) < 3:
-            # TODO: some logic needed here
-            pass
+            raise NotImplementedError("Asymmetric history check not implemented")
 
         # at least one match before current pair is required
         lhs_frames = {l: lhs_pool[l] for l in lhs_three}
