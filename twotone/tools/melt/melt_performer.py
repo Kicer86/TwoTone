@@ -357,13 +357,16 @@ class MeltPerformer:
         output_path: str,
     ) -> None:
         """Concatenate audio parts (head + middle segments + tail) and encode to AAC."""
+        def _esc(p: str) -> str:
+            return p.replace("'", "'\\''" )
+
         with open(concat_list_path, "w", encoding="utf-8") as f:
             if has_head:
-                f.write(f"file '{head_path}'\n")
+                f.write(f"file '{_esc(head_path)}'\n")
             for seg in parts:
-                f.write(f"file '{seg}'\n")
+                f.write(f"file '{_esc(seg)}'\n")
             if has_tail:
-                f.write(f"file '{tail_path}'\n")
+                f.write(f"file '{_esc(tail_path)}'\n")
 
         process_utils.raise_on_error(
             process_utils.start_process("ffmpeg", [
