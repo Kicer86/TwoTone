@@ -926,8 +926,6 @@ class PairMatcher:
                             new_pairs.append((l, rhs_candidate))
                             rhs_used.add(rhs_candidate)
                             break
-                        else:
-                            pass
 
         return sorted(set(known_pairs + new_pairs))
 
@@ -948,9 +946,6 @@ class PairMatcher:
         # Step 2: Apply interpolated cropping to each frame
         lhs_cropped = self._apply_crop_interpolated(lhs_frames, lhs_cropped_dir, lhs_crop_fn)
         rhs_cropped = self._apply_crop_interpolated(rhs_frames, rhs_cropped_dir, rhs_crop_fn)
-
-        # Step 3: Resize both output sets to same resolution (downscale to smaller one)
-        #Melter._resize_dirs_to_smallest(out_dir1, out_dir2)
 
         return lhs_cropped, rhs_cropped
 
@@ -1408,7 +1403,7 @@ class PairMatcher:
         )
 
         if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
-            raise RuntimeError("Not enought scene changes detected")
+            raise RuntimeError("Not enough scene changes detected")
 
         return lhs_scene_changes, rhs_scene_changes
 
