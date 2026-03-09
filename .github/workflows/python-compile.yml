@@ -4,7 +4,17 @@ on:
   push:
     branches:
       - master
+    paths:
+      - 'twotone/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - '.github/workflows/python-compile.yml'
   pull_request:
+    paths:
+      - 'twotone/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - '.github/workflows/python-compile.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

@@ -1,11 +1,21 @@
 pull_request_rules:
   - name: Squash and merge (one commit)
     conditions:
-      - check-success="tests (windows-latest)"
-      - check-success="tests (macos-latest)"
-      - check-success="tests (ubuntu-latest)"
-      - check-success=compile
-      - check-success=mypy
+      - or:
+        - check-success="tests (windows-latest)"
+        - check-skipped="tests (windows-latest)"
+      - or:
+        - check-success="tests (macos-latest)"
+        - check-skipped="tests (macos-latest)"
+      - or:
+        - check-success="tests (ubuntu-latest)"
+        - check-skipped="tests (ubuntu-latest)"
+      - or:
+        - check-success=compile
+        - check-skipped=compile
+      - or:
+        - check-success=mypy
+        - check-skipped=mypy
       - "#commits=1"
       - or:
         - "#approved-reviews-by>0"
@@ -18,11 +28,21 @@ pull_request_rules:
 
   - name: Merge pull request (more than one commit)
     conditions:
-      - check-success="tests (windows-latest)"
-      - check-success="tests (macos-latest)"
-      - check-success="tests (ubuntu-latest)"
-      - check-success=compile
-      - check-success=mypy
+      - or:
+        - check-success="tests (windows-latest)"
+        - check-skipped="tests (windows-latest)"
+      - or:
+        - check-success="tests (macos-latest)"
+        - check-skipped="tests (macos-latest)"
+      - or:
+        - check-success="tests (ubuntu-latest)"
+        - check-skipped="tests (ubuntu-latest)"
+      - or:
+        - check-success=compile
+        - check-skipped=compile
+      - or:
+        - check-success=mypy
+        - check-skipped=mypy
       - "#commits>1"
       - "#commits-behind=0"
       - or:

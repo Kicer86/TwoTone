@@ -5,7 +5,21 @@ on:
   push:
     branches:
       - master
+    paths:
+      - 'twotone/**'
+      - 'tests/**'
+      - 'requirements.txt'
+      - 'mypy.ini'
+      - '.github/workflows/mypy.yml'
+      - '.github/actions/**'
   pull_request:
+    paths:
+      - 'twotone/**'
+      - 'tests/**'
+      - 'requirements.txt'
+      - 'mypy.ini'
+      - '.github/workflows/mypy.yml'
+      - '.github/actions/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
