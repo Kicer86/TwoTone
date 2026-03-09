@@ -155,7 +155,7 @@ def detect_scene_changes(
 
     # Look for lines with "pts_time:"; these indicate the timestamp of a scene change.
     scene_times = []
-    pattern = re.compile(r"pts_time:(\d+\.\d+)")
+    pattern = re.compile(r"pts_time:(\d+\.?\d*)")
     for line in stderr_lines:
         match = pattern.search(line)
         if match:
