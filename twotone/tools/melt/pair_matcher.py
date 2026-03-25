@@ -1411,8 +1411,9 @@ class PairMatcher:
         return lhs_scene_changes, rhs_scene_changes
 
     def _detect_scenes_for(self, video_path: str, label: str) -> list[int]:
-        if self.cache:
-            cached = self.cache.load_scene_changes(video_path)
+        cache = getattr(self, 'cache', None)
+        if cache:
+            cached = cache.load_scene_changes(video_path)
             if cached is not None:
                 self.logger.info("[1/6] Scene changes for %s restored from cache (%d scenes)", label, len(cached))
                 return cached
@@ -1422,8 +1423,8 @@ class PairMatcher:
             interruption=self.interruption, desc=f"[1/6] Detecting scenes: {label}",
         )
 
-        if self.cache:
-            self.cache.save_scene_changes(video_path, result)
+        if cache:
+            cache.save_scene_changes(video_path, result)
 
         return result
 
@@ -1433,8 +1434,9 @@ class PairMatcher:
         self.rhs_all_frames = self._probe_frames_for(self.rhs_path, self.rhs_label)
 
     def _probe_frames_for(self, video_path: str, label: str) -> dict[int, dict]:
-        if self.cache:
-            cached = self.cache.load_frame_probes(video_path)
+        cache = getattr(self, 'cache', None)
+        if cache:
+            cached = cache.load_frame_probes(video_path)
             if cached is not None:
                 self.logger.info("[2/6] Frame probes for %s restored from cache (%d frames)", label, len(cached))
                 return cached
@@ -1444,8 +1446,8 @@ class PairMatcher:
             desc=f"[2/6] Probing frames: {label}",
         )
 
-        if self.cache:
-            self.cache.save_frame_probes(video_path, result)
+        if cache:
+            cache.save_frame_probes(video_path, result)
 
         return result
 
@@ -1489,7 +1491,8 @@ class PairMatcher:
         probed_metadata: dict[int, dict],
         label: str,
     ) -> None:
-        if self.cache and self.cache.load_scene_frames(video_path, target_dir, probed_metadata):
+        cache = getattr(self, 'cache', None)
+        if cache and cache.load_scene_frames(video_path, target_dir, probed_metadata):
             self.logger.info("[3/6] Scene frames for %s restored from cache", label)
             return
 
@@ -1499,8 +1502,8 @@ class PairMatcher:
             desc=f"[3/6] Extracting scene frames: {label}",
         )
 
-        if self.cache:
-            self.cache.save_scene_frames(video_path, target_dir, probed_metadata)
+        if cache:
+            cache.save_scene_frames(video_path, target_dir, probed_metadata)
 
     def _normalize_extracted(
         self,
