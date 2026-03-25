@@ -398,6 +398,27 @@ def probe_frame_timestamps(
     return mapping
 
 
+def _balanced_select_expr(frame_ranges: list[tuple[int, int]]) -> str:
+    """Build a balanced binary tree of between() clauses for ffmpeg's select filter.
+
+    A flat ``a+b+c+d`` expression has O(N) parser stack depth and hits
+    ffmpeg's internal limit at ~101 terms.  A balanced tree
+    ``(a+b)+(c+d)`` has O(log₂ N) depth, supporting thousands of ranges
+    in a single invocation.
+    """
+    parts = [f"between(n\\,{start}\\,{end})" for start, end in frame_ranges]
+
+    def _build(items: list[str]) -> str:
+        if len(items) == 1:
+            return items[0]
+        mid = len(items) // 2
+        left = _build(items[:mid])
+        right = _build(items[mid:])
+        return f"({left}+{right})"
+
+    return _build(parts)
+
+
 def extract_frames_at_ranges(
     video_path: str,
     target_dir: str,
@@ -418,15 +439,15 @@ def extract_frames_at_ranges(
     key is set to the written file on disk.
 
     Uses ffmpeg's ``select='between(n,a,b)+…'`` filter so only the
-    requested frames are encoded and written.
+    requested frames are encoded and written.  The select expression is
+    structured as a balanced binary tree of ``+`` operations so that the
+    parser stack depth is O(log₂ N) instead of O(N), allowing thousands
+    of ranges in a single ffmpeg invocation.
     """
     if not frame_ranges:
         return
 
-    # Build select expression.  With -vf, commas separate filters in the
-    # chain; commas inside the select expression need escaping with \.
-    select_parts = [f"between(n\\,{start}\\,{end})" for start, end in frame_ranges]
-    select_expr = "+".join(select_parts)
+    select_expr = _balanced_select_expr(frame_ranges)
 
     scale_filter = ""
     if isinstance(scale, float):
