@@ -33,7 +33,7 @@ class MeltCache:
         return [int(v) for v in data]
 
     def save_scene_changes(self, video_path: str, scenes: list[int]) -> None:
-        self._save_json(video_path, "scene_changes.json", scenes)
+        self._save_json(video_path, "scene_changes.json", scenes, indent=2)
 
     def load_frame_probes(self, video_path: str) -> dict[int, dict] | None:
         data = self._load_json(video_path, "frame_probes.json")
@@ -43,7 +43,7 @@ class MeltCache:
 
     def save_frame_probes(self, video_path: str, probes: dict[int, dict]) -> None:
         serializable = {str(k): v for k, v in probes.items()}
-        self._save_json(video_path, "frame_probes.json", serializable)
+        self._save_json(video_path, "frame_probes.json", serializable, indent=2)
 
     def load_scene_frames(
         self,
@@ -114,7 +114,7 @@ class MeltCache:
 
         meta_path = os.path.join(entry, "frame_metadata.json")
         with open(meta_path, "w") as f:
-            json.dump(frame_meta, f)
+            json.dump(frame_meta, f, indent=2)
 
         self.logger.debug("Cached %d frames for %s", len(frame_meta), os.path.basename(video_path))
 
@@ -179,11 +179,11 @@ class MeltCache:
         with open(path) as f:
             return json.load(f)
 
-    def _save_json(self, video_path: str, filename: str, data: object) -> None:
+    def _save_json(self, video_path: str, filename: str, data: object, indent: int | None = None) -> None:
         entry = self._ensure_entry(video_path)
         path = os.path.join(entry, filename)
         with open(path, "w") as f:
-            json.dump(data, f)
+            json.dump(data, f, indent=indent)
 
     def _code_hash(self) -> str:
         if self._code_hash_value is not None:
