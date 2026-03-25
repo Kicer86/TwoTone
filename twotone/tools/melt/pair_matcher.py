@@ -13,13 +13,14 @@ from tqdm import tqdm
 from typing import Callable
 
 from .debug_routines import DebugRoutines
+from .melt_cache import MeltCache
 from .melt_common import FramesInfo
 from .phash_cache import PhashCache
 from ..utils import files_utils, generic_utils, image_utils, video_utils
 
 
 class PairMatcher:
-    def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2") -> None:
+    def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2", cache: MeltCache | None = None) -> None:
         self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
         self.lhs_path = lhs_path
@@ -27,6 +28,7 @@ class PairMatcher:
         self.lhs_label = lhs_label
         self.rhs_label = rhs_label
         self.logger = logger
+        self.cache = cache
         self.phash = PhashCache()
         self.lhs_fps = generic_utils.fps_str_to_float(video_utils.get_video_data(lhs_path)["video"][0]["fps"])
         self.rhs_fps = generic_utils.fps_str_to_float(video_utils.get_video_data(rhs_path)["video"][0]["fps"])
