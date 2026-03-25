@@ -115,6 +115,11 @@ class MeltTool(Tool):
                             help='[EXPERIMENTAL] Continue processing even if input video lengths differ.\n'
                                  'This may require additional processing that can consume significant time and disk space.')
 
+        parser.add_argument('--cache-dir',
+                            help='Directory for caching expensive per-video operations (scene detection, '
+                                 'frame probing, frame extraction). Speeds up repeated runs on the same input files. '
+                                 'Cache is invalidated automatically when the input file changes.')
+
     @override
     def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
         interruption = generic_utils.InterruptibleProcess()
