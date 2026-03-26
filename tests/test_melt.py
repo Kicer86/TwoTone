@@ -2054,6 +2054,32 @@ class MeltPerformerUnitTest(unittest.TestCase):
         # Should have at least "0.0s" somewhere in the timestamp rows
         self.assertIn("0.0s", all_text, "Should contain the start timestamp")
 
+    def test_render_overlap_diagram_speed_ratio_projected(self):
+        """When rhs plays faster (PAL), rhs should be projected onto lhs timeline.
+
+        With lhs=100s, rhs=96s, lhs_sg=2, rhs_sg=0, lhs_eg=1, rhs_eg=0:
+        shared_lhs=97, shared_rhs=96, speed=97/96≈1.0104.
+        rhs projected: start=2.0, end=99.0 (=100-1). End gap on diagram ≈1s, not 4s.
+        """
+        performer = self._make_performer()
+        summary = {
+            "lhs_start_gap_s": 2.0,
+            "rhs_start_gap_s": 0.0,
+            "lhs_end_gap_s": 1.0,
+            "rhs_end_gap_s": 0.0,
+            "full_coverage": False,
+        }
+        lines = performer._render_overlap_diagram(1, 2, 100_000, 96_000, summary)
+        self.assertTrue(len(lines) >= 2)
+        # lhs starts first (lhs_sg=2 means has content before shared region)
+        self.assertTrue(lines[0].startswith("|"), "#1 bar at col 0")
+        self.assertTrue(lines[1].startswith(" "), "#2 bar indented")
+        # Both should end close (1s gap gets _MIN_GAP=6 columns, but NOT a proportional 4s gap)
+        lhs_end_col = len(lines[0].rstrip()) - 1
+        rhs_end_col = len(lines[1].rstrip()) - 1
+        self.assertAlmostEqual(lhs_end_col, rhs_end_col, delta=8,
+                               msg="Speed-adjusted rhs should end close to lhs (small gap)")
+
 
 class PairMatcherUnitTest(unittest.TestCase):
     """Unit tests for PairMatcher internal methods.

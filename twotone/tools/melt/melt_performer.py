@@ -285,16 +285,28 @@ class MeltPerformer:
         rhs_duration_ms: int,
         summary: dict[str, Any],
     ) -> list[str]:
-        """Build ASCII overlap diagram lines for two partially-overlapping files."""
+        """Build ASCII overlap diagram lines for two partially-overlapping files.
+
+        All positions are projected onto the lhs (base) timeline so that speed
+        differences between files don't distort the visual overlap.
+        """
         lhs_dur = lhs_duration_ms / 1000
         rhs_dur = rhs_duration_ms / 1000
         lhs_sg = summary["lhs_start_gap_s"]
         rhs_sg = summary["rhs_start_gap_s"]
+        lhs_eg = summary["lhs_end_gap_s"]
+        rhs_eg = summary["rhs_end_gap_s"]
 
-        # Unified timeline positions (lhs starts at t=0)
+        # Compute speed factor to project rhs times onto lhs timeline.
+        # shared_dur_lhs / shared_dur_rhs gives how much rhs time stretches on the lhs axis.
+        shared_dur_lhs = lhs_dur - lhs_sg - lhs_eg
+        shared_dur_rhs = rhs_dur - rhs_sg - rhs_eg
+        speed = shared_dur_lhs / shared_dur_rhs if shared_dur_rhs > 0 else 1.0
+
+        # Unified timeline positions (lhs starts at t=0, rhs projected onto lhs time)
         lhs_s, lhs_e = 0.0, lhs_dur
-        rhs_s = lhs_sg - rhs_sg
-        rhs_e = rhs_s + rhs_dur
+        rhs_s = lhs_sg - rhs_sg * speed
+        rhs_e = (lhs_dur - lhs_eg) + rhs_eg * speed
 
         t_min = min(lhs_s, rhs_s)
         t_max = max(lhs_e, rhs_e)
@@ -371,8 +383,8 @@ class MeltPerformer:
         mappings: list[tuple[int, int]],
         lhs_duration_ms: int,
         rhs_duration_ms: int,
-        lhs_id: int = 1,
-        rhs_id: int = 2,
+        lhs_id: int,
+        rhs_id: int,
     ) -> None:
         """Log a human-readable coverage report after PairMatcher finishes."""
         summary = PairMatcher.coverage_summary(mappings, lhs_duration_ms, rhs_duration_ms)
