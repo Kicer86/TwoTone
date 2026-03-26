@@ -177,16 +177,14 @@ class MeltPerformer:
         """Replace audio using a single global time-scale for constant-offset cases.
 
         Instead of splitting into many subsegments and applying per-segment atempo,
-        this extracts the matching range as one piece and uses asetrate+aresample
-        for sample-accurate duration adjustment. When the durations already match
-        (ratio ≈ 1.0), the audio is copied without re-encoding.
+        this trims and time-scales the source audio directly from the video file,
+        avoiding full audio extraction. When the durations already match
+        (ratio ≈ 1.0), no time-scaling is applied.
         """
 
         wd = os.path.join(wd, "audio_extraction")
         os.makedirs(wd, exist_ok=True)
 
-        v1_audio = os.path.join(wd, "v1_audio.flac")
-        v2_audio = os.path.join(wd, "v2_audio.flac")
         head_path = os.path.join(wd, "head.flac")
         tail_path = os.path.join(wd, "tail.flac")
 
@@ -196,53 +194,58 @@ class MeltPerformer:
         seg1_start, seg1_end = min(left_points), max(left_points)
         seg2_start, seg2_end = min(right_points), max(right_points)
 
-        # 1. Extract main audio tracks
-        self._extract_audio_to_flac(base_video, v1_audio)
-        self._extract_audio_to_flac(source_video, v2_audio)
+        # 1. Extract head/tail directly from base video, normalized to source params
+        source_params = self._get_audio_params(source_video)
+        base_duration_ms = video_utils.get_video_duration(base_video)
+        has_head = seg1_start > 0
+        if has_head:
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", [
+                    "-y", "-to", str(seg1_start / 1000),
+                    "-i", base_video, "-map", "0:a:0",
+                    *self._normalize_args(source_params),
+                    "-c:a", "flac", head_path,
+                ])
+            )
+        has_tail = seg1_end < base_duration_ms
+        if has_tail:
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", [
+                    "-y", "-ss", str(seg1_end / 1000),
+                    "-i", base_video, "-map", "0:a:0",
+                    *self._normalize_args(source_params),
+                    "-c:a", "flac", tail_path,
+                ])
+            )
 
-        source_params = self._get_audio_params(v2_audio)
-
-        # 2. Extract head and tail from base audio, normalized to source params
-        has_head, has_tail = self._extract_head_tail(
-            v1_audio, base_video, seg1_start, seg1_end, head_path, tail_path,
-            normalize_to=source_params,
-        )
-
-        # 3. Trim source audio to matching range
-        source_trimmed = os.path.join(wd, "source_trimmed.flac")
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", [
-                "-y",
-                "-ss", str(seg2_start / 1000),
-                "-to", str(seg2_end / 1000),
-                "-i", v2_audio,
-                "-c:a", "flac",
-                source_trimmed,
-            ])
-        )
-
-        # 4. Time-scale the trimmed audio if needed
+        # 2. Trim + time-scale source audio directly from video in one step
         source_dur = seg2_end - seg2_start
         target_dur = seg1_end - seg1_start
         ratio = source_dur / target_dur if target_dur else 1.0
 
+        scaled_audio = os.path.join(wd, "source_scaled.flac")
+        trim_args = [
+            "-y",
+            "-ss", str(seg2_start / 1000),
+            "-to", str(seg2_end / 1000),
+            "-i", source_video,
+            "-map", "0:a:0",
+        ]
         if abs(ratio - 1.0) < 0.001:
-            scaled_audio = source_trimmed
+            trim_args.extend(["-c:a", "flac"])
         else:
-            scaled_audio = os.path.join(wd, "scaled.flac")
             sample_rate = source_params[1]
             adjusted_rate = sample_rate * source_dur / target_dur
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y",
-                    "-i", source_trimmed,
-                    "-filter:a", f"asetrate={adjusted_rate:.6f},aresample={sample_rate}",
-                    "-c:a", "flac",
-                    scaled_audio,
-                ])
-            )
+            trim_args.extend([
+                "-filter:a", f"asetrate={adjusted_rate:.6f},aresample={sample_rate}",
+                "-c:a", "flac",
+            ])
+        trim_args.append(scaled_audio)
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", trim_args)
+        )
 
-        # 5. Concatenate and encode
+        # 3. Concatenate and encode
         self._concat_and_encode(
             [scaled_audio], has_head, head_path, has_tail, tail_path,
             os.path.join(wd, "concat.txt"), os.path.join(wd, "merged.flac"), output_path,
@@ -445,6 +448,12 @@ class MeltPerformer:
         info = video_utils.get_video_full_info(audio_path)
         stream = next(s for s in info["streams"] if s["codec_type"] == "audio")
         return int(stream["channels"]), int(stream["sample_rate"]), stream["sample_fmt"]
+
+    @staticmethod
+    def _normalize_args(params: tuple[int, int, str]) -> list[str]:
+        """Return ffmpeg args that re-encode audio to match *params* (channels, sample_rate, sample_fmt)."""
+        channels, sample_rate, sample_fmt = params
+        return ["-ac", str(channels), "-ar", str(sample_rate), "-sample_fmt", sample_fmt]
 
     @staticmethod
     def _extract_head_tail(
