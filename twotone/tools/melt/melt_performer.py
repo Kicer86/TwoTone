@@ -262,6 +262,108 @@ class MeltPerformer:
         required_input_files |= {info[0] for info in attachments}
         return required_input_files
 
+    @staticmethod
+    def _fmt_time(seconds: float) -> str:
+        """Format seconds as a compact human-readable time string."""
+        if seconds < 0:
+            return f"-{MeltPerformer._fmt_time(-seconds)}"
+        h = int(seconds // 3600)
+        remainder = seconds - h * 3600
+        m = int(remainder // 60)
+        s = remainder - m * 60
+        if h > 0:
+            return f"{h}:{m:02d}:{s:04.1f}"
+        if m > 0:
+            return f"{m}:{s:04.1f}"
+        return f"{s:.1f}s"
+
+    def _render_overlap_diagram(
+        self,
+        lhs_id: int,
+        rhs_id: int,
+        lhs_duration_ms: int,
+        rhs_duration_ms: int,
+        summary: dict[str, Any],
+    ) -> list[str]:
+        """Build ASCII overlap diagram lines for two partially-overlapping files."""
+        lhs_dur = lhs_duration_ms / 1000
+        rhs_dur = rhs_duration_ms / 1000
+        lhs_sg = summary["lhs_start_gap_s"]
+        rhs_sg = summary["rhs_start_gap_s"]
+
+        # Unified timeline positions (lhs starts at t=0)
+        lhs_s, lhs_e = 0.0, lhs_dur
+        rhs_s = lhs_sg - rhs_sg
+        rhs_e = rhs_s + rhs_dur
+
+        t_min = min(lhs_s, rhs_s)
+        t_max = max(lhs_e, rhs_e)
+        if t_max - t_min <= 0:
+            return []
+
+        _THRESH = 0.1  # ignore gaps smaller than 100ms
+        _MIN_GAP = 6   # minimum column width for a visible gap
+        _W = 70         # total diagram width in columns
+
+        left_gap = abs(lhs_s - rhs_s)
+        right_gap = abs(lhs_e - rhs_e)
+        has_left = left_gap > _THRESH
+        has_right = right_gap > _THRESH
+
+        left_w = _MIN_GAP if has_left else 0
+        right_w = _MIN_GAP if has_right else 0
+        mid_w = _W - left_w - right_w
+
+        # Determine bar column ranges; when there's no gap both bars share that edge
+        lhs_c0 = 0 if (lhs_s <= rhs_s or not has_left) else left_w
+        rhs_c0 = 0 if (rhs_s <= lhs_s or not has_left) else left_w
+        lhs_c1 = _W if (lhs_e >= rhs_e or not has_right) else left_w + mid_w
+        rhs_c1 = _W if (rhs_e >= lhs_e or not has_right) else left_w + mid_w
+
+        def _make_bar(c0: int, c1: int, label: str) -> str:
+            width = max(c1 - c0, len(label) + 2)
+            inner = width - 2
+            pl = (inner - len(label)) // 2
+            pr = inner - len(label) - pl
+            return " " * c0 + "|" + "_" * pl + label + "_" * pr + "|"
+
+        bar_lhs = _make_bar(lhs_c0, lhs_c1, f"#{lhs_id}")
+        bar_rhs = _make_bar(rhs_c0, rhs_c1, f"#{rhs_id}")
+
+        # Collect edge timestamps on the unified timeline (relative to t_min)
+        edge_list: list[tuple[int, float]] = [
+            (lhs_c0, lhs_s - t_min), (rhs_c0, rhs_s - t_min),
+            (lhs_c1, lhs_e - t_min), (rhs_c1, rhs_e - t_min),
+        ]
+        seen: set[tuple[int, int]] = set()
+        edges: list[tuple[int, str]] = []
+        for col, t in sorted(edge_list):
+            key = (col, round(t * 10))
+            if key not in seen:
+                seen.add(key)
+                edges.append((col, self._fmt_time(t)))
+
+        # Place labels on up to two rows, avoiding overlap
+        rows: list[list[str]] = [
+            [" "] * (_W + 20),
+            [" "] * (_W + 20),
+        ]
+        row_end = [-1, -1]
+        for c, label in edges:
+            for r in range(2):
+                if c >= row_end[r] and c + len(label) <= len(rows[r]):
+                    for i, ch in enumerate(label):
+                        rows[r][c + i] = ch
+                    row_end[r] = c + len(label) + 1
+                    break
+
+        lines = [bar_lhs, bar_rhs]
+        for row in rows:
+            s = "".join(row).rstrip()
+            if s:
+                lines.append(s)
+        return lines
+
     def _log_coverage(
         self,
         lhs_path: str,
@@ -269,6 +371,8 @@ class MeltPerformer:
         mappings: list[tuple[int, int]],
         lhs_duration_ms: int,
         rhs_duration_ms: int,
+        lhs_id: int = 1,
+        rhs_id: int = 2,
     ) -> None:
         """Log a human-readable coverage report after PairMatcher finishes."""
         summary = PairMatcher.coverage_summary(mappings, lhs_duration_ms, rhs_duration_ms)
@@ -310,6 +414,12 @@ class MeltPerformer:
                 "Files are NOT fully identical — %s",
                 detail,
             )
+
+            diagram = self._render_overlap_diagram(
+                lhs_id, rhs_id, lhs_duration_ms, rhs_duration_ms, summary,
+            )
+            if diagram:
+                self.logger.info("Overlap diagram:\n%s", "\n".join(diagram))
 
     @staticmethod
     def _extract_audio_to_flac(video_path: str, output_path: str) -> None:
@@ -573,7 +683,7 @@ class MeltPerformer:
             )
             mapping, lhs_all_frames, rhs_all_frames, constant_offset = matcher.create_segments_mapping()
 
-            self._log_coverage(video_path_base, audio_path, mapping, base_duration, duration)
+            self._log_coverage(video_path_base, audio_path, mapping, base_duration, duration, lhs_id, rhs_id)
 
             patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.m4a")
             if constant_offset:
