@@ -179,7 +179,8 @@ class MeltPerformer:
         Instead of splitting into many subsegments and applying per-segment atempo,
         this trims and time-scales the source audio directly from the video file,
         avoiding full audio extraction. When the durations already match
-        (ratio ≈ 1.0), no time-scaling is applied.
+        (ratio ≈ 1.0) and no head/tail is needed, the audio is stream-copied
+        without any re-encoding.
         """
 
         wd = os.path.join(wd, "audio_extraction")
@@ -222,6 +223,21 @@ class MeltPerformer:
         source_dur = seg2_end - seg2_start
         target_dur = seg1_end - seg1_start
         ratio = source_dur / target_dur if target_dur else 1.0
+        needs_scaling = abs(ratio - 1.0) >= 0.001
+
+        # Fast path: no head/tail + no scaling → stream-copy, no re-encoding at all
+        if not has_head and not has_tail and not needs_scaling:
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", [
+                    "-y",
+                    "-ss", str(seg2_start / 1000),
+                    "-to", str(seg2_end / 1000),
+                    "-i", source_video,
+                    "-map", "0:a:0", "-c:a", "copy",
+                    output_path,
+                ])
+            )
+            return
 
         scaled_audio = os.path.join(wd, "source_scaled.flac")
         trim_args = [
@@ -231,7 +247,7 @@ class MeltPerformer:
             "-i", source_video,
             "-map", "0:a:0",
         ]
-        if abs(ratio - 1.0) < 0.001:
+        if not needs_scaling:
             trim_args.extend(["-c:a", "flac"])
         else:
             sample_rate = source_params[1]
@@ -245,7 +261,7 @@ class MeltPerformer:
             process_utils.start_process("ffmpeg", trim_args)
         )
 
-        # 3. Concatenate and encode
+        # 3. Concatenate and encode to AAC
         self._concat_and_encode(
             [scaled_audio], has_head, head_path, has_tail, tail_path,
             os.path.join(wd, "concat.txt"), os.path.join(wd, "merged.flac"), output_path,
@@ -510,7 +526,12 @@ class MeltPerformer:
         merged_flac_path: str,
         output_path: str,
     ) -> None:
-        """Concatenate audio parts (head + middle segments + tail) and encode to AAC."""
+        """Concatenate audio parts (head + middle segments + tail) and encode to AAC.
+
+        All input parts are expected to be FLAC. The concat demuxer merges them
+        and encodes directly to AAC in a single ffmpeg pass.
+        The merged_flac_path parameter is kept for API compatibility but unused.
+        """
         def _esc(p: str) -> str:
             return p.replace("'", "'\\''" )
 
@@ -525,13 +546,9 @@ class MeltPerformer:
         process_utils.raise_on_error(
             process_utils.start_process("ffmpeg", [
                 "-y", "-f", "concat", "-safe", "0",
-                "-i", concat_list_path, "-c:a", "flac", merged_flac_path,
-            ])
-        )
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", [
-                "-y", "-i", merged_flac_path, "-c:a", "aac",
-                "-movflags", "+faststart", output_path,
+                "-i", concat_list_path,
+                "-c:a", "aac", "-movflags", "+faststart",
+                output_path,
             ])
         )
 
