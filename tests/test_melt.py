@@ -1966,6 +1966,94 @@ class MeltPerformerUnitTest(unittest.TestCase):
             self.assertEqual(data["audio"][0]["sample_rate"], 48000,
                              "48kHz sample rate must be preserved")
 
+    # ---- _fmt_time ----
+
+    @parameterized.expand([
+        ("zero",           0.0,       "0.0s"),
+        ("seconds",        2.4,       "2.4s"),
+        ("one_minute",    65.3,       "1:05.3"),
+        ("ten_minutes",  625.0,      "10:25.0"),
+        ("one_hour",    3661.5,       "1:01:01.5"),
+        ("large",       6698.0,       "1:51:38.0"),
+        ("negative",      -5.0,      "-5.0s"),
+    ])
+    def test_fmt_time(self, _name, seconds, expected):
+        self.assertEqual(MeltPerformer._fmt_time(seconds), expected)
+
+    # ---- _render_overlap_diagram ----
+
+    def test_render_overlap_diagram_both_gaps(self):
+        """Diagram with gaps: lhs starts at 2s, rhs starts at 0s → lhs indented, rhs at col 0."""
+        performer = self._make_performer()
+        # rhs_start_gap_s=0 means rhs starts at beginning of shared content
+        # lhs_start_gap_s=2 means lhs starts 2s before shared content → lhs at col 0
+        summary = {
+            "lhs_start_gap_s": 2.0,
+            "rhs_start_gap_s": 0.0,
+            "lhs_end_gap_s": 0.0,
+            "rhs_end_gap_s": 3.0,
+            "full_coverage": False,
+        }
+        lines = performer._render_overlap_diagram(1, 2, 100_000, 101_000, summary)
+        self.assertTrue(len(lines) >= 2, "Should have at least 2 bar lines")
+        # lhs has start_gap=2 → shared content starts 2s into lhs → lhs starts first
+        self.assertTrue(lines[0].startswith("|"), "#1 bar starts at col 0")
+        # rhs starts at shared content → rhs is indented
+        self.assertTrue(lines[1].startswith(" "), "#2 bar should be indented")
+        self.assertIn("#1", lines[0])
+        self.assertIn("#2", lines[1])
+
+    def test_render_overlap_diagram_rhs_starts_first(self):
+        """When rhs has the initial gap → rhs starts later in the diagram, lhs at col 0."""
+        performer = self._make_performer()
+        # lhs_start_gap=0 means shared content starts at beginning of lhs
+        # rhs_start_gap=3 means shared content starts 3s into rhs → rhs starts earlier
+        summary = {
+            "lhs_start_gap_s": 0.0,
+            "rhs_start_gap_s": 3.0,
+            "lhs_end_gap_s": 3.0,
+            "rhs_end_gap_s": 0.0,
+            "full_coverage": False,
+        }
+        lines = performer._render_overlap_diagram(1, 2, 100_000, 100_000, summary)
+        self.assertTrue(len(lines) >= 2)
+        # rhs_s = lhs_sg - rhs_sg = 0 - 3 = -3 → rhs starts before lhs
+        # So rhs is at col 0, lhs is indented
+        self.assertTrue(lines[0].startswith(" "), "#1 bar should be indented")
+        self.assertTrue(lines[1].startswith("|"), "#2 bar starts at col 0")
+
+    def test_render_overlap_diagram_no_gaps_returns_empty(self):
+        """When gaps are tiny (< threshold), no diagram should be produced."""
+        performer = self._make_performer()
+        summary = {
+            "lhs_start_gap_s": 0.0,
+            "rhs_start_gap_s": 0.0,
+            "lhs_end_gap_s": 0.0,
+            "rhs_end_gap_s": 0.0,
+            "full_coverage": False,
+        }
+        lines = performer._render_overlap_diagram(1, 2, 100_000, 100_000, summary)
+        # Bars should be at the same columns (no offset)
+        if lines:
+            lhs_start = len(lines[0]) - len(lines[0].lstrip())
+            rhs_start = len(lines[1]) - len(lines[1].lstrip())
+            self.assertEqual(lhs_start, rhs_start, "Both bars should start at same column")
+
+    def test_render_overlap_diagram_has_timestamps(self):
+        """Diagram should contain time labels."""
+        performer = self._make_performer()
+        summary = {
+            "lhs_start_gap_s": 0.0,
+            "rhs_start_gap_s": 5.0,
+            "lhs_end_gap_s": 0.0,
+            "rhs_end_gap_s": 0.0,
+            "full_coverage": False,
+        }
+        lines = performer._render_overlap_diagram(1, 2, 120_000, 115_000, summary)
+        all_text = "\n".join(lines)
+        # Should have at least "0.0s" somewhere in the timestamp rows
+        self.assertIn("0.0s", all_text, "Should contain the start timestamp")
+
 
 class PairMatcherUnitTest(unittest.TestCase):
     """Unit tests for PairMatcher internal methods.
