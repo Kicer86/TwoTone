@@ -2080,6 +2080,35 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertAlmostEqual(lhs_end_col, rhs_end_col, delta=8,
                                msg="Speed-adjusted rhs should end close to lhs (small gap)")
 
+    def test_patch_audio_constant_offset_stream_copy_fast_path(self):
+        """When ratio ≈ 1.0 and no head/tail, audio should be stream-copied without re-encoding."""
+        performer = self._make_performer()
+        # seg1: 0..6000 (full base), seg2: 500..6500 — same duration, no head/tail
+        pairs = [(0, 500), (6000, 6500)]
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=6000)
+
+        # Should be a single ffmpeg call with -c:a copy
+        self.assertEqual(len(calls), 1, "Fast path should produce exactly one ffmpeg call")
+        self.assertIn("copy", calls[0][1], "Fast path should use -c:a copy")
+        # No FLAC, no AAC, no concat
+        aac_calls = [c for c in calls if any("aac" in str(a) for a in c[1])]
+        self.assertEqual(aac_calls, [], "Fast path should not encode to AAC")
+
+    def test_patch_audio_constant_offset_concat_single_pass(self):
+        """When head/tail needed, concat should encode to AAC in a single pass (no intermediate FLAC)."""
+        performer = self._make_performer()
+        # seg1_start=2000 → has head
+        pairs = [(2000, 1000), (8000, 7000)]
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=10000)
+
+        ffmpeg_args_strs = [" ".join(str(a) for a in c[1]) for c in calls if c[0] == "ffmpeg"]
+        concat_calls = [s for s in ffmpeg_args_strs if "concat" in s]
+        self.assertEqual(len(concat_calls), 1, "Should have exactly one concat call")
+        self.assertIn("aac", concat_calls[0], "Concat should encode directly to AAC")
+        # No separate FLAC→AAC pass
+        flac_to_aac = [s for s in ffmpeg_args_strs if "merged.flac" in s and "aac" in s and "concat" not in s]
+        self.assertEqual(flac_to_aac, [], "Should not have a separate FLAC→AAC re-encoding step")
+
 
 class PairMatcherUnitTest(unittest.TestCase):
     """Unit tests for PairMatcher internal methods.
