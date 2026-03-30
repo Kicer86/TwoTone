@@ -200,7 +200,7 @@ class MeltingTest(TwoToneTestCase):
         Builds a layered dependency tree so shared intermediates (like
         the degraded big_buck_bunny) are generated once and reused.
         """
-        V = "1"  # bump to invalidate all edge fixtures
+        V = "10"  # bump to invalidate all edge fixtures
 
         bbb = get_video("big_buck_bunny_720p_10mb.mp4")
         grass = get_video("Grass - 66810.mp4")
@@ -321,7 +321,6 @@ class MeltingTest(TwoToneTestCase):
     def _prepend_black(self, input_path: str, output_path: str, black_seconds: float, tmp_dir: str | None = None) -> str:
         """Prepend *black_seconds* of black video+silence before *input_path*."""
         td = tmp_dir or self.wd.path
-        # Get input properties
         data = video_utils.get_video_data(input_path)
         width = int(data["video"][0]["width"])
         height = int(data["video"][0]["height"])
@@ -329,37 +328,29 @@ class MeltingTest(TwoToneTestCase):
         fps_float = generic_utils.fps_str_to_float(fps)
         has_audio = len(data.get("audio", [])) > 0
 
-        black_path = os.path.join(td, "black_intro.mp4")
-        args = [
-            "-y",
-            "-f", "lavfi", "-i", f"color=c=black:s={width}x{height}:r={fps_float}:d={black_seconds}",
-        ]
+        black_path = os.path.join(td, "black_intro.mkv")
+        args = ["-y",
+                "-f", "lavfi", "-i", f"color=c=black:s={width}x{height}:r={fps_float}:d={black_seconds}"]
         if has_audio:
             args += ["-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={black_seconds}"]
-            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", black_path]
+            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                     "-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100", "-shortest", black_path]
         else:
             args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", black_path]
         run_ffmpeg(args, expected_path=black_path)
 
-        # Reencode input to match codec/fps for concat
-        reencoded_path = os.path.join(td, "reencoded_input.mp4")
-        args = ["-y", "-i", input_path, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        reencoded_path = os.path.join(td, "reencoded_input.mkv")
+        args = ["-y", "-i", input_path,
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                 "-r", str(fps_float), "-vf", f"fps={fps_float},scale={width}:{height}"]
         if has_audio:
-            args += ["-c:a", "aac", "-ar", "44100"]
+            args += ["-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100"]
         else:
             args += ["-an"]
         args.append(reencoded_path)
         run_ffmpeg(args, expected_path=reencoded_path)
 
-        # Concat
-        filelist = os.path.join(td, "concat_list.txt")
-        with open(filelist, "w") as f:
-            f.write(f"file '{black_path}'\nfile '{reencoded_path}'\n")
-
-        run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", filelist, "-c", "copy", output_path],
-                         expected_path=output_path)
-        return output_path
+        return self._concat_videos([black_path, reencoded_path], output_path, tmp_dir=td)
 
     def _append_black(self, input_path: str, output_path: str, black_seconds: float, tmp_dir: str | None = None) -> str:
         """Append *black_seconds* of black video+silence after *input_path*."""
@@ -371,35 +362,29 @@ class MeltingTest(TwoToneTestCase):
         fps_float = generic_utils.fps_str_to_float(fps)
         has_audio = len(data.get("audio", [])) > 0
 
-        black_path = os.path.join(td, "black_outro.mp4")
-        args = [
-            "-y",
-            "-f", "lavfi", "-i", f"color=c=black:s={width}x{height}:r={fps_float}:d={black_seconds}",
-        ]
-        if has_audio:
-            args += ["-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={black_seconds}"]
-            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", black_path]
-        else:
-            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", black_path]
-        run_ffmpeg(args, expected_path=black_path)
-
-        reencoded_path = os.path.join(td, "reencoded_input_outro.mp4")
-        args = ["-y", "-i", input_path, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        reencoded_path = os.path.join(td, "reencoded_input_outro.mkv")
+        args = ["-y", "-i", input_path,
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                 "-r", str(fps_float), "-vf", f"fps={fps_float},scale={width}:{height}"]
         if has_audio:
-            args += ["-c:a", "aac", "-ar", "44100"]
+            args += ["-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100"]
         else:
             args += ["-an"]
         args.append(reencoded_path)
         run_ffmpeg(args, expected_path=reencoded_path)
 
-        filelist = os.path.join(td, "concat_list_outro.txt")
-        with open(filelist, "w") as f:
-            f.write(f"file '{reencoded_path}'\nfile '{black_path}'\n")
+        black_path = os.path.join(td, "black_outro.mkv")
+        args = ["-y",
+                "-f", "lavfi", "-i", f"color=c=black:s={width}x{height}:r={fps_float}:d={black_seconds}"]
+        if has_audio:
+            args += ["-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={black_seconds}"]
+            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                     "-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100", "-shortest", black_path]
+        else:
+            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", black_path]
+        run_ffmpeg(args, expected_path=black_path)
 
-        run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", filelist, "-c", "copy", output_path],
-                         expected_path=output_path)
-        return output_path
+        return self._concat_videos([reencoded_path, black_path], output_path, tmp_dir=td)
 
     def _degrade_video(self, input_path: str, output_path: str, speed: float = 1.0) -> str:
         """Create a degraded copy: lower quality, optional speed change."""
@@ -423,12 +408,12 @@ class MeltingTest(TwoToneTestCase):
         return output_path
 
     def _reencode_for_concat(self, input_path: str, output_path: str, width: int, height: int, fps: float) -> str:
-        """Reencode a video to specific resolution/fps so it can be concatenated with concat demuxer."""
+        """Reencode a video to specific resolution/fps so it can be concatenated."""
         args = [
             "-y", "-i", input_path,
             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
             "-r", str(fps), "-vf", f"fps={fps},scale={width}:{height}",
-            "-c:a", "aac", "-ar", "44100",
+            "-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100",
             "-shortest",
             output_path,
         ]
@@ -442,7 +427,9 @@ class MeltingTest(TwoToneTestCase):
         with open(filelist, "w") as f:
             for part in parts:
                 f.write(f"file '{part}'\n")
-        run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", filelist, "-c", "copy", output_path],
+        run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", filelist,
+                    "-c:v", "copy", "-c:a", "aac",
+                    output_path],
                          expected_path=output_path)
         return output_path
 
@@ -459,18 +446,18 @@ class MeltingTest(TwoToneTestCase):
         fps = generic_utils.fps_str_to_float(data["video"][0]["fps"])
 
         # Reencode intro
-        intro_reenc = os.path.join(td, f"intro_reenc_{os.path.basename(output_path)}")
+        intro_reenc = os.path.join(td, f"intro_reenc_{Path(output_path).stem}.mkv")
         trim_args = ["-t", str(intro_seconds)] if intro_seconds else []
         args = ["-y", "-i", intro_source] + trim_args + [
             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
             "-r", str(fps), "-vf", f"fps={fps},scale={width}:{height}",
-            "-c:a", "aac", "-ar", "44100", "-shortest",
+            "-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100", "-shortest",
             intro_reenc,
         ]
         run_ffmpeg(args, expected_path=intro_reenc)
 
         # Reencode content
-        content_reenc = os.path.join(td, f"content_reenc_{os.path.basename(output_path)}")
+        content_reenc = os.path.join(td, f"content_reenc_{Path(output_path).stem}.mkv")
         self._reencode_for_concat(content_path, content_reenc, width, height, fps)
 
         return self._concat_videos([intro_reenc, content_reenc], output_path, tmp_dir=td)
@@ -483,15 +470,15 @@ class MeltingTest(TwoToneTestCase):
         height = int(data["video"][0]["height"])
         fps = generic_utils.fps_str_to_float(data["video"][0]["fps"])
 
-        content_reenc = os.path.join(td, f"content_reenc_outro_{os.path.basename(output_path)}")
+        content_reenc = os.path.join(td, f"content_reenc_outro_{Path(output_path).stem}.mkv")
         self._reencode_for_concat(content_path, content_reenc, width, height, fps)
 
-        outro_reenc = os.path.join(td, f"outro_reenc_{os.path.basename(output_path)}")
+        outro_reenc = os.path.join(td, f"outro_reenc_{Path(output_path).stem}.mkv")
         trim_args = ["-t", str(outro_seconds)] if outro_seconds else []
         args = ["-y", "-i", outro_source] + trim_args + [
             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
             "-r", str(fps), "-vf", f"fps={fps},scale={width}:{height}",
-            "-c:a", "aac", "-ar", "44100", "-shortest",
+            "-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100", "-shortest",
             outro_reenc,
         ]
         run_ffmpeg(args, expected_path=outro_reenc)
@@ -1267,11 +1254,11 @@ class MeltingTest(TwoToneTestCase):
         # LHS: bbb_gi3 (65.3s, 3s grass intro), RHS: atoms_i3_deg (63.5s, 3s atoms intro)
         self.assertGreaterEqual(len(mappings), 3)
         # First pair NOT at edge — content starts at ~3s (after different intros)
-        self.assertAlmostEqual(mappings[0][0], 3263, delta=500)
-        self.assertAlmostEqual(mappings[0][1], 3283, delta=500)
-        # Last pair near video duration
-        self.assertAlmostEqual(mappings[-1][0], 65302, delta=500)
-        self.assertAlmostEqual(mappings[-1][1], 63471, delta=500)
+        self.assertAlmostEqual(mappings[0][0], 3023, delta=500)
+        self.assertAlmostEqual(mappings[0][1], 3057, delta=500)
+        # Last pair snapped to video duration (fine-sweep extends to edge)
+        self.assertAlmostEqual(mappings[-1][0], 65302, delta=100)
+        self.assertAlmostEqual(mappings[-1][1], 63471, delta=100)
 
         coverage = PairMatcher.coverage_summary(
             mappings,
@@ -1280,12 +1267,12 @@ class MeltingTest(TwoToneTestCase):
         )
         # Both files have 3s intros (grass / atoms). Common content starts at ~3s.
         # Start gaps must match the known intro duration within 1s tolerance.
-        # End gaps must be negligible — last pair reaches near video boundary.
+        # End gaps effectively 0 — boundary walk + snap reaches video edge.
         self.assertFalse(coverage["full_coverage"])
         self.assertAlmostEqual(coverage["lhs_start_gap_s"], 3.0, delta=1.0)
         self.assertAlmostEqual(coverage["rhs_start_gap_s"], 3.0, delta=1.0)
-        self.assertLess(coverage["lhs_end_gap_s"], 0.5)
-        self.assertLess(coverage["rhs_end_gap_s"], 0.5)
+        self.assertLess(coverage["lhs_end_gap_s"], 0.1)
+        self.assertLess(coverage["rhs_end_gap_s"], 0.1)
 
     def test_pair_matcher_different_intro_different_length(self):
         """Files have different high-entropy intros of DIFFERENT lengths."""
@@ -1298,11 +1285,11 @@ class MeltingTest(TwoToneTestCase):
         # LHS: bbb_gi2 (64.3s, 2s grass intro), RHS: atoms_i5_deg (65.5s, 5s atoms intro)
         self.assertGreaterEqual(len(mappings), 3)
         # First pair NOT at edge — after different intros (2s vs 5s)
-        self.assertAlmostEqual(mappings[0][0], 2263, delta=500)
-        self.assertAlmostEqual(mappings[0][1], 5283, delta=500)
-        # Last pair near video duration
-        self.assertAlmostEqual(mappings[-1][0], 64302, delta=500)
-        self.assertAlmostEqual(mappings[-1][1], 65471, delta=500)
+        self.assertAlmostEqual(mappings[0][0], 2023, delta=500)
+        self.assertAlmostEqual(mappings[0][1], 5057, delta=500)
+        # Last pair snapped to video duration (fine-sweep extends to edge)
+        self.assertAlmostEqual(mappings[-1][0], 64302, delta=100)
+        self.assertAlmostEqual(mappings[-1][1], 65471, delta=100)
 
         coverage = PairMatcher.coverage_summary(
             mappings,
@@ -1311,12 +1298,12 @@ class MeltingTest(TwoToneTestCase):
         )
         # LHS has 2s grass intro, RHS has 5s atoms intro.
         # Start gaps must match known intro durations within 1s tolerance.
-        # End gaps must be negligible — last pair reaches near video boundary.
+        # End gaps effectively 0 — boundary walk + snap reaches video edge.
         self.assertFalse(coverage["full_coverage"])
         self.assertAlmostEqual(coverage["lhs_start_gap_s"], 2.0, delta=1.0)
         self.assertAlmostEqual(coverage["rhs_start_gap_s"], 5.0, delta=1.0)
-        self.assertLess(coverage["lhs_end_gap_s"], 0.5)
-        self.assertLess(coverage["rhs_end_gap_s"], 0.5)
+        self.assertLess(coverage["lhs_end_gap_s"], 0.1)
+        self.assertLess(coverage["rhs_end_gap_s"], 0.1)
 
     def test_pair_matcher_different_outro(self):
         """Files share content but have different high-entropy outros."""
@@ -1370,9 +1357,9 @@ class MeltingTest(TwoToneTestCase):
         # Both files have 3s intros and 3s outros — start/end gaps expected.
         self.assertFalse(coverage["full_coverage"])
         self.assertAlmostEqual(coverage["lhs_start_gap_s"], 3.0, delta=1.0)
-        self.assertGreater(coverage["lhs_end_gap_s"], 3.0)
+        self.assertAlmostEqual(coverage["lhs_end_gap_s"], 3.0, delta=1.0)
         self.assertAlmostEqual(coverage["rhs_start_gap_s"], 3.0, delta=1.0)
-        self.assertGreater(coverage["rhs_end_gap_s"], 10.0)
+        self.assertAlmostEqual(coverage["rhs_end_gap_s"], 3.0, delta=1.0)
 
     # ---- coverage_summary tests ----
 
@@ -1433,9 +1420,8 @@ class MeltingTest(TwoToneTestCase):
         self.assertFalse(result["full_coverage"])
         self.assertAlmostEqual(result["lhs_start_gap_s"], 3.0, delta=1.0)
         self.assertAlmostEqual(result["rhs_start_gap_s"], 3.0, delta=1.0)
-        self.assertLess(result["lhs_end_gap_s"], 0.5)
-        self.assertLess(result["rhs_end_gap_s"], 0.5)
-
+        self.assertLess(result["lhs_end_gap_s"], 0.1)
+        self.assertLess(result["rhs_end_gap_s"], 0.1)
 
     def test_languages_ordering(self):
         interruption = generic_utils.InterruptibleProcess()
@@ -1896,7 +1882,7 @@ class PairMatcherUnitTest(unittest.TestCase):
     These tests mock _is_rich and bypass the full constructor to test
     algorithmic behaviour without needing video files. They target:
     - _extrapolate_through_low_entropy: 5% noise tolerance
-    - snap_to_edges: snap_frames=4 threshold
+    - snap_to_edges: snap threshold
     - find_boundary (via _look_for_boundaries): look_ahead robustness
     """
 
@@ -2086,7 +2072,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(100, 100), (5000, 5000), (9900, 9900)]
 
         with patch.object(video_utils, 'get_video_duration', return_value=10000):
-            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames, snap_frames=4)
 
         # 100ms is within 160ms threshold → snap to 0
         self.assertEqual(result[0], (0, 0))
@@ -2104,7 +2090,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(200, 200), (5000, 5000), (9700, 9700)]
 
         with patch.object(video_utils, 'get_video_duration', return_value=10000):
-            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames, snap_frames=4)
 
         # 200ms > 160ms → no snap
         self.assertEqual(result[0], (200, 200))
@@ -2123,7 +2109,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(100, 90), (5000, 5000)]
 
         with patch.object(video_utils, 'get_video_duration', return_value=10000):
-            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames, snap_frames=4)
 
         # LHS: 100ms <= 160ms → snaps
         self.assertEqual(result[0][0], 0)
