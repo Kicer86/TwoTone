@@ -508,7 +508,7 @@ class PairMatcher:
         matching_pairs: list[tuple[int, int]],
         lhs_all_frames: FramesInfo,
         rhs_all_frames: FramesInfo,
-        snap_frames: int = 4,
+        snap_frames: int = 16,
     ) -> list[tuple[int, int]]:
         """Snap first/last pair timestamps to video edges when within a few frames.
 
@@ -1202,6 +1202,13 @@ class PairMatcher:
             i += step
             idx = start_idx + direction * i
             if idx < 0 or idx >= len(lhs_keys):
+                # The coarse step overshot the edge.  Switch to frame-by-frame
+                # walking from current_best so we don't miss near-edge matches.
+                if step > 1:
+                    best_idx = lhs_keys.index(current_best[0])
+                    i = direction * (best_idx - start_idx)
+                    step = 1
+                    continue
                 break
 
             lhs_ts = lhs_keys[idx]
