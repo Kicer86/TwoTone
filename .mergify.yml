@@ -2,58 +2,53 @@ pull_request_rules:
   - name: Squash and merge (one commit)
     conditions:
       - or:
-        - check-success="tests (windows-latest)"
-        - check-skipped="tests (windows-latest)"
+          - check-success="tests (windows-latest)"
+          - check-skipped="tests (windows-latest)"
       - or:
-        - check-success="tests (macos-latest)"
-        - check-skipped="tests (macos-latest)"
+          - check-success="tests (macos-latest)"
+          - check-skipped="tests (macos-latest)"
       - or:
-        - check-success="tests (ubuntu-latest)"
-        - check-skipped="tests (ubuntu-latest)"
+          - check-success="tests (ubuntu-latest)"
+          - check-skipped="tests (ubuntu-latest)"
       - or:
-        - check-success=compile
-        - check-skipped=compile
+          - check-success=compile
+          - check-skipped=compile
       - or:
-        - check-success=mypy
-        - check-skipped=mypy
+          - check-success=mypy
+          - check-skipped=mypy
       - "#commits=1"
       - "#changes-requested-reviews-by=0"
       - "#review-threads-unresolved=0"
       - or:
-        - "#approved-reviews-by>0"
-        - author=Kicer86
+          - "#approved-reviews-by>0"
+          - author=Kicer86
     actions:
       merge:
         method: squash
-      delete_head_branch:
-        force: false
-
   - name: Merge pull request (more than one commit)
     conditions:
       - or:
-        - check-success="tests (windows-latest)"
-        - check-skipped="tests (windows-latest)"
+          - check-success="tests (windows-latest)"
+          - check-skipped="tests (windows-latest)"
       - or:
-        - check-success="tests (macos-latest)"
-        - check-skipped="tests (macos-latest)"
+          - check-success="tests (macos-latest)"
+          - check-skipped="tests (macos-latest)"
       - or:
-        - check-success="tests (ubuntu-latest)"
-        - check-skipped="tests (ubuntu-latest)"
+          - check-success="tests (ubuntu-latest)"
+          - check-skipped="tests (ubuntu-latest)"
       - or:
-        - check-success=compile
-        - check-skipped=compile
+          - check-success=compile
+          - check-skipped=compile
       - or:
-        - check-success=mypy
-        - check-skipped=mypy
+          - check-success=mypy
+          - check-skipped=mypy
       - "#commits>1"
       - "#commits-behind=0"
       - "#changes-requested-reviews-by=0"
       - "#review-threads-unresolved=0"
       - or:
-        - "#approved-reviews-by>0"
-        - author=Kicer86
+          - "#approved-reviews-by>0"
+          - author=Kicer86
     actions:
       merge:
         method: merge
-      delete_head_branch:
-        force: false
