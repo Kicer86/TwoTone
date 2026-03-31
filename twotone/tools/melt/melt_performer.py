@@ -197,9 +197,12 @@ class MeltPerformer:
         self._extract_audio_to_flac(base_video, v1_audio)
         self._extract_audio_to_flac(source_video, v2_audio)
 
-        # 2. Extract head and tail from base audio
+        source_params = self._get_audio_params(v2_audio)
+
+        # 2. Extract head and tail from base audio, normalized to source params
         has_head, has_tail = self._extract_head_tail(
             v1_audio, base_video, seg1_start, seg1_end, head_path, tail_path,
+            normalize_to=source_params,
         )
 
         # 3. Trim source audio to matching range
@@ -224,7 +227,7 @@ class MeltPerformer:
             scaled_audio = source_trimmed
         else:
             scaled_audio = os.path.join(wd, "scaled.flac")
-            sample_rate = video_utils.get_video_data(v2_audio)["audio"][0]["sample_rate"]
+            sample_rate = source_params[1]
             adjusted_rate = sample_rate * source_dur / target_dur
             process_utils.raise_on_error(
                 process_utils.start_process("ffmpeg", [
@@ -312,6 +315,13 @@ class MeltPerformer:
         )
 
     @staticmethod
+    def _get_audio_params(audio_path: str) -> tuple[int, int, str]:
+        """Return (channels, sample_rate, sample_fmt) of the first audio stream."""
+        info = video_utils.get_video_full_info(audio_path)
+        stream = next(s for s in info["streams"] if s["codec_type"] == "audio")
+        return int(stream["channels"]), int(stream["sample_rate"]), stream["sample_fmt"]
+
+    @staticmethod
     def _extract_head_tail(
         base_audio: str,
         base_video: str,
@@ -319,17 +329,27 @@ class MeltPerformer:
         seg_end_ms: int,
         head_path: str,
         tail_path: str,
+        normalize_to: tuple[int, int, str] | None = None,
     ) -> tuple[bool, bool]:
         """Extract head/tail segments from the base audio track.
 
+        When *normalize_to* is given as (channels, sample_rate, sample_fmt),
+        head and tail are re-encoded to match those parameters so that FLAC
+        concatenation with the main segment works without parameter mismatches.
+
         Returns (has_head, has_tail) indicating which parts were extracted.
         """
+        norm_args: list[str] = []
+        if normalize_to:
+            channels, sample_rate, sample_fmt = normalize_to
+            norm_args = ["-ac", str(channels), "-ar", str(sample_rate), "-sample_fmt", sample_fmt]
+
         has_head = seg_start_ms > 0
         if has_head:
             process_utils.raise_on_error(
                 process_utils.start_process("ffmpeg", [
                     "-y", "-ss", "0", "-to", str(seg_start_ms / 1000),
-                    "-i", base_audio, "-c:a", "flac", head_path,
+                    "-i", base_audio, *norm_args, "-c:a", "flac", head_path,
                 ])
             )
 
@@ -339,7 +359,7 @@ class MeltPerformer:
             process_utils.raise_on_error(
                 process_utils.start_process("ffmpeg", [
                     "-y", "-ss", str(seg_end_ms / 1000),
-                    "-i", base_audio, "-c:a", "flac", tail_path,
+                    "-i", base_audio, *norm_args, "-c:a", "flac", tail_path,
                 ])
             )
 
@@ -418,9 +438,12 @@ class MeltPerformer:
         self._extract_audio_to_flac(base_video, v1_audio)
         self._extract_audio_to_flac(source_video, v2_audio)
 
-        # 2. Extract head and tail from base audio
+        source_params = self._get_audio_params(v2_audio)
+
+        # 2. Extract head and tail from base audio, normalized to source params
         has_head, has_tail = self._extract_head_tail(
             v1_audio, base_video, seg1_start, seg1_end, head_path, tail_path,
+            normalize_to=source_params,
         )
 
         # 3. Generate subsegment split points from provided mapping pairs
