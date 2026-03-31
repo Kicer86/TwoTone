@@ -1788,7 +1788,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
     # ---- _patch_audio_constant_offset ----
 
-    def _collect_ffmpeg_calls(self, performer, segment_pairs, base_duration_ms, source_sample_rate=48000):
+    def _collect_ffmpeg_calls(self, performer, segment_pairs, base_duration_ms,
+                               source_sample_rate=48000, source_channels=2, source_sample_fmt="s16"):
         """Run _patch_audio_constant_offset with mocked externals and return captured ffmpeg calls."""
         calls = []
 
@@ -1800,6 +1801,9 @@ class MeltPerformerUnitTest(unittest.TestCase):
         def fake_raise_on_error(result):
             pass
 
+        fake_full_info = {"streams": [{"codec_type": "audio", "channels": source_channels,
+                                       "sample_rate": str(source_sample_rate), "sample_fmt": source_sample_fmt}]}
+
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = os.path.join(tmpdir, "out.m4a")
             wd = os.path.join(tmpdir, "work")
@@ -1807,7 +1811,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
                  patch.object(process_utils, 'raise_on_error', side_effect=fake_raise_on_error), \
                  patch.object(video_utils, 'get_video_duration', return_value=base_duration_ms), \
-                 patch.object(video_utils, 'get_video_data', return_value={"audio": [{"sample_rate": source_sample_rate}]}):
+                 patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
                 performer.patch_audio_constant_offset(
                     wd, "/base.mkv", "/source.mkv", output_path, segment_pairs,
                 )
@@ -1874,6 +1878,93 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         tail_calls = [c for c in calls if any("tail" in str(a) for a in c[1])]
         self.assertEqual(tail_calls, [], "No tail should be extracted when seg1 ends at base duration")
+
+    def test_patch_audio_head_tail_normalized_to_source_params(self):
+        """Head and tail must be re-encoded with source audio parameters so FLAC concat works."""
+        performer = self._make_performer()
+        pairs = [(2000, 1000), (8000, 7000)]
+        calls = self._collect_ffmpeg_calls(
+            performer, pairs, base_duration_ms=10000,
+            source_sample_rate=44100, source_channels=6, source_sample_fmt="s32",
+        )
+
+        ffmpeg_calls = [c[1] for c in calls if c[0] == "ffmpeg"]
+        head_calls = [a for a in ffmpeg_calls if any("head" in str(x) for x in a)]
+        tail_calls = [a for a in ffmpeg_calls if any("tail" in str(x) for x in a)]
+
+        self.assertTrue(len(head_calls) >= 1, "Head segment should be extracted")
+        self.assertTrue(len(tail_calls) >= 1, "Tail segment should be extracted")
+
+        for label, call_args in [("head", head_calls[0]), ("tail", tail_calls[0])]:
+            self.assertIn("-ac", call_args, f"{label} must have -ac")
+            self.assertIn("-ar", call_args, f"{label} must have -ar")
+            self.assertIn("-sample_fmt", call_args, f"{label} must have -sample_fmt")
+            self.assertEqual(call_args[call_args.index("-ac") + 1], "6", f"{label} channels")
+            self.assertEqual(call_args[call_args.index("-ar") + 1], "44100", f"{label} sample rate")
+            self.assertEqual(call_args[call_args.index("-sample_fmt") + 1], "s32", f"{label} sample fmt")
+
+    def test_flac_concat_silently_degrades_when_params_differ(self):
+        """Concatenating FLAC files with different params silently downgrades to first file's params.
+
+        When the concat demuxer encounters a parameter change mid-stream, ffmpeg
+        reconfigures the filter graph and resamples/downmixes to match the first
+        segment.  In the melt audio pipeline head/tail come from the base video
+        and the middle segment from the source video — if their params differ,
+        the source audio (which is the whole point of melt) gets silently
+        degraded.  The normalization fix prevents this by re-encoding head/tail
+        to match source params *before* concatenation.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            stereo_path = os.path.join(td, "stereo_44100.flac")
+            surround_path = os.path.join(td, "surround_48000.flac")
+            concat_list = os.path.join(td, "concat.txt")
+            merged_path = os.path.join(td, "merged.flac")
+
+            # head-like: stereo 44100 Hz (base video params)
+            run_ffmpeg(["-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo:d=1",
+                        "-c:a", "flac", stereo_path], expected_path=stereo_path)
+            # source segment: 5.1 surround 48000 Hz (higher quality)
+            run_ffmpeg(["-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=5.1:d=1",
+                        "-c:a", "flac", surround_path], expected_path=surround_path)
+
+            with open(concat_list, "w") as f:
+                f.write(f"file '{stereo_path}'\nfile '{surround_path}'\n")
+
+            run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+                        "-c:a", "flac", merged_path], expected_path=merged_path)
+
+            # ffmpeg silently downgrades: output uses the FIRST file's params
+            data = video_utils.get_video_data(merged_path)
+            self.assertEqual(data["audio"][0]["channels"], 2,
+                             "5.1 was silently downmixed to stereo — this is the bug normalization prevents")
+            self.assertEqual(data["audio"][0]["sample_rate"], 44100,
+                             "48kHz was silently resampled to 44.1kHz")
+
+    def test_flac_concat_preserves_quality_with_normalized_params(self):
+        """When all FLAC segments share parameters, concat preserves full quality."""
+        with tempfile.TemporaryDirectory() as td:
+            a_path = os.path.join(td, "a.flac")
+            b_path = os.path.join(td, "b.flac")
+            concat_list = os.path.join(td, "concat.txt")
+            merged_path = os.path.join(td, "merged.flac")
+
+            # Both normalized to source params: 5.1 surround 48000 Hz
+            run_ffmpeg(["-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=5.1:d=1",
+                        "-c:a", "flac", a_path], expected_path=a_path)
+            run_ffmpeg(["-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=5.1:d=1",
+                        "-c:a", "flac", b_path], expected_path=b_path)
+
+            with open(concat_list, "w") as f:
+                f.write(f"file '{a_path}'\nfile '{b_path}'\n")
+
+            run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+                        "-c:a", "flac", merged_path], expected_path=merged_path)
+
+            data = video_utils.get_video_data(merged_path)
+            self.assertEqual(data["audio"][0]["channels"], 6,
+                             "5.1 surround must be preserved")
+            self.assertEqual(data["audio"][0]["sample_rate"], 48000,
+                             "48kHz sample rate must be preserved")
 
 
 class PairMatcherUnitTest(unittest.TestCase):
