@@ -6,6 +6,7 @@ import os
 import shutil
 
 from datetime import datetime, timezone
+from typing import Any
 
 
 class MeltCache:
@@ -169,7 +170,7 @@ class MeltCache:
 
         return entry
 
-    def _load_json(self, video_path: str, filename: str) -> object:
+    def _load_json(self, video_path: str, filename: str) -> Any:
         entry = self._entry_dir(video_path)
         if entry is None:
             return None
@@ -179,7 +180,7 @@ class MeltCache:
         with open(path) as f:
             return json.load(f)
 
-    def _save_json(self, video_path: str, filename: str, data: object, indent: int | None = None) -> None:
+    def _save_json(self, video_path: str, filename: str, data: Any, indent: int | None = None) -> None:
         entry = self._ensure_entry(video_path)
         path = os.path.join(entry, filename)
         with open(path, "w") as f:
