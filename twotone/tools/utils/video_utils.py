@@ -41,7 +41,9 @@ def _start_ffmpeg_streaming(
     popen_kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
-        "universal_newlines": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
         "bufsize": 1,
     }
     if platform.system() == "Windows":
