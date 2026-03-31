@@ -4,26 +4,48 @@
 
 **TwoTone** is a versatile tool with various subtools for batch video file manipulations.
 
-### Running TwoTone
-
-To run TwoTone, use the following command:
+### Installation
 
 ```bash
-python -m twotone <global options> <tool-name> <tool-specific options>
+pip install -e .
 ```
+
+This installs TwoTone in editable mode: the `twotone` command appears on PATH, and any code changes take effect immediately without reinstalling.
+
+### Running TwoTone
+
+```bash
+twotone <global options> <tool-name> <tool-specific options>
+```
+
+### Shell Autocompletion (bash)
+
+```bash
+twotone --install-completion
+```
+
+Open a new terminal. Tab-completion now works:
+
+```
+twotone <TAB>           → concatenate, language_fix, melt, merge, ...
+twotone --<TAB>         → --verbose, --quiet, --no-dry-run, ...
+twotone merge --<TAB>   → merge-specific arguments
+```
+
+To remove: `twotone --uninstall-completion`
 
 ### Getting Help
 
 To see a list of global options, available tools, and their descriptions:
 
 ```bash
-python -m twotone --help
+twotone --help
 ```
 
 To get help for a specific tool:
 
 ```bash
-python -m twotone <tool-name> --help
+twotone <tool-name> --help
 ```
 
 ### Important Notes
@@ -44,7 +66,7 @@ By default, subtitles are added without a language label. You can specify a lang
 For a full list of options:
 
 ```bash
-python -m twotone merge --help
+twotone merge --help
 ```
 
 #### Fix Missing Track Languages
@@ -52,7 +74,7 @@ python -m twotone merge --help
 The language_fix tool scans MKV files and fills missing language metadata for subtitle tracks by extracting them and running language detection. It can also infer audio track language from the track name (use --audio to enable; heuristic may be inaccurate).
 
 ```bash
-python -m twotone language_fix --help
+twotone language_fix --help
 ```
 
 #### Automatic Video transcoding
@@ -65,7 +87,7 @@ The script aims to achieve a quality level where SSIM ≈ 0.98 (by default).
 For a full list of options:
 
 ```bash
-python -m twotone transcode --help
+twotone transcode --help
 ```
 
 #### Movies concatenation
@@ -73,7 +95,7 @@ python -m twotone transcode --help
 The concatenate tool looks for movie files which seem to be split into a few files (like CD1, CD2 etc) and glues them into one file.
 
 ```bash
-python -m twotone concatenate --help
+twotone concatenate --help
 ```
 
 #### Combine Duplicate Videos (melt)
@@ -81,7 +103,7 @@ python -m twotone concatenate --help
 The melt tool scans for duplicate video files and creates a single output using the best quality segments from each copy. Duplicates can be provided manually or taken from a Jellyfin server. Input files are kept intact by default.
 
 ```bash
-python -m twotone melt --help
+twotone melt --help
 ```
 
 #### Miscellaneous utilities
@@ -89,5 +111,5 @@ python -m twotone melt --help
 The utilities tool groups smaller helpers. Currently it provides the *scenes* subtool for extracting frames from a video and saving them into per-scene folders.
 
 ```bash
-python -m twotone utilities scenes --help
+twotone utilities scenes --help
 ```

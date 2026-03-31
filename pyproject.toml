@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "twotone"
+version = "1.0.0"
+description = "Tools for batch video file manipulations"
+requires-python = ">=3.10"
+dependencies = [
+    "argcomplete>=3.5.0",
+    "faust_cchardet>=2.1.19",
+    "ImageHash>=4.3.2",
+    "numpy>=2.2.6",
+    "opencv_python>=4.11.0.86",
+    "overrides>=7.7.0",
+    "Pillow>=11.2.1",
+    "platformdirs>=4.3.8",
+    "py3langid>=0.3.0",
+    "pycountry>=24.6.1",
+    "pysubs2>=1.8.0",
+    "Requests>=2.32.3",
+    "scikit_learn>=1.6.1",
+    "scikit-image>=0.25.2",
+    "scipy>=1.15.3",
+    "tqdm>=4.67.1",
+]
+
+[project.optional-dependencies]
+ocr = ["pytesseract"]
+test = ["parameterized>=0.9.0"]
+
+[project.scripts]
+twotone = "twotone.twotone:main"
+
+[tool.setuptools.packages.find]
+include = ["twotone*"]

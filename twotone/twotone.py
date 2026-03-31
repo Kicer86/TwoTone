@@ -5,6 +5,7 @@ import os
 import sys
 import shutil
 
+import argcomplete
 from overrides import override
 from tqdm.contrib.logging import logging_redirect_tqdm
 
@@ -28,6 +29,33 @@ TOOLS = {
     "transcode": (transcode.TranscodeTool(), "Transcode videos from provided directory preserving quality."),
     "utilities": (utilities.UtilitiesTool(), "Various smaller tools"),
 }
+
+def _get_completion_dir() -> str:
+    data_dir = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
+    return os.path.join(data_dir, "bash-completion", "completions")
+
+
+def _install_completion() -> None:
+    completion_dir = _get_completion_dir()
+    os.makedirs(completion_dir, exist_ok=True)
+    dest = os.path.join(completion_dir, "twotone")
+
+    script = argcomplete.shellcode(["twotone"], shell="bash")
+
+    with open(dest, "w") as f:
+        f.write(script)
+    print(f"Completion installed: {dest}")
+    print("Open a new terminal for it to take effect.")
+
+
+def _uninstall_completion() -> None:
+    dest = os.path.join(_get_completion_dir(), "twotone")
+    if os.path.exists(dest):
+        os.remove(dest)
+        print(f"Completion removed: {dest}")
+    else:
+        print("Completion was not installed.")
+
 
 def _plan_item_count(plan: object) -> int | None:
     items = getattr(plan, "items", None)
@@ -83,6 +111,16 @@ def execute(argv: list[str]) -> None:
         default=generic_utils.get_twotone_working_dir(),
         help="Directory for temporary files",
     )
+    parser.add_argument(
+        "--install-completion",
+        action="store_true",
+        help="Install bash tab-completion and exit.",
+    )
+    parser.add_argument(
+        "--uninstall-completion",
+        action="store_true",
+        help="Remove bash tab-completion and exit.",
+    )
     subparsers = parser.add_subparsers(dest="tool", help="Available tools:")
 
     for tool_name, (tool, desc) in TOOLS.items():
@@ -93,7 +131,15 @@ def execute(argv: list[str]) -> None:
         )
         tool.setup_parser(tool_parser)
 
+    argcomplete.autocomplete(parser)
     args = parser.parse_args(args = argv)
+
+    if args.install_completion:
+        _install_completion()
+        return
+    if args.uninstall_completion:
+        _uninstall_completion()
+        return
 
     if args.tool is None:
         parser.print_help()
