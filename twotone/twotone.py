@@ -2,7 +2,6 @@
 import argparse
 import logging
 import os
-import subprocess
 import sys
 import shutil
 
@@ -41,16 +40,10 @@ def _install_completion() -> None:
     os.makedirs(completion_dir, exist_ok=True)
     dest = os.path.join(completion_dir, "twotone")
 
-    result = subprocess.run(
-        ["register-python-argcomplete", "twotone"],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        print(f"Error: register-python-argcomplete failed: {result.stderr.strip()}", file=sys.stderr)
-        sys.exit(1)
+    script = argcomplete.shellcode(["twotone"], shell="bash")
 
     with open(dest, "w") as f:
-        f.write(result.stdout)
+        f.write(script)
     print(f"Completion installed: {dest}")
     print("Open a new terminal for it to take effect.")
 
