@@ -10,6 +10,7 @@ from .duplicates_source import DuplicatesSource
 from .jellyfin import JellyfinSource
 from .static_source import StaticSource
 from .melt_analyzer import MeltAnalyzer
+from .melt_cache import MeltCache
 from .melt_common import DEFAULT_TOLERANCE_MS, _ensure_working_dir, _split_path_fix
 from .melt_performer import MeltPerformer
 from .melt_plan import MeltPlan
@@ -115,6 +116,11 @@ class MeltTool(Tool):
                             help='[EXPERIMENTAL] Continue processing even if input video lengths differ.\n'
                                  'This may require additional processing that can consume significant time and disk space.')
 
+        parser.add_argument('--cache-dir',
+                            help='Directory for caching expensive per-video operations (scene detection, '
+                                 'frame probing, frame extraction). Speeds up repeated runs on the same input files. '
+                                 'Cache is invalidated automatically when the input file changes.')
+
     @override
     def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
         interruption = generic_utils.InterruptibleProcess()
@@ -199,11 +205,13 @@ class MeltTool(Tool):
             raise TypeError(f"Expected MeltPlan, got {type(plan).__name__}")
 
         interruption = generic_utils.InterruptibleProcess()
+        cache = MeltCache(args.cache_dir, logger.getChild("cache")) if args.cache_dir else None
         performer = MeltPerformer(
             logger,
             interruption,
             working_dir,
             plan.output_dir,
             DEFAULT_TOLERANCE_MS,
+            cache=cache,
         )
         performer.process_duplicates(plan.items)

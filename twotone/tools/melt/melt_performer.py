@@ -7,6 +7,7 @@ from tqdm import tqdm
 
 from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
 from .debug_routines import DebugRoutines
+from .melt_cache import MeltCache
 from .pair_matcher import PairMatcher
 from .melt_common import FramesInfo, _ensure_working_dir, _is_length_mismatch
 
@@ -19,11 +20,13 @@ class MeltPerformer:
         working_dir: str,
         output_dir: str,
         tolerance_ms: int,
+        cache: MeltCache | None = None,
     ) -> None:
         self.logger = logger
         self.interruption = interruption
         self.output_dir = output_dir
         self.tolerance_ms = tolerance_ms
+        self.cache = cache
         self.wd = _ensure_working_dir(working_dir)
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
@@ -566,6 +569,7 @@ class MeltPerformer:
                 self.interruption, mwd, video_path_base, audio_path,
                 self.logger.getChild("PairMatcher"),
                 lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
+                cache=self.cache,
             )
             mapping, lhs_all_frames, rhs_all_frames, constant_offset = matcher.create_segments_mapping()
 

@@ -13,13 +13,14 @@ from tqdm import tqdm
 from typing import Callable
 
 from .debug_routines import DebugRoutines
+from .melt_cache import MeltCache
 from .melt_common import FramesInfo
 from .phash_cache import PhashCache
 from ..utils import files_utils, generic_utils, image_utils, video_utils
 
 
 class PairMatcher:
-    def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2") -> None:
+    def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2", cache: MeltCache | None = None) -> None:
         self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
         self.lhs_path = lhs_path
@@ -27,6 +28,7 @@ class PairMatcher:
         self.lhs_label = lhs_label
         self.rhs_label = rhs_label
         self.logger = logger
+        self.cache = cache
         self.phash = PhashCache()
         self.lhs_fps = generic_utils.fps_str_to_float(video_utils.get_video_data(lhs_path)["video"][0]["fps"])
         self.rhs_fps = generic_utils.fps_str_to_float(video_utils.get_video_data(rhs_path)["video"][0]["fps"])
@@ -1400,30 +1402,54 @@ class PairMatcher:
 
     def _detect_scenes(self) -> tuple[list[int], list[int]]:
         """Phase 1: Detect scene changes in both files."""
-        lhs_scene_changes = video_utils.detect_scene_changes(
-            self.lhs_path, threshold=0.3, logger=self.logger,
-            interruption=self.interruption, desc=f"[1/6] Detecting scenes: {self.lhs_label}",
-        )
-        rhs_scene_changes = video_utils.detect_scene_changes(
-            self.rhs_path, threshold=0.3, logger=self.logger,
-            interruption=self.interruption, desc=f"[1/6] Detecting scenes: {self.rhs_label}",
-        )
+        lhs_scene_changes = self._detect_scenes_for(self.lhs_path, self.lhs_label)
+        rhs_scene_changes = self._detect_scenes_for(self.rhs_path, self.rhs_label)
 
         if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
             raise RuntimeError("Not enough scene changes detected")
 
         return lhs_scene_changes, rhs_scene_changes
 
+    def _detect_scenes_for(self, video_path: str, label: str) -> list[int]:
+        cache = getattr(self, 'cache', None)
+        if cache:
+            cached = cache.load_scene_changes(video_path)
+            if cached is not None:
+                self.logger.info("[1/6] Scene changes for %s restored from cache (%d scenes)", label, len(cached))
+                return cached
+
+        result = video_utils.detect_scene_changes(
+            video_path, threshold=0.3, logger=self.logger,
+            interruption=self.interruption, desc=f"[1/6] Detecting scenes: {label}",
+        )
+
+        if cache:
+            cache.save_scene_changes(video_path, result)
+
+        return result
+
     def _probe_frames(self) -> None:
         """Phase 2: Probe all frame timestamps (fast — no images written)."""
-        self.lhs_all_frames = video_utils.probe_frame_timestamps(
-            self.lhs_path, interruption=self.interruption,
-            desc=f"[2/6] Probing frames: {self.lhs_label}",
+        self.lhs_all_frames = self._probe_frames_for(self.lhs_path, self.lhs_label)
+        self.rhs_all_frames = self._probe_frames_for(self.rhs_path, self.rhs_label)
+
+    def _probe_frames_for(self, video_path: str, label: str) -> dict[int, dict]:
+        cache = getattr(self, 'cache', None)
+        if cache:
+            cached = cache.load_frame_probes(video_path)
+            if cached is not None:
+                self.logger.info("[2/6] Frame probes for %s restored from cache (%d frames)", label, len(cached))
+                return cached
+
+        result = video_utils.probe_frame_timestamps(
+            video_path, interruption=self.interruption,
+            desc=f"[2/6] Probing frames: {label}",
         )
-        self.rhs_all_frames = video_utils.probe_frame_timestamps(
-            self.rhs_path, interruption=self.interruption,
-            desc=f"[2/6] Probing frames: {self.rhs_label}",
-        )
+
+        if cache:
+            cache.save_frame_probes(video_path, result)
+
+        return result
 
     def _extract_scene_frames(
         self,
@@ -1442,15 +1468,11 @@ class PairMatcher:
             f"{rhs_scene_frame_count}/{len(self.rhs_all_frames)} frames for {self.rhs_label}"
         )
 
-        video_utils.extract_frames_at_ranges(
-            self.lhs_path, self.lhs_all_wd, lhs_scene_ranges, self.lhs_all_frames,
-            scale=(960, -2), format="png", interruption=self.interruption,
-            desc=f"[3/6] Extracting scene frames: {self.lhs_label}",
+        self._extract_scene_frames_for(
+            self.lhs_path, self.lhs_all_wd, lhs_scene_ranges, self.lhs_all_frames, self.lhs_label,
         )
-        video_utils.extract_frames_at_ranges(
-            self.rhs_path, self.rhs_all_wd, rhs_scene_ranges, self.rhs_all_frames,
-            scale=(960, -2), format="png", interruption=self.interruption,
-            desc=f"[3/6] Extracting scene frames: {self.rhs_label}",
+        self._extract_scene_frames_for(
+            self.rhs_path, self.rhs_all_wd, rhs_scene_ranges, self.rhs_all_frames, self.rhs_label,
         )
 
         lhs_key_frames_str = [str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes if lhs in self.lhs_all_frames]
@@ -1460,6 +1482,28 @@ class PairMatcher:
         self.logger.debug(f"{self.rhs_label} key frames: {' '.join(rhs_key_frames_str)}")
 
         return lhs_scene_ranges, rhs_scene_ranges
+
+    def _extract_scene_frames_for(
+        self,
+        video_path: str,
+        target_dir: str,
+        scene_ranges: list[tuple[int, int]],
+        probed_metadata: dict[int, dict],
+        label: str,
+    ) -> None:
+        cache = getattr(self, 'cache', None)
+        if cache and cache.load_scene_frames(video_path, target_dir, probed_metadata):
+            self.logger.info("[3/6] Scene frames for %s restored from cache", label)
+            return
+
+        video_utils.extract_frames_at_ranges(
+            video_path, target_dir, scene_ranges, probed_metadata,
+            scale=(960, -2), format="png", interruption=self.interruption,
+            desc=f"[3/6] Extracting scene frames: {label}",
+        )
+
+        if cache:
+            cache.save_scene_frames(video_path, target_dir, probed_metadata)
 
     def _normalize_extracted(
         self,
