@@ -200,7 +200,7 @@ class MeltingTest(TwoToneTestCase):
         Builds a layered dependency tree so shared intermediates (like
         the degraded big_buck_bunny) are generated once and reused.
         """
-        V = "1"  # bump to invalidate all edge fixtures
+        V = "10"  # bump to invalidate all edge fixtures
 
         bbb = get_video("big_buck_bunny_720p_10mb.mp4")
         grass = get_video("Grass - 66810.mp4")
@@ -321,7 +321,6 @@ class MeltingTest(TwoToneTestCase):
     def _prepend_black(self, input_path: str, output_path: str, black_seconds: float, tmp_dir: str | None = None) -> str:
         """Prepend *black_seconds* of black video+silence before *input_path*."""
         td = tmp_dir or self.wd.path
-        # Get input properties
         data = video_utils.get_video_data(input_path)
         width = int(data["video"][0]["width"])
         height = int(data["video"][0]["height"])
@@ -329,37 +328,29 @@ class MeltingTest(TwoToneTestCase):
         fps_float = generic_utils.fps_str_to_float(fps)
         has_audio = len(data.get("audio", [])) > 0
 
-        black_path = os.path.join(td, "black_intro.mp4")
-        args = [
-            "-y",
-            "-f", "lavfi", "-i", f"color=c=black:s={width}x{height}:r={fps_float}:d={black_seconds}",
-        ]
+        black_path = os.path.join(td, "black_intro.mkv")
+        args = ["-y",
+                "-f", "lavfi", "-i", f"color=c=black:s={width}x{height}:r={fps_float}:d={black_seconds}"]
         if has_audio:
             args += ["-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={black_seconds}"]
-            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", black_path]
+            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                     "-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100", "-shortest", black_path]
         else:
             args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", black_path]
         run_ffmpeg(args, expected_path=black_path)
 
-        # Reencode input to match codec/fps for concat
-        reencoded_path = os.path.join(td, "reencoded_input.mp4")
-        args = ["-y", "-i", input_path, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        reencoded_path = os.path.join(td, "reencoded_input.mkv")
+        args = ["-y", "-i", input_path,
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                 "-r", str(fps_float), "-vf", f"fps={fps_float},scale={width}:{height}"]
         if has_audio:
-            args += ["-c:a", "aac", "-ar", "44100"]
+            args += ["-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100"]
         else:
             args += ["-an"]
         args.append(reencoded_path)
         run_ffmpeg(args, expected_path=reencoded_path)
 
-        # Concat
-        filelist = os.path.join(td, "concat_list.txt")
-        with open(filelist, "w") as f:
-            f.write(f"file '{black_path}'\nfile '{reencoded_path}'\n")
-
-        run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", filelist, "-c", "copy", output_path],
-                         expected_path=output_path)
-        return output_path
+        return self._concat_videos([black_path, reencoded_path], output_path, tmp_dir=td)
 
     def _append_black(self, input_path: str, output_path: str, black_seconds: float, tmp_dir: str | None = None) -> str:
         """Append *black_seconds* of black video+silence after *input_path*."""
@@ -371,35 +362,29 @@ class MeltingTest(TwoToneTestCase):
         fps_float = generic_utils.fps_str_to_float(fps)
         has_audio = len(data.get("audio", [])) > 0
 
-        black_path = os.path.join(td, "black_outro.mp4")
-        args = [
-            "-y",
-            "-f", "lavfi", "-i", f"color=c=black:s={width}x{height}:r={fps_float}:d={black_seconds}",
-        ]
-        if has_audio:
-            args += ["-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={black_seconds}"]
-            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", black_path]
-        else:
-            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", black_path]
-        run_ffmpeg(args, expected_path=black_path)
-
-        reencoded_path = os.path.join(td, "reencoded_input_outro.mp4")
-        args = ["-y", "-i", input_path, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        reencoded_path = os.path.join(td, "reencoded_input_outro.mkv")
+        args = ["-y", "-i", input_path,
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                 "-r", str(fps_float), "-vf", f"fps={fps_float},scale={width}:{height}"]
         if has_audio:
-            args += ["-c:a", "aac", "-ar", "44100"]
+            args += ["-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100"]
         else:
             args += ["-an"]
         args.append(reencoded_path)
         run_ffmpeg(args, expected_path=reencoded_path)
 
-        filelist = os.path.join(td, "concat_list_outro.txt")
-        with open(filelist, "w") as f:
-            f.write(f"file '{reencoded_path}'\nfile '{black_path}'\n")
+        black_path = os.path.join(td, "black_outro.mkv")
+        args = ["-y",
+                "-f", "lavfi", "-i", f"color=c=black:s={width}x{height}:r={fps_float}:d={black_seconds}"]
+        if has_audio:
+            args += ["-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={black_seconds}"]
+            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                     "-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100", "-shortest", black_path]
+        else:
+            args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", black_path]
+        run_ffmpeg(args, expected_path=black_path)
 
-        run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", filelist, "-c", "copy", output_path],
-                         expected_path=output_path)
-        return output_path
+        return self._concat_videos([reencoded_path, black_path], output_path, tmp_dir=td)
 
     def _degrade_video(self, input_path: str, output_path: str, speed: float = 1.0) -> str:
         """Create a degraded copy: lower quality, optional speed change."""
@@ -423,12 +408,12 @@ class MeltingTest(TwoToneTestCase):
         return output_path
 
     def _reencode_for_concat(self, input_path: str, output_path: str, width: int, height: int, fps: float) -> str:
-        """Reencode a video to specific resolution/fps so it can be concatenated with concat demuxer."""
+        """Reencode a video to specific resolution/fps so it can be concatenated."""
         args = [
             "-y", "-i", input_path,
             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
             "-r", str(fps), "-vf", f"fps={fps},scale={width}:{height}",
-            "-c:a", "aac", "-ar", "44100",
+            "-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100",
             "-shortest",
             output_path,
         ]
@@ -442,7 +427,9 @@ class MeltingTest(TwoToneTestCase):
         with open(filelist, "w") as f:
             for part in parts:
                 f.write(f"file '{part}'\n")
-        run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", filelist, "-c", "copy", output_path],
+        run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", filelist,
+                    "-c:v", "copy", "-c:a", "aac",
+                    output_path],
                          expected_path=output_path)
         return output_path
 
@@ -459,18 +446,18 @@ class MeltingTest(TwoToneTestCase):
         fps = generic_utils.fps_str_to_float(data["video"][0]["fps"])
 
         # Reencode intro
-        intro_reenc = os.path.join(td, f"intro_reenc_{os.path.basename(output_path)}")
+        intro_reenc = os.path.join(td, f"intro_reenc_{Path(output_path).stem}.mkv")
         trim_args = ["-t", str(intro_seconds)] if intro_seconds else []
         args = ["-y", "-i", intro_source] + trim_args + [
             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
             "-r", str(fps), "-vf", f"fps={fps},scale={width}:{height}",
-            "-c:a", "aac", "-ar", "44100", "-shortest",
+            "-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100", "-shortest",
             intro_reenc,
         ]
         run_ffmpeg(args, expected_path=intro_reenc)
 
         # Reencode content
-        content_reenc = os.path.join(td, f"content_reenc_{os.path.basename(output_path)}")
+        content_reenc = os.path.join(td, f"content_reenc_{Path(output_path).stem}.mkv")
         self._reencode_for_concat(content_path, content_reenc, width, height, fps)
 
         return self._concat_videos([intro_reenc, content_reenc], output_path, tmp_dir=td)
@@ -483,15 +470,15 @@ class MeltingTest(TwoToneTestCase):
         height = int(data["video"][0]["height"])
         fps = generic_utils.fps_str_to_float(data["video"][0]["fps"])
 
-        content_reenc = os.path.join(td, f"content_reenc_outro_{os.path.basename(output_path)}")
+        content_reenc = os.path.join(td, f"content_reenc_outro_{Path(output_path).stem}.mkv")
         self._reencode_for_concat(content_path, content_reenc, width, height, fps)
 
-        outro_reenc = os.path.join(td, f"outro_reenc_{os.path.basename(output_path)}")
+        outro_reenc = os.path.join(td, f"outro_reenc_{Path(output_path).stem}.mkv")
         trim_args = ["-t", str(outro_seconds)] if outro_seconds else []
         args = ["-y", "-i", outro_source] + trim_args + [
             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
             "-r", str(fps), "-vf", f"fps={fps},scale={width}:{height}",
-            "-c:a", "aac", "-ar", "44100", "-shortest",
+            "-c:a", "pcm_s16le", "-ac", "2", "-ar", "44100", "-shortest",
             outro_reenc,
         ]
         run_ffmpeg(args, expected_path=outro_reenc)
@@ -1267,11 +1254,11 @@ class MeltingTest(TwoToneTestCase):
         # LHS: bbb_gi3 (65.3s, 3s grass intro), RHS: atoms_i3_deg (63.5s, 3s atoms intro)
         self.assertGreaterEqual(len(mappings), 3)
         # First pair NOT at edge — content starts at ~3s (after different intros)
-        self.assertAlmostEqual(mappings[0][0], 3263, delta=500)
-        self.assertAlmostEqual(mappings[0][1], 3283, delta=500)
-        # Last pair near video duration
-        self.assertAlmostEqual(mappings[-1][0], 65302, delta=500)
-        self.assertAlmostEqual(mappings[-1][1], 63471, delta=500)
+        self.assertAlmostEqual(mappings[0][0], 3023, delta=500)
+        self.assertAlmostEqual(mappings[0][1], 3057, delta=500)
+        # Last pair snapped to video duration (fine-sweep extends to edge)
+        self.assertAlmostEqual(mappings[-1][0], 65302, delta=100)
+        self.assertAlmostEqual(mappings[-1][1], 63471, delta=100)
 
         coverage = PairMatcher.coverage_summary(
             mappings,
@@ -1280,12 +1267,12 @@ class MeltingTest(TwoToneTestCase):
         )
         # Both files have 3s intros (grass / atoms). Common content starts at ~3s.
         # Start gaps must match the known intro duration within 1s tolerance.
-        # End gaps must be negligible — last pair reaches near video boundary.
+        # End gaps effectively 0 — boundary walk + snap reaches video edge.
         self.assertFalse(coverage["full_coverage"])
         self.assertAlmostEqual(coverage["lhs_start_gap_s"], 3.0, delta=1.0)
         self.assertAlmostEqual(coverage["rhs_start_gap_s"], 3.0, delta=1.0)
-        self.assertLess(coverage["lhs_end_gap_s"], 0.5)
-        self.assertLess(coverage["rhs_end_gap_s"], 0.5)
+        self.assertLess(coverage["lhs_end_gap_s"], 0.1)
+        self.assertLess(coverage["rhs_end_gap_s"], 0.1)
 
     def test_pair_matcher_different_intro_different_length(self):
         """Files have different high-entropy intros of DIFFERENT lengths."""
@@ -1298,11 +1285,11 @@ class MeltingTest(TwoToneTestCase):
         # LHS: bbb_gi2 (64.3s, 2s grass intro), RHS: atoms_i5_deg (65.5s, 5s atoms intro)
         self.assertGreaterEqual(len(mappings), 3)
         # First pair NOT at edge — after different intros (2s vs 5s)
-        self.assertAlmostEqual(mappings[0][0], 2263, delta=500)
-        self.assertAlmostEqual(mappings[0][1], 5283, delta=500)
-        # Last pair near video duration
-        self.assertAlmostEqual(mappings[-1][0], 64302, delta=500)
-        self.assertAlmostEqual(mappings[-1][1], 65471, delta=500)
+        self.assertAlmostEqual(mappings[0][0], 2023, delta=500)
+        self.assertAlmostEqual(mappings[0][1], 5057, delta=500)
+        # Last pair snapped to video duration (fine-sweep extends to edge)
+        self.assertAlmostEqual(mappings[-1][0], 64302, delta=100)
+        self.assertAlmostEqual(mappings[-1][1], 65471, delta=100)
 
         coverage = PairMatcher.coverage_summary(
             mappings,
@@ -1311,12 +1298,12 @@ class MeltingTest(TwoToneTestCase):
         )
         # LHS has 2s grass intro, RHS has 5s atoms intro.
         # Start gaps must match known intro durations within 1s tolerance.
-        # End gaps must be negligible — last pair reaches near video boundary.
+        # End gaps effectively 0 — boundary walk + snap reaches video edge.
         self.assertFalse(coverage["full_coverage"])
         self.assertAlmostEqual(coverage["lhs_start_gap_s"], 2.0, delta=1.0)
         self.assertAlmostEqual(coverage["rhs_start_gap_s"], 5.0, delta=1.0)
-        self.assertLess(coverage["lhs_end_gap_s"], 0.5)
-        self.assertLess(coverage["rhs_end_gap_s"], 0.5)
+        self.assertLess(coverage["lhs_end_gap_s"], 0.1)
+        self.assertLess(coverage["rhs_end_gap_s"], 0.1)
 
     def test_pair_matcher_different_outro(self):
         """Files share content but have different high-entropy outros."""
@@ -1370,9 +1357,9 @@ class MeltingTest(TwoToneTestCase):
         # Both files have 3s intros and 3s outros — start/end gaps expected.
         self.assertFalse(coverage["full_coverage"])
         self.assertAlmostEqual(coverage["lhs_start_gap_s"], 3.0, delta=1.0)
-        self.assertGreater(coverage["lhs_end_gap_s"], 3.0)
+        self.assertAlmostEqual(coverage["lhs_end_gap_s"], 3.0, delta=1.0)
         self.assertAlmostEqual(coverage["rhs_start_gap_s"], 3.0, delta=1.0)
-        self.assertGreater(coverage["rhs_end_gap_s"], 10.0)
+        self.assertAlmostEqual(coverage["rhs_end_gap_s"], 3.0, delta=1.0)
 
     # ---- coverage_summary tests ----
 
@@ -1433,9 +1420,8 @@ class MeltingTest(TwoToneTestCase):
         self.assertFalse(result["full_coverage"])
         self.assertAlmostEqual(result["lhs_start_gap_s"], 3.0, delta=1.0)
         self.assertAlmostEqual(result["rhs_start_gap_s"], 3.0, delta=1.0)
-        self.assertLess(result["lhs_end_gap_s"], 0.5)
-        self.assertLess(result["rhs_end_gap_s"], 0.5)
-
+        self.assertLess(result["lhs_end_gap_s"], 0.1)
+        self.assertLess(result["rhs_end_gap_s"], 0.1)
 
     def test_languages_ordering(self):
         interruption = generic_utils.InterruptibleProcess()
@@ -1802,7 +1788,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
     # ---- _patch_audio_constant_offset ----
 
-    def _collect_ffmpeg_calls(self, performer, segment_pairs, base_duration_ms, source_sample_rate=48000):
+    def _collect_ffmpeg_calls(self, performer, segment_pairs, base_duration_ms,
+                               source_sample_rate=48000, source_channels=2, source_sample_fmt="s16"):
         """Run _patch_audio_constant_offset with mocked externals and return captured ffmpeg calls."""
         calls = []
 
@@ -1814,6 +1801,9 @@ class MeltPerformerUnitTest(unittest.TestCase):
         def fake_raise_on_error(result):
             pass
 
+        fake_full_info = {"streams": [{"codec_type": "audio", "channels": source_channels,
+                                       "sample_rate": str(source_sample_rate), "sample_fmt": source_sample_fmt}]}
+
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = os.path.join(tmpdir, "out.m4a")
             wd = os.path.join(tmpdir, "work")
@@ -1821,7 +1811,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
                  patch.object(process_utils, 'raise_on_error', side_effect=fake_raise_on_error), \
                  patch.object(video_utils, 'get_video_duration', return_value=base_duration_ms), \
-                 patch.object(video_utils, 'get_video_data', return_value={"audio": [{"sample_rate": source_sample_rate}]}):
+                 patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
                 performer.patch_audio_constant_offset(
                     wd, "/base.mkv", "/source.mkv", output_path, segment_pairs,
                 )
@@ -1889,6 +1879,93 @@ class MeltPerformerUnitTest(unittest.TestCase):
         tail_calls = [c for c in calls if any("tail" in str(a) for a in c[1])]
         self.assertEqual(tail_calls, [], "No tail should be extracted when seg1 ends at base duration")
 
+    def test_patch_audio_head_tail_normalized_to_source_params(self):
+        """Head and tail must be re-encoded with source audio parameters so FLAC concat works."""
+        performer = self._make_performer()
+        pairs = [(2000, 1000), (8000, 7000)]
+        calls = self._collect_ffmpeg_calls(
+            performer, pairs, base_duration_ms=10000,
+            source_sample_rate=44100, source_channels=6, source_sample_fmt="s32",
+        )
+
+        ffmpeg_calls = [c[1] for c in calls if c[0] == "ffmpeg"]
+        head_calls = [a for a in ffmpeg_calls if any("head" in str(x) for x in a)]
+        tail_calls = [a for a in ffmpeg_calls if any("tail" in str(x) for x in a)]
+
+        self.assertTrue(len(head_calls) >= 1, "Head segment should be extracted")
+        self.assertTrue(len(tail_calls) >= 1, "Tail segment should be extracted")
+
+        for label, call_args in [("head", head_calls[0]), ("tail", tail_calls[0])]:
+            self.assertIn("-ac", call_args, f"{label} must have -ac")
+            self.assertIn("-ar", call_args, f"{label} must have -ar")
+            self.assertIn("-sample_fmt", call_args, f"{label} must have -sample_fmt")
+            self.assertEqual(call_args[call_args.index("-ac") + 1], "6", f"{label} channels")
+            self.assertEqual(call_args[call_args.index("-ar") + 1], "44100", f"{label} sample rate")
+            self.assertEqual(call_args[call_args.index("-sample_fmt") + 1], "s32", f"{label} sample fmt")
+
+    def test_flac_concat_silently_degrades_when_params_differ(self):
+        """Concatenating FLAC files with different params silently downgrades to first file's params.
+
+        When the concat demuxer encounters a parameter change mid-stream, ffmpeg
+        reconfigures the filter graph and resamples/downmixes to match the first
+        segment.  In the melt audio pipeline head/tail come from the base video
+        and the middle segment from the source video — if their params differ,
+        the source audio (which is the whole point of melt) gets silently
+        degraded.  The normalization fix prevents this by re-encoding head/tail
+        to match source params *before* concatenation.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            stereo_path = os.path.join(td, "stereo_44100.flac")
+            surround_path = os.path.join(td, "surround_48000.flac")
+            concat_list = os.path.join(td, "concat.txt")
+            merged_path = os.path.join(td, "merged.flac")
+
+            # head-like: stereo 44100 Hz (base video params)
+            run_ffmpeg(["-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo:d=1",
+                        "-c:a", "flac", stereo_path], expected_path=stereo_path)
+            # source segment: 5.1 surround 48000 Hz (higher quality)
+            run_ffmpeg(["-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=5.1:d=1",
+                        "-c:a", "flac", surround_path], expected_path=surround_path)
+
+            with open(concat_list, "w") as f:
+                f.write(f"file '{stereo_path}'\nfile '{surround_path}'\n")
+
+            run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+                        "-c:a", "flac", merged_path], expected_path=merged_path)
+
+            # ffmpeg silently downgrades: output uses the FIRST file's params
+            data = video_utils.get_video_data(merged_path)
+            self.assertEqual(data["audio"][0]["channels"], 2,
+                             "5.1 was silently downmixed to stereo — this is the bug normalization prevents")
+            self.assertEqual(data["audio"][0]["sample_rate"], 44100,
+                             "48kHz was silently resampled to 44.1kHz")
+
+    def test_flac_concat_preserves_quality_with_normalized_params(self):
+        """When all FLAC segments share parameters, concat preserves full quality."""
+        with tempfile.TemporaryDirectory() as td:
+            a_path = os.path.join(td, "a.flac")
+            b_path = os.path.join(td, "b.flac")
+            concat_list = os.path.join(td, "concat.txt")
+            merged_path = os.path.join(td, "merged.flac")
+
+            # Both normalized to source params: 5.1 surround 48000 Hz
+            run_ffmpeg(["-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=5.1:d=1",
+                        "-c:a", "flac", a_path], expected_path=a_path)
+            run_ffmpeg(["-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=5.1:d=1",
+                        "-c:a", "flac", b_path], expected_path=b_path)
+
+            with open(concat_list, "w") as f:
+                f.write(f"file '{a_path}'\nfile '{b_path}'\n")
+
+            run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+                        "-c:a", "flac", merged_path], expected_path=merged_path)
+
+            data = video_utils.get_video_data(merged_path)
+            self.assertEqual(data["audio"][0]["channels"], 6,
+                             "5.1 surround must be preserved")
+            self.assertEqual(data["audio"][0]["sample_rate"], 48000,
+                             "48kHz sample rate must be preserved")
+
 
 class PairMatcherUnitTest(unittest.TestCase):
     """Unit tests for PairMatcher internal methods.
@@ -1896,7 +1973,7 @@ class PairMatcherUnitTest(unittest.TestCase):
     These tests mock _is_rich and bypass the full constructor to test
     algorithmic behaviour without needing video files. They target:
     - _extrapolate_through_low_entropy: 5% noise tolerance
-    - snap_to_edges: snap_frames=4 threshold
+    - snap_to_edges: snap threshold
     - find_boundary (via _look_for_boundaries): look_ahead robustness
     """
 
@@ -2086,7 +2163,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(100, 100), (5000, 5000), (9900, 9900)]
 
         with patch.object(video_utils, 'get_video_duration', return_value=10000):
-            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames, snap_frames=4)
 
         # 100ms is within 160ms threshold → snap to 0
         self.assertEqual(result[0], (0, 0))
@@ -2104,7 +2181,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(200, 200), (5000, 5000), (9700, 9700)]
 
         with patch.object(video_utils, 'get_video_duration', return_value=10000):
-            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames, snap_frames=4)
 
         # 200ms > 160ms → no snap
         self.assertEqual(result[0], (200, 200))
@@ -2123,7 +2200,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(100, 90), (5000, 5000)]
 
         with patch.object(video_utils, 'get_video_duration', return_value=10000):
-            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames)
+            result = pm.snap_to_edges(matching_pairs, lhs_frames, rhs_frames, snap_frames=4)
 
         # LHS: 100ms <= 160ms → snaps
         self.assertEqual(result[0][0], 0)

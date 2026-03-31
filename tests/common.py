@@ -109,9 +109,16 @@ class FileCache:
                     print(f"Warning: could not delete {file}: {e}")
 
         # Run generator
-        generator_fn(out_path)
+        try:
+            generator_fn(out_path)
+        except Exception:
+            # Remove partial/empty output left by a failed generator
+            if out_path.exists():
+                out_path.unlink(missing_ok=True)
+            raise
 
-        if not out_path.exists():
+        if not out_path.exists() or out_path.stat().st_size == 0:
+            out_path.unlink(missing_ok=True)
             raise RuntimeError(f"Generator did not produce expected file: {out_path}")
 
         return out_path
