@@ -1,3 +1,6 @@
 __pycache__
 tests/test_datasets
 manual_fixtures
+*.egg-info/
+build/
+dist/
