@@ -248,13 +248,13 @@ class MeltPerformer:
             "-map", "0:a:0",
         ]
         if not needs_scaling:
-            trim_args.extend(["-c:a", "flac"])
+            trim_args.extend(["-sample_fmt", self._flac_safe_fmt(source_params[2]), "-c:a", "flac"])
         else:
             sample_rate = source_params[1]
             adjusted_rate = sample_rate * source_dur / target_dur
             trim_args.extend([
                 "-filter:a", f"asetrate={adjusted_rate:.6f},aresample={sample_rate}",
-                "-c:a", "flac",
+                "-sample_fmt", "s32", "-c:a", "flac",
             ])
         trim_args.append(scaled_audio)
         process_utils.raise_on_error(
@@ -455,7 +455,7 @@ class MeltPerformer:
     @staticmethod
     def _extract_audio_to_flac(video_path: str, output_path: str) -> None:
         process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", ["-y", "-i", video_path, "-map", "0:a:0", "-c:a", "flac", output_path])
+            process_utils.start_process("ffmpeg", ["-y", "-i", video_path, "-map", "0:a:0", "-sample_fmt", "s32", "-c:a", "flac", output_path])
         )
 
     @staticmethod
@@ -466,9 +466,21 @@ class MeltPerformer:
         return int(stream["channels"]), int(stream["sample_rate"]), stream["sample_fmt"]
 
     @staticmethod
+    def _flac_safe_fmt(sample_fmt: str) -> str:
+        """Return a FLAC-compatible sample format (FLAC does not support float formats)."""
+        if sample_fmt.endswith("p"):
+            base = sample_fmt[:-1]
+        else:
+            base = sample_fmt
+        if base in ("flt", "dbl"):
+            return "s32"
+        return sample_fmt
+
+    @staticmethod
     def _normalize_args(params: tuple[int, int, str]) -> list[str]:
         """Return ffmpeg args that re-encode audio to match *params* (channels, sample_rate, sample_fmt)."""
         channels, sample_rate, sample_fmt = params
+        sample_fmt = MeltPerformer._flac_safe_fmt(sample_fmt)
         return ["-ac", str(channels), "-ar", str(sample_rate), "-sample_fmt", sample_fmt]
 
     @staticmethod
@@ -492,7 +504,10 @@ class MeltPerformer:
         norm_args: list[str] = []
         if normalize_to:
             channels, sample_rate, sample_fmt = normalize_to
+            sample_fmt = MeltPerformer._flac_safe_fmt(sample_fmt)
             norm_args = ["-ac", str(channels), "-ar", str(sample_rate), "-sample_fmt", sample_fmt]
+        else:
+            norm_args = ["-sample_fmt", "s32"]
 
         has_head = seg_start_ms > 0
         if has_head:
@@ -666,7 +681,7 @@ class MeltPerformer:
                         "-y",
                         "-i", raw_cut,
                         "-filter:a", f"atempo={ratio:.3f}",
-                        "-c:a", "flac",
+                        "-sample_fmt", "s32", "-c:a", "flac",
                         scaled_cut,
                     ]
                 )
