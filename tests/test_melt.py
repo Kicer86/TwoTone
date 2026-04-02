@@ -1864,6 +1864,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
         performer.output_dir = tempfile.mkdtemp()
         performer.tolerance_ms = DEFAULT_TOLERANCE_MS
         performer.interruption = generic_utils.InterruptibleProcess()
+        performer.fill_audio_gaps = False
+        performer._sync_offsets = {}
         return performer
 
     def test_stream_sorting_puts_unknown_languages_last(self):
@@ -2244,6 +2246,118 @@ class MeltPerformerUnitTest(unittest.TestCase):
         # No separate FLAC→AAC pass
         flac_to_aac = [s for s in ffmpeg_args_strs if "merged.flac" in s and "aac" in s and "concat" not in s]
         self.assertEqual(flac_to_aac, [], "Should not have a separate FLAC→AAC re-encoding step")
+
+    # ---- silence mode (use_silence=True) ----
+
+    def _collect_ffmpeg_calls_silence(self, performer, segment_pairs, base_duration_ms,
+                                       source_sample_rate=48000, source_channels=2, source_sample_fmt="s16"):
+        """Run patch_audio_constant_offset with use_silence=True and return captured ffmpeg calls."""
+        calls = []
+
+        def fake_start_process(tool, args, **kwargs):
+            calls.append((tool, list(args)))
+            result = type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+            return result
+
+        def fake_raise_on_error(result):
+            pass
+
+        fake_full_info = {"streams": [{"codec_type": "audio", "channels": source_channels,
+                                       "sample_rate": str(source_sample_rate), "sample_fmt": source_sample_fmt}]}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "out.m4a")
+            wd = os.path.join(tmpdir, "work")
+
+            with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
+                 patch.object(process_utils, 'raise_on_error', side_effect=fake_raise_on_error), \
+                 patch.object(video_utils, 'get_video_duration', return_value=base_duration_ms), \
+                 patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
+                performer.patch_audio_constant_offset(
+                    wd, "/base.mkv", "/source.mkv", output_path, segment_pairs,
+                    use_silence=True,
+                )
+
+        return calls
+
+    def test_silence_mode_skips_head_and_tail(self):
+        """With use_silence=True, no head/tail extraction or generation should occur."""
+        performer = self._make_performer()
+        # Matching region: 2000..8000 in base (10s total) → would have head and tail
+        pairs = [(2000, 1000), (8000, 7000)]
+        calls = self._collect_ffmpeg_calls_silence(performer, pairs, base_duration_ms=10000)
+
+        ffmpeg_args_strs = [" ".join(str(a) for a in c[1]) for c in calls if c[0] == "ffmpeg"]
+
+        # No head/tail extraction or silence generation
+        head_tail_calls = [s for s in ffmpeg_args_strs if "head" in s or "tail" in s or "anullsrc" in s]
+        self.assertEqual(head_tail_calls, [], "Silence mode should not produce head/tail segments")
+
+        # No base video extraction
+        base_extract_calls = [s for s in ffmpeg_args_strs if "/base.mkv" in s]
+        self.assertEqual(base_extract_calls, [], "Silence mode should not read from base video")
+
+    def test_silence_mode_uses_stream_copy_when_no_scaling(self):
+        """With use_silence=True and ratio ≈ 1.0, audio should be stream-copied."""
+        performer = self._make_performer()
+        pairs = [(0, 500), (4000, 4500)]
+        calls = self._collect_ffmpeg_calls_silence(performer, pairs, base_duration_ms=6000)
+
+        self.assertEqual(len(calls), 1, "Should produce exactly one ffmpeg call")
+        self.assertIn("copy", calls[0][1], "Should use stream-copy")
+
+    def test_shift_audio_no_reencode_uses_stream_copy(self):
+        """_shift_audio_no_reencode should trim with stream-copy and return correct sync offset."""
+        performer = self._make_performer()
+        calls = []
+
+        def fake_start_process(tool, args, **kwargs):
+            calls.append((tool, list(args)))
+            result = type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+            return result
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "out.mka")
+            pairs = [(2000, 1000), (8000, 7000)]
+
+            with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
+                 patch.object(process_utils, 'raise_on_error', lambda r: None):
+                sync_offset = performer._shift_audio_no_reencode("/source.mkv", output_path, pairs)
+
+        self.assertEqual(sync_offset, 2000, "Sync offset should be seg1_start")
+        self.assertEqual(len(calls), 1, "Should produce exactly one ffmpeg call")
+        self.assertIn("copy", calls[0][1], "Should use stream-copy")
+        # Verify trim points
+        args = calls[0][1]
+        ss_idx = args.index("-ss")
+        to_idx = args.index("-to")
+        self.assertEqual(args[ss_idx + 1], "1.0", "Should trim from seg2_start")
+        self.assertEqual(args[to_idx + 1], "7.0", "Should trim to seg2_end")
+
+    def test_build_mkvmerge_args_applies_sync_offset(self):
+        """When _sync_offsets has an entry, --sync should appear in mkvmerge args."""
+        performer = self._make_performer()
+
+        patched_file = "/tmp/patched.mka"
+        base_file = "/tmp/base.mkv"
+        performer._sync_offsets[patched_file] = 3000
+
+        streams = [
+            ("video", 0, base_file, None),
+            ("audio", 0, patched_file, "pol"),
+        ]
+
+        args = performer.build_mkvmerge_args(
+            "/tmp/out.mkv",
+            streams,
+            attachments=[],
+            preferred_audio=None,
+            required_input_files=[base_file, patched_file],
+        )
+
+        self.assertIn("--sync", args, "Should contain --sync flag")
+        sync_idx = args.index("--sync")
+        self.assertEqual(args[sync_idx + 1], "0:3000", "Sync should be TID:offset")
 
 
 class PairMatcherUnitTest(unittest.TestCase):

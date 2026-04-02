@@ -21,12 +21,15 @@ class MeltPerformer:
         output_dir: str,
         tolerance_ms: int,
         cache: MeltCache | None = None,
+        fill_audio_gaps: bool = False,
     ) -> None:
         self.logger = logger
         self.interruption = interruption
         self.output_dir = output_dir
         self.tolerance_ms = tolerance_ms
         self.cache = cache
+        self.fill_audio_gaps = fill_audio_gaps
+        self._sync_offsets: dict[str, int] = {}
         self.wd = _ensure_working_dir(working_dir)
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
@@ -70,6 +73,7 @@ class MeltPerformer:
                     # Convert streams to unified list (and patch audios if needed)
                     files = group.get("files", [])
                     file_ids = {f: i + 1 for i, f in enumerate(files)}
+                    self._sync_offsets.clear()
                     streams_list = self._prepare_stream_entries(
                         video_streams,
                         audio_streams,
@@ -159,6 +163,11 @@ class MeltPerformer:
                     flag = "yes" if tid in fo["defaults"] else "no"
                     generation_args.extend(["--default-track", f"{tid}:{flag}"])
 
+            sync_offset = self._sync_offsets.get(file_path)
+            if sync_offset:
+                for tid in fo["audio"]:
+                    generation_args.extend(["--sync", f"{tid}:{sync_offset}"])
+
             generation_args.append(file_path)
 
         if track_order:
@@ -173,6 +182,8 @@ class MeltPerformer:
         source_video: str,
         output_path: str,
         segment_pairs: list[tuple[int, int]],
+        *,
+        use_silence: bool = False,
     ) -> None:
         """Replace audio using a single global time-scale for constant-offset cases.
 
@@ -181,13 +192,13 @@ class MeltPerformer:
         avoiding full audio extraction. When the durations already match
         (ratio ≈ 1.0) and no head/tail is needed, the audio is stream-copied
         without any re-encoding.
+
+        When *use_silence* is True, head/tail gaps are skipped entirely — the
+        caller is expected to position the track via mkvmerge ``--sync``.
         """
 
         wd = os.path.join(wd, "audio_extraction")
         os.makedirs(wd, exist_ok=True)
-
-        head_path = os.path.join(wd, "head.flac")
-        tail_path = os.path.join(wd, "tail.flac")
 
         # Compute global segment range (milliseconds)
         left_points = [p[0] for p in segment_pairs]
@@ -198,7 +209,12 @@ class MeltPerformer:
         # 1. Extract head/tail directly from base video, normalized to source params
         source_params = self._get_audio_params(source_video)
         base_duration_ms = video_utils.get_video_duration(base_video)
-        has_head = seg1_start > 0
+        has_head = seg1_start > 0 and not use_silence
+        has_tail = seg1_end < base_duration_ms and not use_silence
+
+        head_path = os.path.join(wd, "head.flac")
+        tail_path = os.path.join(wd, "tail.flac")
+
         if has_head:
             process_utils.raise_on_error(
                 process_utils.start_process("ffmpeg", [
@@ -208,7 +224,6 @@ class MeltPerformer:
                     "-c:a", "flac", head_path,
                 ])
             )
-        has_tail = seg1_end < base_duration_ms
         if has_tail:
             process_utils.raise_on_error(
                 process_utils.start_process("ffmpeg", [
@@ -578,10 +593,14 @@ class MeltPerformer:
         lhs_frames: FramesInfo,
         rhs_frames: FramesInfo,
         min_subsegment_duration: float = 30.0,
+        *,
+        use_silence: bool = False,
     ) -> None:
         """Replace an audio segment in the base video with time-adjusted audio from another video.
 
         The replacement is split into smaller, corresponding subsegments to better handle drift.
+        When *use_silence* is True, head/tail gaps are skipped entirely — the
+        caller is expected to position the track via mkvmerge ``--sync``.
         """
 
         wd = os.path.join(wd, "audio_extraction")
@@ -589,7 +608,6 @@ class MeltPerformer:
         os.makedirs(wd, exist_ok=True)
         os.makedirs(debug_wd, exist_ok=True)
 
-        v1_audio = os.path.join(wd, "v1_audio.flac")
         v2_audio = os.path.join(wd, "v2_audio.flac")
         head_path = os.path.join(wd, "head.flac")
         tail_path = os.path.join(wd, "tail.flac")
@@ -600,17 +618,23 @@ class MeltPerformer:
         left_points = [p[0] for p in segment_pairs]
         seg1_start, seg1_end = min(left_points), max(left_points)
 
-        # 1. Extract main audio tracks
-        self._extract_audio_to_flac(base_video, v1_audio)
+        # 1. Extract audio tracks
+        if not use_silence:
+            v1_audio = os.path.join(wd, "v1_audio.flac")
+            self._extract_audio_to_flac(base_video, v1_audio)
         self._extract_audio_to_flac(source_video, v2_audio)
 
         source_params = self._get_audio_params(v2_audio)
 
-        # 2. Extract head and tail from base audio, normalized to source params
-        has_head, has_tail = self._extract_head_tail(
-            v1_audio, base_video, seg1_start, seg1_end, head_path, tail_path,
-            normalize_to=source_params,
-        )
+        # 2. Extract head/tail from base audio (skipped when use_silence — caller uses --sync)
+        if use_silence:
+            has_head = False
+            has_tail = False
+        else:
+            has_head, has_tail = self._extract_head_tail(
+                v1_audio, base_video, seg1_start, seg1_end, head_path, tail_path,
+                normalize_to=source_params,
+            )
 
         # 3. Generate subsegment split points from provided mapping pairs
         total_left_duration = seg1_end - seg1_start
@@ -710,6 +734,35 @@ class MeltPerformer:
         )
         shutil.copy2(input_path, output_path)
 
+    def _shift_audio_no_reencode(
+        self,
+        source_video: str,
+        output_path: str,
+        segment_pairs: list[tuple[int, int]],
+    ) -> int:
+        """Trim source audio with stream-copy and return a sync offset for mkvmerge.
+
+        For the simplest case (constant offset, ratio ≈ 1.0): no decoding at all.
+        The returned offset (ms) should be applied as ``--sync TID:<offset>`` in mkvmerge.
+        """
+        right_points = [p[1] for p in segment_pairs]
+        seg2_start, seg2_end = min(right_points), max(right_points)
+        left_points = [p[0] for p in segment_pairs]
+        sync_offset = min(left_points)
+
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", [
+                "-y",
+                "-ss", str(seg2_start / 1000),
+                "-to", str(seg2_end / 1000),
+                "-i", source_video,
+                "-map", "0:a:0", "-c:a", "copy",
+                output_path,
+            ])
+        )
+
+        return sync_offset
+
     def _patch_mismatched_audio(
         self,
         video_path_base: str,
@@ -738,11 +791,32 @@ class MeltPerformer:
 
             self._log_coverage(video_path_base, audio_path, mapping, base_duration, duration, lhs_id, rhs_id)
 
+            use_silence = not self.fill_audio_gaps
+
+            if use_silence and constant_offset:
+                # Check if we can avoid re-encoding entirely
+                left_points = [p[0] for p in mapping]
+                right_points = [p[1] for p in mapping]
+                source_dur = max(right_points) - min(right_points)
+                target_dur = max(left_points) - min(left_points)
+                ratio = source_dur / target_dur if target_dur else 1.0
+                needs_scaling = abs(ratio - 1.0) >= 0.001
+
+                if not needs_scaling:
+                    # Fast path: stream-copy + mkvmerge --sync, no decoding at all
+                    patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.mka")
+                    sync_offset = self._shift_audio_no_reencode(audio_path, patched_audio, mapping)
+                    self._sync_offsets[patched_audio] = sync_offset
+                    return patched_audio, 0
+
             patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.m4a")
             if constant_offset:
-                self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping)
+                self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
             else:
-                self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames)
+                self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames, use_silence=use_silence)
+
+            if use_silence:
+                self._sync_offsets[patched_audio] = min(p[0] for p in mapping)
 
         return patched_audio, 0
 
