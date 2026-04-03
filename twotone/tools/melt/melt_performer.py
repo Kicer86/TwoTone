@@ -827,6 +827,7 @@ class MeltPerformer:
         seg2_start, seg2_end = min(right_points), max(right_points)
         left_points = [p[0] for p in segment_pairs]
         sync_offset = min(left_points)
+        expected_dur = seg2_end - seg2_start
 
         process_utils.raise_on_error(
             process_utils.start_process("ffmpeg", [
@@ -838,6 +839,9 @@ class MeltPerformer:
                 output_path,
             ])
         )
+
+        actual_dur = video_utils.get_video_duration(output_path)
+        self._validate_audio_duration(actual_dur, expected_dur, "stream-copied audio (no reencode)")
 
         return sync_offset
 

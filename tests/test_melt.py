@@ -2339,7 +2339,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
             pairs = [(2000, 1000), (8000, 7000)]
 
             with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
-                 patch.object(process_utils, 'raise_on_error', lambda r: None):
+                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
+                 patch.object(video_utils, 'get_video_duration', return_value=6000):
                 sync_offset = performer._shift_audio_no_reencode("/source.mkv", output_path, pairs)
 
         self.assertEqual(sync_offset, 2000, "Sync offset should be seg1_start")
@@ -2351,6 +2352,24 @@ class MeltPerformerUnitTest(unittest.TestCase):
         to_idx = args.index("-to")
         self.assertEqual(args[ss_idx + 1], "1.0", "Should trim from seg2_start")
         self.assertEqual(args[to_idx + 1], "7.0", "Should trim to seg2_end")
+
+    def test_shift_audio_no_reencode_validates_output_duration(self):
+        """_shift_audio_no_reencode should raise when output duration deviates too much."""
+        performer = self._make_performer()
+
+        def fake_start_process(tool, args, **kwargs):
+            return type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "out.mka")
+            # seg2 range: 1000..7000 → expected duration ≈ 6000 ms
+            pairs = [(2000, 1000), (8000, 7000)]
+
+            with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
+                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
+                 patch.object(video_utils, 'get_video_duration', return_value=3000):
+                with self.assertRaises(RuntimeError, msg="Should raise on excessive duration deviation"):
+                    performer._shift_audio_no_reencode("/source.mkv", output_path, pairs)
 
     def test_build_mkvmerge_args_applies_sync_offset(self):
         """When _sync_offsets has an entry, --sync should appear in mkvmerge args."""
