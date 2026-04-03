@@ -226,7 +226,7 @@ class MeltPerformer:
         target_dur = seg1_end - seg1_start
         video_ratio = target_dur / source_dur if source_dur else 1.0
         fps_ratio = source_dur / target_dur if target_dur else 1.0
-        needs_scaling = abs(fps_ratio - 1.0) >= 0.001
+        needs_scaling = self._needs_fps_scaling(fps_ratio)
 
         self.logger.info(
             "Audio patch (constant-offset): base=[%d…%d] ms, source=[%d…%d] ms, fps_ratio=%.4f",
@@ -557,6 +557,13 @@ class MeltPerformer:
             deficit, sync_offset, seg1_start, correction,
         )
         return sync_offset
+
+    _FPS_RATIO_TOLERANCE = 0.001
+
+    @staticmethod
+    def _needs_fps_scaling(ratio: float) -> bool:
+        """Return True when *ratio* deviates enough from 1.0 to need asetrate scaling."""
+        return abs(ratio - 1.0) >= MeltPerformer._FPS_RATIO_TOLERANCE
 
     _MAX_DURATION_DEVIATION = 0.05  # 5%
 
@@ -903,7 +910,7 @@ class MeltPerformer:
                 source_dur = seg.rhs_end - seg.rhs_start
                 target_dur = seg.lhs_end - seg.lhs_start
                 ratio = source_dur / target_dur if target_dur else 1.0
-                needs_scaling = abs(ratio - 1.0) >= 0.001
+                needs_scaling = self._needs_fps_scaling(ratio)
 
                 if not needs_scaling:
                     # Fast path: stream-copy + mkvmerge --sync, no decoding at all
