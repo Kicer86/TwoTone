@@ -840,8 +840,9 @@ class MeltPerformer:
 
         actual_dur = video_utils.get_video_duration(output_path)
         self._validate_audio_duration(actual_dur, expected_dur, "stream-copied audio (no reencode)")
+        deficit = expected_dur - actual_dur
 
-        return sync_offset
+        return self._sync_offset_from_deficit(sync_offset, deficit, 1.0)
 
     def _patch_mismatched_audio(
         self,

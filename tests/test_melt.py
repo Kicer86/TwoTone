@@ -2332,6 +2332,34 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError, msg="Should raise on excessive duration deviation"):
                     performer._shift_audio_no_reencode("/source.mkv", output_path, pairs)
 
+    def test_shift_audio_no_reencode_corrects_for_audio_deficit(self):
+        """When stream-copied audio is shorter than expected (AVI deficit), sync offset must shift forward."""
+        performer = self._make_performer()
+        calls = []
+
+        def fake_start_process(tool, args, **kwargs):
+            calls.append((tool, list(args)))
+            return type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "out.mka")
+            # seg2 range: 1000..7000 → expected duration 6000 ms
+            # seg1 range: 2000..8000 → sync_offset base = 2000
+            pairs = [(2000, 1000), (8000, 7000)]
+            # Audio deficit: 200 ms (got 5800 instead of 6000) — within 5% tolerance
+            actual_dur = 5800
+
+            with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
+                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
+                 patch.object(video_utils, 'get_video_duration', return_value=actual_dur):
+                sync_offset = performer._shift_audio_no_reencode("/source.mkv", output_path, pairs)
+
+        # deficit = 6000 - 5800 = 200, video_ratio = 1.0 (no scaling in this path)
+        # correction = round(200 * 1.0) = 200
+        # expected sync = 2000 + 200 = 2200
+        self.assertEqual(sync_offset, 2200,
+                         "Sync offset should be corrected forward by the deficit amount")
+
     def test_build_mkvmerge_args_applies_sync_offset(self):
         """When _sync_offsets has an entry, --sync should appear in mkvmerge args."""
         performer = self._make_performer()
