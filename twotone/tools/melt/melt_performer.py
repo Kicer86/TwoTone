@@ -2,7 +2,7 @@ import logging
 import os
 import shutil
 
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, NamedTuple, Sequence
 from tqdm import tqdm
 
 from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
@@ -10,6 +10,13 @@ from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
 from .pair_matcher import PairMatcher
 from .melt_common import FramesInfo, _ensure_working_dir, _is_length_mismatch
+
+
+class SegmentRange(NamedTuple):
+    lhs_start: int
+    lhs_end: int
+    rhs_start: int
+    rhs_end: int
 
 
 class MeltPerformer:
@@ -204,10 +211,9 @@ class MeltPerformer:
         os.makedirs(wd, exist_ok=True)
 
         # Compute global segment range (milliseconds)
-        left_points = [p[0] for p in segment_pairs]
-        right_points = [p[1] for p in segment_pairs]
-        seg1_start, seg1_end = min(left_points), max(left_points)
-        seg2_start, seg2_end = min(right_points), max(right_points)
+        seg = self._segment_range(segment_pairs)
+        seg1_start, seg1_end = seg.lhs_start, seg.lhs_end
+        seg2_start, seg2_end = seg.rhs_start, seg.rhs_end
 
         # 1. Extract head/tail directly from base video, normalized to source params
         source_params = self._get_audio_params(source_video)
@@ -516,6 +522,12 @@ class MeltPerformer:
         )
 
     @staticmethod
+    def _segment_range(pairs: Sequence[tuple[int, int]]) -> SegmentRange:
+        """Return the bounding lhs/rhs range from a list of (lhs, rhs) pairs."""
+        left, right = zip(*pairs)
+        return SegmentRange(min(left), max(left), min(right), max(right))
+
+    @staticmethod
     def _get_audio_params(audio_path: str) -> tuple[int, int, str]:
         """Return (channels, sample_rate, sample_fmt) of the first audio stream."""
         info = video_utils.get_video_full_info(audio_path)
@@ -691,8 +703,8 @@ class MeltPerformer:
         debug = DebugRoutines(debug_wd, lhs_frames, rhs_frames)
 
         # Compute global segment range (milliseconds)
-        left_points = [p[0] for p in segment_pairs]
-        seg1_start, seg1_end = min(left_points), max(left_points)
+        seg = self._segment_range(segment_pairs)
+        seg1_start, seg1_end = seg.lhs_start, seg.lhs_end
 
         # 1. Extract audio tracks
         if not use_silence:
@@ -821,10 +833,9 @@ class MeltPerformer:
         For the simplest case (constant offset, ratio ≈ 1.0): no decoding at all.
         The returned offset (ms) should be applied as ``--sync TID:<offset>`` in mkvmerge.
         """
-        right_points = [p[1] for p in segment_pairs]
-        seg2_start, seg2_end = min(right_points), max(right_points)
-        left_points = [p[0] for p in segment_pairs]
-        sync_offset = min(left_points)
+        seg = self._segment_range(segment_pairs)
+        seg2_start, seg2_end = seg.rhs_start, seg.rhs_end
+        sync_offset = seg.lhs_start
         expected_dur = seg2_end - seg2_start
 
         process_utils.raise_on_error(
@@ -888,10 +899,9 @@ class MeltPerformer:
 
             if use_silence and constant_offset:
                 # Check if we can avoid re-encoding entirely
-                left_points = [p[0] for p in mapping]
-                right_points = [p[1] for p in mapping]
-                source_dur = max(right_points) - min(right_points)
-                target_dur = max(left_points) - min(left_points)
+                seg = self._segment_range(mapping)
+                source_dur = seg.rhs_end - seg.rhs_start
+                target_dur = seg.lhs_end - seg.lhs_start
                 ratio = source_dur / target_dur if target_dur else 1.0
                 needs_scaling = abs(ratio - 1.0) >= 0.001
 
