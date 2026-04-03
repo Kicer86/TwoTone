@@ -1854,6 +1854,9 @@ class AudioAlignmentTest(TwoToneTestCase):
             )
 
 
+_FAKE_PROCESS_OK = type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+
+
 class MeltPerformerUnitTest(unittest.TestCase):
     """Unit tests for MeltPerformer internal methods."""
 
@@ -1934,8 +1937,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         def fake_start_process(tool, args, **kwargs):
             calls.append((tool, list(args)))
-            result = type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
-            return result
+            return _FAKE_PROCESS_OK
 
         def fake_raise_on_error(result):
             pass
@@ -2292,8 +2294,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         def fake_start_process(tool, args, **kwargs):
             calls.append((tool, list(args)))
-            result = type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
-            return result
+            return _FAKE_PROCESS_OK
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = os.path.join(tmpdir, "out.mka")
@@ -2319,7 +2320,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         performer = self._make_performer()
 
         def fake_start_process(tool, args, **kwargs):
-            return type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+            return _FAKE_PROCESS_OK
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = os.path.join(tmpdir, "out.mka")
@@ -2339,7 +2340,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         def fake_start_process(tool, args, **kwargs):
             calls.append((tool, list(args)))
-            return type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+            return _FAKE_PROCESS_OK
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = os.path.join(tmpdir, "out.mka")
@@ -2443,7 +2444,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         def fake_start_process(tool, args, **kwargs):
             calls.append((tool, list(args)))
-            return type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+            return _FAKE_PROCESS_OK
 
         def fake_get_duration(path):
             # Trimmed audio is shorter than requested → simulates AVI deficit
@@ -2525,7 +2526,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             wd = os.path.join(tmpdir, "work")
 
             with patch.object(process_utils, 'start_process',
-                              side_effect=lambda t, a, **kw: type('R', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()), \
+                              side_effect=lambda t, a, **kw: _FAKE_PROCESS_OK), \
                  patch.object(process_utils, 'raise_on_error', lambda r: None), \
                  patch.object(video_utils, 'get_video_duration', side_effect=fake_get_duration), \
                  patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
