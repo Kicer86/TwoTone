@@ -319,7 +319,7 @@ class MeltPerformer:
         # 3. Concatenate and encode to AAC
         self._concat_and_encode(
             [scaled_audio], has_head, head_path, has_tail, tail_path,
-            os.path.join(wd, "concat.txt"), os.path.join(wd, "merged.flac"), output_path,
+            os.path.join(wd, "concat.txt"), output_path,
         )
 
         return sync_offset
@@ -633,14 +633,12 @@ class MeltPerformer:
         has_tail: bool,
         tail_path: str,
         concat_list_path: str,
-        merged_flac_path: str,
         output_path: str,
     ) -> None:
         """Concatenate audio parts (head + middle segments + tail) and encode to AAC.
 
         All input parts are expected to be FLAC. The concat demuxer merges them
         and encodes directly to AAC in a single ffmpeg pass.
-        The merged_flac_path parameter is kept for API compatibility but unused.
         """
         def _esc(p: str) -> str:
             return p.replace("'", "'\\''" )
@@ -796,7 +794,7 @@ class MeltPerformer:
         # 5. Concatenate and encode
         self._concat_and_encode(
             temp_segments, has_head, head_path, has_tail, tail_path,
-            os.path.join(wd, "concat.txt"), os.path.join(wd, "merged.flac"), output_path,
+            os.path.join(wd, "concat.txt"), output_path,
         )
 
     def _build_output_path(self, title: str, output_name: str) -> str:
