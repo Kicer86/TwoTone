@@ -1932,6 +1932,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
     def _collect_ffmpeg_calls(self, performer, segment_pairs, base_duration_ms,
                                source_sample_rate=48000, source_channels=2, source_sample_fmt="s16",
+                               source_channel_layout=None,
                                use_silence=False):
         """Run patch_audio_constant_offset with mocked externals and return captured ffmpeg calls."""
         calls = []
@@ -1951,8 +1952,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 return source_segment_dur
             return base_duration_ms
 
-        fake_full_info = {"streams": [{"codec_type": "audio", "channels": source_channels,
-                                       "sample_rate": str(source_sample_rate), "sample_fmt": source_sample_fmt}]}
+        stream_info = {"codec_type": "audio", "channels": source_channels,
+                       "sample_rate": str(source_sample_rate), "sample_fmt": source_sample_fmt}
+        if source_channel_layout is not None:
+            stream_info["channel_layout"] = source_channel_layout
+        fake_full_info = {"streams": [stream_info]}
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = os.path.join(tmpdir, "out.m4a")
@@ -2259,6 +2263,69 @@ class MeltPerformerUnitTest(unittest.TestCase):
         # No separate FLAC→AAC pass
         flac_to_aac = [s for s in ffmpeg_args_strs if "merged.flac" in s and "aac" in s and "concat" not in s]
         self.assertEqual(flac_to_aac, [], "Should not have a separate FLAC→AAC re-encoding step")
+
+    # ---- channel layout normalization ----
+
+    def test_nonstandard_channel_layout_triggers_aformat(self):
+        """5.1(side) is not a native AAC layout — aformat filter must normalize it to avoid PCE."""
+        performer = self._make_performer()
+        pairs = [(2000, 1000), (8000, 7000)]
+        calls = self._collect_ffmpeg_calls(
+            performer, pairs, base_duration_ms=10000,
+            source_channels=6, source_channel_layout="5.1(side)",
+        )
+
+        # Find the concat→AAC call
+        concat_calls = [c for c in calls if c[0] == "ffmpeg" and "concat" in str(c[1])]
+        self.assertEqual(len(concat_calls), 1)
+        args = concat_calls[0][1]
+        self.assertIn("-af", args, "aformat filter should be present for non-standard layout")
+        af_idx = args.index("-af")
+        self.assertIn("aformat=channel_layouts=", args[af_idx + 1])
+        self.assertIn("5.1", args[af_idx + 1], "Standard 5.1 must be in allowed layouts")
+
+    def test_standard_channel_layout_skips_aformat(self):
+        """Standard 5.1 layout should NOT trigger the aformat normalization filter."""
+        performer = self._make_performer()
+        pairs = [(2000, 1000), (8000, 7000)]
+        calls = self._collect_ffmpeg_calls(
+            performer, pairs, base_duration_ms=10000,
+            source_channels=6, source_channel_layout="5.1",
+        )
+
+        concat_calls = [c for c in calls if c[0] == "ffmpeg" and "concat" in str(c[1])]
+        self.assertEqual(len(concat_calls), 1)
+        args = concat_calls[0][1]
+        aformat_args = [a for a in args if isinstance(a, str) and "aformat" in a]
+        self.assertEqual(aformat_args, [], "aformat should not be used for standard 5.1")
+
+    def test_stereo_layout_skips_aformat(self):
+        """Stereo is a standard AAC layout — no aformat needed."""
+        performer = self._make_performer()
+        pairs = [(2000, 1000), (8000, 7000)]
+        calls = self._collect_ffmpeg_calls(
+            performer, pairs, base_duration_ms=10000,
+            source_channels=2, source_channel_layout="stereo",
+        )
+
+        concat_calls = [c for c in calls if c[0] == "ffmpeg" and "concat" in str(c[1])]
+        self.assertEqual(len(concat_calls), 1)
+        args = concat_calls[0][1]
+        aformat_args = [a for a in args if isinstance(a, str) and "aformat" in a]
+        self.assertEqual(aformat_args, [], "aformat should not be used for stereo")
+
+    def test_unknown_channel_layout_skips_aformat(self):
+        """When ffprobe doesn't report channel_layout, aformat should not be added."""
+        performer = self._make_performer()
+        pairs = [(2000, 1000), (8000, 7000)]
+        # No source_channel_layout → defaults to None
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=10000)
+
+        concat_calls = [c for c in calls if c[0] == "ffmpeg" and "concat" in str(c[1])]
+        self.assertEqual(len(concat_calls), 1)
+        args = concat_calls[0][1]
+        aformat_args = [a for a in args if isinstance(a, str) and "aformat" in a]
+        self.assertEqual(aformat_args, [], "aformat should not be used when layout is unknown")
 
     # ---- silence mode (use_silence=True) ----
 

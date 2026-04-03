@@ -330,9 +330,11 @@ class MeltPerformer:
         self._validate_audio_duration(scaled_dur, expected_scaled_dur, "scaled audio")
 
         # 3. Concatenate and encode to AAC
+        channel_layout = self._get_audio_channel_layout(source_video)
         self._concat_and_encode(
             [scaled_audio], has_head, head_path, has_tail, tail_path,
             os.path.join(wd, "concat.txt"), output_path,
+            channel_layout=channel_layout,
         )
 
         return sync_offset
@@ -541,6 +543,13 @@ class MeltPerformer:
         stream = next(s for s in info["streams"] if s["codec_type"] == "audio")
         return int(stream["channels"]), int(stream["sample_rate"]), stream["sample_fmt"]
 
+    @staticmethod
+    def _get_audio_channel_layout(audio_path: str) -> str | None:
+        """Return the channel layout string of the first audio stream, or None."""
+        info = video_utils.get_video_full_info(audio_path)
+        stream = next(s for s in info["streams"] if s["codec_type"] == "audio")
+        return stream.get("channel_layout") or None
+
     def _sync_offset_from_deficit(
         self,
         seg1_start: int,
@@ -646,6 +655,14 @@ class MeltPerformer:
 
         return has_head, has_tail
 
+    # Channel layouts that have a standard AAC channel configuration index.
+    # Non-standard layouts (e.g., "5.1(side)") force the AAC encoder to use a
+    # Program Config Element (PCE) which many decoders/muxers handle poorly,
+    # leading to missing channel_layout metadata and garbled channel ordering.
+    _AAC_STANDARD_LAYOUTS = frozenset({
+        "mono", "stereo", "3.0", "4.0", "5.0", "5.1", "6.1", "7.1",
+    })
+
     @staticmethod
     def _concat_and_encode(
         parts: list[str],
@@ -655,11 +672,16 @@ class MeltPerformer:
         tail_path: str,
         concat_list_path: str,
         output_path: str,
+        channel_layout: str | None = None,
     ) -> None:
         """Concatenate audio parts (head + middle segments + tail) and encode to AAC.
 
         All input parts are expected to be FLAC. The concat demuxer merges them
         and encodes directly to AAC in a single ffmpeg pass.
+
+        *channel_layout*, when given, is the source channel layout string
+        (e.g., ``"5.1(side)"``).  Non-standard layouts are normalized to the
+        closest standard AAC configuration to avoid PCE encoding issues.
         """
         def _esc(p: str) -> str:
             return p.replace("'", "'\\''" )
@@ -672,10 +694,22 @@ class MeltPerformer:
             if has_tail:
                 f.write(f"file '{_esc(tail_path)}'\n")
 
+        needs_layout_fix = (
+            channel_layout is not None
+            and channel_layout not in MeltPerformer._AAC_STANDARD_LAYOUTS
+        )
+        layout_args: list[str] = []
+        if needs_layout_fix:
+            # Force standard layout selection via aformat filter so the AAC
+            # encoder uses a channel configuration index (no PCE).
+            allowed = "|".join(sorted(MeltPerformer._AAC_STANDARD_LAYOUTS))
+            layout_args = ["-af", f"aformat=channel_layouts={allowed}"]
+
         process_utils.raise_on_error(
             process_utils.start_process("ffmpeg", [
                 "-y", "-f", "concat", "-safe", "0",
                 "-i", concat_list_path,
+                *layout_args,
                 "-c:a", "aac", "-movflags", "+faststart",
                 output_path,
             ])
@@ -813,9 +847,11 @@ class MeltPerformer:
             temp_segments.append(scaled_cut)
 
         # 5. Concatenate and encode
+        channel_layout = self._get_audio_channel_layout(v2_audio)
         self._concat_and_encode(
             temp_segments, has_head, head_path, has_tail, tail_path,
             os.path.join(wd, "concat.txt"), output_path,
+            channel_layout=channel_layout,
         )
 
     def _build_output_path(self, title: str, output_name: str) -> str:
