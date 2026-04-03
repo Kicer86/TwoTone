@@ -2377,6 +2377,31 @@ class MeltPerformerUnitTest(unittest.TestCase):
         sync_idx = args.index("--sync")
         self.assertEqual(args[sync_idx + 1], "0:3000", "Sync should be TID:offset")
 
+    def test_build_mkvmerge_args_applies_sync_offset_zero(self):
+        """When _sync_offsets has an entry with value 0, --sync 0:0 should still appear."""
+        performer = self._make_performer()
+
+        patched_file = "/tmp/patched.mka"
+        base_file = "/tmp/base.mkv"
+        performer._sync_offsets[patched_file] = 0
+
+        streams = [
+            ("video", 0, base_file, None),
+            ("audio", 0, patched_file, "pol"),
+        ]
+
+        args = performer.build_mkvmerge_args(
+            "/tmp/out.mkv",
+            streams,
+            attachments=[],
+            preferred_audio=None,
+            required_input_files=[base_file, patched_file],
+        )
+
+        self.assertIn("--sync", args, "Should contain --sync flag even for offset 0")
+        sync_idx = args.index("--sync")
+        self.assertEqual(args[sync_idx + 1], "0:0", "Sync should be TID:0")
+
     def test_patch_audio_fps_mismatch_with_audio_deficit(self):
         """Exact scenario: 23.976fps base + 25fps AVI source with audio deficit.
 

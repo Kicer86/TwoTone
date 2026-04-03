@@ -164,7 +164,7 @@ class MeltPerformer:
                     generation_args.extend(["--default-track", f"{tid}:{flag}"])
 
             sync_offset = self._sync_offsets.get(file_path)
-            if sync_offset:
+            if sync_offset is not None:
                 for tid in fo["audio"]:
                     generation_args.extend(["--sync", f"{tid}:{sync_offset}"])
 
