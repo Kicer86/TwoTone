@@ -582,10 +582,7 @@ class MeltPerformer:
     @staticmethod
     def _flac_safe_fmt(sample_fmt: str) -> str:
         """Return a FLAC-compatible sample format (FLAC does not support float formats)."""
-        if sample_fmt.endswith("p"):
-            base = sample_fmt[:-1]
-        else:
-            base = sample_fmt
+        base = sample_fmt.removesuffix("p")
         if base in ("flt", "dbl"):
             return "s32"
         return sample_fmt
