@@ -2,6 +2,7 @@
 import logging
 import re
 import tempfile
+import types
 import unittest
 import os
 import platform
@@ -11,7 +12,7 @@ from functools import partial
 from itertools import permutations
 from parameterized import parameterized
 from pathlib import Path
-from typing import Iterator
+from collections.abc import Iterator
 
 from twotone.tools.utils import generic_utils, process_utils, video_utils
 from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, MeltTool, PairMatcher, StaticSource, StreamsPicker
@@ -1854,7 +1855,7 @@ class AudioAlignmentTest(TwoToneTestCase):
             )
 
 
-_FAKE_PROCESS_OK = type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+_FAKE_PROCESS_OK = types.SimpleNamespace(returncode=0, stdout='', stderr='')
 
 
 class MeltPerformerUnitTest(unittest.TestCase):
