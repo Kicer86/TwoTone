@@ -1927,8 +1927,9 @@ class MeltPerformerUnitTest(unittest.TestCase):
     # ---- _patch_audio_constant_offset ----
 
     def _collect_ffmpeg_calls(self, performer, segment_pairs, base_duration_ms,
-                               source_sample_rate=48000, source_channels=2, source_sample_fmt="s16"):
-        """Run _patch_audio_constant_offset with mocked externals and return captured ffmpeg calls."""
+                               source_sample_rate=48000, source_channels=2, source_sample_fmt="s16",
+                               use_silence=False):
+        """Run patch_audio_constant_offset with mocked externals and return captured ffmpeg calls."""
         calls = []
 
         def fake_start_process(tool, args, **kwargs):
@@ -1948,8 +1949,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             return base_duration_ms
 
         fake_full_info = {"streams": [{"codec_type": "audio", "channels": source_channels,
-                                       "sample_rate": str(source_sample_rate), "sample_fmt": source_sample_fmt,
-                                       "start_time": "0"}]}
+                                       "sample_rate": str(source_sample_rate), "sample_fmt": source_sample_fmt}]}
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = os.path.join(tmpdir, "out.m4a")
@@ -1961,6 +1961,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                  patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
                 performer.patch_audio_constant_offset(
                     wd, "/base.mkv", "/source.mkv", output_path, segment_pairs,
+                    use_silence=use_silence,
                 )
 
         return calls
@@ -2258,52 +2259,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
     # ---- silence mode (use_silence=True) ----
 
-    def _collect_ffmpeg_calls_silence(self, performer, segment_pairs, base_duration_ms,
-                                       source_sample_rate=48000, source_channels=2, source_sample_fmt="s16"):
-        """Run patch_audio_constant_offset with use_silence=True and return captured ffmpeg calls."""
-        calls = []
-
-        def fake_start_process(tool, args, **kwargs):
-            calls.append((tool, list(args)))
-            result = type('ProcessResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
-            return result
-
-        def fake_raise_on_error(result):
-            pass
-
-        right_points = [p[1] for p in segment_pairs]
-        source_segment_dur = max(right_points) - min(right_points)
-
-        def fake_get_duration(path):
-            if "source_trimmed" in path or "source_scaled" in path or "out." in path:
-                return source_segment_dur
-            return base_duration_ms
-
-        fake_full_info = {"streams": [{"codec_type": "audio", "channels": source_channels,
-                                       "sample_rate": str(source_sample_rate), "sample_fmt": source_sample_fmt,
-                                       "start_time": "0"}]}
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = os.path.join(tmpdir, "out.m4a")
-            wd = os.path.join(tmpdir, "work")
-
-            with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
-                 patch.object(process_utils, 'raise_on_error', side_effect=fake_raise_on_error), \
-                 patch.object(video_utils, 'get_video_duration', side_effect=fake_get_duration), \
-                 patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
-                performer.patch_audio_constant_offset(
-                    wd, "/base.mkv", "/source.mkv", output_path, segment_pairs,
-                    use_silence=True,
-                )
-
-        return calls
-
     def test_silence_mode_skips_head_and_tail(self):
         """With use_silence=True, no head/tail extraction or generation should occur."""
         performer = self._make_performer()
         # Matching region: 2000..8000 in base (10s total) → would have head and tail
         pairs = [(2000, 1000), (8000, 7000)]
-        calls = self._collect_ffmpeg_calls_silence(performer, pairs, base_duration_ms=10000)
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=10000, use_silence=True)
 
         ffmpeg_args_strs = [" ".join(str(a) for a in c[1]) for c in calls if c[0] == "ffmpeg"]
 
@@ -2319,7 +2280,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         """With use_silence=True and ratio ≈ 1.0, audio should be stream-copied."""
         performer = self._make_performer()
         pairs = [(0, 500), (4000, 4500)]
-        calls = self._collect_ffmpeg_calls_silence(performer, pairs, base_duration_ms=6000)
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=6000, use_silence=True)
 
         self.assertEqual(len(calls), 1, "Should produce exactly one ffmpeg call")
         self.assertIn("copy", calls[0][1], "Should use stream-copy")
