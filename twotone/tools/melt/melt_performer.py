@@ -66,7 +66,7 @@ class MeltPerformer:
 
                 output = self._build_output_path(title, output_name)
                 if os.path.exists(output):
-                    self.logger.info(f"Output file {output} exists, removing it.")
+                    self.logger.info("Output file %s exists, removing it.", output)
                     os.remove(output)
 
                 output_parent = os.path.dirname(output)
@@ -110,13 +110,13 @@ class MeltPerformer:
                         required_input_files,
                     )
 
-                    self.logger.info(f"Generating file: {self._display_path(output)}")
+                    self.logger.info("Generating file: %s", self._display_path(output))
 
                     process_utils.raise_on_error(
                         process_utils.start_process("mkvmerge", generation_args, show_progress=True)
                     )
 
-                    self.logger.info(f"{output} saved.")
+                    self.logger.info("%s saved.", output)
 
     def build_mkvmerge_args(
         self,
@@ -776,7 +776,7 @@ class MeltPerformer:
             ratio = right_duration / left_duration if left_duration else 1.0
 
             if abs(ratio - 1.0) > 0.10:
-                self.logger.error(f"Segment {idx} duration mismatch exceeds 10%")
+                self.logger.error("Segment %d duration mismatch exceeds 10%%", idx)
 
             raw_cut = os.path.join(wd, f"cut_{idx}.flac")
             scaled_cut = os.path.join(wd, f"scaled_{idx}.flac")
@@ -825,7 +825,8 @@ class MeltPerformer:
 
     def _copy_single_input(self, input_path: str, output_path: str) -> None:
         self.logger.info(
-            f"File {self._display_path(input_path)} is superior. Using it whole as output {self._display_path(output_path)}."
+            "File %s is superior. Using it whole as output %s.",
+            self._display_path(input_path), self._display_path(output_path),
         )
         shutil.copy2(input_path, output_path)
 
@@ -985,8 +986,8 @@ class MeltPerformer:
         if audio_prod_lang:
             language_name = language_utils.language_name(audio_prod_lang)
             if preferred_audio:
-                self.logger.info(f"Setting production audio language '{language_name}' as default.")
+                self.logger.info("Setting production audio language '%s' as default.", language_name)
             else:
-                self.logger.warning(f"Production audio language '{language_name}' not found among audio streams.")
+                self.logger.warning("Production audio language '%s' not found among audio streams.", language_name)
 
         return preferred_audio
