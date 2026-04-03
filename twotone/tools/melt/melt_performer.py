@@ -184,7 +184,7 @@ class MeltPerformer:
         segment_pairs: list[tuple[int, int]],
         *,
         use_silence: bool = False,
-    ) -> None:
+    ) -> int:
         """Replace audio using a single global time-scale for constant-offset cases.
 
         Instead of splitting into many subsegments and applying per-segment atempo,
@@ -195,6 +195,9 @@ class MeltPerformer:
 
         When *use_silence* is True, head/tail gaps are skipped entirely — the
         caller is expected to position the track via mkvmerge ``--sync``.
+
+        Returns the effective sync offset (ms) for positioning the produced
+        audio track on the base-video timeline.
         """
 
         wd = os.path.join(wd, "audio_extraction")
@@ -211,6 +214,18 @@ class MeltPerformer:
         base_duration_ms = video_utils.get_video_duration(base_video)
         has_head = seg1_start > 0 and not use_silence
         has_tail = seg1_end < base_duration_ms and not use_silence
+
+        # Video-frame ratio (true fps relationship, independent of audio track)
+        source_dur = seg2_end - seg2_start
+        target_dur = seg1_end - seg1_start
+        video_ratio = target_dur / source_dur if source_dur else 1.0
+        fps_ratio = source_dur / target_dur if target_dur else 1.0
+        needs_scaling = abs(fps_ratio - 1.0) >= 0.001
+
+        self.logger.info(
+            "Audio patch (constant-offset): base=[%d…%d] ms, source=[%d…%d] ms, fps_ratio=%.4f",
+            seg1_start, seg1_end, seg2_start, seg2_end, fps_ratio,
+        )
 
         head_path = os.path.join(wd, "head.flac")
         tail_path = os.path.join(wd, "tail.flac")
@@ -234,13 +249,13 @@ class MeltPerformer:
                 ])
             )
 
-        # 2. Trim + time-scale source audio directly from video in one step
-        source_dur = seg2_end - seg2_start
-        target_dur = seg1_end - seg1_start
-        ratio = source_dur / target_dur if target_dur else 1.0
-        needs_scaling = abs(ratio - 1.0) >= 0.001
+        # 2. Trim + time-scale source audio.
+        #    The scaling ratio is derived from video-frame timestamps (fps
+        #    relationship), NOT from measured audio duration.  If the audio
+        #    stream in the container is shorter than the video, the deficit
+        #    is handled via sync_offset (start) and natural end (no padding).
 
-        # Fast path: no head/tail + no scaling → stream-copy, no re-encoding at all
+        # Fast path: no head/tail + fps ratio ≈ 1.0 → stream-copy, no re-encoding at all
         if not has_head and not has_tail and not needs_scaling:
             process_utils.raise_on_error(
                 process_utils.start_process("ffmpeg", [
@@ -252,35 +267,62 @@ class MeltPerformer:
                     output_path,
                 ])
             )
-            return
+            actual_dur = video_utils.get_video_duration(output_path)
+            deficit = source_dur - actual_dur
+            self._validate_audio_duration(actual_dur, target_dur, "stream-copied audio")
+            return self._sync_offset_from_deficit(seg1_start, deficit, video_ratio)
 
+        trimmed_audio = os.path.join(wd, "source_trimmed.flac")
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", [
+                "-y",
+                "-ss", str(seg2_start / 1000),
+                "-to", str(seg2_end / 1000),
+                "-i", source_video,
+                "-map", "0:a:0",
+                "-sample_fmt", self._flac_safe_fmt(source_params[2]),
+                "-c:a", "flac",
+                trimmed_audio,
+            ])
+        )
+
+        actual_source_dur = video_utils.get_video_duration(trimmed_audio)
+        expected_scaled_dur = round(actual_source_dur * video_ratio)
+
+        # Compute sync offset from the measured trim deficit.
+        # If the audio stream starts later than the -ss timestamp (common in
+        # AVI), the trimmed output is shorter than requested.  The deficit
+        # tells us how much audio is missing at the start, so the sync offset
+        # must shift forward to compensate.
+        deficit = source_dur - actual_source_dur
+        sync_offset = self._sync_offset_from_deficit(seg1_start, deficit, video_ratio)
+
+        # Scale with VIDEO-frame ratio (true fps relationship)
         scaled_audio = os.path.join(wd, "source_scaled.flac")
-        trim_args = [
-            "-y",
-            "-ss", str(seg2_start / 1000),
-            "-to", str(seg2_end / 1000),
-            "-i", source_video,
-            "-map", "0:a:0",
-        ]
         if not needs_scaling:
-            trim_args.extend(["-sample_fmt", self._flac_safe_fmt(source_params[2]), "-c:a", "flac"])
+            scaled_audio = trimmed_audio
         else:
             sample_rate = source_params[1]
-            adjusted_rate = sample_rate * source_dur / target_dur
-            trim_args.extend([
-                "-filter:a", f"asetrate={adjusted_rate:.6f},aresample={sample_rate}",
-                "-sample_fmt", "s32", "-c:a", "flac",
-            ])
-        trim_args.append(scaled_audio)
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", trim_args)
-        )
+            adjusted_rate = sample_rate * fps_ratio
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", [
+                    "-y", "-i", trimmed_audio,
+                    "-filter:a", f"asetrate={adjusted_rate:.6f},aresample={sample_rate}",
+                    "-sample_fmt", "s32", "-c:a", "flac",
+                    scaled_audio,
+                ])
+            )
+
+        scaled_dur = video_utils.get_video_duration(scaled_audio)
+        self._validate_audio_duration(scaled_dur, expected_scaled_dur, "scaled audio")
 
         # 3. Concatenate and encode to AAC
         self._concat_and_encode(
             [scaled_audio], has_head, head_path, has_tail, tail_path,
             os.path.join(wd, "concat.txt"), os.path.join(wd, "merged.flac"), output_path,
         )
+
+        return sync_offset
 
     @staticmethod
     def _collect_required_input_files(
@@ -479,6 +521,44 @@ class MeltPerformer:
         info = video_utils.get_video_full_info(audio_path)
         stream = next(s for s in info["streams"] if s["codec_type"] == "audio")
         return int(stream["channels"]), int(stream["sample_rate"]), stream["sample_fmt"]
+
+    def _sync_offset_from_deficit(
+        self,
+        seg1_start: int,
+        deficit: int,
+        video_ratio: float,
+    ) -> int:
+        """Compute mkvmerge --sync offset from the measured trim deficit.
+
+        When the audio stream in a container starts later than the video
+        (common in AVI), trimming from a video-frame timestamp yields output
+        shorter than requested.  The *deficit* (requested − actual) tells us
+        how much audio is missing at the start.  We shift the sync offset
+        forward by ``deficit * video_ratio`` to compensate.
+        """
+        if deficit <= 50:
+            return seg1_start
+        correction = round(deficit * video_ratio)
+        sync_offset = seg1_start + correction
+        self.logger.info(
+            "Audio deficit: %d ms → sync offset: %d ms (base: %d + correction: %d)",
+            deficit, sync_offset, seg1_start, correction,
+        )
+        return sync_offset
+
+    _MAX_DURATION_DEVIATION = 0.05  # 5%
+
+    def _validate_audio_duration(self, actual_ms: int, expected_ms: int, label: str) -> None:
+        """Raise if *actual_ms* deviates from *expected_ms* by more than 5%."""
+        if expected_ms == 0:
+            return
+        deviation = abs(actual_ms - expected_ms) / expected_ms
+        if deviation > self._MAX_DURATION_DEVIATION:
+            raise RuntimeError(
+                f"Audio duration mismatch in {label}: "
+                f"got {actual_ms} ms, expected {expected_ms} ms "
+                f"(deviation: {deviation:.1%}, max allowed: {self._MAX_DURATION_DEVIATION:.0%})"
+            )
 
     @staticmethod
     def _flac_safe_fmt(sample_fmt: str) -> str:
@@ -791,6 +871,18 @@ class MeltPerformer:
 
             self._log_coverage(video_path_base, audio_path, mapping, base_duration, duration, lhs_id, rhs_id)
 
+            self.logger.info(
+                "Audio patching: base_duration=%d ms, source_duration=%d ms, "
+                "constant_offset=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
+                base_duration, duration, constant_offset,
+                matcher.lhs_fps, matcher.rhs_fps, len(mapping),
+            )
+            if mapping:
+                self.logger.info(
+                    "  Mapping range: lhs=[%d … %d] ms, rhs=[%d … %d] ms",
+                    mapping[0][0], mapping[-1][0], mapping[0][1], mapping[-1][1],
+                )
+
             use_silence = not self.fill_audio_gaps
 
             if use_silence and constant_offset:
@@ -811,12 +903,14 @@ class MeltPerformer:
 
             patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.m4a")
             if constant_offset:
-                self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
+                effective_sync = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
             else:
                 self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames, use_silence=use_silence)
+                effective_sync = min(p[0] for p in mapping)
 
             if use_silence:
-                self._sync_offsets[patched_audio] = min(p[0] for p in mapping)
+                self._sync_offsets[patched_audio] = effective_sync
+                self.logger.info("  Sync offset (--sync): %d ms", effective_sync)
 
         return patched_audio, 0
 
