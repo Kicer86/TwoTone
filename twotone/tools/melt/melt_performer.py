@@ -1,3 +1,4 @@
+import enum
 import logging
 import os
 import shutil
@@ -17,6 +18,12 @@ class SegmentRange(NamedTuple):
     lhs_end: int
     rhs_start: int
     rhs_end: int
+
+
+class _AudioStrategy(enum.Enum):
+    STREAM_COPY = "stream_copy"        # no re-encoding, shift via --sync
+    CONSTANT_OFFSET = "constant_offset"  # single global time-scale
+    SUBSEGMENT = "subsegment"          # per-subsegment atempo
 
 
 class MeltPerformer:
@@ -901,24 +908,17 @@ class MeltPerformer:
                 )
 
             use_silence = not self.fill_audio_gaps
+            strategy = self._choose_audio_strategy(constant_offset, use_silence, mapping)
+            self.logger.info("  Audio strategy: %s", strategy.value)
 
-            if use_silence and constant_offset:
-                # Check if we can avoid re-encoding entirely
-                seg = self._segment_range(mapping)
-                source_dur = seg.rhs_end - seg.rhs_start
-                target_dur = seg.lhs_end - seg.lhs_start
-                ratio = source_dur / target_dur if target_dur else 1.0
-                needs_scaling = self._needs_fps_scaling(ratio)
-
-                if not needs_scaling:
-                    # Fast path: stream-copy + mkvmerge --sync, no decoding at all
-                    patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.mka")
-                    sync_offset = self._shift_audio_no_reencode(audio_path, patched_audio, mapping)
-                    self._sync_offsets[patched_audio] = sync_offset
-                    return patched_audio, 0
+            if strategy == _AudioStrategy.STREAM_COPY:
+                patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.mka")
+                sync_offset = self._shift_audio_no_reencode(audio_path, patched_audio, mapping)
+                self._sync_offsets[patched_audio] = sync_offset
+                return patched_audio, 0
 
             patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.m4a")
-            if constant_offset:
+            if strategy == _AudioStrategy.CONSTANT_OFFSET:
                 effective_sync = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
             else:
                 self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames, use_silence=use_silence)
@@ -929,6 +929,24 @@ class MeltPerformer:
                 self.logger.info("  Sync offset (--sync): %d ms", effective_sync)
 
         return patched_audio, 0
+
+    def _choose_audio_strategy(
+        self,
+        constant_offset: bool,
+        use_silence: bool,
+        mapping: list[tuple[int, int]],
+    ) -> _AudioStrategy:
+        """Pick the lightest audio patching strategy that fits the constraints."""
+        if not constant_offset:
+            return _AudioStrategy.SUBSEGMENT
+        if use_silence:
+            seg = self._segment_range(mapping)
+            source_dur = seg.rhs_end - seg.rhs_start
+            target_dur = seg.lhs_end - seg.lhs_start
+            ratio = source_dur / target_dur if target_dur else 1.0
+            if not self._needs_fps_scaling(ratio):
+                return _AudioStrategy.STREAM_COPY
+        return _AudioStrategy.CONSTANT_OFFSET
 
     def _prepare_stream_entries(
         self,
