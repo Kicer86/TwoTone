@@ -598,9 +598,7 @@ class MeltPerformer:
         """
         norm_args: list[str] = []
         if normalize_to:
-            channels, sample_rate, sample_fmt = normalize_to
-            sample_fmt = MeltPerformer._flac_safe_fmt(sample_fmt)
-            norm_args = ["-ac", str(channels), "-ar", str(sample_rate), "-sample_fmt", sample_fmt]
+            norm_args = MeltPerformer._normalize_args(normalize_to)
         else:
             norm_args = ["-sample_fmt", "s32"]
 
