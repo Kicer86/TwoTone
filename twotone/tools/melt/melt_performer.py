@@ -13,7 +13,7 @@ from .pair_matcher import PairMatcher
 from .melt_common import FramesInfo, _ensure_working_dir, _is_length_mismatch
 
 
-class SegmentRange(NamedTuple):
+class _SegmentRange(NamedTuple):
     lhs_start: int
     lhs_end: int
     rhs_start: int
@@ -282,7 +282,7 @@ class MeltPerformer:
             )
             actual_dur = video_utils.get_video_duration(output_path)
             deficit = source_dur - actual_dur
-            self._validate_audio_duration(actual_dur, target_dur, "stream-copied audio")
+            self._validate_audio_duration(actual_dur, source_dur, "stream-copied audio")
             return self._sync_offset_from_deficit(seg1_start, deficit, video_ratio)
 
         trimmed_audio = os.path.join(wd, "source_trimmed.flac")
@@ -529,10 +529,10 @@ class MeltPerformer:
         )
 
     @staticmethod
-    def _segment_range(pairs: Sequence[tuple[int, int]]) -> SegmentRange:
+    def _segment_range(pairs: Sequence[tuple[int, int]]) -> _SegmentRange:
         """Return the bounding lhs/rhs range from a list of (lhs, rhs) pairs."""
         left, right = zip(*pairs)
-        return SegmentRange(min(left), max(left), min(right), max(right))
+        return _SegmentRange(min(left), max(left), min(right), max(right))
 
     @staticmethod
     def _get_audio_params(audio_path: str) -> tuple[int, int, str]:
