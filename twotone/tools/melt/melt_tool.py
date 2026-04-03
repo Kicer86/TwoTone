@@ -218,6 +218,6 @@ class MeltTool(Tool):
             plan.output_dir,
             DEFAULT_TOLERANCE_MS,
             cache=cache,
-            fill_audio_gaps=getattr(args, 'fill_audio_gaps', False),
+            fill_audio_gaps=args.fill_audio_gaps,
         )
         performer.process_duplicates(plan.items)
