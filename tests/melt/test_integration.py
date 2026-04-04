@@ -1,5 +1,4 @@
 
-import logging
 import os
 
 from twotone.tools.utils import generic_utils, video_utils
@@ -435,7 +434,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        logger = logging.getLogger("Melter")
+        logger = self.logger.getChild("Melter")
         plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
         process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
 
@@ -471,7 +470,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        logger = logging.getLogger("Melter")
+        logger = self.logger.getChild("Melter")
         plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
         process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
 
@@ -501,7 +500,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)
 
-        logger = logging.getLogger("Melter")
+        logger = self.logger.getChild("Melter")
         plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
         process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
 
