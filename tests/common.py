@@ -476,7 +476,9 @@ def extract_subtitles(video_path: str, out_path: str):
     process_utils.start_process("ffmpeg", ["-i", video_path, "-map", "0:s:0", out_path])
 
 
-def run_twotone(tool: str, tool_options = [], global_options = None):
+def run_twotone(tool: str, tool_options: list[str] | None = None, global_options: list[str] | None = None):
+    if tool_options is None:
+        tool_options = []
     if global_options is None:
         global_options = []
 
