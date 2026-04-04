@@ -116,6 +116,11 @@ class MeltTool(Tool):
                             help='[EXPERIMENTAL] Continue processing even if input video lengths differ.\n'
                                  'This may require additional processing that can consume significant time and disk space.')
 
+        parser.add_argument('--fill-audio-gaps', action='store_true',
+                            help='When audio comes from a file with different length, fill head/tail gaps\n'
+                                 'with audio from the base video file. By default, gaps are filled with silence\n'
+                                 'and the audio is shifted/trimmed without re-encoding when possible.')
+
         parser.add_argument('--cache-dir',
                             help='Directory for caching expensive per-video operations (scene detection, '
                                  'frame probing, frame extraction). Speeds up repeated runs on the same input files. '
@@ -213,5 +218,6 @@ class MeltTool(Tool):
             plan.output_dir,
             DEFAULT_TOLERANCE_MS,
             cache=cache,
+            fill_audio_gaps=args.fill_audio_gaps,
         )
         performer.process_duplicates(plan.items)
