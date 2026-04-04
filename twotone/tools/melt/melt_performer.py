@@ -728,7 +728,7 @@ class MeltPerformer:
                 "-y", "-f", "concat", "-safe", "0",
                 "-i", concat_list_path,
                 *layout_args,
-                "-c:a", "aac", "-movflags", "+faststart",
+                "-c:a", "aac",
                 output_path,
             ])
         )
@@ -971,7 +971,7 @@ class MeltPerformer:
                 self._sync_offsets[patched_audio] = sync_offset
                 return patched_audio, 0
 
-            patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.m4a")
+            patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.mka")
             if strategy == _AudioStrategy.CONSTANT_OFFSET:
                 effective_sync = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
             else:

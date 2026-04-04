@@ -1959,7 +1959,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         fake_full_info = {"streams": [stream_info]}
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = os.path.join(tmpdir, "out.m4a")
+            output_path = os.path.join(tmpdir, "out.mka")
             wd = os.path.join(tmpdir, "work")
 
             with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
@@ -2529,7 +2529,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                                        "sample_rate": "48000", "sample_fmt": "s16"}]}
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = os.path.join(tmpdir, "out.m4a")
+            output_path = os.path.join(tmpdir, "out.mka")
             wd = os.path.join(tmpdir, "work")
 
             with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
@@ -2590,7 +2590,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                                        "sample_rate": "48000", "sample_fmt": "s16"}]}
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = os.path.join(tmpdir, "out.m4a")
+            output_path = os.path.join(tmpdir, "out.mka")
             wd = os.path.join(tmpdir, "work")
 
             with patch.object(process_utils, 'start_process',
@@ -2625,7 +2625,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                                        "sample_rate": "48000", "sample_fmt": "s16"}]}
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = os.path.join(tmpdir, "out.m4a")
+            output_path = os.path.join(tmpdir, "out.mka")
             wd = os.path.join(tmpdir, "work")
 
             with patch.object(process_utils, 'start_process',
