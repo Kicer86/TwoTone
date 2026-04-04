@@ -3,7 +3,6 @@ import logging
 import os
 import tempfile
 import types
-import unittest
 
 from collections.abc import Iterator
 from functools import partial
