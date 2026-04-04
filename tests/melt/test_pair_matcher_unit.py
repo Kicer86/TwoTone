@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 from twotone.tools.utils import generic_utils, video_utils
 from twotone.tools.melt.melt import PairMatcher
-from twotone.tools.melt.phash_cache import PhashCache
 
 
 class PairMatcherUnitTest(unittest.TestCase):
