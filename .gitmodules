@@ -1,9 +1,9 @@
-[submodule "tests/videos"]
+[submodule "tests/media/videos"]
 	path = tests/media/videos
- 	url = https://gitlab.com/kicer86/video-files.git
-[submodule "tests/audio"]
+	url = https://gitlab.com/kicer86/video-files.git
+[submodule "tests/media/audio"]
 	path = tests/media/audio
- 	url = https://gitlab.com/kicer86/audio-files.git
-[submodule "tests/images"]
+	url = https://gitlab.com/kicer86/audio-files.git
+[submodule "tests/media/images"]
 	path = tests/media/images
- 	url = https://gitlab.com/kicer86/image-files.git
+	url = https://gitlab.com/kicer86/image-files.git
