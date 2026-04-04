@@ -2606,6 +2606,41 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(sync, seg1_start,
                          "Without deficit, sync offset should be the raw seg1_start")
 
+    def test_patch_audio_fill_gaps_raises_on_deficit(self):
+        """In fill-audio-gaps mode, audio deficit cannot be compensated — must raise."""
+        performer = self._make_performer()
+
+        seg1_start, seg2_start = 2420, 40
+        seg1_end, seg2_end = 6961247, 6673840
+        pairs = [(seg1_start, seg2_start), (seg1_end, seg2_end)]
+        source_dur = seg2_end - seg2_start
+        audio_deficit_ms = 488
+
+        def fake_get_duration(path):
+            if "source_trimmed" in path:
+                return source_dur - audio_deficit_ms
+            return 7000000
+
+        fake_full_info = {"streams": [{"codec_type": "audio", "channels": 2,
+                                       "sample_rate": "48000", "sample_fmt": "s16"}]}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "out.m4a")
+            wd = os.path.join(tmpdir, "work")
+
+            with patch.object(process_utils, 'start_process',
+                              side_effect=lambda t, a, **kw: _FAKE_PROCESS_OK), \
+                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
+                 patch.object(video_utils, 'get_video_duration', side_effect=fake_get_duration), \
+                 patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
+                with self.assertRaises(RuntimeError, msg="Should raise on deficit in fill-audio-gaps mode") as ctx:
+                    performer.patch_audio_constant_offset(
+                        wd, "/base.mkv", "/source.avi", output_path, pairs,
+                        use_silence=False,
+                    )
+                self.assertIn("fill-audio-gaps", str(ctx.exception))
+                self.assertIn(str(audio_deficit_ms), str(ctx.exception))
+
     def test_validate_audio_duration_raises_on_excessive_deviation(self):
         """_validate_audio_duration should raise when deviation exceeds 5%."""
         performer = self._make_performer()

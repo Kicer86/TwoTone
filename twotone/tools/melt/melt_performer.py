@@ -282,6 +282,15 @@ class MeltPerformer:
             )
             actual_dur = video_utils.get_video_duration(output_path)
             deficit = source_dur - actual_dur
+
+            if not use_silence and deficit > 50:
+                raise RuntimeError(
+                    f"Audio deficit of {deficit} ms detected in fill-audio-gaps mode. "
+                    f"The source container's audio starts later than its video, "
+                    f"which cannot be compensated when head/tail are filled from "
+                    f"the base file. Use default (silence) mode instead."
+                )
+
             self._validate_audio_duration(actual_dur, source_dur, "stream-copied audio")
             return self._sync_offset_from_deficit(seg1_start, deficit, video_ratio)
 
@@ -308,6 +317,15 @@ class MeltPerformer:
         # tells us how much audio is missing at the start, so the sync offset
         # must shift forward to compensate.
         deficit = source_dur - actual_source_dur
+
+        if not use_silence and deficit > 50:
+            raise RuntimeError(
+                f"Audio deficit of {deficit} ms detected in fill-audio-gaps mode. "
+                f"The source container's audio starts later than its video, "
+                f"which cannot be compensated when head/tail are filled from "
+                f"the base file. Use default (silence) mode instead."
+            )
+
         sync_offset = self._sync_offset_from_deficit(seg1_start, deficit, video_ratio)
 
         # Scale with VIDEO-frame ratio (true fps relationship)
