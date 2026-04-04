@@ -865,7 +865,7 @@ class MeltPerformer:
             temp_segments.append(scaled_cut)
 
         # 5. Concatenate and encode
-        channel_layout = self._get_audio_channel_layout(v2_audio)
+        channel_layout = self._get_audio_channel_layout(source_video)
         self._concat_and_encode(
             temp_segments, has_head, head_path, has_tail, tail_path,
             os.path.join(wd, "concat.txt"), output_path,
