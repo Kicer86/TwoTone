@@ -1,5 +1,7 @@
 
 import argparse
+import contextlib
+import io
 import os
 import platform
 
@@ -190,7 +192,7 @@ class StreamsPickerTest(MeltTestBase):
         parser = argparse.ArgumentParser()
         MeltTool().setup_parser(parser)
 
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             parser.parse_args(["--force-all-streams", "-i", "/tmp/a.mkv", "-o", "/out", "-t", "X"])
 
     def test_force_all_streams_both_inputs_forced_same_language(self):
