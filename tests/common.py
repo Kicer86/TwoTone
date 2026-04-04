@@ -24,6 +24,7 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, subti
 
 
 current_path = os.path.dirname(os.path.abspath(__file__))
+media_path = os.path.join(current_path, "media")
 generic_utils.DISABLE_PROGRESSBARS = True
 
 
@@ -158,7 +159,7 @@ def add_test_media(filter: str, test_case_path: str, suffixes: list[str] | None 
     suffixes = suffixes or [""]
 
     for media in ["subtitles", "subtitles_txt", "videos"]:
-        for root, _, files in os.walk(os.path.join(current_path, media)):
+        for root, _, files in os.walk(os.path.join(media_path, media)):
             for file in files:
                 if filter_regex.fullmatch(file):
                     for suffix in suffixes:
@@ -166,7 +167,7 @@ def add_test_media(filter: str, test_case_path: str, suffixes: list[str] | None 
                         file_path = Path(os.path.join(root, file))
                         dst_file_name = file_path.stem + suffix + file_path.suffix
 
-                        src = os.path.join(current_path, media, file_path)
+                        src = os.path.join(media_path, media, file_path)
                         dst = add_to_test_dir(test_case_path, src, copy, dst_file_name)
 
                         output_files.append(dst)
@@ -187,19 +188,19 @@ def add_to_test_dir(test_case_path: str, file_path: str, copy: bool = False, dst
 
 
 def get_audio(name: str) -> str:
-    return os.path.join(current_path, "audio", name)
+    return os.path.join(media_path, "audio", name)
 
 
 def get_video(name: str) -> str:
-    return os.path.join(current_path, "videos", name)
+    return os.path.join(media_path, "videos", name)
 
 
 def get_image(name: str) -> str:
-    return os.path.join(current_path, "images", name)
+    return os.path.join(media_path, "images", name)
 
 
 def get_subtitle(name: str) -> str:
-    return os.path.join(current_path, "subtitles", name)
+    return os.path.join(media_path, "subtitles", name)
 
 
 def build_test_video(
