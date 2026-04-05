@@ -1,50 +1,17 @@
 
 import os
-import re
 import unittest
 from unittest.mock import patch
 
-from twotone.tools.utils import files_utils
 from common import TwoToneTestCase, assert_video_info, list_files, add_test_media, hashes, run_twotone, write_srt_subtitle, write_subtitle
-
-
-default_video_set = [
-    "Atoms - 8579.mp4",
-    "Blue_Sky_and_Clouds_Timelapse_0892__Videvo.mov",
-    "close-up-of-flowers-13554420.mp4",
-    "DSC_8073.MP4",
-    "fog-over-mountainside-13008647.mp4",
-    "Frog - 113403.mp4",
-    "Grass - 66810.mp4",
-    "herd-of-horses-in-fog-13642605.mp4",
-    "moon_23.976.mp4",
-    "moon_dark.mp4",
-    "moon.mp4",
-    "sea-waves-crashing-on-beach-shore-4793288.mp4",
-    "Woman - 58142.mp4"
-]
-
-
-def get_default_media_set_regex():
-    media = []
-    for video in default_video_set:
-        video_escaped = re.escape(video)
-        media.append(video_escaped)
-
-        subtitle = files_utils.split_path(video)[1] + ".srt"
-        subtitle_escaped = re.escape(subtitle)
-        media.append(subtitle_escaped)
-
-    filter = "|".join(media)
-    return filter
 
 
 class SubtitlesMerge(TwoToneTestCase):
     def test_dry_run_is_respected(self):
-        add_test_media(get_default_media_set_regex(), self.wd.path)
+        add_test_media("Atoms.*(mp4|srt)|Frog.*(mp4|srt)|Grass.*(mp4|srt)", self.wd.path)
 
         hashes_before = hashes(self.wd.path)
-        self.assertEqual(len(hashes_before), 2 * 13)        # 13 videos and 13 subtitles expected
+        self.assertEqual(len(hashes_before), 2 * 3)          # 3 videos and 3 subtitles expected
         run_twotone("merge", [self.wd.path])
 
         hashes_after = hashes(self.wd.path)
@@ -63,15 +30,15 @@ class SubtitlesMerge(TwoToneTestCase):
         self.assertEqual(hashes_before, hashes_after)
 
     def test_many_videos_conversion(self):
-        add_test_media(get_default_media_set_regex(), self.wd.path)
+        add_test_media("Atoms.*(mp4|srt)|Frog.*(mp4|srt)|Grass.*(mp4|srt)", self.wd.path)
 
         files_before = list_files(self.wd.path)
-        self.assertEqual(len(files_before), 2 * 13)         # 13 videos and 13 subtitles expected
+        self.assertEqual(len(files_before), 2 * 3)          # 3 videos and 3 subtitles expected
 
         run_twotone("merge", [self.wd.path], ["--no-dry-run"])
 
         files_after = list_files(self.wd.path)
-        self.assertEqual(len(files_after), 1 * 13)          # 13 mkv videos expected
+        self.assertEqual(len(files_after), 1 * 3)           # 3 mkv videos expected
 
         for video in files_after:
             assert_video_info(self, video, expected_subtitles=1)
