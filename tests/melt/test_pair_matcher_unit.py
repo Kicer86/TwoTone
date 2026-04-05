@@ -1,5 +1,6 @@
 
 import logging
+import tempfile
 import unittest
 
 from unittest.mock import patch
@@ -11,24 +12,26 @@ from twotone.tools.melt.melt import PairMatcher
 class PairMatcherUnitTest(unittest.TestCase):
     """Unit tests for PairMatcher internal methods.
 
-    These tests mock _is_rich and bypass the full constructor to test
-    algorithmic behaviour without needing video files. They target:
+    These tests mock get_video_data to avoid needing real video files,
+    but use the real PairMatcher constructor. They target:
     - _extrapolate_through_low_entropy: 5% noise tolerance
     - snap_to_edges: snap threshold
     - find_boundary (via _look_for_boundaries): look_ahead robustness
     """
 
     def _make_pair_matcher(self, lhs_fps: float = 25.0, rhs_fps: float = 25.0) -> PairMatcher:
-        """Create a PairMatcher with minimal init — no video files needed."""
-        pm = object.__new__(PairMatcher)
-        pm.logger = logging.getLogger("test.PairMatcher")
-        pm.lhs_fps = lhs_fps
-        pm.rhs_fps = rhs_fps
-        pm.lhs_path = "/fake/lhs.mp4"
-        pm.rhs_path = "/fake/rhs.mp4"
-        pm.lhs_label = "#1"
-        pm.rhs_label = "#2"
-        pm.interruption = generic_utils.InterruptibleProcess()
+        """Create a PairMatcher using the real constructor with mocked externals."""
+        fps_map = {"/fake/lhs.mp4": str(lhs_fps), "/fake/rhs.mp4": str(rhs_fps)}
+
+        with patch.object(video_utils, 'get_video_data',
+                          side_effect=lambda p: {"video": [{"fps": fps_map[p]}]}):
+            pm = PairMatcher(
+                interruption=generic_utils.InterruptibleProcess(),
+                wd=tempfile.mkdtemp(),
+                lhs_path="/fake/lhs.mp4",
+                rhs_path="/fake/rhs.mp4",
+                logger=logging.getLogger("test.PairMatcher"),
+            )
         return pm
 
     @staticmethod
