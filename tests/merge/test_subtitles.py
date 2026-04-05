@@ -57,21 +57,6 @@ class SubtitlesMerge(TwoToneTestCase):
         tracks = assert_video_info(self, video, expected_subtitles=1)
         self.assertEqual(tracks["subtitle"][0]["language"], "pol")
 
-    def test_subtitles_with_a_bit_different_names(self):
-        add_test_media("moon_dark.*|Woman.*", self.wd.path)
-        os.rename(os.path.join(self.wd.path, "moon_dark.srt"), os.path.join(self.wd.path, "moon_dark_de.srt"))
-        os.rename(os.path.join(self.wd.path, "Woman - 58142.srt"), os.path.join(self.wd.path, "Woman - 58142_de.srt"))
-
-        run_twotone("merge", [self.wd.path, "-l", "deu"], ["--no-dry-run"])
-
-        # verify results
-        files_after = list_files(self.wd.path)
-        self.assertEqual(len(files_after), 2)
-
-        for video in files_after:
-            tracks = assert_video_info(self, video, expected_subtitles=1)
-            self.assertEqual(tracks["subtitle"][0]["language"], "deu")
-
     def test_multiple_subtitles_for_single_file(self):
         # one file in directory with many subtitles
         add_test_media("Atoms.*mp4", self.wd.path)

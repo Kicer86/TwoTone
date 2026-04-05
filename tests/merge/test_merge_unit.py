@@ -128,6 +128,20 @@ class DirectorySubtitleMatcherUnitTest(TwoToneTestCase):
         self.assertEqual(len(result), 1)
         self.assertIn(long_video, result)
 
+    def test_suffix_appended_subtitles_match(self):
+        """Subtitles renamed with a language suffix (e.g. movie_de.srt) match movie.mp4."""
+        for name in ["moon_dark", "Woman - 58142"]:
+            video = os.path.join(self.wd.path, f"{name}.mp4")
+            with open(video, "wb") as f:
+                f.write(b"\x00" * 100)
+            write_srt_subtitle(os.path.join(self.wd.path, f"{name}_de.srt"), [(0, 1000, "Hallo")])
+
+        merger = self._merger()
+        result = merger._directory_subtitle_matcher(self.wd.path)
+        self.assertEqual(len(result), 2)
+        for video_path, subs in result.items():
+            self.assertEqual(len(subs), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
