@@ -8,6 +8,8 @@ from common import (
     add_to_test_dir,
     build_test_video,
     hashes,
+    list_files,
+    run_twotone,
 )
 from melt.helpers import (
     MeltTestBase,
@@ -512,3 +514,37 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_file_data["tracks"]["video"]), 1)
         self.assertEqual(len(output_file_data["attachments"]), 1)
+
+    def test_cli_simple_duplicate(self):
+        file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["v1"])[0]
+        file2 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["v2"])[0]
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        run_twotone("melt", [
+            "-t", "Grass",
+            "-i", file1,
+            "-i", file2,
+            "-o", output_dir,
+        ], ["--no-dry-run"])
+
+        output_files = list_files(output_dir)
+        self.assertEqual(len(output_files), 1)
+
+    def test_cli_dry_run(self):
+        file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["v1"])[0]
+        file2 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["v2"])[0]
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        run_twotone("melt", [
+            "-t", "Grass",
+            "-i", file1,
+            "-i", file2,
+            "-o", output_dir,
+        ])
+
+        output_files = list_files(output_dir)
+        self.assertEqual(len(output_files), 0)
