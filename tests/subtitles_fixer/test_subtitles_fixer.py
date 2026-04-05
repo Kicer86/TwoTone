@@ -11,7 +11,7 @@ from twotone.tools.utils import subtitles_utils, video_utils
 from common import (
     TwoToneTestCase,
     hashes,
-    current_path,
+    get_video,
     run_twotone,
     write_subtitle,
     write_srt_subtitle,
@@ -136,7 +136,7 @@ def create_broken_video_with_metadata_rich_subtitles(output_video_path: str, inp
 class SubtitlesFixer(TwoToneTestCase):
     def test_dry_run_is_respected(self):
         output_video_path = f"{self.wd.path}/test_video.mkv"
-        create_broken_video_with_scaled_subtitle_timings(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
+        create_broken_video_with_scaled_subtitle_timings(output_video_path, get_video("sea-waves-crashing-on-beach-shore-4793288.mp4"))
 
         hashes_before = hashes(self.wd.path)
         run_twotone("subtitles_fix", [self.wd.path])
@@ -146,7 +146,7 @@ class SubtitlesFixer(TwoToneTestCase):
 
     def test_metadata_preserved(self):
         output_video_path = f"{self.wd.path}/test_video.mkv"
-        create_broken_video_with_metadata_rich_subtitles(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
+        create_broken_video_with_metadata_rich_subtitles(output_video_path, get_video("sea-waves-crashing-on-beach-shore-4793288.mp4"))
 
         def collect_subtitle_metadata(video_path: str):
             info = video_utils.get_video_data(video_path)
@@ -175,7 +175,7 @@ class SubtitlesFixer(TwoToneTestCase):
 
     def test_video_with_scaled_subtitle_timings_fixing(self):
         output_video_path = f"{self.wd.path}/test_video.mkv"
-        create_broken_video_with_scaled_subtitle_timings(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
+        create_broken_video_with_scaled_subtitle_timings(output_video_path, get_video("sea-waves-crashing-on-beach-shore-4793288.mp4"))
 
         hashes_before = hashes(self.wd.path)
         run_twotone("subtitles_fix", [self.wd.path], ["-r"])
@@ -190,7 +190,7 @@ class SubtitlesFixer(TwoToneTestCase):
 
     def test_video_with_too_long_last_subtitle_fixing(self):
         output_video_path = f"{self.wd.path}/test_video.mkv"
-        create_broken_video_with_too_long_last_subtitle(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
+        create_broken_video_with_too_long_last_subtitle(output_video_path, get_video("sea-waves-crashing-on-beach-shore-4793288.mp4"))
 
         hashes_before = hashes(self.wd.path)
         run_twotone("subtitles_fix", [self.wd.path], ["-r"])
@@ -205,7 +205,7 @@ class SubtitlesFixer(TwoToneTestCase):
 
     def test_leave_unfixable_subtitles(self):
         output_video_path = f"{self.wd.path}/test_video.mkv"
-        create_broken_video_with_some_incompatible_subtitles(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
+        create_broken_video_with_some_incompatible_subtitles(output_video_path, get_video("sea-waves-crashing-on-beach-shore-4793288.mp4"))
 
         hashes_before = hashes(self.wd.path)
         run_twotone("subtitles_fix", [self.wd.path], ["-r"])
@@ -216,7 +216,7 @@ class SubtitlesFixer(TwoToneTestCase):
 
     def test_drop_unfixable_subtitles(self):
         output_video_path = f"{self.wd.path}/test_video.mkv"
-        create_broken_video_with_some_incompatible_subtitles(output_video_path, f"{current_path}/videos/sea-waves-crashing-on-beach-shore-4793288.mp4")
+        create_broken_video_with_some_incompatible_subtitles(output_video_path, get_video("sea-waves-crashing-on-beach-shore-4793288.mp4"))
 
         hashes_before = hashes(self.wd.path)
         run_twotone("subtitles_fix", ["-d", self.wd.path], ["-r"])
