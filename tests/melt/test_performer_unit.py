@@ -17,15 +17,13 @@ class MeltPerformerUnitTest(unittest.TestCase):
     """Unit tests for MeltPerformer internal methods."""
 
     def _make_performer(self) -> MeltPerformer:
-        performer = object.__new__(MeltPerformer)
-        performer.logger = logging.getLogger("test.MeltPerformer")
-        performer.wd = tempfile.mkdtemp()
-        performer.output_dir = tempfile.mkdtemp()
-        performer.tolerance_ms = DEFAULT_TOLERANCE_MS
-        performer.interruption = generic_utils.InterruptibleProcess()
-        performer.fill_audio_gaps = False
-        performer._sync_offsets = {}
-        return performer
+        return MeltPerformer(
+            logger=logging.getLogger("test.MeltPerformer"),
+            interruption=generic_utils.InterruptibleProcess(),
+            working_dir=tempfile.mkdtemp(),
+            output_dir=tempfile.mkdtemp(),
+            tolerance_ms=DEFAULT_TOLERANCE_MS,
+        )
 
     def test_stream_sorting_puts_unknown_languages_last(self):
         streams = [
