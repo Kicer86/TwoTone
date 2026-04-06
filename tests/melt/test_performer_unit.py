@@ -162,11 +162,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         ffmpeg_args_strs = [" ".join(str(a) for a in c[1]) for c in calls if c[0] == "ffmpeg"]
 
         head_calls = [s for s in ffmpeg_args_strs if "head" in s and "-to" in s]
-        self.assertTrue(len(head_calls) >= 1, "Head segment should be extracted")
+        self.assertGreaterEqual(len(head_calls), 1, "Head segment should be extracted")
         self.assertIn("2.0", head_calls[0])
 
         tail_calls = [s for s in ffmpeg_args_strs if "tail" in s and "-ss" in s]
-        self.assertTrue(len(tail_calls) >= 1, "Tail segment should be extracted")
+        self.assertGreaterEqual(len(tail_calls), 1, "Tail segment should be extracted")
         self.assertIn("8.0", tail_calls[0])
 
     def test_patch_audio_constant_offset_no_head_when_at_start(self):
@@ -200,8 +200,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
         head_calls = [a for a in ffmpeg_calls if any("head" in str(x) for x in a)]
         tail_calls = [a for a in ffmpeg_calls if any("tail" in str(x) for x in a)]
 
-        self.assertTrue(len(head_calls) >= 1, "Head segment should be extracted")
-        self.assertTrue(len(tail_calls) >= 1, "Tail segment should be extracted")
+        self.assertGreaterEqual(len(head_calls), 1, "Head segment should be extracted")
+        self.assertGreaterEqual(len(tail_calls), 1, "Tail segment should be extracted")
 
         for label, call_args in [("head", head_calls[0]), ("tail", tail_calls[0])]:
             self.assertIn("-ac", call_args, f"{label} must have -ac")
@@ -303,7 +303,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             "full_coverage": False,
         }
         lines = performer._render_overlap_diagram(1, 2, 100_000, 101_000, summary)
-        self.assertTrue(len(lines) >= 2, "Should have at least 2 bar lines")
+        self.assertGreaterEqual(len(lines), 2, "Should have at least 2 bar lines")
         # lhs has start_gap=2 → shared content starts 2s into lhs → lhs starts first
         self.assertTrue(lines[0].startswith("|"), "#1 bar starts at col 0")
         # rhs starts at shared content → rhs is indented
@@ -324,7 +324,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             "full_coverage": False,
         }
         lines = performer._render_overlap_diagram(1, 2, 100_000, 100_000, summary)
-        self.assertTrue(len(lines) >= 2)
+        self.assertGreaterEqual(len(lines), 2)
         # rhs_s = lhs_sg - rhs_sg = 0 - 3 = -3 → rhs starts before lhs
         # So rhs is at col 0, lhs is indented
         self.assertTrue(lines[0].startswith(" "), "#1 bar should be indented")
@@ -378,7 +378,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             "full_coverage": False,
         }
         lines = performer._render_overlap_diagram(1, 2, 100_000, 96_000, summary)
-        self.assertTrue(len(lines) >= 2)
+        self.assertGreaterEqual(len(lines), 2)
         # lhs starts first (lhs_sg=2 means has content before shared region)
         self.assertTrue(lines[0].startswith("|"), "#1 bar at col 0")
         self.assertTrue(lines[1].startswith(" "), "#2 bar indented")
