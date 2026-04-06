@@ -17,10 +17,7 @@ class TranscoderTests(TwoToneTestCase):
         hashes_before = hashes(self.wd.path)
         self.assertEqual(len(hashes_before), 4)
 
-        try:
-            run_twotone("transcode", [self.wd.path])
-        except:
-            self.assertTrue(False)
+        run_twotone("transcode", [self.wd.path])
 
         hashes_after = hashes(self.wd.path)
         self.assertEqual(hashes_after, hashes_before)
@@ -32,10 +29,7 @@ class TranscoderTests(TwoToneTestCase):
         hashes_before = hashes(self.wd.path)
         self.assertEqual(len(hashes_before), 3)
 
-        try:
-            run_twotone("transcode", [self.wd.path], ["-r"])
-        except:
-            self.assertTrue(False)
+        run_twotone("transcode", [self.wd.path], ["-r"])
 
         hashes_after = hashes(self.wd.path)
         self.assertEqual(len(hashes_after), 3)
