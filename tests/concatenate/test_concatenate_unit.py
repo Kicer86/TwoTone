@@ -22,7 +22,7 @@ class ConcatenateAnalyzeUnitTest(unittest.TestCase):
         result = self._analyze(files)
         self.assertIsNotNone(result)
         self.assertEqual(len(result), 1)
-        key = list(result.keys())[0]
+        key = next(iter(result))
         self.assertEqual(len(result[key]), 2)
         self.assertEqual(result[key][0][1], 1)
         self.assertEqual(result[key][1][1], 2)
@@ -50,7 +50,7 @@ class ConcatenateAnalyzeUnitTest(unittest.TestCase):
         result = self._analyze(files)
         self.assertIsNotNone(result)
         self.assertEqual(len(result), 1)
-        key = list(result.keys())[0]
+        key = next(iter(result))
         self.assertIn("movie", key)
 
     def test_no_match_for_non_cd_files(self):
@@ -85,14 +85,14 @@ class ConcatenateAnalyzeUnitTest(unittest.TestCase):
         files = ["/dir/movie cd1.rmvb", "/dir/movie cd2.rmvb"]
         result = self._analyze(files)
         self.assertIsNotNone(result)
-        key = list(result.keys())[0]
+        key = next(iter(result))
         self.assertTrue(key.endswith(".mkv"))
 
     def test_parts_sorted_by_number(self):
         files = ["/dir/movie cd3.avi", "/dir/movie cd1.avi", "/dir/movie cd2.avi"]
         result = self._analyze(files)
         self.assertIsNotNone(result)
-        key = list(result.keys())[0]
+        key = next(iter(result))
         part_numbers = [part for _, part in result[key]]
         self.assertEqual(part_numbers, [1, 2, 3])
 
@@ -112,7 +112,7 @@ class ConcatenateAnalyzeUnitTest(unittest.TestCase):
         result = self._analyze(files, ignore_warnings=True)
         self.assertIsNotNone(result)
         self.assertEqual(len(result), 1)
-        key = list(result.keys())[0]
+        key = next(iter(result))
         self.assertIn("a", key)
 
 
