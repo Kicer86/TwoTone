@@ -44,7 +44,7 @@ class MeltIntegrationTest(MeltTestBase):
         self.assertEqual(len(output_file_hash), 1)
 
         # check if file was not altered
-        self.assertEqual(list(output_file_hash.values())[0], input_file_hashes[file1])
+        self.assertEqual(next(iter(output_file_hash.values())), input_file_hashes[file1])
 
 
     def test_dry_run_is_being_respected(self):
@@ -138,7 +138,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
-        output_file = list(output_file_hash.keys())[0]
+        output_file = next(iter(output_file_hash))
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_file_data["tracks"]["audio"]), 2)
 
@@ -177,7 +177,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
-        output_file = list(output_file_hash.keys())[0]
+        output_file = next(iter(output_file_hash))
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_file_data["tracks"]["audio"]), 1)
 
@@ -228,7 +228,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
-        output_file = list(output_file_hash.keys())[0]
+        output_file = next(iter(output_file_hash))
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_file_data["tracks"]["audio"]), 2)
         self.assertEqual({a["language"] for a in output_file_data["tracks"]["audio"]}, {"eng", "deu"})
@@ -266,7 +266,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
 
         output_file_data = video_utils.get_video_data(output_file)
         self.assertEqual(len(output_file_data["video"]), 1)
@@ -308,7 +308,7 @@ class MeltIntegrationTest(MeltTestBase):
 
         # validate output
         output_file_hash = hashes(output_dir)
-        output_files = sorted(list(output_file_hash))
+        output_files = sorted(output_file_hash)
 
         for i, output_file in enumerate(output_files):
             output_file_name = os.path.basename(output_file)
@@ -344,7 +344,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
         output_file_data = video_utils.get_video_data(output_file)
         self.assertEqual(output_file_data["audio"][0]["language"], "deu")
         self.assertEqual(output_file_data["audio"][1]["language"], "eng")
@@ -376,7 +376,7 @@ class MeltIntegrationTest(MeltTestBase):
 
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
 
         output_file_data = video_utils.get_video_data(output_file)
         subtitles = output_file_data["subtitle"]
@@ -407,7 +407,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
         output_file_data = video_utils.get_video_data(output_file)
         self.assertEqual(output_file_data["audio"][0]["language"], "deu")
         self.assertEqual(output_file_data["audio"][1]["language"], "eng")
@@ -443,7 +443,7 @@ class MeltIntegrationTest(MeltTestBase):
         # validate output
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
 
         output_file_data = video_utils.get_video_data(output_file)
         self.assertEqual(len(output_file_data["video"]), 1)
@@ -479,7 +479,7 @@ class MeltIntegrationTest(MeltTestBase):
         # validate output
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
 
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_file_data["tracks"]["video"]), 1)
@@ -509,7 +509,7 @@ class MeltIntegrationTest(MeltTestBase):
         # validate output
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
 
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_file_data["tracks"]["video"]), 1)
