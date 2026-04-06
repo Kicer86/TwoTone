@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from twotone.tools.utilities import extract_scenes
-from common import TwoToneTestCase, WorkingDirectoryForTest, get_video
+from common import TwoToneTestCase, WorkingDirectoryForTest, get_video, run_twotone
 
 
 def collect_files(directory: str):
@@ -92,6 +92,18 @@ class UtilitiesScenesTests(TwoToneTestCase):
         ]
 
         self.assertEqual(files, expected_files)
+
+    def test_scenes_extraction_via_cli(self):
+        test_video = get_video("big_buck_bunny_720p_10mb.mp4")
+        output_dir = os.path.join(self.wd.path, "scenes_output")
+
+        run_twotone("utilities", ["scenes", test_video, "-o", output_dir, "-f", "png", "-s", "10"], ["--no-dry-run"])
+
+        files = collect_files(output_dir)
+        scene_dirs = {os.path.dirname(f) for f in files}
+        self.assertGreater(len(scene_dirs), 1)
+        self.assertGreater(len(files), 0)
+        self.assertTrue(all(f.endswith(".png") for f in files))
 
 
 if __name__ == '__main__':

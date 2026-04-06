@@ -8,6 +8,8 @@ from common import (
     add_to_test_dir,
     build_test_video,
     hashes,
+    list_files,
+    run_twotone,
 )
 from melt.helpers import (
     MeltTestBase,
@@ -42,7 +44,7 @@ class MeltIntegrationTest(MeltTestBase):
         self.assertEqual(len(output_file_hash), 1)
 
         # check if file was not altered
-        self.assertEqual(list(output_file_hash.values())[0], input_file_hashes[file1])
+        self.assertEqual(next(iter(output_file_hash.values())), input_file_hashes[file1])
 
 
     def test_dry_run_is_being_respected(self):
@@ -136,7 +138,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
-        output_file = list(output_file_hash.keys())[0]
+        output_file = next(iter(output_file_hash))
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_file_data["tracks"]["audio"]), 2)
 
@@ -175,7 +177,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
-        output_file = list(output_file_hash.keys())[0]
+        output_file = next(iter(output_file_hash))
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_file_data["tracks"]["audio"]), 1)
 
@@ -226,7 +228,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
-        output_file = list(output_file_hash.keys())[0]
+        output_file = next(iter(output_file_hash))
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_file_data["tracks"]["audio"]), 2)
         self.assertEqual({a["language"] for a in output_file_data["tracks"]["audio"]}, {"eng", "deu"})
@@ -264,7 +266,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
 
         output_file_data = video_utils.get_video_data(output_file)
         self.assertEqual(len(output_file_data["video"]), 1)
@@ -306,7 +308,7 @@ class MeltIntegrationTest(MeltTestBase):
 
         # validate output
         output_file_hash = hashes(output_dir)
-        output_files = sorted(list(output_file_hash))
+        output_files = sorted(output_file_hash)
 
         for i, output_file in enumerate(output_files):
             output_file_name = os.path.basename(output_file)
@@ -342,7 +344,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
         output_file_data = video_utils.get_video_data(output_file)
         self.assertEqual(output_file_data["audio"][0]["language"], "deu")
         self.assertEqual(output_file_data["audio"][1]["language"], "eng")
@@ -374,7 +376,7 @@ class MeltIntegrationTest(MeltTestBase):
 
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
 
         output_file_data = video_utils.get_video_data(output_file)
         subtitles = output_file_data["subtitle"]
@@ -405,7 +407,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
         output_file_data = video_utils.get_video_data(output_file)
         self.assertEqual(output_file_data["audio"][0]["language"], "deu")
         self.assertEqual(output_file_data["audio"][1]["language"], "eng")
@@ -441,7 +443,7 @@ class MeltIntegrationTest(MeltTestBase):
         # validate output
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
 
         output_file_data = video_utils.get_video_data(output_file)
         self.assertEqual(len(output_file_data["video"]), 1)
@@ -477,7 +479,7 @@ class MeltIntegrationTest(MeltTestBase):
         # validate output
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
 
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_file_data["tracks"]["video"]), 1)
@@ -507,8 +509,42 @@ class MeltIntegrationTest(MeltTestBase):
         # validate output
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
-        output_file = list(output_file_hash)[0]
+        output_file = next(iter(output_file_hash))
 
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_file_data["tracks"]["video"]), 1)
         self.assertEqual(len(output_file_data["attachments"]), 1)
+
+    def test_cli_simple_duplicate(self):
+        file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["v1"])[0]
+        file2 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["v2"])[0]
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        run_twotone("melt", [
+            "-t", "Grass",
+            "-i", file1,
+            "-i", file2,
+            "-o", output_dir,
+        ], ["--no-dry-run"])
+
+        output_files = list_files(output_dir)
+        self.assertEqual(len(output_files), 1)
+
+    def test_cli_dry_run(self):
+        file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["v1"])[0]
+        file2 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes=["v2"])[0]
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        run_twotone("melt", [
+            "-t", "Grass",
+            "-i", file1,
+            "-i", file2,
+            "-o", output_dir,
+        ])
+
+        output_files = list_files(output_dir)
+        self.assertEqual(len(output_files), 0)
