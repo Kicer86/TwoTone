@@ -1,6 +1,5 @@
 
 import unittest
-import logging
 
 from twotone.tools.transcode import Transcoder
 from common import TwoToneTestCase, get_video, add_test_media, hashes, run_twotone
