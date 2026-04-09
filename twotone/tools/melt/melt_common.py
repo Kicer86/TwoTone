@@ -4,7 +4,7 @@ import re
 
 FramesInfo = dict[int, dict[str, str]]
 
-DEFAULT_TOLERANCE_MS = 100
+DEFAULT_TOLERANCE_MS = 50
 
 
 def _split_path_fix(value: str) -> list[str]:
