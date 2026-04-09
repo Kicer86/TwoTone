@@ -56,7 +56,6 @@ class MeltAnalyzer:
                         "files": files,
                         "output_name": output_name,
                         "issue": issue or "Unknown issue.",
-                        "files_details": files_details,
                     })
                 else:
                     analyzed_groups.append({
