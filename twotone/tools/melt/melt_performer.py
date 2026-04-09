@@ -92,6 +92,7 @@ class MeltPerformer:
                 else:
                     # Convert streams to unified list (and patch audios if needed)
                     self._sync_offsets.clear()
+                    files_details = group.get("files_details", {})
                     streams_list = self._prepare_stream_entries(
                         video_streams,
                         audio_streams,
@@ -99,6 +100,7 @@ class MeltPerformer:
                         required_input_files,
                         attachments,
                         file_ids,
+                        files_details,
                     )
 
                     # Sort streams by language alphabetically, unknown languages last
@@ -1006,6 +1008,22 @@ class MeltPerformer:
                 return _AudioStrategy.STREAM_COPY
         return _AudioStrategy.CONSTANT_OFFSET
 
+    @staticmethod
+    def _video_track_duration(path: str, files_details: dict[str, Any]) -> int | None:
+        """Return video track duration in ms from pre-probed plan data.
+
+        Falls back to container-level ffprobe duration when plan data is
+        unavailable.
+        """
+        details = files_details.get(path)
+        if details:
+            for track in details.get("tracks", {}).get("video", []):
+                if not track.get("attached_pic", False):
+                    length = track.get("length")
+                    if length is not None:
+                        return length
+        return video_utils.get_video_duration(path)
+
     def _prepare_stream_entries(
         self,
         video_streams: Sequence[tuple[str, int, str | None]],
@@ -1014,10 +1032,12 @@ class MeltPerformer:
         required_input_files: set[str],
         attachments: Sequence[tuple[str, int]],
         file_ids: dict[str, int] | None = None,
+        files_details: dict[str, Any] | None = None,
     ) -> list[tuple[str, int, str, str | None]]:
         streams_list: list[tuple[str, int, str, str | None]] = []
         video_path_base, video_tid, _ = video_streams[0]
-        base_duration = video_utils.get_video_duration(video_path_base)
+        details = files_details or {}
+        base_duration = self._video_track_duration(video_path_base, details)
         protected_paths = (
             {p for (p, _, _) in video_streams}
             | {p for (p, _, _) in subtitle_streams}
@@ -1028,7 +1048,7 @@ class MeltPerformer:
             streams_list.append(("video", stream_index, path, language))
 
         for (path, stream_index, language) in audio_streams:
-            duration = video_utils.get_video_duration(path)
+            duration = self._video_track_duration(path, details)
             if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
                 original_path = path
                 path, stream_index = self._patch_mismatched_audio(
