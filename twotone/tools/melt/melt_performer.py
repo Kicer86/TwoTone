@@ -62,7 +62,7 @@ class MeltPerformer:
                 files = group.get("files", [])
                 file_ids = {f: i + 1 for i, f in enumerate(files)}
                 for f, fid in file_ids.items():
-                    self.logger.info("  #%d: %s", fid, self._display_path(f))
+                    self.logger.info("  #%d: %s", fid, f)
 
                 # Use analysis results
                 streams_info = group.get("streams", {})
