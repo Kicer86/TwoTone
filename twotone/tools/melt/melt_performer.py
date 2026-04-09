@@ -53,10 +53,16 @@ class MeltPerformer:
             title = item["title"]
             groups = item.get("groups", [])
 
+            self.logger.info("Processing title: %s (%d group(s))", title, len(groups))
+
             for group in tqdm(groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
                 self.interruption.check_for_stop()
 
                 output_name = group["output_name"]
+                files = group.get("files", [])
+                file_ids = {f: i + 1 for i, f in enumerate(files)}
+                for f, fid in file_ids.items():
+                    self.logger.info("  #%d: %s", fid, self._display_path(f))
 
                 # Use analysis results
                 streams_info = group.get("streams", {})
@@ -85,8 +91,6 @@ class MeltPerformer:
                     self._copy_single_input(first_file_path, output)
                 else:
                     # Convert streams to unified list (and patch audios if needed)
-                    files = group.get("files", [])
-                    file_ids = {f: i + 1 for i, f in enumerate(files)}
                     self._sync_offsets.clear()
                     streams_list = self._prepare_stream_entries(
                         video_streams,
