@@ -121,6 +121,11 @@ class MeltTool(Tool):
                                  'with audio from the base video file. By default, gaps are filled with silence\n'
                                  'and the audio is shifted/trimmed without re-encoding when possible.')
 
+        parser.add_argument('--tolerance', type=int, default=DEFAULT_TOLERANCE_MS,
+                            help='Maximum allowed duration difference (in ms) between input files\n'
+                                 'before alignment is triggered. Files within this tolerance are treated\n'
+                                 'as having equal length. Default: %(default)d ms.')
+
         parser.add_argument('--cache-dir',
                             help='Directory for caching expensive per-video operations (scene detection, '
                                  'frame probing, frame extraction). Speeds up repeated runs on the same input files. '
@@ -188,7 +193,7 @@ class MeltTool(Tool):
             data_source,
             analysis_wd,
             args.allow_length_mismatch,
-            DEFAULT_TOLERANCE_MS,
+            args.tolerance,
         )
         all_entries = [path for entries in duplicates.values() for path in entries]
         if path_fix:
@@ -216,7 +221,7 @@ class MeltTool(Tool):
             interruption,
             working_dir,
             plan.output_dir,
-            DEFAULT_TOLERANCE_MS,
+            args.tolerance,
             cache=cache,
             fill_audio_gaps=args.fill_audio_gaps,
         )
