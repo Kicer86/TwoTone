@@ -51,7 +51,7 @@ class MeltAnalyzer:
                 # analysis for group
                 plan_details, issue, files_details = self._analyze_group(files, ids, title)
                 if plan_details is None:
-                    self._log_group_issue(title, issue or "Unknown issue.", files)
+                    self._log_group_issue(title, issue or "Unknown issue.", files, ids)
                     skipped_groups.append({
                         "files": files,
                         "output_name": output_name,
@@ -368,10 +368,10 @@ class MeltAnalyzer:
 
         return None
 
-    def _log_group_issue(self, title: str, issue: str, files: Sequence[str]) -> None:
+    def _log_group_issue(self, title: str, issue: str, files: Sequence[str], ids: dict[str, int]) -> None:
         self.logger.warning("Title %s: %s", title, issue)
         for path in files:
-            self.logger.warning("  %s", self._format_group_path(path))
+            self.logger.warning("  #%d: %s", ids[path], self._format_group_path(path))
 
     def _format_group_path(self, path: str) -> str:
         if not self.base_path:
