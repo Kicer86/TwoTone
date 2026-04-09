@@ -121,7 +121,13 @@ class MeltTool(Tool):
                                  'with audio from the base video file. By default, gaps are filled with silence\n'
                                  'and the audio is shifted/trimmed without re-encoding when possible.')
 
-        parser.add_argument('--tolerance', type=int, default=DEFAULT_TOLERANCE_MS,
+        def _nonneg_int(value: str) -> int:
+            ival = int(value)
+            if ival < 0:
+                raise argparse.ArgumentTypeError(f"tolerance must be non-negative, got {ival}")
+            return ival
+
+        parser.add_argument('--tolerance', type=_nonneg_int, default=DEFAULT_TOLERANCE_MS,
                             help='Maximum allowed duration difference (in ms) between input files\n'
                                  'before alignment is triggered. Files within this tolerance are treated\n'
                                  'as having equal length. Default: %(default)d ms.')
