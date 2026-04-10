@@ -9,7 +9,7 @@ from ..utils import files_utils, generic_utils, language_utils, video_utils
 from .attachments_picker import AttachmentsPicker
 from .duplicates_source import DuplicatesSource
 from .streams_picker import StreamsPicker
-from .melt_common import StreamType, _is_length_mismatch
+from .melt_common import StreamType, _is_length_mismatch, stream_short_details
 
 
 class MeltAnalyzer:
@@ -72,58 +72,7 @@ class MeltAnalyzer:
 
         return analysis_plan
 
-    @staticmethod
-    def _stream_short_details(stype: StreamType, stream: dict[str, Any]) -> str:
-        def fmt_fps(value: str) -> str | None:
-            try:
-                fps = generic_utils.fps_str_to_float(str(value))
-            except Exception:
-                return None
-
-            if abs(fps - round(fps)) < 0.01:
-                return str(int(round(fps)))
-            return f"{fps:.2f}"
-
-        match stype:
-            case "video":
-                width = stream.get("width")
-                height = stream.get("height")
-                fps = stream.get("fps")
-                codec = stream.get("codec")
-                length = stream.get("length")
-                length_formatted = generic_utils.ms_to_time(length) if length else None
-                details = []
-                if width and height:
-                    fps_val = fmt_fps(fps) if fps else None
-                    if fps_val:
-                        details.append(f"{width}x{height}@{fps_val}")
-                    else:
-                        details.append(f"{width}x{height}")
-                elif fps:
-                    fps_val = fmt_fps(fps)
-                    if fps_val:
-                        details.append(f"{fps_val}fps")
-                if codec:
-                    details.append(codec)
-
-                if length_formatted:
-                    details.append(f"duration: {length_formatted}")
-
-                return ", ".join(details)
-            case "audio":
-                channels = stream.get("channels")
-                sample_rate = stream.get("sample_rate")
-                details = []
-                if channels:
-                    details.append(f"{channels}ch")
-                if sample_rate:
-                    details.append(f"{sample_rate}Hz")
-                return ", ".join(details)
-            case "subtitle":
-                fmt = stream.get("format")
-                return fmt or ""
-            case _:
-                return ""
+    _stream_short_details = staticmethod(stream_short_details)
 
     @staticmethod
     def _pick_track_by_tid(streams: Sequence[dict[str, Any]], tid: int) -> dict[str, Any]:

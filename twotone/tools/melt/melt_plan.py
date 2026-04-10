@@ -4,8 +4,8 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from ..utils import generic_utils, language_utils
-from .melt_common import StreamType
+from ..utils import language_utils
+from .melt_common import StreamType, stream_short_details
 
 
 @dataclass
@@ -42,40 +42,7 @@ class MeltPlan:
 
         self._render_planned(logger, planned_items)
 
-    @staticmethod
-    def _stream_short_details(stype: StreamType, stream: dict[str, Any]) -> str:
-        match stype:
-            case "video":
-                fps = stream.get("fps")
-                width = stream.get("width")
-                height = stream.get("height")
-                bitrate = stream.get("bitrate")
-                details = []
-                if width and height:
-                    details.append(f"{width}x{height}")
-                if fps:
-                    try:
-                        fps_val = generic_utils.fps_str_to_float(str(fps))
-                        details.append(f"{fps_val:.3f}fps")
-                    except Exception:
-                        details.append(f"{fps}fps")
-                if bitrate:
-                    details.append(f"{bitrate}bps")
-                return ", ".join(details)
-            case "audio":
-                channels = stream.get("channels")
-                sample_rate = stream.get("sample_rate")
-                details = []
-                if channels:
-                    details.append(f"{channels}ch")
-                if sample_rate:
-                    details.append(f"{sample_rate}Hz")
-                return ", ".join(details)
-            case "subtitle":
-                fmt = stream.get("format") or stream.get("codec")
-                return str(fmt) if fmt else ""
-            case _:
-                return ""
+    _stream_short_details = staticmethod(stream_short_details)
 
     @staticmethod
     def _format_track_line(stype: StreamType, stream: dict[str, Any], used: bool) -> str:
