@@ -1,6 +1,7 @@
 import logging
 import os
 
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,19 +65,17 @@ class MeltPlan:
 
     @staticmethod
     def _collect_selected(group: dict[str, Any]) -> tuple[dict[str, dict[str, set[int]]], dict[str, set[int]]]:
-        selected: dict[str, dict[str, set[int]]] = {
-            "video": {},
-            "audio": {},
-            "subtitle": {},
+        selected: dict[str, defaultdict[str, set[int]]] = {
+            stype: defaultdict(set) for stype in ("video", "audio", "subtitle")
         }
         streams = group.get("streams", {})
         for stype in ("video", "audio", "subtitle"):
             for path, tid, _ in streams.get(stype, []):
-                selected[stype].setdefault(path, set()).add(tid)
+                selected[stype][path].add(tid)
 
-        selected_attachments: dict[str, set[int]] = {}
+        selected_attachments: defaultdict[str, set[int]] = defaultdict(set)
         for path, tid in group.get("attachments", []):
-            selected_attachments.setdefault(path, set()).add(tid)
+            selected_attachments[path].add(tid)
 
         return selected, selected_attachments
 
