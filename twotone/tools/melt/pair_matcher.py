@@ -7,7 +7,6 @@ import numpy as np
 import os
 
 from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from tqdm import tqdm
 from typing import Callable
