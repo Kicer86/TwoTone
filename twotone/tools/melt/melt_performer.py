@@ -47,8 +47,7 @@ class MeltPerformer:
         self.wd = _ensure_working_dir(working_dir)
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
-        visible_items = [item for item in plan if item.get("groups") or item.get("skipped_groups")]
-        planned_items = [item for item in visible_items if item.get("groups")]
+        planned_items = [item for item in plan if item.get("groups")]
         for item in tqdm(planned_items, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
             title = item["title"]
             groups = item.get("groups", [])
