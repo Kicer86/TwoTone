@@ -84,44 +84,46 @@ class MeltAnalyzer:
                 return str(int(round(fps)))
             return f"{fps:.2f}"
 
-        if stype == "video":
-            width = stream.get("width")
-            height = stream.get("height")
-            fps = stream.get("fps")
-            codec = stream.get("codec")
-            length = stream.get("length")
-            length_formatted = generic_utils.ms_to_time(length) if length else None
-            details = []
-            if width and height:
-                fps_val = fmt_fps(fps) if fps else None
-                if fps_val:
-                    details.append(f"{width}x{height}@{fps_val}")
-                else:
-                    details.append(f"{width}x{height}")
-            elif fps:
-                fps_val = fmt_fps(fps)
-                if fps_val:
-                    details.append(f"{fps_val}fps")
-            if codec:
-                details.append(codec)
+        match stype:
+            case "video":
+                width = stream.get("width")
+                height = stream.get("height")
+                fps = stream.get("fps")
+                codec = stream.get("codec")
+                length = stream.get("length")
+                length_formatted = generic_utils.ms_to_time(length) if length else None
+                details = []
+                if width and height:
+                    fps_val = fmt_fps(fps) if fps else None
+                    if fps_val:
+                        details.append(f"{width}x{height}@{fps_val}")
+                    else:
+                        details.append(f"{width}x{height}")
+                elif fps:
+                    fps_val = fmt_fps(fps)
+                    if fps_val:
+                        details.append(f"{fps_val}fps")
+                if codec:
+                    details.append(codec)
 
-            if length_formatted:
-                details.append(f"duration: {length_formatted}")
+                if length_formatted:
+                    details.append(f"duration: {length_formatted}")
 
-            return ", ".join(details)
-        if stype == "audio":
-            channels = stream.get("channels")
-            sample_rate = stream.get("sample_rate")
-            details = []
-            if channels:
-                details.append(f"{channels}ch")
-            if sample_rate:
-                details.append(f"{sample_rate}Hz")
-            return ", ".join(details)
-        if stype == "subtitle":
-            fmt = stream.get("format")
-            return fmt or ""
-        return ""
+                return ", ".join(details)
+            case "audio":
+                channels = stream.get("channels")
+                sample_rate = stream.get("sample_rate")
+                details = []
+                if channels:
+                    details.append(f"{channels}ch")
+                if sample_rate:
+                    details.append(f"{sample_rate}Hz")
+                return ", ".join(details)
+            case "subtitle":
+                fmt = stream.get("format")
+                return fmt or ""
+            case _:
+                return ""
 
     @staticmethod
     def _pick_track_by_tid(streams: Sequence[dict[str, Any]], tid: int) -> dict[str, Any]:
