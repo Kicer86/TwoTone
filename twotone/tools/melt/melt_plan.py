@@ -46,10 +46,10 @@ class MeltPlan:
     _stream_short_details = staticmethod(stream_short_details)
 
     @staticmethod
-    def _format_track_line(stype: StreamType, stream: dict[str, Any], used: bool) -> str:
+    def _format_track_line(stype: StreamType, stream: dict[str, Any], used: bool, override_lang: str | None = None) -> str:
         tid = stream.get("tid", "?")
         name = stream.get("name")
-        lang = stream.get("language")
+        lang = override_lang or stream.get("language")
         lang_name = language_utils.language_name(lang) if lang else "unknown"
         details = MeltPlan._stream_short_details(stype, stream)
         parts = []
@@ -64,20 +64,27 @@ class MeltPlan:
         return f"#{tid} ({flag}): {suffix}"
 
     @staticmethod
-    def _collect_selected(group: dict[str, Any]) -> tuple[dict[str, dict[str, set[int]]], dict[str, set[int]]]:
+    def _collect_selected(
+        group: dict[str, Any],
+    ) -> tuple[dict[str, dict[str, set[int]]], dict[str, set[int]], dict[str, dict[tuple[str, int], str]]]:
         selected: dict[str, dict[str, set[int]]] = {
             stype: defaultdict(set) for stype in ("video", "audio", "subtitle")
         }
+        lang_overrides: dict[str, dict[tuple[str, int], str]] = {
+            stype: {} for stype in ("video", "audio", "subtitle")
+        }
         streams = group.get("streams", {})
         for stype in ("video", "audio", "subtitle"):
-            for path, tid, _ in streams.get(stype, []):
+            for path, tid, lang in streams.get(stype, []):
                 selected[stype][path].add(tid)
+                if lang is not None:
+                    lang_overrides[stype][(path, tid)] = lang
 
         selected_attachments: defaultdict[str, set[int]] = defaultdict(set)
         for path, tid in group.get("attachments", []):
             selected_attachments[path].add(tid)
 
-        return selected, selected_attachments
+        return selected, selected_attachments, lang_overrides
 
     def _render_planned(self, logger: logging.Logger, planned_items: list[dict[str, Any]]) -> None:
         logger.info("Planned outputs:")
@@ -116,7 +123,7 @@ class MeltPlan:
             return
 
         logger.info("%sStreams:", prefix)
-        selected, selected_attachments = self._collect_selected(group)
+        selected, selected_attachments, lang_overrides = self._collect_selected(group)
         for file_idx, path in enumerate(files, start=1):
             details = files_details.get(path)
             if not details:
@@ -129,10 +136,12 @@ class MeltPlan:
                     continue
                 logger.info("%s    %s:", prefix, stype)
                 selected_ids = selected.get(stype, {}).get(path, set())
+                stype_lang_overrides = lang_overrides.get(stype, {})
                 for stream in streams:
                     tid = stream.get("tid")
                     used = tid in selected_ids
-                    logger.info("%s      %s", prefix, self._format_track_line(stype, stream, used))
+                    override_lang = stype_lang_overrides.get((path, tid))
+                    logger.info("%s      %s", prefix, self._format_track_line(stype, stream, used, override_lang))
 
             attachments = details.get("attachments", [])
             if attachments:
