@@ -141,7 +141,7 @@ class MeltAnalyzer:
     def _print_streams_details(
         self,
         ids: dict[str, int],
-        all_streams: Iterable[tuple[str, Iterable[tuple[str, int, str | None]]]],
+        all_streams: Iterable[tuple[StreamType, Iterable[tuple[str, int, str | None]]]],
         tracks: dict[str, dict],
     ) -> None:
         for stype, type_stream in all_streams:

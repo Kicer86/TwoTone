@@ -65,7 +65,7 @@ class MeltPlan:
 
     @staticmethod
     def _collect_selected(group: dict[str, Any]) -> tuple[dict[str, dict[str, set[int]]], dict[str, set[int]]]:
-        selected: dict[str, defaultdict[str, set[int]]] = {
+        selected: dict[str, dict[str, set[int]]] = {
             stype: defaultdict(set) for stype in ("video", "audio", "subtitle")
         }
         streams = group.get("streams", {})
