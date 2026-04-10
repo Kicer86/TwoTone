@@ -1,11 +1,12 @@
 import logging
 import os
-import re
 
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
-from ..utils import generic_utils, language_utils
+from ..utils import language_utils
+from .melt_common import StreamType, stream_short_details
 
 
 @dataclass
@@ -21,16 +22,10 @@ class MeltPlan:
             logger.info("No titles to melt.")
             return
 
-        visible_items = [
-            item for item in self.items
-            if item.get("groups") or item.get("skipped_groups")
-        ]
-        if not visible_items:
+        planned_items = [item for item in self.items if item.get("groups")]
+        if not planned_items:
             logger.info("No suitable candidates found for melting.")
             return
-
-        planned_items = [item for item in visible_items if item.get("groups")]
-        skipped_items = [item for item in visible_items if item.get("skipped_groups")]
 
         total_outputs = sum(len(item.get("groups", [])) for item in planned_items)
         total_files = sum(
@@ -38,64 +33,20 @@ class MeltPlan:
             for item in planned_items
             for group in item.get("groups", [])
         )
-        has_missing_language = any(
-            "missing properties" in (group.get("issue") or "").lower()
-            and "language" in (group.get("issue") or "").lower()
-            for item in skipped_items
-            for group in item.get("skipped_groups", [])
-        )
 
-        if planned_items:
-            logger.info(
-                "Planned melt: %d output(s) from %d input file(s).",
-                total_outputs,
-                total_files,
-            )
-        else:
-            logger.info("No outputs planned.")
+        logger.info(
+            "Planned melt: %d output(s) from %d input file(s).",
+            total_outputs,
+            total_files,
+        )
         logger.info("Output directory: %s", self.output_dir)
 
-        if planned_items:
-            self._render_planned(logger, planned_items)
+        self._render_planned(logger, planned_items)
 
-        if skipped_items:
-            self._render_skipped(logger, skipped_items, has_missing_language)
+    _stream_short_details = staticmethod(stream_short_details)
 
     @staticmethod
-    def _stream_short_details(stype: str, stream: dict[str, Any]) -> str:
-        if stype == "video":
-            fps = stream.get("fps")
-            width = stream.get("width")
-            height = stream.get("height")
-            bitrate = stream.get("bitrate")
-            details = []
-            if width and height:
-                details.append(f"{width}x{height}")
-            if fps:
-                try:
-                    fps_val = generic_utils.fps_str_to_float(str(fps))
-                    details.append(f"{fps_val:.3f}fps")
-                except Exception:
-                    details.append(f"{fps}fps")
-            if bitrate:
-                details.append(f"{bitrate}bps")
-            return ", ".join(details)
-        if stype == "audio":
-            channels = stream.get("channels")
-            sample_rate = stream.get("sample_rate")
-            details = []
-            if channels:
-                details.append(f"{channels}ch")
-            if sample_rate:
-                details.append(f"{sample_rate}Hz")
-            return ", ".join(details)
-        if stype == "subtitle":
-            fmt = stream.get("format") or stream.get("codec")
-            return str(fmt) if fmt else ""
-        return ""
-
-    @staticmethod
-    def _format_track_line(stype: str, stream: dict[str, Any], used: bool) -> str:
+    def _format_track_line(stype: StreamType, stream: dict[str, Any], used: bool) -> str:
         tid = stream.get("tid", "?")
         name = stream.get("name")
         lang = stream.get("language")
@@ -115,18 +66,16 @@ class MeltPlan:
     @staticmethod
     def _collect_selected(group: dict[str, Any]) -> tuple[dict[str, dict[str, set[int]]], dict[str, set[int]]]:
         selected: dict[str, dict[str, set[int]]] = {
-            "video": {},
-            "audio": {},
-            "subtitle": {},
+            stype: defaultdict(set) for stype in ("video", "audio", "subtitle")
         }
         streams = group.get("streams", {})
         for stype in ("video", "audio", "subtitle"):
             for path, tid, _ in streams.get(stype, []):
-                selected[stype].setdefault(path, set()).add(tid)
+                selected[stype][path].add(tid)
 
-        selected_attachments: dict[str, set[int]] = {}
+        selected_attachments: defaultdict[str, set[int]] = defaultdict(set)
         for path, tid in group.get("attachments", []):
-            selected_attachments.setdefault(path, set()).add(tid)
+            selected_attachments[path].add(tid)
 
         return selected, selected_attachments
 
@@ -196,40 +145,4 @@ class MeltPlan:
                     flag = "used" if used else "skip"
                     logger.info("%s      #%s (%s): %s", prefix, tid, flag, name)
 
-    def _render_skipped(self, logger: logging.Logger, skipped_items: list[dict[str, Any]], has_missing_language: bool) -> None:
-        skipped_sets = sum(len(item.get("skipped_groups", [])) for item in skipped_items)
-        skipped_files = sum(
-            len(group.get("files", []))
-            for item in skipped_items
-            for group in item.get("skipped_groups", [])
-        )
 
-        logger.warning("Skipped candidates: %d set(s), %d file(s).", skipped_sets, skipped_files)
-
-        if has_missing_language:
-            logger.info("Hint: Some candidates were skipped due to missing stream language. Consider running: twotone language_fix")
-
-        for item in skipped_items:
-            title = item.get("title", "<unknown>")
-            skipped = item.get("skipped_groups", [])
-            if not skipped:
-                continue
-            logger.warning("Title: %s", title)
-            for idx, group in enumerate(skipped, start=1):
-                issue = group.get("issue", "Unknown issue.")
-                output_name = group.get("output_name", "output")
-                output_path = os.path.join(self.output_dir, title, f"{output_name}.mkv")
-                files = group.get("files", [])
-                problem_ids = {int(val) for val in re.findall(r"#(\d+)", issue)}
-                if len(skipped) > 1:
-                    logger.warning("  Candidate %d:", idx)
-                    prefix = "    "
-                else:
-                    prefix = "  "
-                logger.warning("%sIssue: %s", prefix, issue)
-                logger.warning("%sOutput: %s", prefix, output_path)
-                if files:
-                    logger.warning("%sFiles:", prefix)
-                    for file_idx, path in enumerate(files, start=1):
-                        marker = " (!)" if file_idx in problem_ids else ""
-                        logger.warning("%s  #%d%s: %s", prefix, file_idx, marker, path)

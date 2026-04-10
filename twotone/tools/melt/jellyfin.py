@@ -121,7 +121,7 @@ class JellyfinSource(DuplicatesSource):
 
                             if len(dirs) < len(fixed_paths):
                                 if len(dirs) == 1:
-                                    first_dir = e = next(iter(dirs))
+                                    first_dir = next(iter(dirs))
                                     self.logger.info(f"All files for title {name} are in the same directory: {first_dir}.\nAssuming these all variants of the same movie and skipping.")
                                 else:
                                     self.logger.warning(f"Some files for title {name} are in the same directory:")

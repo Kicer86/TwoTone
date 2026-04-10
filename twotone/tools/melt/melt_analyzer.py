@@ -9,7 +9,7 @@ from ..utils import files_utils, generic_utils, language_utils, video_utils
 from .attachments_picker import AttachmentsPicker
 from .duplicates_source import DuplicatesSource
 from .streams_picker import StreamsPicker
-from .melt_common import _is_length_mismatch
+from .melt_common import StreamType, _is_length_mismatch, stream_short_details
 
 
 class MeltAnalyzer:
@@ -51,12 +51,11 @@ class MeltAnalyzer:
                 # analysis for group
                 plan_details, issue, files_details = self._analyze_group(files, ids, title)
                 if plan_details is None:
-                    self._log_group_issue(title, issue or "Unknown issue.", files)
+                    self._log_group_issue(title, issue or "Unknown issue.", files, ids)
                     skipped_groups.append({
                         "files": files,
                         "output_name": output_name,
                         "issue": issue or "Unknown issue.",
-                        "files_details": files_details,
                     })
                 else:
                     analyzed_groups.append({
@@ -73,56 +72,7 @@ class MeltAnalyzer:
 
         return analysis_plan
 
-    @staticmethod
-    def _stream_short_details(stype: str, stream: dict[str, Any]) -> str:
-        def fmt_fps(value: str) -> str | None:
-            try:
-                fps = generic_utils.fps_str_to_float(str(value))
-            except Exception:
-                return None
-
-            if abs(fps - round(fps)) < 0.01:
-                return str(int(round(fps)))
-            return f"{fps:.2f}"
-
-        if stype == "video":
-            width = stream.get("width")
-            height = stream.get("height")
-            fps = stream.get("fps")
-            codec = stream.get("codec")
-            length = stream.get("length")
-            length_formatted = generic_utils.ms_to_time(length) if length else None
-            details = []
-            if width and height:
-                fps_val = fmt_fps(fps) if fps else None
-                if fps_val:
-                    details.append(f"{width}x{height}@{fps_val}")
-                else:
-                    details.append(f"{width}x{height}")
-            elif fps:
-                fps_val = fmt_fps(fps)
-                if fps_val:
-                    details.append(f"{fps_val}fps")
-            if codec:
-                details.append(codec)
-
-            if length_formatted:
-                details.append(f"duration: {length_formatted}")
-
-            return ", ".join(details)
-        if stype == "audio":
-            channels = stream.get("channels")
-            sample_rate = stream.get("sample_rate")
-            details = []
-            if channels:
-                details.append(f"{channels}ch")
-            if sample_rate:
-                details.append(f"{sample_rate}Hz")
-            return ", ".join(details)
-        if stype == "subtitle":
-            fmt = stream.get("format")
-            return fmt or ""
-        return ""
+    _stream_short_details = staticmethod(stream_short_details)
 
     @staticmethod
     def _pick_track_by_tid(streams: Sequence[dict[str, Any]], tid: int) -> dict[str, Any]:
@@ -191,7 +141,7 @@ class MeltAnalyzer:
     def _print_streams_details(
         self,
         ids: dict[str, int],
-        all_streams: Iterable[tuple[str, Iterable[tuple[str, int, str | None]]]],
+        all_streams: Iterable[tuple[StreamType, Iterable[tuple[str, int, str | None]]]],
         tracks: dict[str, dict],
     ) -> None:
         for stype, type_stream in all_streams:
@@ -368,10 +318,10 @@ class MeltAnalyzer:
 
         return None
 
-    def _log_group_issue(self, title: str, issue: str, files: Sequence[str]) -> None:
+    def _log_group_issue(self, title: str, issue: str, files: Sequence[str], ids: dict[str, int]) -> None:
         self.logger.warning("Title %s: %s", title, issue)
         for path in files:
-            self.logger.warning("  %s", self._format_group_path(path))
+            self.logger.warning("  #%d: %s", ids[path], self._format_group_path(path))
 
     def _format_group_path(self, path: str) -> str:
         if not self.base_path:

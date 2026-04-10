@@ -47,16 +47,21 @@ class MeltPerformer:
         self.wd = _ensure_working_dir(working_dir)
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
-        visible_items = [item for item in plan if item.get("groups") or item.get("skipped_groups")]
-        planned_items = [item for item in visible_items if item.get("groups")]
+        planned_items = [item for item in plan if item.get("groups")]
         for item in tqdm(planned_items, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
             title = item["title"]
             groups = item.get("groups", [])
+
+            self.logger.info("Processing title: %s (%d group(s))", title, len(groups))
 
             for group in tqdm(groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
                 self.interruption.check_for_stop()
 
                 output_name = group["output_name"]
+                files = group.get("files", [])
+                file_ids = {f: i + 1 for i, f in enumerate(files)}
+                for f, fid in file_ids.items():
+                    self.logger.info("  #%d: %s", fid, f)
 
                 # Use analysis results
                 streams_info = group.get("streams", {})
@@ -85,9 +90,8 @@ class MeltPerformer:
                     self._copy_single_input(first_file_path, output)
                 else:
                     # Convert streams to unified list (and patch audios if needed)
-                    files = group.get("files", [])
-                    file_ids = {f: i + 1 for i, f in enumerate(files)}
                     self._sync_offsets.clear()
+                    files_details = group.get("files_details", {})
                     streams_list = self._prepare_stream_entries(
                         video_streams,
                         audio_streams,
@@ -95,6 +99,7 @@ class MeltPerformer:
                         required_input_files,
                         attachments,
                         file_ids,
+                        files_details,
                     )
 
                     # Sort streams by language alphabetically, unknown languages last
@@ -1002,6 +1007,22 @@ class MeltPerformer:
                 return _AudioStrategy.STREAM_COPY
         return _AudioStrategy.CONSTANT_OFFSET
 
+    @staticmethod
+    def _video_track_duration(path: str, files_details: dict[str, Any]) -> int | None:
+        """Return video track duration in ms from pre-probed plan data.
+
+        Falls back to container-level ffprobe duration when plan data is
+        unavailable.
+        """
+        details = files_details.get(path)
+        if details:
+            for track in details.get("tracks", {}).get("video", []):
+                if not track.get("attached_pic", False):
+                    length = track.get("length")
+                    if length is not None:
+                        return length
+        return video_utils.get_video_duration(path)
+
     def _prepare_stream_entries(
         self,
         video_streams: Sequence[tuple[str, int, str | None]],
@@ -1010,10 +1031,12 @@ class MeltPerformer:
         required_input_files: set[str],
         attachments: Sequence[tuple[str, int]],
         file_ids: dict[str, int] | None = None,
+        files_details: dict[str, Any] | None = None,
     ) -> list[tuple[str, int, str, str | None]]:
         streams_list: list[tuple[str, int, str, str | None]] = []
         video_path_base, video_tid, _ = video_streams[0]
-        base_duration = video_utils.get_video_duration(video_path_base)
+        details = files_details or {}
+        base_duration = self._video_track_duration(video_path_base, details)
         protected_paths = (
             {p for (p, _, _) in video_streams}
             | {p for (p, _, _) in subtitle_streams}
@@ -1024,8 +1047,9 @@ class MeltPerformer:
             streams_list.append(("video", stream_index, path, language))
 
         for (path, stream_index, language) in audio_streams:
-            duration = video_utils.get_video_duration(path)
+            duration = self._video_track_duration(path, details)
             if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
+                assert base_duration is not None  # guaranteed by _is_length_mismatch
                 original_path = path
                 path, stream_index = self._patch_mismatched_audio(
                     video_path_base, path, video_tid, stream_index, base_duration, file_ids,
