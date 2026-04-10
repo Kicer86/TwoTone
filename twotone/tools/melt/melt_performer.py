@@ -1050,6 +1050,7 @@ class MeltPerformer:
         for (path, stream_index, language) in audio_streams:
             duration = self._video_track_duration(path, details)
             if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
+                assert base_duration is not None  # guaranteed by _is_length_mismatch
                 original_path = path
                 path, stream_index = self._patch_mismatched_audio(
                     video_path_base, path, video_tid, stream_index, base_duration, file_ids,
