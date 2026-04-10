@@ -1,8 +1,10 @@
 import os
 import re
 
+from typing import Literal
 
 FramesInfo = dict[int, dict[str, str]]
+StreamType = Literal["video", "audio", "subtitle"]
 
 DEFAULT_TOLERANCE_MS = 0
 

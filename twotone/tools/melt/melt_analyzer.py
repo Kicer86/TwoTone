@@ -9,7 +9,7 @@ from ..utils import files_utils, generic_utils, language_utils, video_utils
 from .attachments_picker import AttachmentsPicker
 from .duplicates_source import DuplicatesSource
 from .streams_picker import StreamsPicker
-from .melt_common import _is_length_mismatch
+from .melt_common import StreamType, _is_length_mismatch
 
 
 class MeltAnalyzer:
@@ -73,7 +73,7 @@ class MeltAnalyzer:
         return analysis_plan
 
     @staticmethod
-    def _stream_short_details(stype: str, stream: dict[str, Any]) -> str:
+    def _stream_short_details(stype: StreamType, stream: dict[str, Any]) -> str:
         def fmt_fps(value: str) -> str | None:
             try:
                 fps = generic_utils.fps_str_to_float(str(value))

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..utils import generic_utils, language_utils
+from .melt_common import StreamType
 
 
 @dataclass
@@ -42,7 +43,7 @@ class MeltPlan:
         self._render_planned(logger, planned_items)
 
     @staticmethod
-    def _stream_short_details(stype: str, stream: dict[str, Any]) -> str:
+    def _stream_short_details(stype: StreamType, stream: dict[str, Any]) -> str:
         match stype:
             case "video":
                 fps = stream.get("fps")
@@ -77,7 +78,7 @@ class MeltPlan:
                 return ""
 
     @staticmethod
-    def _format_track_line(stype: str, stream: dict[str, Any], used: bool) -> str:
+    def _format_track_line(stype: StreamType, stream: dict[str, Any], used: bool) -> str:
         tid = stream.get("tid", "?")
         name = stream.get("name")
         lang = stream.get("language")
