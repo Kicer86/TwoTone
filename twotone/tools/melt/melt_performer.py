@@ -297,7 +297,13 @@ class MeltPerformer:
                 )
 
             self._validate_audio_duration(actual_dur, source_dur, "stream-copied audio")
-            return self._sync_offset_from_deficit(seg1_start, deficit, video_ratio)
+            source_start_delay_ms = self._audio_video_start_delay_ms(source_video)
+            return self._sync_offset_from_deficit(
+                seg1_start,
+                deficit,
+                video_ratio,
+                source_start_delay_ms=source_start_delay_ms,
+            )
 
         trimmed_audio = os.path.join(wd, "source_trimmed.flac")
         process_utils.raise_on_error(
@@ -331,7 +337,13 @@ class MeltPerformer:
                 f"the base file. Use default (silence) mode instead."
             )
 
-        sync_offset = self._sync_offset_from_deficit(seg1_start, deficit, video_ratio)
+        source_start_delay_ms = self._audio_video_start_delay_ms(source_video)
+        sync_offset = self._sync_offset_from_deficit(
+            seg1_start,
+            deficit,
+            video_ratio,
+            source_start_delay_ms=source_start_delay_ms,
+        )
 
         # Scale with VIDEO-frame ratio (true fps relationship)
         scaled_audio = os.path.join(wd, "source_scaled.flac")
@@ -578,6 +590,7 @@ class MeltPerformer:
         seg1_start: int,
         deficit: int,
         video_ratio: float,
+        source_start_delay_ms: int | None = None,
     ) -> int:
         """Compute mkvmerge --sync offset from the measured trim deficit.
 
@@ -587,15 +600,35 @@ class MeltPerformer:
         how much audio is missing at the start.  We shift the sync offset
         forward by ``deficit * video_ratio`` to compensate.
         """
-        if deficit <= 50:
+        # Prefer explicit stream start delay when available. The measured
+        # duration deficit can also come from missing tail audio and should not
+        # be treated as an initial delay.
+        effective_delay = source_start_delay_ms if source_start_delay_ms is not None else deficit
+        if effective_delay <= 50:
             return seg1_start
-        correction = round(deficit * video_ratio)
+        correction = round(effective_delay * video_ratio)
         sync_offset = seg1_start + correction
         self.logger.info(
-            "Audio deficit: %d ms → sync offset: %d ms (base: %d + correction: %d)",
-            deficit, sync_offset, seg1_start, correction,
+            "Audio start delay: %d ms (deficit: %d ms) → sync offset: %d ms "
+            "(base: %d + correction: %d)",
+            effective_delay, deficit, sync_offset, seg1_start, correction,
         )
         return sync_offset
+
+    @staticmethod
+    def _audio_video_start_delay_ms(source_video: str) -> int:
+        """Return non-negative (audio_start - video_start) in milliseconds."""
+        info = video_utils.get_video_full_info(source_video)
+        video_stream = next((s for s in info["streams"] if s.get("codec_type") == "video"), None)
+        audio_stream = next((s for s in info["streams"] if s.get("codec_type") == "audio"), None)
+        if video_stream is None or audio_stream is None:
+            return 0
+        try:
+            video_start = float(video_stream.get("start_time", 0.0) or 0.0)
+            audio_start = float(audio_stream.get("start_time", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, round((audio_start - video_start) * 1000.0))
 
     _FPS_RATIO_TOLERANCE = 0.001
 
@@ -924,7 +957,13 @@ class MeltPerformer:
         self._validate_audio_duration(actual_dur, expected_dur, "stream-copied audio (no reencode)")
         deficit = expected_dur - actual_dur
 
-        return self._sync_offset_from_deficit(sync_offset, deficit, 1.0)
+        source_start_delay_ms = self._audio_video_start_delay_ms(source_video)
+        return self._sync_offset_from_deficit(
+            sync_offset,
+            deficit,
+            1.0,
+            source_start_delay_ms=source_start_delay_ms,
+        )
 
     def _patch_mismatched_audio(
         self,
