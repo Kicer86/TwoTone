@@ -20,6 +20,17 @@ class _SegmentRange(NamedTuple):
     rhs_end: int
 
 
+class _PairMatchResult(NamedTuple):
+    mapping: list[tuple[int, int]]
+    lhs_all_frames: FramesInfo
+    rhs_all_frames: FramesInfo
+    constant_offset: bool
+    base_duration: int
+    source_duration: int
+    lhs_fps: float
+    rhs_fps: float
+
+
 class _AudioStrategy(enum.Enum):
     STREAM_COPY = "stream_copy"        # no re-encoding, shift via --sync
     CONSTANT_OFFSET = "constant_offset"  # single global time-scale
@@ -44,6 +55,7 @@ class MeltPerformer:
         self.cache = cache
         self.fill_audio_gaps = fill_audio_gaps
         self._sync_offsets: dict[str, int] = {}
+        self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
         self.wd = _ensure_working_dir(working_dir)
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
@@ -91,6 +103,7 @@ class MeltPerformer:
                 else:
                     # Convert streams to unified list (and patch audios if needed)
                     self._sync_offsets.clear()
+                    self._pair_match_cache.clear()
                     files_details = group.get("files_details", {})
                     streams_list = self._prepare_stream_entries(
                         video_streams,
@@ -978,18 +991,44 @@ class MeltPerformer:
 
         Returns (patched_path, new_stream_index).
         """
-        duration = video_utils.get_video_duration(audio_path)
         with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
             lhs_id = file_ids.get(video_path_base, 1) if file_ids else 1
             rhs_id = file_ids.get(audio_path, 2) if file_ids else 2
-            matcher = PairMatcher(
-                self.interruption, mwd, video_path_base, audio_path,
-                self.logger.getChild("PairMatcher"),
-                lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
-                cache=self.cache,
-            )
-            mapping, lhs_all_frames, rhs_all_frames, constant_offset = matcher.create_segments_mapping()
+            cache_key = (video_path_base, audio_path)
+            match_result = self._pair_match_cache.get(cache_key)
+
+            if match_result is None:
+                duration = video_utils.get_video_duration(audio_path)
+                matcher = PairMatcher(
+                    self.interruption, mwd, video_path_base, audio_path,
+                    self.logger.getChild("PairMatcher"),
+                    lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
+                    cache=self.cache,
+                )
+                mapping, lhs_all_frames, rhs_all_frames, constant_offset = matcher.create_segments_mapping()
+                match_result = _PairMatchResult(
+                    mapping=mapping,
+                    lhs_all_frames=lhs_all_frames,
+                    rhs_all_frames=rhs_all_frames,
+                    constant_offset=constant_offset,
+                    base_duration=base_duration,
+                    source_duration=duration,
+                    lhs_fps=matcher.lhs_fps,
+                    rhs_fps=matcher.rhs_fps,
+                )
+                self._pair_match_cache[cache_key] = match_result
+            else:
+                self.logger.info(
+                    "Reusing PairMatcher results for #%d ↔ #%d (same video pair).",
+                    lhs_id, rhs_id,
+                )
+
+            mapping = match_result.mapping
+            lhs_all_frames = match_result.lhs_all_frames
+            rhs_all_frames = match_result.rhs_all_frames
+            constant_offset = match_result.constant_offset
+            duration = match_result.source_duration
 
             self._log_coverage(video_path_base, audio_path, mapping, base_duration, duration, lhs_id, rhs_id)
 
@@ -997,7 +1036,7 @@ class MeltPerformer:
                 "Audio patching: base_duration=%d ms, source_duration=%d ms, "
                 "constant_offset=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
                 base_duration, duration, constant_offset,
-                matcher.lhs_fps, matcher.rhs_fps, len(mapping),
+                match_result.lhs_fps, match_result.rhs_fps, len(mapping),
             )
             if mapping:
                 self.logger.info(
