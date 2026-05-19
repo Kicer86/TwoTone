@@ -10,7 +10,7 @@ class TranscoderTests(TwoToneTestCase):
         test_video = get_video("big_buck_bunny_720p_2mb.mp4")
         best_enc = Transcoder(self.wd.path, self.logger).find_optimal_crf(test_video, allow_segments=False)
 
-        self.assertEqual(best_enc, 28)
+        self.assertTrue(best_enc in [28, 29])                                   # with some versions of ffmpeg best_enc is 28 on some other it is 29
 
     def test_transcoding_on_short_videos_dry_run(self):
         add_test_media("VID_20240412_1815.*", self.wd.path, copy = True)
