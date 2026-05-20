@@ -981,9 +981,7 @@ class MeltPerformer:
     def _patch_mismatched_audio(
         self,
         video_path_base: str,
-        audio_path: str,
-        video_tid: int,
-        stream_index: int,
+        audio_stream: tuple[str, int],
         base_duration: int,
         file_ids: dict[str, int] | None,
     ) -> tuple[str, int]:
@@ -991,6 +989,7 @@ class MeltPerformer:
 
         Returns (patched_path, new_stream_index).
         """
+        audio_path, stream_index = audio_stream
         with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
             lhs_id = file_ids.get(video_path_base, 1) if file_ids else 1
@@ -1049,12 +1048,12 @@ class MeltPerformer:
             self.logger.info("  Audio strategy: %s", strategy.value)
 
             if strategy == _AudioStrategy.STREAM_COPY:
-                patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.mka")
+                patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
                 sync_offset = self._shift_audio_no_reencode(audio_path, patched_audio, mapping)
                 self._sync_offsets[patched_audio] = sync_offset
                 return patched_audio, 0
 
-            patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.mka")
+            patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
             if strategy == _AudioStrategy.CONSTANT_OFFSET:
                 effective_sync = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
             else:
@@ -1112,7 +1111,7 @@ class MeltPerformer:
         files_details: dict[str, Any] | None = None,
     ) -> list[tuple[str, int, str, str | None]]:
         streams_list: list[tuple[str, int, str, str | None]] = []
-        video_path_base, video_tid, _ = video_streams[0]
+        video_path_base, _, _ = video_streams[0]
         details = files_details or {}
         base_duration = self._video_track_duration(video_path_base, details)
         protected_paths = (
@@ -1130,7 +1129,7 @@ class MeltPerformer:
                 assert base_duration is not None  # guaranteed by _is_length_mismatch
                 original_path = path
                 path, stream_index = self._patch_mismatched_audio(
-                    video_path_base, path, video_tid, stream_index, base_duration, file_ids,
+                    video_path_base, (path, stream_index), base_duration, file_ids,
                 )
                 required_input_files.add(path)
                 if original_path not in protected_paths:
