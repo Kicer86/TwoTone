@@ -591,14 +591,15 @@ class PairMatcher:
             matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
         )
         used_constant_offset_extrapolation = constant_offset_pairs is not None
-        if constant_offset_pairs is not None:
-            matching_pairs = constant_offset_pairs
-            debug.dump_matches(matching_pairs, "after constant-offset extrapolation")
-        else:
+
+        if constant_offset_pairs is None:
             matching_pairs = self._extract_and_refine_boundaries(
                 matching_pairs, lhs_scene_ranges, rhs_scene_ranges,
                 lhs_normalized_frames, rhs_normalized_frames, debug,
             )
+        else:
+            matching_pairs = constant_offset_pairs
+            debug.dump_matches(matching_pairs, "after constant-offset extrapolation")
 
         # Snap near-edge pairs only for heuristic boundary search results.
         # Constant-offset extrapolation already yields exact frame-aligned
