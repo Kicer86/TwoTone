@@ -20,6 +20,17 @@ class _SegmentRange(NamedTuple):
     rhs_end: int
 
 
+class _PairMatchResult(NamedTuple):
+    mapping: list[tuple[int, int]]
+    lhs_all_frames: FramesInfo
+    rhs_all_frames: FramesInfo
+    constant_offset: bool
+    base_duration: int
+    source_duration: int
+    lhs_fps: float
+    rhs_fps: float
+
+
 class _AudioStrategy(enum.Enum):
     STREAM_COPY = "stream_copy"        # no re-encoding, shift via --sync
     CONSTANT_OFFSET = "constant_offset"  # single global time-scale
@@ -44,6 +55,7 @@ class MeltPerformer:
         self.cache = cache
         self.fill_audio_gaps = fill_audio_gaps
         self._sync_offsets: dict[str, int] = {}
+        self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
         self.wd = _ensure_working_dir(working_dir)
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
@@ -91,6 +103,7 @@ class MeltPerformer:
                 else:
                     # Convert streams to unified list (and patch audios if needed)
                     self._sync_offsets.clear()
+                    self._pair_match_cache.clear()
                     files_details = group.get("files_details", {})
                     streams_list = self._prepare_stream_entries(
                         video_streams,
@@ -297,7 +310,13 @@ class MeltPerformer:
                 )
 
             self._validate_audio_duration(actual_dur, source_dur, "stream-copied audio")
-            return self._sync_offset_from_deficit(seg1_start, deficit, video_ratio)
+            source_start_delay_ms = self._audio_video_start_delay_ms(source_video)
+            return self._sync_offset_from_deficit(
+                seg1_start,
+                deficit,
+                video_ratio,
+                source_start_delay_ms=source_start_delay_ms,
+            )
 
         trimmed_audio = os.path.join(wd, "source_trimmed.flac")
         process_utils.raise_on_error(
@@ -331,7 +350,13 @@ class MeltPerformer:
                 f"the base file. Use default (silence) mode instead."
             )
 
-        sync_offset = self._sync_offset_from_deficit(seg1_start, deficit, video_ratio)
+        source_start_delay_ms = self._audio_video_start_delay_ms(source_video)
+        sync_offset = self._sync_offset_from_deficit(
+            seg1_start,
+            deficit,
+            video_ratio,
+            source_start_delay_ms=source_start_delay_ms,
+        )
 
         # Scale with VIDEO-frame ratio (true fps relationship)
         scaled_audio = os.path.join(wd, "source_scaled.flac")
@@ -578,6 +603,7 @@ class MeltPerformer:
         seg1_start: int,
         deficit: int,
         video_ratio: float,
+        source_start_delay_ms: int | None = None,
     ) -> int:
         """Compute mkvmerge --sync offset from the measured trim deficit.
 
@@ -587,15 +613,35 @@ class MeltPerformer:
         how much audio is missing at the start.  We shift the sync offset
         forward by ``deficit * video_ratio`` to compensate.
         """
-        if deficit <= 50:
+        # Prefer explicit stream start delay when available. The measured
+        # duration deficit can also come from missing tail audio and should not
+        # be treated as an initial delay.
+        effective_delay = source_start_delay_ms if source_start_delay_ms is not None else deficit
+        if effective_delay <= 50:
             return seg1_start
-        correction = round(deficit * video_ratio)
+        correction = round(effective_delay * video_ratio)
         sync_offset = seg1_start + correction
         self.logger.info(
-            "Audio deficit: %d ms → sync offset: %d ms (base: %d + correction: %d)",
-            deficit, sync_offset, seg1_start, correction,
+            "Audio start delay: %d ms (deficit: %d ms) → sync offset: %d ms "
+            "(base: %d + correction: %d)",
+            effective_delay, deficit, sync_offset, seg1_start, correction,
         )
         return sync_offset
+
+    @staticmethod
+    def _audio_video_start_delay_ms(source_video: str) -> int:
+        """Return non-negative (audio_start - video_start) in milliseconds."""
+        info = video_utils.get_video_full_info(source_video)
+        video_stream = next((s for s in info["streams"] if s.get("codec_type") == "video"), None)
+        audio_stream = next((s for s in info["streams"] if s.get("codec_type") == "audio"), None)
+        if video_stream is None or audio_stream is None:
+            return 0
+        try:
+            video_start = float(video_stream.get("start_time", 0.0) or 0.0)
+            audio_start = float(audio_stream.get("start_time", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, round((audio_start - video_start) * 1000.0))
 
     _FPS_RATIO_TOLERANCE = 0.001
 
@@ -924,14 +970,18 @@ class MeltPerformer:
         self._validate_audio_duration(actual_dur, expected_dur, "stream-copied audio (no reencode)")
         deficit = expected_dur - actual_dur
 
-        return self._sync_offset_from_deficit(sync_offset, deficit, 1.0)
+        source_start_delay_ms = self._audio_video_start_delay_ms(source_video)
+        return self._sync_offset_from_deficit(
+            sync_offset,
+            deficit,
+            1.0,
+            source_start_delay_ms=source_start_delay_ms,
+        )
 
     def _patch_mismatched_audio(
         self,
         video_path_base: str,
-        audio_path: str,
-        video_tid: int,
-        stream_index: int,
+        audio_stream: tuple[str, int],
         base_duration: int,
         file_ids: dict[str, int] | None,
     ) -> tuple[str, int]:
@@ -939,18 +989,45 @@ class MeltPerformer:
 
         Returns (patched_path, new_stream_index).
         """
-        duration = video_utils.get_video_duration(audio_path)
+        audio_path, stream_index = audio_stream
         with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
             lhs_id = file_ids.get(video_path_base, 1) if file_ids else 1
             rhs_id = file_ids.get(audio_path, 2) if file_ids else 2
-            matcher = PairMatcher(
-                self.interruption, mwd, video_path_base, audio_path,
-                self.logger.getChild("PairMatcher"),
-                lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
-                cache=self.cache,
-            )
-            mapping, lhs_all_frames, rhs_all_frames, constant_offset = matcher.create_segments_mapping()
+            cache_key = (video_path_base, audio_path)
+            match_result = self._pair_match_cache.get(cache_key)
+
+            if match_result is None:
+                duration = video_utils.get_video_duration(audio_path)
+                matcher = PairMatcher(
+                    self.interruption, mwd, video_path_base, audio_path,
+                    self.logger.getChild("PairMatcher"),
+                    lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
+                    cache=self.cache,
+                )
+                mapping, lhs_all_frames, rhs_all_frames, constant_offset = matcher.create_segments_mapping()
+                match_result = _PairMatchResult(
+                    mapping=mapping,
+                    lhs_all_frames=lhs_all_frames,
+                    rhs_all_frames=rhs_all_frames,
+                    constant_offset=constant_offset,
+                    base_duration=base_duration,
+                    source_duration=duration,
+                    lhs_fps=matcher.lhs_fps,
+                    rhs_fps=matcher.rhs_fps,
+                )
+                self._pair_match_cache[cache_key] = match_result
+            else:
+                self.logger.info(
+                    "Reusing PairMatcher results for #%d ↔ #%d (same video pair).",
+                    lhs_id, rhs_id,
+                )
+
+            mapping = match_result.mapping
+            lhs_all_frames = match_result.lhs_all_frames
+            rhs_all_frames = match_result.rhs_all_frames
+            constant_offset = match_result.constant_offset
+            duration = match_result.source_duration
 
             self._log_coverage(video_path_base, audio_path, mapping, base_duration, duration, lhs_id, rhs_id)
 
@@ -958,7 +1035,7 @@ class MeltPerformer:
                 "Audio patching: base_duration=%d ms, source_duration=%d ms, "
                 "constant_offset=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
                 base_duration, duration, constant_offset,
-                matcher.lhs_fps, matcher.rhs_fps, len(mapping),
+                match_result.lhs_fps, match_result.rhs_fps, len(mapping),
             )
             if mapping:
                 self.logger.info(
@@ -971,12 +1048,12 @@ class MeltPerformer:
             self.logger.info("  Audio strategy: %s", strategy.value)
 
             if strategy == _AudioStrategy.STREAM_COPY:
-                patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.mka")
+                patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
                 sync_offset = self._shift_audio_no_reencode(audio_path, patched_audio, mapping)
                 self._sync_offsets[patched_audio] = sync_offset
                 return patched_audio, 0
 
-            patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{video_tid}_{stream_index}.mka")
+            patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
             if strategy == _AudioStrategy.CONSTANT_OFFSET:
                 effective_sync = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
             else:
@@ -1034,7 +1111,7 @@ class MeltPerformer:
         files_details: dict[str, Any] | None = None,
     ) -> list[tuple[str, int, str, str | None]]:
         streams_list: list[tuple[str, int, str, str | None]] = []
-        video_path_base, video_tid, _ = video_streams[0]
+        video_path_base, _, _ = video_streams[0]
         details = files_details or {}
         base_duration = self._video_track_duration(video_path_base, details)
         protected_paths = (
@@ -1052,7 +1129,7 @@ class MeltPerformer:
                 assert base_duration is not None  # guaranteed by _is_length_mismatch
                 original_path = path
                 path, stream_index = self._patch_mismatched_audio(
-                    video_path_base, path, video_tid, stream_index, base_duration, file_ids,
+                    video_path_base, (path, stream_index), base_duration, file_ids,
                 )
                 required_input_files.add(path)
                 if original_path not in protected_paths:

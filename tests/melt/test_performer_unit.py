@@ -520,10 +520,17 @@ class MeltPerformerUnitTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = os.path.join(tmpdir, "out.mka")
             pairs = [(2000, 1000), (8000, 7000)]
+            fake_full_info = {
+                "streams": [
+                    {"codec_type": "video", "start_time": "0.0"},
+                    {"codec_type": "audio", "start_time": "0.0"},
+                ]
+            }
 
             with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
                  patch.object(process_utils, 'raise_on_error', lambda r: None), \
-                 patch.object(video_utils, 'get_video_duration', return_value=6000):
+                 patch.object(video_utils, 'get_video_duration', return_value=6000), \
+                 patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
                 sync_offset = performer._shift_audio_no_reencode("/source.mkv", output_path, pairs)
 
         self.assertEqual(sync_offset, 2000, "Sync offset should be seg1_start")
@@ -554,8 +561,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError, msg="Should raise on excessive duration deviation"):
                     performer._shift_audio_no_reencode("/source.mkv", output_path, pairs)
 
-    def test_shift_audio_no_reencode_corrects_for_audio_deficit(self):
-        """When stream-copied audio is shorter than expected (AVI deficit), sync offset must shift forward."""
+    def test_shift_audio_no_reencode_does_not_correct_on_tail_shortfall(self):
+        """Tail shortfall must not be treated as start delay for sync correction."""
         performer = self._make_performer()
         calls = []
 
@@ -570,17 +577,46 @@ class MeltPerformerUnitTest(unittest.TestCase):
             pairs = [(2000, 1000), (8000, 7000)]
             # Audio deficit: 200 ms (got 5800 instead of 6000) — within 5% tolerance
             actual_dur = 5800
+            fake_full_info = {
+                "streams": [
+                    {"codec_type": "video", "start_time": "0.0"},
+                    {"codec_type": "audio", "start_time": "0.0"},
+                ]
+            }
 
             with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
                  patch.object(process_utils, 'raise_on_error', lambda r: None), \
-                 patch.object(video_utils, 'get_video_duration', return_value=actual_dur):
+                 patch.object(video_utils, 'get_video_duration', return_value=actual_dur), \
+                 patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
                 sync_offset = performer._shift_audio_no_reencode("/source.mkv", output_path, pairs)
 
-        # deficit = 6000 - 5800 = 200, video_ratio = 1.0 (no scaling in this path)
-        # correction = round(200 * 1.0) = 200
-        # expected sync = 2000 + 200 = 2200
+        self.assertEqual(sync_offset, 2000,
+                         "Without audio start delay, sync offset should remain at seg1_start")
+
+    def test_shift_audio_no_reencode_corrects_when_audio_starts_late(self):
+        """Real audio start delay should shift sync offset forward."""
+        performer = self._make_performer()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "out.mka")
+            pairs = [(2000, 1000), (8000, 7000)]
+            actual_dur = 5800
+            fake_full_info = {
+                "streams": [
+                    {"codec_type": "video", "start_time": "0.0"},
+                    {"codec_type": "audio", "start_time": "0.2"},
+                ]
+            }
+
+            with patch.object(process_utils, 'start_process',
+                              side_effect=lambda t, a, **kw: _FAKE_PROCESS_OK), \
+                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
+                 patch.object(video_utils, 'get_video_duration', return_value=actual_dur), \
+                 patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
+                sync_offset = performer._shift_audio_no_reencode("/source.mkv", output_path, pairs)
+
         self.assertEqual(sync_offset, 2200,
-                         "Sync offset should be corrected forward by the deficit amount")
+                         "Audio start delay should be added to sync offset")
 
     def test_build_mkvmerge_args_applies_sync_offset(self):
         """When _sync_offsets has an entry, --sync should appear in mkvmerge args."""
@@ -678,8 +714,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
             return 7000000  # base video duration (>seg1_end → has tail)
 
         base_duration_ms = 7000000
-        fake_full_info = {"streams": [{"codec_type": "audio", "channels": 2,
-                                       "sample_rate": "48000", "sample_fmt": "s16"}]}
+        fake_full_info = {"streams": [
+            {"codec_type": "video", "start_time": "0.0"},
+            {"codec_type": "audio", "channels": 2, "sample_rate": "48000",
+             "sample_fmt": "s16", "start_time": "0.488"},
+        ]}
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = os.path.join(tmpdir, "out.mka")
