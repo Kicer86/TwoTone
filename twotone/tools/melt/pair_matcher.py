@@ -504,6 +504,172 @@ class PairMatcher:
 
         return result
 
+    def try_linear_frame_drift_extrapolation(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+        *,
+        max_slope_delta: float = 0.002,
+        max_median_residual_frames: float = 1.5,
+        max_p95_residual_frames: float = 4.0,
+        max_outlier_ratio: float = 0.25,
+        min_span_frames: int = 250,
+    ) -> list[tuple[int, int]] | None:
+        """Extrapolate boundaries when frame-number offset drifts almost linearly.
+
+        This handles sources that are mostly frame-aligned but one side has an
+        occasional extra/dropped frame.  In that case ``lhs_frame_id -
+        rhs_frame_id`` is not constant, but matching scene pairs should still
+        fit a near-identity line:
+
+            rhs_frame_id ~= slope * lhs_frame_id + intercept
+
+        The method only estimates boundary pairs.  It does not imply that the
+        audio can be patched with the constant-offset strategy.
+        """
+        if len(matching_pairs) < 4:
+            return None
+
+        try:
+            lhs_frame_ids = np.array([
+                int(lhs_all_frames[l]["frame_id"]) for l, _ in matching_pairs
+            ], dtype=float)
+            rhs_frame_ids = np.array([
+                int(rhs_all_frames[r]["frame_id"]) for _, r in matching_pairs
+            ], dtype=float)
+        except KeyError:
+            return None
+
+        lhs_span = float(np.max(lhs_frame_ids) - np.min(lhs_frame_ids))
+        if lhs_span < min_span_frames:
+            self.logger.debug(
+                f"Linear-drift check: matched frame span {lhs_span:.0f} "
+                f"is below {min_span_frames} frames — skipping"
+            )
+            return None
+
+        lhs_x = lhs_frame_ids.reshape(-1, 1)
+        ransac = RANSACRegressor(
+            LinearRegression(),
+            residual_threshold=max_p95_residual_frames,
+            random_state=0,
+        )
+        ransac.fit(lhs_x, rhs_frame_ids)
+
+        inliers = ransac.inlier_mask_
+        if inliers is None:
+            inliers = np.ones(len(matching_pairs), dtype=bool)
+
+        inlier_count = int(np.sum(inliers))
+        if inlier_count < 4:
+            self.logger.debug(
+                f"Linear-drift check: only {inlier_count}/{len(matching_pairs)} "
+                "pairs fit the model — skipping"
+            )
+            return None
+
+        outlier_ratio = 1.0 - inlier_count / len(matching_pairs)
+        if outlier_ratio > max_outlier_ratio:
+            self.logger.debug(
+                f"Linear-drift check: outlier ratio {outlier_ratio:.1%} "
+                f"exceeds {max_outlier_ratio:.1%} — skipping"
+            )
+            return None
+
+        model = LinearRegression()
+        model.fit(lhs_frame_ids[inliers].reshape(-1, 1), rhs_frame_ids[inliers])
+        slope = float(model.coef_[0])
+        intercept = float(model.intercept_)
+
+        if slope <= 0:
+            self.logger.debug(
+                f"Linear-drift check: non-positive slope {slope:.6f} — skipping"
+            )
+            return None
+
+        slope_delta = abs(slope - 1.0)
+        if slope_delta > max_slope_delta:
+            self.logger.debug(
+                f"Linear-drift check: slope={slope:.6f} differs from 1.0 "
+                f"by {slope_delta:.6f}, max {max_slope_delta:.6f} — skipping"
+            )
+            return None
+
+        predicted_rhs = model.predict(lhs_frame_ids[inliers].reshape(-1, 1))
+        residuals = np.abs(rhs_frame_ids[inliers] - predicted_rhs)
+        median_residual = float(np.median(residuals))
+        p95_residual = float(np.percentile(residuals, 95))
+        if median_residual > max_median_residual_frames or p95_residual > max_p95_residual_frames:
+            self.logger.debug(
+                f"Linear-drift check: residuals too high "
+                f"(median={median_residual:.2f}, p95={p95_residual:.2f}) — skipping"
+            )
+            return None
+
+        lhs_by_frame = {int(info["frame_id"]): ts for ts, info in lhs_all_frames.items()}
+        rhs_by_frame = {int(info["frame_id"]): ts for ts, info in rhs_all_frames.items()}
+
+        lhs_min_frame = min(lhs_by_frame)
+        lhs_max_frame = max(lhs_by_frame)
+        rhs_min_frame = min(rhs_by_frame)
+        rhs_max_frame = max(rhs_by_frame)
+
+        epsilon = 1e-6
+        first_lhs_frame = max(lhs_min_frame, int(np.ceil(((rhs_min_frame - intercept) / slope) - epsilon)))
+        last_lhs_frame = min(lhs_max_frame, int(np.floor(((rhs_max_frame - intercept) / slope) + epsilon)))
+        if first_lhs_frame > last_lhs_frame:
+            self.logger.debug(
+                "Linear-drift check: fitted frame ranges do not overlap — skipping"
+            )
+            return None
+
+        first_rhs_frame = int(round(slope * first_lhs_frame + intercept))
+        last_rhs_frame = int(round(slope * last_lhs_frame + intercept))
+        first_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, first_rhs_frame))
+        last_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, last_rhs_frame))
+
+        lhs_keys = sorted(lhs_all_frames.keys())
+        rhs_keys = sorted(rhs_all_frames.keys())
+
+        first_lhs = lhs_by_frame.get(first_lhs_frame,
+                        PairMatcher._snap_to_nearest_frame(lhs_keys, lhs_keys[0]))
+        first_rhs = rhs_by_frame.get(first_rhs_frame,
+                        PairMatcher._snap_to_nearest_frame(rhs_keys, rhs_keys[0]))
+        last_lhs = lhs_by_frame.get(last_lhs_frame,
+                        PairMatcher._snap_to_nearest_frame(lhs_keys, lhs_keys[-1]))
+        last_rhs = rhs_by_frame.get(last_rhs_frame,
+                        PairMatcher._snap_to_nearest_frame(rhs_keys, rhs_keys[-1]))
+
+        self.logger.info(
+            f"Linear frame drift detected: rhs_frame~={slope:.8f}*lhs_frame"
+            f"{intercept:+.2f} (inliers={inlier_count}/{len(matching_pairs)}, "
+            f"median_residual={median_residual:.2f}, p95={p95_residual:.2f}). "
+            f"Extrapolated boundaries: ({first_lhs}, {first_rhs}) - ({last_lhs}, {last_rhs})"
+        )
+
+        result = sorted(matching_pairs)
+
+        if (first_lhs, first_rhs) != result[0]:
+            if first_lhs < result[0][0] or first_rhs < result[0][1]:
+                result.insert(0, (first_lhs, first_rhs))
+
+        if (last_lhs, last_rhs) != result[-1]:
+            if last_lhs > result[-1][0] or last_rhs > result[-1][1]:
+                result.append((last_lhs, last_rhs))
+
+        for ts, frames, keys in [
+            (first_lhs, lhs_all_frames, lhs_keys),
+            (first_rhs, rhs_all_frames, rhs_keys),
+            (last_lhs, lhs_all_frames, lhs_keys),
+            (last_rhs, rhs_all_frames, rhs_keys),
+        ]:
+            if ts not in frames and keys:
+                nearest = PairMatcher._snap_to_nearest_frame(keys, ts)
+                frames[ts] = frames[nearest].copy()
+
+        return result
+
     def snap_to_edges(
         self,
         matching_pairs: list[tuple[int, int]],

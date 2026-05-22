@@ -362,6 +362,48 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_linear_frame_drift_extrapolates_boundaries(self):
+        """Slight linear frame drift should extrapolate common boundaries."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        # RHS has an initial +1 frame offset and slowly gains one extra frame
+        # per 1000 LHS frames: rhs_frame = 1.001 * lhs_frame + 1.
+        lhs_keys = list(range(0, 10001 * 40, 40))
+        rhs_keys = list(range(0, 10021 * 40, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        matching_frame_ids = [1000, 4000, 7000, 9000]
+        matching_pairs = [
+            (lhs_id * 40, int(round(1.001 * lhs_id + 1)) * 40)
+            for lhs_id in matching_frame_ids
+        ]
+
+        result = pm.try_linear_frame_drift_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], (0, 40))
+        self.assertEqual(result[-1], (400000, 400440))
+
+    def test_linear_frame_drift_rejects_large_slope_delta(self):
+        """A substantial frame-rate conversion should not use slight-drift extrapolation."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        lhs_keys = list(range(0, 10001 * 40, 40))
+        rhs_keys = list(range(0, 10501 * 40, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        matching_frame_ids = [1000, 4000, 7000, 9000]
+        matching_pairs = [
+            (lhs_id * 40, int(round(1.02 * lhs_id + 1)) * 40)
+            for lhs_id in matching_frame_ids
+        ]
+
+        result = pm.try_linear_frame_drift_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNone(result)
+
     def test_constant_offset_too_few_pairs(self):
         """With fewer than 3 pairs, constant-offset detection is skipped."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
