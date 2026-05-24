@@ -72,8 +72,6 @@ class MeltAnalyzer:
 
         return analysis_plan
 
-    _stream_short_details = staticmethod(stream_short_details)
-
     @staticmethod
     def _pick_track_by_tid(streams: Sequence[dict[str, Any]], tid: int) -> dict[str, Any]:
         track = next((item for item in streams if item.get("tid") == tid), None)
@@ -112,7 +110,7 @@ class MeltAnalyzer:
             self.logger.debug(f"  {stream_type}: {len(streams)} track(s)")
             for stream in streams:
                 lang_name = language_utils.language_name(stream.get("language"))
-                short = self._stream_short_details(stream_type, stream)
+                short = stream_short_details(stream_type, stream)
 
                 info = lang_name
                 if short:
@@ -154,7 +152,7 @@ class MeltAnalyzer:
                 track_infos = tracks.get(path, {}).get(stype, [])
                 for info in track_infos:
                     if info.get("tid") == tid:
-                        stream_details = self._stream_short_details(stype, info)
+                        stream_details = stream_short_details(stype, info)
                         break
 
                 extra = f" ({stream_details})" if stream_details else ""
@@ -177,8 +175,7 @@ class MeltAnalyzer:
         tracks = {file: info["tracks"] for file, info in details_full.items()}
         return details_full, attachments, tracks
 
-    @staticmethod
-    def _prepare_duplicates_set(duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
+    def _prepare_duplicates_set(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
         """Prepare groups of duplicate files and output names per title.
 
         Returns a plan in the form:
@@ -194,33 +191,25 @@ class MeltAnalyzer:
                 dir, name, _ = files_utils.split_path(path)
                 return os.path.join(dir, name)
 
+            def collect_media_files(dir_path: str) -> list[str]:
+                media_files = video_utils.collect_video_files(dir_path, self.duplicates_source.interruption)
+                media_files.sort()
+                return media_files
+
             if all(os.path.isdir(p) for p in entries):
                 dirs = entries
 
                 if len(dirs) == 1:
                     # Special case: single dir → treat all files as one group of duplicates
                     dir_path = dirs[0]
-                    media_files = [
-                        os.path.join(root, file)
-                        for root, _, filenames in os.walk(dir_path)
-                        for file in filenames
-                        if video_utils.is_video(file)
-                    ]
-                    media_files.sort()
+                    media_files = collect_media_files(dir_path)
                     output_name = file_without_ext(os.path.relpath(media_files[0], dir_path)) if media_files else "output"
                     return [(media_files, output_name)]
 
                 # Multiple dirs → group matching files by position
                 files_per_dir = []
                 for dir_path in dirs:
-                    media_files = [
-                        os.path.join(root, file)
-                        for root, _, filenames in os.walk(dir_path)
-                        for file in filenames
-                        if video_utils.is_video(file)
-                    ]
-                    media_files.sort()
-                    files_per_dir.append(media_files)
+                    files_per_dir.append(collect_media_files(dir_path))
 
                 lengths = [len(files) for files in files_per_dir]
                 if len(set(lengths)) != 1:
@@ -324,12 +313,7 @@ class MeltAnalyzer:
             self.logger.warning("  #%d: %s", ids[path], self._format_group_path(path))
 
     def _format_group_path(self, path: str) -> str:
-        if not self.base_path:
-            return path
-        try:
-            return os.path.relpath(path, self.base_path)
-        except ValueError:
-            return path
+        return files_utils.format_path(path, self.base_path)
 
     def _validate_group_lengths(
         self,

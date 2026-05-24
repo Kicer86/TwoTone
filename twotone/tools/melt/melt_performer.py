@@ -927,10 +927,7 @@ class MeltPerformer:
         return os.path.join(self.output_dir, title, output_name + ".mkv")
 
     def _display_path(self, path: str) -> str:
-        try:
-            return os.path.relpath(path, self.output_dir)
-        except ValueError:
-            return path
+        return files_utils.format_path(path, self.output_dir)
 
     def _copy_single_input(self, input_path: str, output_path: str) -> None:
         self.logger.info(
