@@ -177,8 +177,7 @@ class MeltAnalyzer:
         tracks = {file: info["tracks"] for file, info in details_full.items()}
         return details_full, attachments, tracks
 
-    @staticmethod
-    def _prepare_duplicates_set(duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
+    def _prepare_duplicates_set(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
         """Prepare groups of duplicate files and output names per title.
 
         Returns a plan in the form:
@@ -194,33 +193,25 @@ class MeltAnalyzer:
                 dir, name, _ = files_utils.split_path(path)
                 return os.path.join(dir, name)
 
+            def collect_media_files(dir_path: str) -> list[str]:
+                media_files = video_utils.collect_video_files(dir_path, self.duplicates_source.interruption)
+                media_files.sort()
+                return media_files
+
             if all(os.path.isdir(p) for p in entries):
                 dirs = entries
 
                 if len(dirs) == 1:
                     # Special case: single dir → treat all files as one group of duplicates
                     dir_path = dirs[0]
-                    media_files = [
-                        os.path.join(root, file)
-                        for root, _, filenames in os.walk(dir_path)
-                        for file in filenames
-                        if video_utils.is_video(file)
-                    ]
-                    media_files.sort()
+                    media_files = collect_media_files(dir_path)
                     output_name = file_without_ext(os.path.relpath(media_files[0], dir_path)) if media_files else "output"
                     return [(media_files, output_name)]
 
                 # Multiple dirs → group matching files by position
                 files_per_dir = []
                 for dir_path in dirs:
-                    media_files = [
-                        os.path.join(root, file)
-                        for root, _, filenames in os.walk(dir_path)
-                        for file in filenames
-                        if video_utils.is_video(file)
-                    ]
-                    media_files.sort()
-                    files_per_dir.append(media_files)
+                    files_per_dir.append(collect_media_files(dir_path))
 
                 lengths = [len(files) for files in files_per_dir]
                 if len(set(lengths)) != 1:
