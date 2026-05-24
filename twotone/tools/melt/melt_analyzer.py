@@ -324,12 +324,7 @@ class MeltAnalyzer:
             self.logger.warning("  #%d: %s", ids[path], self._format_group_path(path))
 
     def _format_group_path(self, path: str) -> str:
-        if not self.base_path:
-            return path
-        try:
-            return os.path.relpath(path, self.base_path)
-        except ValueError:
-            return path
+        return files_utils.format_path(path, self.base_path)
 
     def _validate_group_lengths(
         self,
