@@ -13,6 +13,11 @@ def split_path(path: str) -> tuple[str, str, str]:
     return str(info.parent), info.stem, info.suffix[1:]
 
 
+def ensure_dir(path: str) -> str:
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 class ScopedDirectory:
     def __init__(self, path: str):
         self.path = Path(path)

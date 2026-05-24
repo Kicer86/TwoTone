@@ -1,9 +1,8 @@
-import os
 import re
 
 from typing import Any, Literal
 
-from ..utils import generic_utils
+from ..utils import files_utils, generic_utils
 
 FramesInfo = dict[int, dict[str, str]]
 StreamType = Literal["video", "audio", "subtitle"]
@@ -71,8 +70,7 @@ def _split_path_fix(value: str) -> list[str]:
 
 
 def _ensure_working_dir(working_dir: str) -> str:
-    os.makedirs(working_dir, exist_ok=True)
-    return working_dir
+    return files_utils.ensure_dir(working_dir)
 
 
 def _is_length_mismatch(base_ms: int | None, other_ms: int | None, tolerance_ms: int) -> bool:
