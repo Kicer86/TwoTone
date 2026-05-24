@@ -2,7 +2,7 @@ from .attachments_picker import AttachmentsPicker
 from .debug_routines import DebugRoutines
 from .duplicates_source import DuplicatesSource
 from .jellyfin import JellyfinSource
-from .pair_matcher import PairMatcher
+from .pair_matcher import MappingRelation, PairMatcher, SegmentsMappingResult
 from .static_source import StaticSource
 from .streams_picker import StreamsPicker
 from .melt_analyzer import MeltAnalyzer

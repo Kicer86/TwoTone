@@ -9,7 +9,7 @@ from tqdm import tqdm
 from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
-from .pair_matcher import PairMatcher
+from .pair_matcher import MappingRelation, PairMatcher
 from .melt_common import FramesInfo, _ensure_working_dir, _is_length_mismatch
 
 
@@ -24,7 +24,7 @@ class _PairMatchResult(NamedTuple):
     mapping: list[tuple[int, int]]
     lhs_all_frames: FramesInfo
     rhs_all_frames: FramesInfo
-    constant_offset: bool
+    mapping_relation: MappingRelation
     base_duration: int
     source_duration: int
     lhs_fps: float
@@ -1013,12 +1013,12 @@ class MeltPerformer:
                     lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
                     cache=self.cache,
                 )
-                mapping, lhs_all_frames, rhs_all_frames, constant_offset = matcher.create_segments_mapping()
+                mapping_result = matcher.create_segments_mapping()
                 match_result = _PairMatchResult(
-                    mapping=mapping,
-                    lhs_all_frames=lhs_all_frames,
-                    rhs_all_frames=rhs_all_frames,
-                    constant_offset=constant_offset,
+                    mapping=mapping_result.mapping,
+                    lhs_all_frames=mapping_result.lhs_all_frames,
+                    rhs_all_frames=mapping_result.rhs_all_frames,
+                    mapping_relation=mapping_result.relation,
                     base_duration=base_duration,
                     source_duration=duration,
                     lhs_fps=matcher.lhs_fps,
@@ -1034,15 +1034,15 @@ class MeltPerformer:
             mapping = match_result.mapping
             lhs_all_frames = match_result.lhs_all_frames
             rhs_all_frames = match_result.rhs_all_frames
-            constant_offset = match_result.constant_offset
+            mapping_relation = match_result.mapping_relation
             duration = match_result.source_duration
 
             self._log_coverage(video_path_base, audio_path, mapping, base_duration, duration, lhs_id, rhs_id)
 
             self.logger.info(
                 "Audio patching: base_duration=%d ms, source_duration=%d ms, "
-                "constant_offset=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
-                base_duration, duration, constant_offset,
+                "mapping_relation=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
+                base_duration, duration, mapping_relation.value,
                 match_result.lhs_fps, match_result.rhs_fps, len(mapping),
             )
             if mapping:
@@ -1052,7 +1052,7 @@ class MeltPerformer:
                 )
 
             use_silence = not self.fill_audio_gaps
-            strategy = self._choose_audio_strategy(constant_offset, use_silence, mapping)
+            strategy = self._choose_audio_strategy(mapping_relation, use_silence, mapping)
             self.logger.info("  Audio strategy: %s", strategy.value)
 
             if strategy == _AudioStrategy.STREAM_COPY:
@@ -1076,12 +1076,12 @@ class MeltPerformer:
 
     def _choose_audio_strategy(
         self,
-        constant_offset: bool,
+        mapping_relation: MappingRelation,
         use_silence: bool,
         mapping: list[tuple[int, int]],
     ) -> _AudioStrategy:
         """Pick the lightest audio patching strategy that fits the constraints."""
-        if not constant_offset:
+        if mapping_relation != MappingRelation.CONSTANT_FRAME_OFFSET:
             return _AudioStrategy.SUBSEGMENT
         if use_silence:
             seg = self._segment_range(mapping)

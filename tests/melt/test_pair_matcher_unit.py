@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from twotone.tools.utils import generic_utils, video_utils
-from twotone.tools.melt.melt import PairMatcher
+from twotone.tools.melt.melt import MappingRelation, PairMatcher
 
 
 class PairMatcherUnitTest(unittest.TestCase):
@@ -532,10 +532,10 @@ class PairMatcherUnitTest(unittest.TestCase):
             debug.dump_frames.return_value = None
             debug.dump_matches.return_value = None
 
-            mappings, _, _, is_constant = pm.create_segments_mapping()
+            result = pm.create_segments_mapping()
 
-        self.assertTrue(is_constant)
-        self.assertEqual(mappings, extrapolated_pairs)
+        self.assertEqual(result.relation, MappingRelation.CONSTANT_FRAME_OFFSET)
+        self.assertEqual(result.mapping, extrapolated_pairs)
 
     # ---- _look_for_boundaries: look_ahead robustness ----
 

@@ -16,7 +16,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1, file2, logging.getLogger("PM"))
-        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+        mappings = pair_matcher.create_segments_mapping().mapping
 
         # At least 6 pairs across the 82s video
         self.assertGreaterEqual(len(mappings), 6)
@@ -44,7 +44,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+        mappings = pair_matcher.create_segments_mapping().mapping
 
         # 3s black intro on both files — boundary extends through black to edge
         # LHS: bbb_bi3 (65.3s), RHS: bi3_deg103 (63.4s)
@@ -68,7 +68,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+        mappings = pair_matcher.create_segments_mapping().mapping
 
         # LHS: bbb_bi2 (64.3s, 2s black intro), RHS: bi6_deg103 (66.5s, 6s black intro)
         # LHS extends to edge through black; RHS starts inside its 6s intro (3-6.5s)
@@ -101,7 +101,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+        mappings = pair_matcher.create_segments_mapping().mapping
 
         # LHS: bbb_bo3 (65.3s, 3s black outro), RHS: bo3_deg103 (63.4s, 3s black outro)
         self.assertGreaterEqual(len(mappings), 3)
@@ -124,7 +124,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+        mappings = pair_matcher.create_segments_mapping().mapping
 
         # LHS: bi2_bo2 (66.3s, 2s black intro + 2s black outro)
         # RHS: bi2_bo2_deg103 (64.4s, same + 1.03x speed)
@@ -149,7 +149,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+        mappings = pair_matcher.create_segments_mapping().mapping
 
         # LHS: bbb (62.3s), RHS: bbb_deg10 (62.3s, same speed, degraded quality)
         self.assertGreaterEqual(len(mappings), 3)
@@ -172,7 +172,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+        mappings = pair_matcher.create_segments_mapping().mapping
 
         # LHS: bbb_gi3 (65.3s, 3s grass intro), RHS: atoms_i3_deg (63.5s, 3s atoms intro)
         self.assertGreaterEqual(len(mappings), 3)
@@ -203,7 +203,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+        mappings = pair_matcher.create_segments_mapping().mapping
 
         # LHS: bbb_gi2 (64.3s, 2s grass intro), RHS: atoms_i5_deg (65.5s, 5s atoms intro)
         self.assertGreaterEqual(len(mappings), 3)
@@ -234,7 +234,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+        mappings = pair_matcher.create_segments_mapping().mapping
 
         # LHS: bbb_wo3 (65.3s, 3s woman outro), RHS: deg103_atoms_o3 (63.5s, 3s atoms outro)
         self.assertGreaterEqual(len(mappings), 3)
@@ -263,7 +263,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+        mappings = pair_matcher.create_segments_mapping().mapping
 
         # LHS: gi3_wo3 (57.1s, 3s grass intro + 3s woman outro)
         # RHS: ai3d_swo3 (66.5s, 3s atoms intro + 3s seawaves outro)
@@ -321,7 +321,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+        mappings = pair_matcher.create_segments_mapping().mapping
 
         d1 = video_utils.get_video_duration(file1_path)
         d2 = video_utils.get_video_duration(file2_path)
@@ -334,7 +334,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings, _, _, _ = pair_matcher.create_segments_mapping()
+        mappings = pair_matcher.create_segments_mapping().mapping
 
         d1 = video_utils.get_video_duration(file1_path)
         d2 = video_utils.get_video_duration(file2_path)

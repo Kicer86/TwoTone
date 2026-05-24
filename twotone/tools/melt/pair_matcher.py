@@ -1,7 +1,6 @@
 
-from typing import Any
-
 import cv2 as cv
+import enum
 import logging
 import numpy as np
 import os
@@ -9,13 +8,28 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from tqdm import tqdm
-from typing import Callable
+from typing import Any, Callable, NamedTuple
 
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
 from .melt_common import FramesInfo
 from .phash_cache import PhashCache
 from ..utils import files_utils, generic_utils, image_utils, video_utils
+
+
+class MappingRelation(enum.Enum):
+    """Detected relation between matching video frames."""
+
+    GENERIC = "generic"
+    CONSTANT_FRAME_OFFSET = "constant_frame_offset"
+    LINEAR_FRAME_DRIFT = "linear_frame_drift"
+
+
+class SegmentsMappingResult(NamedTuple):
+    mapping: list[tuple[int, int]]
+    lhs_all_frames: FramesInfo
+    rhs_all_frames: FramesInfo
+    relation: MappingRelation
 
 
 class PairMatcher:
@@ -733,7 +747,7 @@ class PairMatcher:
 
         return matching_pairs
 
-    def create_segments_mapping(self) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo, bool]:
+    def create_segments_mapping(self) -> SegmentsMappingResult:
 
         lhs_scene_changes, rhs_scene_changes = self._detect_scenes()
         self._probe_frames()
@@ -756,7 +770,7 @@ class PairMatcher:
         constant_offset_pairs = self.try_constant_offset_extrapolation(
             matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
         )
-        used_constant_offset_extrapolation = constant_offset_pairs is not None
+        relation = MappingRelation.GENERIC
 
         if constant_offset_pairs is None:
             matching_pairs = self._extract_and_refine_boundaries(
@@ -765,16 +779,22 @@ class PairMatcher:
             )
         else:
             matching_pairs = constant_offset_pairs
+            relation = MappingRelation.CONSTANT_FRAME_OFFSET
             debug.dump_matches(matching_pairs, "after constant-offset extrapolation")
 
         # Snap near-edge pairs only for heuristic boundary search results.
         # Constant-offset extrapolation already yields exact frame-aligned
         # boundaries, so applying timestamp-based edge snapping here could
         # distort the precise offset.
-        if not used_constant_offset_extrapolation:
+        if relation != MappingRelation.CONSTANT_FRAME_OFFSET:
             matching_pairs = self.snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
 
-        return matching_pairs, self.lhs_all_frames, self.rhs_all_frames, used_constant_offset_extrapolation
+        return SegmentsMappingResult(
+            mapping=matching_pairs,
+            lhs_all_frames=self.lhs_all_frames,
+            rhs_all_frames=self.rhs_all_frames,
+            relation=relation,
+        )
 
     def _normalize_frames(self, frames_info: FramesInfo, wd: str, desc: str = "Normalizing frames", prefix: str = "") -> FramesInfo:
         PairMatcher._assert_frames_extracted(frames_info, f"_normalize_frames({desc})")
