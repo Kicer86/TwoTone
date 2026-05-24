@@ -72,8 +72,6 @@ class MeltAnalyzer:
 
         return analysis_plan
 
-    _stream_short_details = staticmethod(stream_short_details)
-
     @staticmethod
     def _pick_track_by_tid(streams: Sequence[dict[str, Any]], tid: int) -> dict[str, Any]:
         track = next((item for item in streams if item.get("tid") == tid), None)
@@ -112,7 +110,7 @@ class MeltAnalyzer:
             self.logger.debug(f"  {stream_type}: {len(streams)} track(s)")
             for stream in streams:
                 lang_name = language_utils.language_name(stream.get("language"))
-                short = self._stream_short_details(stream_type, stream)
+                short = stream_short_details(stream_type, stream)
 
                 info = lang_name
                 if short:
@@ -154,7 +152,7 @@ class MeltAnalyzer:
                 track_infos = tracks.get(path, {}).get(stype, [])
                 for info in track_infos:
                     if info.get("tid") == tid:
-                        stream_details = self._stream_short_details(stype, info)
+                        stream_details = stream_short_details(stype, info)
                         break
 
                 extra = f" ({stream_details})" if stream_details else ""

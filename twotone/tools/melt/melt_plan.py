@@ -43,15 +43,13 @@ class MeltPlan:
 
         self._render_planned(logger, planned_items)
 
-    _stream_short_details = staticmethod(stream_short_details)
-
     @staticmethod
     def _format_track_line(stype: StreamType, stream: dict[str, Any], used: bool, override_lang: str | None = None) -> str:
         tid = stream.get("tid", "?")
         name = stream.get("name")
         lang = override_lang or stream.get("language")
         lang_name = language_utils.language_name(lang) if lang else "unknown"
-        details = MeltPlan._stream_short_details(stype, stream)
+        details = stream_short_details(stype, stream)
         parts = []
         if stype != "video" or lang_name != "unknown":
             parts.append(lang_name)
@@ -153,5 +151,4 @@ class MeltPlan:
                     used = tid in selected_ids
                     flag = "used" if used else "skip"
                     logger.info("%s      #%s (%s): %s", prefix, tid, flag, name)
-
 
