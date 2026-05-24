@@ -40,11 +40,7 @@ class StreamsPicker:
         video_stream_path = video_stream[0]
 
         # pick audio streams
-        forced_audio_language_raw = {path: self.duplicates_source.get_metadata_for(path).get("audio_lang") for path in files_details}
-        forced_audio_language: dict[str, str] = {}
-        for path, lang in forced_audio_language_raw.items():
-            if lang and isinstance(lang, str):
-                forced_audio_language[path] = language_utils.unify_lang(lang)
+        forced_audio_language = self._metadata_language_overrides(files_details, "audio_lang", normalize=True)
         audio_streams = self._pick_streams(
             files_details,
             video_stream_path,
@@ -56,11 +52,7 @@ class StreamsPicker:
         )
 
         # pick subtitle streams
-        forced_subtitle_language_raw = {path: self.duplicates_source.get_metadata_for(path).get("subtitle_lang") for path in files_details}
-        forced_subtitle_language: dict[str, str] = {}
-        for path, lang in forced_subtitle_language_raw.items():
-            if lang and isinstance(lang, str):
-                forced_subtitle_language[path] = lang
+        forced_subtitle_language = self._metadata_language_overrides(files_details, "subtitle_lang", normalize=False)
         subtitle_streams = self._pick_streams(
             files_details,
             video_stream_path,
@@ -85,6 +77,14 @@ class StreamsPicker:
     def _path_forces_all_streams(self, path: str) -> bool:
         metadata = self.duplicates_source.get_metadata_for(path)
         return self._metadata_flag_is_enabled(metadata.get("force_all_streams"))
+
+    def _metadata_language_overrides(self, files_details: dict, key: str, *, normalize: bool) -> dict[str, str]:
+        overrides: dict[str, str] = {}
+        for path in files_details:
+            lang = self.duplicates_source.get_metadata_for(path).get(key)
+            if lang and isinstance(lang, str):
+                overrides[path] = language_utils.unify_lang(lang) if normalize else lang
+        return overrides
 
 
     @staticmethod
