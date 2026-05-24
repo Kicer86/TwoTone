@@ -100,7 +100,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         right_points = [p[1] for p in segment_pairs]
         source_segment_dur = max(right_points) - min(right_points)
 
-        def fake_get_duration(path):
+        def fake_get_duration(path, **_kwargs):
             if "source_trimmed" in path or "source_scaled" in path or "out." in path:
                 return source_segment_dur
             return base_duration_ms
@@ -703,7 +703,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             calls.append((tool, list(args)))
             return _FAKE_PROCESS_OK
 
-        def fake_get_duration(path):
+        def fake_get_duration(path, **_kwargs):
             # Trimmed audio is shorter than requested → simulates AVI deficit
             if "source_trimmed" in path:
                 return actual_trimmed_dur
@@ -773,7 +773,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         pairs = [(seg1_start, seg2_start), (seg1_end, seg2_end)]
         source_dur = seg2_end - seg2_start
 
-        def fake_get_duration(path):
+        def fake_get_duration(path, **_kwargs):
             if "source_trimmed" in path or "source_scaled" in path or "out." in path:
                 return source_dur  # no deficit — actual equals requested
             return 7000000
@@ -808,7 +808,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         source_dur = seg2_end - seg2_start
         audio_deficit_ms = 488
 
-        def fake_get_duration(path):
+        def fake_get_duration(path, **_kwargs):
             if "source_trimmed" in path:
                 return source_dur - audio_deficit_ms
             return 7000000

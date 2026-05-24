@@ -24,7 +24,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         fps_map = {"/fake/lhs.mp4": str(lhs_fps), "/fake/rhs.mp4": str(rhs_fps)}
 
         with patch.object(video_utils, 'get_video_data',
-                          side_effect=lambda p: {"video": [{"fps": fps_map[p]}]}):
+                          side_effect=lambda p, **_kwargs: {"video": [{"fps": fps_map[p]}]}):
             pm = PairMatcher(
                 interruption=generic_utils.InterruptibleProcess(),
                 wd=tempfile.mkdtemp(),

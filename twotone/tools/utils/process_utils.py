@@ -12,6 +12,8 @@ from typing import Any
 from . import generic_utils
 from . import video_utils
 
+DEFAULT_LOGGER = logging.getLogger("TwoTone.utils.process_utils")
+
 DEFAULT_TOOL_OPTIONS: dict[str, list[str]] = {
     "ffmpeg": ["-hide_banner"],
     "ffprobe": ["-hide_banner"],
@@ -26,7 +28,13 @@ class ProcessResult:
     stderr: str
 
 
-def start_process(process: str, args: list[str], show_progress = False) -> ProcessResult:
+def start_process(
+    process: str,
+    args: list[str],
+    show_progress: bool = False,
+    logger: logging.Logger | None = None,
+) -> ProcessResult:
+    logger = logger or DEFAULT_LOGGER
     defaults = DEFAULT_TOOL_OPTIONS.get(process, [])
     for opt in reversed(defaults):
         if opt not in args:
@@ -36,7 +44,7 @@ def start_process(process: str, args: list[str], show_progress = False) -> Proce
     command.extend(args)
 
     full_cmd = f"{process} {' '.join(args)}"
-    logging.debug(f"Starting {full_cmd}")
+    logger.debug(f"Starting {full_cmd}")
     popen_kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
@@ -60,7 +68,7 @@ def start_process(process: str, args: list[str], show_progress = False) -> Proce
 
             if video_utils.is_video(input_file) and sub_process.stderr:
                 progress_pattern = re.compile(r"frame= *(\d+)")
-                frames = video_utils.get_video_frames_count(input_file)
+                frames = video_utils.get_video_frames_count(input_file, logger=logger)
                 with tqdm(desc="Processing video", unit="frame", total=frames, **generic_utils.get_tqdm_defaults()) as pbar:
                     last_frame = 0
                     for line in sub_process.stderr:
@@ -87,7 +95,7 @@ def start_process(process: str, args: list[str], show_progress = False) -> Proce
 
     stdout, stderr = sub_process.communicate()
 
-    logging.debug(f"Process finished with {sub_process.returncode}")
+    logger.debug(f"Process finished with {sub_process.returncode}")
 
     return ProcessResult(sub_process.returncode, str(stdout), str(stderr))
 

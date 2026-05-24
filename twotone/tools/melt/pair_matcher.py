@@ -29,8 +29,8 @@ class PairMatcher:
         self.logger = logger
         self.cache = cache
         self.phash = PhashCache()
-        self.lhs_fps = generic_utils.fps_str_to_float(video_utils.get_video_data(lhs_path)["video"][0]["fps"])
-        self.rhs_fps = generic_utils.fps_str_to_float(video_utils.get_video_data(rhs_path)["video"][0]["fps"])
+        self.lhs_fps = generic_utils.fps_str_to_float(video_utils.get_video_data(lhs_path, logger=self.logger)["video"][0]["fps"])
+        self.rhs_fps = generic_utils.fps_str_to_float(video_utils.get_video_data(rhs_path, logger=self.logger)["video"][0]["fps"])
 
         lhs_wd = os.path.join(self.wd, "lhs")
         rhs_wd = os.path.join(self.wd, "rhs")
@@ -692,8 +692,8 @@ class PairMatcher:
         lhs_threshold_ms = snap_frames * 1000 / self.lhs_fps
         rhs_threshold_ms = snap_frames * 1000 / self.rhs_fps
 
-        lhs_duration = video_utils.get_video_duration(self.lhs_path)
-        rhs_duration = video_utils.get_video_duration(self.rhs_path)
+        lhs_duration = video_utils.get_video_duration(self.lhs_path, logger=self.logger)
+        rhs_duration = video_utils.get_video_duration(self.rhs_path, logger=self.logger)
 
         lhs_keys = sorted(lhs_all_frames.keys())
         rhs_keys = sorted(rhs_all_frames.keys())
@@ -1610,6 +1610,7 @@ class PairMatcher:
         result = video_utils.probe_frame_timestamps(
             video_path, interruption=self.interruption,
             desc=f"[2/6] Probing frames: {label}",
+            logger=self.logger,
         )
 
         if cache:
@@ -1666,6 +1667,7 @@ class PairMatcher:
             video_path, target_dir, scene_ranges, probed_metadata,
             scale=(960, -2), format="png", interruption=self.interruption,
             desc=f"[3/6] Extracting scene frames: {label}",
+            logger=self.logger,
         )
 
         if cache:
@@ -1749,11 +1751,13 @@ class PairMatcher:
             self.lhs_path, self.lhs_boundary_wd, lhs_boundary_ranges, self.lhs_all_frames,
             scale=(960, -2), format="png", interruption=self.interruption,
             desc=f"[6/6] Extracting boundary frames: {self.lhs_label}",
+            logger=self.logger,
         )
         video_utils.extract_frames_at_ranges(
             self.rhs_path, self.rhs_boundary_wd, rhs_boundary_ranges, self.rhs_all_frames,
             scale=(960, -2), format="png", interruption=self.interruption,
             desc=f"[6/6] Extracting boundary frames: {self.rhs_label}",
+            logger=self.logger,
         )
 
         # Normalize the newly extracted boundary frames and merge
