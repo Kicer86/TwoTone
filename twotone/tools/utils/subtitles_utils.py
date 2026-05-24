@@ -85,6 +85,8 @@ MKVMERGE_UNSUPPORTED_FORMATS = {
     "whisper_jax",
 }
 
+DEFAULT_LOGGER = logging.getLogger("TwoTone.utils.subtitles_utils")
+
 
 def subtitle_format_from_extension(path: str) -> str | None:
     ext = Path(path).suffix.lower()
@@ -111,7 +113,12 @@ def file_encoding(file: str) -> str:
     return encoding
 
 
-def open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> pysubs2.SSAFile | None:
+def open_subtitle_file(
+    file: str,
+    fps: float = ffmpeg_default_fps,
+    logger: logging.Logger | None = None,
+) -> pysubs2.SSAFile | None:
+    logger = logger or DEFAULT_LOGGER
     try:
         encoding = file_encoding(file)
         subs = pysubs2.load(file, encoding = encoding, fps = fps)
@@ -119,24 +126,25 @@ def open_subtitle_file(file: str, fps: float = ffmpeg_default_fps) -> pysubs2.SS
         return subs
 
     except Exception as e:
-        logging.debug(f"Error opening subtitle file {file}: {e}")
+        logger.debug(f"Error opening subtitle file {file}: {e}")
         return None
 
 
-def is_subtitle(file: str) -> bool:
-    logging.debug(f"Checking file {file} for being subtitle")
+def is_subtitle(file: str, logger: logging.Logger | None = None) -> bool:
+    logger = logger or DEFAULT_LOGGER
+    logger.debug(f"Checking file {file} for being subtitle")
     path_obj = Path(file)
     suffix = path_obj.suffix.lower()
     if suffix not in SUBTITLE_EXTENSIONS:
-        logging.debug("\tNot a subtitle file")
+        logger.debug("\tNot a subtitle file")
         return False
 
     if suffix == ".sub" and _vobsub_idx_exists(path_obj):
-        logging.debug("\tDetected VobSub pair, skipping .sub file")
+        logger.debug("\tDetected VobSub pair, skipping .sub file")
         return False
 
     if suffix == ".idx" and _vobsub_sub_exists(path_obj):
-        logging.debug("\tDetected VobSub pair, accepting .idx file")
+        logger.debug("\tDetected VobSub pair, accepting .idx file")
         return True
 
     from . import process_utils
@@ -144,22 +152,23 @@ def is_subtitle(file: str) -> bool:
     status = process_utils.start_process(
         "ffprobe",
         ["-v", "error", "-show_entries", "format=format_name", "-of", "default=nw=1:nk=1", file],
+        logger=logger,
     )
     if status.returncode == 0:
         formats = {fmt.strip().lower() for fmt in status.stdout.split(",") if fmt.strip()}
         if formats & FFPROBE_SUBTITLE_FORMATS:
-            logging.debug("\tSubtitle format detected")
+            logger.debug("\tSubtitle format detected")
             return True
 
         if suffix in NON_AMBIGUOUS_SUBTITLE_EXTENSIONS:
-            logging.debug("\tAssuming subtitle based on extension")
+            logger.debug("\tAssuming subtitle based on extension")
             return True
     else:
         if suffix in FALLBACK_SUBTITLE_EXTENSIONS:
-            logging.debug("\tAssuming subtitle based on extension (ffprobe failed)")
+            logger.debug("\tAssuming subtitle based on extension (ffprobe failed)")
             return True
 
-    logging.debug("\tNot a subtitle file")
+    logger.debug("\tNot a subtitle file")
     return False
 
 
@@ -190,17 +199,18 @@ def _strip_microdvd_header(subs: pysubs2.SSAFile | None, fps: float | None = Non
         del subs[0]
 
 
-def is_subtitle_microdvd(subtitle: SubtitleFile) -> bool:
+def is_subtitle_microdvd(subtitle: SubtitleFile, logger: logging.Logger | None = None) -> bool:
     assert subtitle.path
 
-    subs = open_subtitle_file(subtitle.path)
+    subs = open_subtitle_file(subtitle.path, logger=logger)
     if subs and subs.format and subs.format.lower() == "microdvd":
         return True
     else:
         return False
 
 
-def guess_subtitle_language(path: str, encoding: str) -> str:
+def guess_subtitle_language(path: str, encoding: str, logger: logging.Logger | None = None) -> str:
+    logger = logger or DEFAULT_LOGGER
     result = ""
 
     if not encoding:
@@ -230,20 +240,24 @@ def guess_subtitle_language(path: str, encoding: str) -> str:
     try:
         result = langid.classify(content)[0]
     except Exception as e:
-        logging.debug(f"Language detection failed for {path}: {e}")
+        logger.debug(f"Language detection failed for {path}: {e}")
         result = ""
 
     return result
 
 
-def build_subtitle_from_path(path: str, language: str | None = "") -> SubtitleFile:
+def build_subtitle_from_path(
+    path: str,
+    language: str | None = "",
+    logger: logging.Logger | None = None,
+) -> SubtitleFile:
     """
     if language == None - use autodetection.
                    Empty string - no language
                    2/3 letter language code - use that language
     """
     encoding = file_encoding(path)
-    language = guess_subtitle_language(path, encoding) if language is None else language
+    language = guess_subtitle_language(path, encoding, logger=logger) if language is None else language
 
     return SubtitleFile(path = path, language = language, encoding = encoding)
 

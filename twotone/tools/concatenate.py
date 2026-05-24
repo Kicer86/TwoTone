@@ -14,8 +14,7 @@ from twotone.tools.utils import generic_utils, process_utils, video_utils, files
 
 class Concatenate(generic_utils.InterruptibleProcess):
     def __init__(self, logger: logging.Logger, working_dir: str):
-        super().__init__()
-
+        super().__init__(logger)
         self.logger = logger
         self.working_dir = working_dir
 
@@ -109,7 +108,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
 
             audio_codec = "copy"
             for input_file in input_files:
-                file_details = video_utils.get_video_data(input_file)
+                file_details = video_utils.get_video_data(input_file, logger=self.logger)
                 audio_streams = file_details.get("audio", [])
                 for audio_stream in audio_streams:
                     codec = audio_stream.get("codec")
@@ -125,7 +124,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
                 ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c:v", "copy", "-c:a", audio_codec, output]
 
                 self.logger.info(f"Concatenating files into {output} file")
-                status = process_utils.start_process("ffmpeg", ffmpeg_args)
+                status = process_utils.start_process("ffmpeg", ffmpeg_args, logger=self.logger)
                 if status.returncode == 0:
                     for input_file in input_files:
                         os.remove(input_file)

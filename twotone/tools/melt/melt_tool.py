@@ -139,7 +139,7 @@ class MeltTool(Tool):
 
     @override
     def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
-        interruption = generic_utils.InterruptibleProcess()
+        interruption = generic_utils.InterruptibleProcess(logger)
         data_source: DuplicatesSource | None = None
         parser = self.parser
         if parser is None:
@@ -220,7 +220,7 @@ class MeltTool(Tool):
         if not isinstance(plan, MeltPlan):
             raise TypeError(f"Expected MeltPlan, got {type(plan).__name__}")
 
-        interruption = generic_utils.InterruptibleProcess()
+        interruption = generic_utils.InterruptibleProcess(logger)
         cache = MeltCache(args.cache_dir, logger.getChild("cache")) if args.cache_dir else None
         performer = MeltPerformer(
             logger,

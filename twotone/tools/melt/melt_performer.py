@@ -138,7 +138,7 @@ class MeltPerformer:
                     self.logger.info("Generating file: %s", self._display_path(output))
 
                     process_utils.raise_on_error(
-                        process_utils.start_process("mkvmerge", generation_args, show_progress=True)
+                        process_utils.start_process("mkvmerge", generation_args, show_progress=True, logger=self.logger)
                     )
 
                     self.logger.info("%s saved.", output)
@@ -241,8 +241,8 @@ class MeltPerformer:
         seg2_start, seg2_end = seg.rhs_start, seg.rhs_end
 
         # 1. Extract head/tail directly from base video, normalized to source params
-        source_params = self._get_audio_params(source_video)
-        base_duration_ms = video_utils.get_video_duration(base_video)
+        source_params = self._get_audio_params(source_video, logger=self.logger)
+        base_duration_ms = video_utils.get_video_duration(base_video, logger=self.logger)
         has_head = seg1_start > 0 and not use_silence
         has_tail = seg1_end < base_duration_ms and not use_silence
 
@@ -268,7 +268,7 @@ class MeltPerformer:
                     "-i", base_video, "-map", "0:a:0",
                     *self._normalize_args(source_params),
                     "-c:a", "flac", head_path,
-                ])
+                ], logger=self.logger)
             )
         if has_tail:
             process_utils.raise_on_error(
@@ -277,7 +277,7 @@ class MeltPerformer:
                     "-i", base_video, "-map", "0:a:0",
                     *self._normalize_args(source_params),
                     "-c:a", "flac", tail_path,
-                ])
+                ], logger=self.logger)
             )
 
         # 2. Trim + time-scale source audio.
@@ -296,9 +296,9 @@ class MeltPerformer:
                     "-i", source_video,
                     "-map", "0:a:0", "-c:a", "copy",
                     output_path,
-                ])
+                ], logger=self.logger)
             )
-            actual_dur = video_utils.get_video_duration(output_path)
+            actual_dur = video_utils.get_video_duration(output_path, logger=self.logger)
             deficit = source_dur - actual_dur
 
             if not use_silence and deficit > 50:
@@ -320,19 +320,19 @@ class MeltPerformer:
 
         trimmed_audio = os.path.join(wd, "source_trimmed.flac")
         process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", [
-                "-y",
-                "-ss", str(seg2_start / 1000),
-                "-to", str(seg2_end / 1000),
-                "-i", source_video,
-                "-map", "0:a:0",
-                "-sample_fmt", self._flac_safe_fmt(source_params[2]),
-                "-c:a", "flac",
-                trimmed_audio,
-            ])
+                process_utils.start_process("ffmpeg", [
+                    "-y",
+                    "-ss", str(seg2_start / 1000),
+                    "-to", str(seg2_end / 1000),
+                    "-i", source_video,
+                    "-map", "0:a:0",
+                    "-sample_fmt", self._flac_safe_fmt(source_params[2]),
+                    "-c:a", "flac",
+                    trimmed_audio,
+                ], logger=self.logger)
         )
 
-        actual_source_dur = video_utils.get_video_duration(trimmed_audio)
+        actual_source_dur = video_utils.get_video_duration(trimmed_audio, logger=self.logger)
         expected_scaled_dur = round(actual_source_dur * video_ratio)
 
         # Compute sync offset from the measured trim deficit.
@@ -371,18 +371,19 @@ class MeltPerformer:
                     "-filter:a", f"asetrate={adjusted_rate:.6f},aresample={sample_rate}",
                     "-sample_fmt", "s32", "-c:a", "flac",
                     scaled_audio,
-                ])
+                ], logger=self.logger)
             )
 
-        scaled_dur = video_utils.get_video_duration(scaled_audio)
+        scaled_dur = video_utils.get_video_duration(scaled_audio, logger=self.logger)
         self._validate_audio_duration(scaled_dur, expected_scaled_dur, "scaled audio")
 
         # 3. Concatenate and encode to AAC
-        channel_layout = self._get_audio_channel_layout(source_video)
+        channel_layout = self._get_audio_channel_layout(source_video, logger=self.logger)
         self._concat_and_encode(
             [scaled_audio], has_head, head_path, has_tail, tail_path,
             os.path.join(wd, "concat.txt"), output_path,
             channel_layout=channel_layout,
+            logger=self.logger,
         )
 
         return sync_offset
@@ -573,9 +574,13 @@ class MeltPerformer:
                 self.logger.info("Overlap diagram:\n%s", "\n".join(diagram))
 
     @staticmethod
-    def _extract_audio_to_flac(video_path: str, output_path: str) -> None:
+    def _extract_audio_to_flac(video_path: str, output_path: str, logger: logging.Logger | None = None) -> None:
         process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", ["-y", "-i", video_path, "-map", "0:a:0", "-sample_fmt", "s32", "-c:a", "flac", output_path])
+            process_utils.start_process(
+                "ffmpeg",
+                ["-y", "-i", video_path, "-map", "0:a:0", "-sample_fmt", "s32", "-c:a", "flac", output_path],
+                logger=logger,
+            )
         )
 
     @staticmethod
@@ -585,16 +590,16 @@ class MeltPerformer:
         return _SegmentRange(min(left), max(left), min(right), max(right))
 
     @staticmethod
-    def _get_audio_params(audio_path: str) -> tuple[int, int, str]:
+    def _get_audio_params(audio_path: str, logger: logging.Logger | None = None) -> tuple[int, int, str]:
         """Return (channels, sample_rate, sample_fmt) of the first audio stream."""
-        info = video_utils.get_video_full_info(audio_path)
+        info = video_utils.get_video_full_info(audio_path, logger=logger)
         stream = next(s for s in info["streams"] if s["codec_type"] == "audio")
         return int(stream["channels"]), int(stream["sample_rate"]), stream["sample_fmt"]
 
     @staticmethod
-    def _get_audio_channel_layout(audio_path: str) -> str | None:
+    def _get_audio_channel_layout(audio_path: str, logger: logging.Logger | None = None) -> str | None:
         """Return the channel layout string of the first audio stream, or None."""
-        info = video_utils.get_video_full_info(audio_path)
+        info = video_utils.get_video_full_info(audio_path, logger=logger)
         stream = next(s for s in info["streams"] if s["codec_type"] == "audio")
         return stream.get("channel_layout") or None
 
@@ -688,6 +693,7 @@ class MeltPerformer:
         head_path: str,
         tail_path: str,
         normalize_to: tuple[int, int, str] | None = None,
+        logger: logging.Logger | None = None,
     ) -> tuple[bool, bool]:
         """Extract head/tail segments from the base audio track.
 
@@ -709,17 +715,17 @@ class MeltPerformer:
                 process_utils.start_process("ffmpeg", [
                     "-y", "-ss", "0", "-to", str(seg_start_ms / 1000),
                     "-i", base_audio, *norm_args, "-c:a", "flac", head_path,
-                ])
+                ], logger=logger)
             )
 
-        base_duration_ms = video_utils.get_video_duration(base_video)
+        base_duration_ms = video_utils.get_video_duration(base_video, logger=logger)
         has_tail = seg_end_ms < base_duration_ms
         if has_tail:
             process_utils.raise_on_error(
                 process_utils.start_process("ffmpeg", [
                     "-y", "-ss", str(seg_end_ms / 1000),
                     "-i", base_audio, *norm_args, "-c:a", "flac", tail_path,
-                ])
+                ], logger=logger)
             )
 
         return has_head, has_tail
@@ -742,6 +748,7 @@ class MeltPerformer:
         concat_list_path: str,
         output_path: str,
         channel_layout: str | None = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         """Concatenate audio parts (head + middle segments + tail) and encode to AAC.
 
@@ -781,7 +788,7 @@ class MeltPerformer:
                 *layout_args,
                 "-c:a", "aac",
                 output_path,
-            ])
+            ], logger=logger)
         )
 
     def _patch_audio_segment(
@@ -823,10 +830,10 @@ class MeltPerformer:
         # 1. Extract audio tracks
         if not use_silence:
             v1_audio = os.path.join(wd, "v1_audio.flac")
-            self._extract_audio_to_flac(base_video, v1_audio)
-        self._extract_audio_to_flac(source_video, v2_audio)
+            self._extract_audio_to_flac(base_video, v1_audio, logger=self.logger)
+        self._extract_audio_to_flac(source_video, v2_audio, logger=self.logger)
 
-        source_params = self._get_audio_params(v2_audio)
+        source_params = self._get_audio_params(v2_audio, logger=self.logger)
 
         # 2. Extract head/tail from base audio (skipped when use_silence — caller uses --sync)
         if use_silence:
@@ -836,6 +843,7 @@ class MeltPerformer:
             has_head, has_tail = self._extract_head_tail(
                 v1_audio, base_video, seg1_start, seg1_end, head_path, tail_path,
                 normalize_to=source_params,
+                logger=self.logger,
             )
 
         # 3. Generate subsegment split points from provided mapping pairs
@@ -897,7 +905,8 @@ class MeltPerformer:
                         "-i", v2_audio,
                         "-c:a", "flac",
                         raw_cut,
-                    ]
+                    ],
+                    logger=self.logger,
                 )
             )
 
@@ -909,18 +918,20 @@ class MeltPerformer:
                         "-filter:a", f"atempo={ratio:.3f}",
                         "-sample_fmt", "s32", "-c:a", "flac",
                         scaled_cut,
-                    ]
+                    ],
+                    logger=self.logger,
                 )
             )
 
             temp_segments.append(scaled_cut)
 
         # 5. Concatenate and encode
-        channel_layout = self._get_audio_channel_layout(source_video)
+        channel_layout = self._get_audio_channel_layout(source_video, logger=self.logger)
         self._concat_and_encode(
             temp_segments, has_head, head_path, has_tail, tail_path,
             os.path.join(wd, "concat.txt"), output_path,
             channel_layout=channel_layout,
+            logger=self.logger,
         )
 
     def _build_output_path(self, title: str, output_name: str) -> str:
@@ -960,10 +971,10 @@ class MeltPerformer:
                 "-i", source_video,
                 "-map", "0:a:0", "-c:a", "copy",
                 output_path,
-            ])
+            ], logger=self.logger)
         )
 
-        actual_dur = video_utils.get_video_duration(output_path)
+        actual_dur = video_utils.get_video_duration(output_path, logger=self.logger)
         self._validate_audio_duration(actual_dur, expected_dur, "stream-copied audio (no reencode)")
         deficit = expected_dur - actual_dur
 
@@ -1082,7 +1093,11 @@ class MeltPerformer:
         return _AudioStrategy.CONSTANT_OFFSET
 
     @staticmethod
-    def _video_track_duration(path: str, files_details: dict[str, Any]) -> int | None:
+    def _video_track_duration(
+        path: str,
+        files_details: dict[str, Any],
+        logger: logging.Logger | None = None,
+    ) -> int | None:
         """Return video track duration in ms from pre-probed plan data.
 
         Falls back to container-level ffprobe duration when plan data is
@@ -1095,7 +1110,7 @@ class MeltPerformer:
                     length = track.get("length")
                     if length is not None:
                         return length
-        return video_utils.get_video_duration(path)
+        return video_utils.get_video_duration(path, logger=logger)
 
     def _prepare_stream_entries(
         self,
@@ -1110,7 +1125,7 @@ class MeltPerformer:
         streams_list: list[tuple[str, int, str, str | None]] = []
         video_path_base, _, _ = video_streams[0]
         details = files_details or {}
-        base_duration = self._video_track_duration(video_path_base, details)
+        base_duration = self._video_track_duration(video_path_base, details, logger=self.logger)
         protected_paths = (
             {p for (p, _, _) in video_streams}
             | {p for (p, _, _) in subtitle_streams}
@@ -1121,7 +1136,7 @@ class MeltPerformer:
             streams_list.append(("video", stream_index, path, language))
 
         for (path, stream_index, language) in audio_streams:
-            duration = self._video_track_duration(path, details)
+            duration = self._video_track_duration(path, details, logger=self.logger)
             if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
                 assert base_duration is not None  # guaranteed by _is_length_mismatch
                 original_path = path

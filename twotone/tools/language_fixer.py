@@ -327,7 +327,7 @@ class LanguageFixerTool(Tool):
     def _set_context(self, logger: logging.Logger, working_dir: str) -> None:
         self.logger = logger
         self.working_dir = working_dir
-        self._interruption = generic_utils.InterruptibleProcess()
+        self._interruption = generic_utils.InterruptibleProcess(logger)
 
     def check_for_stop(self) -> None:
         if self._interruption is not None:
@@ -348,7 +348,7 @@ class LanguageFixerTool(Tool):
 
     def _get_tracks_mkvmerge(self, video_path: str) -> list[dict]:
         start = time.perf_counter()
-        info = video_utils.get_video_full_info_mkvmerge(video_path)
+        info = video_utils.get_video_full_info_mkvmerge(video_path, logger=self.logger)
         self._log_if_slow("get_tracks_mkvmerge", video_path, start)
         tracks: list[dict] = []
 
@@ -383,7 +383,7 @@ class LanguageFixerTool(Tool):
 
     def _get_tracks_ffprobe(self, video_path: str) -> list[dict]:
         start = time.perf_counter()
-        info = video_utils.get_video_full_info(video_path)
+        info = video_utils.get_video_full_info(video_path, logger=self.logger)
         self._log_if_slow("get_tracks_ffprobe", video_path, start)
         tracks: list[dict] = []
         for stream in info.get("streams", []):
@@ -581,7 +581,7 @@ class LanguageFixerTool(Tool):
                 encoding = subtitles_utils.file_encoding(path)
                 self._log_if_slow("subtitle_file_encoding", path, encoding_start)
                 lang_start = time.perf_counter()
-                detected_lang = subtitles_utils.guess_subtitle_language(path, encoding)
+                detected_lang = subtitles_utils.guess_subtitle_language(path, encoding, logger=self.logger)
                 self._log_if_slow("subtitle_language_guess", path, lang_start)
                 if detected_lang:
                     try:
@@ -664,7 +664,7 @@ class LanguageFixerTool(Tool):
             args.extend(["--language", f"{tid}:{lang}"])
         args.append(video_path)
 
-        status = process_utils.start_process("mkvmerge", args)
+        status = process_utils.start_process("mkvmerge", args, logger=self.logger)
         if status.returncode not in (0, 1):
             output = (status.stdout or "") + (status.stderr or "")
             self.logger.error(

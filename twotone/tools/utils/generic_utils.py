@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 
 DISABLE_PROGRESSBARS = False
+DEFAULT_LOGGER = logging.getLogger("TwoTone.utils.generic_utils")
 
 
 def hide_progressbar() -> bool:
@@ -85,18 +86,19 @@ class InterruptibleProcess:
     process-wide signal handlers — keep at most one live instance.
     """
 
-    def __init__(self):
+    def __init__(self, logger: logging.Logger | None = None):
+        self.logger = logger or DEFAULT_LOGGER
         self._work = True
         signal.signal(signal.SIGINT, self.exit_gracefully)
         signal.signal(signal.SIGTERM, self.exit_gracefully)
 
     def exit_gracefully(self, signum, frame):
-        logging.info(f"Got signal #{signum}. Exiting soon.")
+        self.logger.info(f"Got signal #{signum}. Exiting soon.")
         self._work = False
 
     def check_for_stop(self):
         if not self._work:
-            logging.warning("Exiting now due to received signal.")
+            self.logger.warning("Exiting now due to received signal.")
             sys.exit(1)
 
 

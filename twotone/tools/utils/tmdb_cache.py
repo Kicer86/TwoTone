@@ -10,6 +10,9 @@ from typing import Any
 from . import generic_utils
 
 
+DEFAULT_LOGGER = logging.getLogger("TwoTone.utils.tmdb_cache")
+
+
 class TmdbCache:
     """Disk backed cache for TMDB metadata.
 
@@ -24,7 +27,7 @@ class TmdbCache:
         cache_filename: str = "tmdb_cache.json",
         logger: logging.Logger | None = None,
     ) -> None:
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or DEFAULT_LOGGER
         cache_dir = generic_utils.get_twotone_config_dir()
         os.makedirs(cache_dir, exist_ok=True)
         self._cache_path = os.path.join(cache_dir, cache_filename)

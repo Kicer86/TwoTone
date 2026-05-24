@@ -498,11 +498,11 @@ def run_twotone(tool: str, tool_options: list[str] | None = None, global_options
 def simulate_process_failure(target_exec: str):
     original = process_utils.start_process
 
-    def wrapper(cmd, args):
+    def wrapper(cmd, args, *wrapper_args, **wrapper_kwargs):
         _, exec_name, _ = files_utils.split_path(cmd)
         if exec_name == target_exec:
-            return process_utils.ProcessResult(1, b"", b"")
-        return original(cmd, args)
+            return process_utils.ProcessResult(1, "", "")
+        return original(cmd, args, *wrapper_args, **wrapper_kwargs)
 
     with patch("twotone.tools.utils.process_utils.start_process", side_effect=wrapper) as p:
         yield p

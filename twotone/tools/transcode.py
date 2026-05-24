@@ -17,7 +17,7 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, video
 
 class Transcoder(generic_utils.InterruptibleProcess):
     def __init__(self, working_dir: str, logger: logging.Logger, target_ssim: float = 0.98, codec: str = "libx265") -> None:
-        super().__init__()
+        super().__init__(logger)
         self.logger = logger
         self.target_ssim = target_ssim
         self.codec = codec
@@ -41,7 +41,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
             "-lavfi", "ssim", "-f", "null", "-"
         ]
 
-        result = process_utils.start_process("ffmpeg", args)
+        result = process_utils.start_process("ffmpeg", args, logger=self.logger)
         ssim_line = [line for line in result.stderr.splitlines() if "All:" in line]
 
         if ssim_line:
@@ -87,7 +87,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
             output_file
         ]
 
-        process_utils.raise_on_error(process_utils.start_process("ffmpeg", args, show_progress=show_progress))
+        process_utils.raise_on_error(process_utils.start_process("ffmpeg", args, show_progress=show_progress, logger=self.logger))
 
 
     def _extract_segment(self, video_file: str, start_time: float, end_time: float, output_file: str) -> None:
@@ -135,7 +135,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
             "-vsync", "vfr", "-f", "null", "/dev/null"
         ]
 
-        result = process_utils.start_process("ffmpeg", args)
+        result = process_utils.start_process("ffmpeg", args, logger=self.logger)
 
         # Parse timestamps from the ffmpeg output
         timestamps = []
@@ -164,7 +164,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
 
     def _select_segments(self, video_file: str, segment_duration: int = 5) -> list[tuple[float, float]]:
-        duration = video_utils.get_video_duration(video_file) / 1000
+        duration = video_utils.get_video_duration(video_file, logger=self.logger) / 1000
         num_segments = max(3, min(10, int(duration // 30)))
 
         if duration <= 0 or num_segments <= 0 or segment_duration <= 0:
@@ -276,7 +276,11 @@ class Transcoder(generic_utils.InterruptibleProcess):
                 raise ValueError()
 
 
-            process_utils.start_process("exiftool", ["-overwrite_original", "-TagsFromFile", input_file, "-all:all>all:all", temp_file])
+            process_utils.start_process(
+                "exiftool",
+                ["-overwrite_original", "-TagsFromFile", input_file, "-all:all>all:all", temp_file],
+                logger=self.logger,
+            )
 
             if overwrite_input:
                 try:
@@ -310,7 +314,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         """Find the optimal CRF using bisection."""
         original_size = os.path.getsize(input_file)
 
-        duration = video_utils.get_video_duration(input_file)
+        duration = video_utils.get_video_duration(input_file, logger=self.logger)
         if not duration:
             return None
 

@@ -15,11 +15,14 @@ from . import language_utils, process_utils, subtitles_utils
 from .generic_utils import InterruptibleProcess, fps_str_to_float, get_tqdm_defaults, time_to_ms
 from .subtitles_utils import SubtitleFile
 
+DEFAULT_LOGGER = logging.getLogger("TwoTone.utils.video_utils")
+
 
 def _start_ffmpeg_streaming(
     args: list[str],
     interruption: InterruptibleProcess | None = None,
     on_line: "Callable[[str], None] | None" = None,
+    logger: logging.Logger | None = None,
 ) -> tuple[subprocess.Popen, list[str]]:
     """Start an ffmpeg subprocess and read its stderr line-by-line.
 
@@ -35,8 +38,9 @@ def _start_ffmpeg_streaming(
         if opt not in full_args:
             full_args.insert(0, opt)
 
+    logger = logger or DEFAULT_LOGGER
     command = ["ffmpeg"] + full_args
-    logging.debug(f"Starting ffmpeg {' '.join(full_args)}")
+    logger.debug(f"Starting ffmpeg {' '.join(full_args)}")
 
     popen_kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
@@ -85,14 +89,16 @@ def is_video(file: str) -> bool:
     return Path(file).suffix[1:].lower() in ["mkv", "mp4", "avi", "mpg", "mpeg", "mov", "rmvb"]
 
 
-def get_video_frames_count(video_file: str):
+def get_video_frames_count(video_file: str, logger: logging.Logger | None = None):
+    logger = logger or DEFAULT_LOGGER
     result = process_utils.start_process("ffprobe", ["-v", "error", "-select_streams", "v:0", "-count_packets",
-                                   "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", video_file])
+                                   "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", video_file],
+                                   logger=logger)
 
     try:
         return int(result.stdout.strip())
     except ValueError:
-        logging.error(f"Failed to get frame count for {video_file}")
+        logger.error(f"Failed to get frame count for {video_file}")
         return None
 
 
@@ -111,6 +117,7 @@ def detect_scene_changes(
         When *logger* is given (and no *desc*), an info message is emitted.
         When *interruption* is given, ctrl+c can cleanly stop the process.
     """
+    logger = logger or DEFAULT_LOGGER
 
     args = [
         "-i", file_path,
@@ -125,7 +132,7 @@ def detect_scene_changes(
     basename = os.path.basename(file_path)
     bar_desc = desc or f"Detecting scenes: {basename}"
 
-    duration_ms = get_video_duration(file_path)
+    duration_ms = get_video_duration(file_path, logger=logger)
     duration_s = (duration_ms / 1000.0) if duration_ms else None
     pts_time_re = re.compile(r"pts_time:(\d+\.?\d*)")
 
@@ -147,13 +154,13 @@ def detect_scene_changes(
                 pbar.update(delta)
                 last_time = t
 
-    proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line)
+    proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line, logger=logger)
     if duration_s and last_time < duration_s:
         pbar.update(duration_s - last_time)
     pbar.close()
 
     if proc.returncode != 0:
-        logging.warning(f"ffmpeg scene detection exited with code {proc.returncode}")
+        logger.warning(f"ffmpeg scene detection exited with code {proc.returncode}")
 
     # Look for lines with "pts_time:"; these indicate the timestamp of a scene change.
     scene_times = []
@@ -165,13 +172,12 @@ def detect_scene_changes(
             time_ms = int(round(time_s * 1000))
             scene_times.append(time_ms)
 
-    if logger:
-        logger.debug(f"Detected {len(scene_times)} scene changes in {basename}")
+    logger.debug(f"Detected {len(scene_times)} scene changes in {basename}")
 
     return sorted(set(scene_times))
 
 
-def extract_timestamp_frame_mapping(video_path: str) -> dict[int, int]:
+def extract_timestamp_frame_mapping(video_path: str, logger: logging.Logger | None = None) -> dict[int, int]:
     """
     Extracts a mapping of timestamp (seconds) to frame number from a video.
 
@@ -182,6 +188,7 @@ def extract_timestamp_frame_mapping(video_path: str) -> dict[int, int]:
         dict: A dictionary mapping {timestamp in ms (int): frame number (int)}
     """
 
+    logger = logger or DEFAULT_LOGGER
     args = [
         "-v", "error",
         "-select_streams", "v:0",
@@ -191,7 +198,7 @@ def extract_timestamp_frame_mapping(video_path: str) -> dict[int, int]:
     ]
 
     # Run the command
-    result = process_utils.start_process("ffprobe", args)
+    result = process_utils.start_process("ffprobe", args, logger=logger)
 
     # Parse output
     timestamp_frame_map = {}
@@ -229,6 +236,8 @@ def extract_all_frames(
         When *logger* is given, an info message is emitted.
         When *interruption* is given, ctrl+c can cleanly stop the process.
     """
+    provided_logger = logger
+    logger = logger or DEFAULT_LOGGER
 
     # Clear target directory
     def clean_target_dir():
@@ -271,7 +280,7 @@ def extract_all_frames(
     bar_desc = desc or f"Extracting frames: {basename}"
 
     # Get total frame count for a real progress bar
-    total_frames = get_video_frames_count(video_path)
+    total_frames = get_video_frames_count(video_path, logger=logger)
 
     fallback_options: list[list[str]] = [
         ["-fps_mode", "vfr"],
@@ -303,7 +312,7 @@ def extract_all_frames(
                 showinfo_entries.append((frame_number, timestamp_ms))
                 pbar.update(1)
 
-        proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line)
+        proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line, logger=logger)
         pbar.close()
         last_stderr = stderr_lines
 
@@ -321,7 +330,7 @@ def extract_all_frames(
     # Handle count mismatch gracefully — use the smaller count
     usable = min(len(showinfo_entries), len(frame_files))
     if len(showinfo_entries) != len(frame_files):
-        logging.warning(
+        logger.warning(
             f"Frame count mismatch for {basename}: showinfo reported {len(showinfo_entries)} "
             f"frames but {len(frame_files)} files on disk. Using {usable}."
         )
@@ -335,7 +344,7 @@ def extract_all_frames(
             "frame_id": frame_number,
         }
 
-    if logger:
+    if provided_logger:
         logger.info(f"Extracted {len(mapping)} frames from {basename}")
 
     return mapping
@@ -345,6 +354,7 @@ def probe_frame_timestamps(
     video_path: str,
     interruption: InterruptibleProcess | None = None,
     desc: str | None = None,
+    logger: logging.Logger | None = None,
 ) -> dict[int, dict]:
     """Probe all frame timestamps without writing image files.
 
@@ -353,6 +363,7 @@ def probe_frame_timestamps(
     output so that frame numbering (``n:``) is guaranteed to match the
     ``n`` variable used by ffmpeg's ``select`` filter.
     """
+    logger = logger or DEFAULT_LOGGER
     args = [
         "-i", video_path,
         "-map", "0:v:0",
@@ -364,7 +375,7 @@ def probe_frame_timestamps(
     basename = os.path.basename(video_path)
     bar_desc = desc or f"Probing frames: {basename}"
 
-    total_frames = get_video_frames_count(video_path)
+    total_frames = get_video_frames_count(video_path, logger=logger)
 
     frame_pattern = re.compile(r"n: *(\d+).*pts_time:([\d.]+)")
     entries: list[tuple[int, int]] = []
@@ -384,7 +395,7 @@ def probe_frame_timestamps(
             entries.append((frame_number, timestamp_ms))
             pbar.update(1)
 
-    proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line)
+    proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line, logger=logger)
     pbar.close()
 
     if proc.returncode != 0:
@@ -430,6 +441,7 @@ def extract_frames_at_ranges(
     scale: float | tuple[int, int] = 0.5,
     interruption: InterruptibleProcess | None = None,
     desc: str | None = None,
+    logger: logging.Logger | None = None,
 ) -> None:
     """Extract frames from specific frame-number ranges and update *probed_metadata* paths.
 
@@ -449,6 +461,7 @@ def extract_frames_at_ranges(
     if not frame_ranges:
         return
 
+    logger = logger or DEFAULT_LOGGER
     select_expr = _balanced_select_expr(frame_ranges)
 
     scale_filter = ""
@@ -516,7 +529,7 @@ def extract_frames_at_ranges(
             output_pattern,
         ]
 
-        proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line)
+        proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line, logger=logger)
         last_stderr = stderr_lines
 
         if proc.returncode == 0:
@@ -535,7 +548,7 @@ def extract_frames_at_ranges(
 
     usable = min(len(showinfo_entries), len(frame_files))
     if len(showinfo_entries) != len(frame_files):
-        logging.warning(
+        logger.warning(
             f"Frame count mismatch for {basename}: showinfo reported "
             f"{len(showinfo_entries)} frames but {len(frame_files)} files "
             f"on disk. Using {usable}."
@@ -547,24 +560,26 @@ def extract_frames_at_ranges(
         if timestamp_ms in probed_metadata:
             probed_metadata[timestamp_ms]["path"] = os.path.join(target_dir, fname)
         else:
-            logging.warning(
+            logger.warning(
                 f"Extracted frame at {timestamp_ms}ms has no matching "
                 f"entry in probed metadata — skipping."
             )
 
 
-def get_video_duration(video_file):
+def get_video_duration(video_file, logger: logging.Logger | None = None):
     """Get the duration of a video in milliseconds."""
-    result = process_utils.start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file])
+    logger = logger or DEFAULT_LOGGER
+    result = process_utils.start_process("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_file], logger=logger)
 
     try:
         return int(float(result.stdout.strip())*1000)
     except ValueError:
-        logging.error(f"Failed to get duration for {video_file}")
+        logger.error(f"Failed to get duration for {video_file}")
         return None
 
 
-def get_video_full_info(path: str) -> dict:
+def get_video_full_info(path: str, logger: logging.Logger | None = None) -> dict:
+    logger = logger or DEFAULT_LOGGER
     args = []
     args.extend(["-v", "quiet"])
     args.extend(["-print_format", "json"])
@@ -572,7 +587,7 @@ def get_video_full_info(path: str) -> dict:
     args.append("-show_streams")
     args.append(path)
 
-    result = process_utils.start_process("ffprobe", args)
+    result = process_utils.start_process("ffprobe", args, logger=logger)
 
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe exited with unexpected error:\n{result.stderr}")
@@ -583,7 +598,8 @@ def get_video_full_info(path: str) -> dict:
     return output_json
 
 
-def get_video_data(path: str) -> dict:
+def get_video_data(path: str, logger: logging.Logger | None = None) -> dict:
+    logger = logger or DEFAULT_LOGGER
 
     def get_length(stream) -> int | None:
         """Return stream length in milliseconds if available."""
@@ -617,7 +633,7 @@ def get_video_data(path: str) -> dict:
 
         return language
 
-    output_json = get_video_full_info(path)
+    output_json = get_video_full_info(path, logger=logger)
 
     streams = defaultdict(list)
     for stream in output_json["streams"]:
@@ -650,7 +666,7 @@ def get_video_data(path: str) -> dict:
             fps = stream["r_frame_rate"]
             length = get_length(stream)
             if length is None:
-                length = get_video_duration(path)
+                length = get_video_duration(path, logger=logger)
 
             width = stream["width"]
             height = stream["height"]
@@ -681,10 +697,11 @@ def get_video_data(path: str) -> dict:
     return dict(streams)
 
 
-def get_video_full_info_mkvmerge(path: str) -> dict:
+def get_video_full_info_mkvmerge(path: str, logger: logging.Logger | None = None) -> dict:
     """Return file information using ``mkvmerge -J``."""
 
-    result = process_utils.start_process("mkvmerge", ["-J", path])
+    logger = logger or DEFAULT_LOGGER
+    result = process_utils.start_process("mkvmerge", ["-J", path], logger=logger)
 
     if result.returncode != 0:
         raise RuntimeError(f"mkvmerge exited with unexpected error:\n{result.stderr}")
@@ -692,12 +709,17 @@ def get_video_full_info_mkvmerge(path: str) -> dict:
     return json.loads(result.stdout)
 
 
-def get_video_data_mkvmerge(path: str, enrich: bool = False) -> dict:
+def get_video_data_mkvmerge(
+    path: str,
+    enrich: bool = False,
+    logger: logging.Logger | None = None,
+) -> dict:
     """
         Return stream information parsed from ``mkvmerge -J`` output.
         For non mkv files, mkvmerge does not provide as much information as ffprobe.
         Set 'enrich' to True to enrich mkvmerge's outpput with data from ffprobe.
     """
+    logger = logger or DEFAULT_LOGGER
 
     def find_ffprobe_track(track_id: int, ffprobe_info: dict | None) -> dict:
         for streams in (ffprobe_info or {}).values():
@@ -722,16 +744,16 @@ def get_video_data_mkvmerge(path: str, enrich: bool = False) -> dict:
             elif value != base_value:
                 if key != "codec" and key != "format":
                     if key == "fps" and abs(fps_str_to_float(base_value) - fps_str_to_float(value)) > 0.001:
-                        logging.warning(f"Inconsistent data provided by mkvmerge ({key}: {value}) and ffprobe ({key}: {base_value})")
+                        logger.warning(f"Inconsistent data provided by mkvmerge ({key}: {value}) and ffprobe ({key}: {base_value})")
                 output[key] = value
 
         return output
 
-    info = get_video_full_info_mkvmerge(path)
+    info = get_video_full_info_mkvmerge(path, logger=logger)
 
     # process streams/tracks
     streams = defaultdict(list)
-    ffprobe_info = get_video_data(path) if enrich else None
+    ffprobe_info = get_video_data(path, logger=logger) if enrich else None
 
     for track in info.get("tracks", []):
         track_type = track.get("type")
@@ -886,9 +908,9 @@ def extract_subtitle_to_temp(video_path: str, tids: list[int], output_base_path:
     - Returns a mapping {tid: output_path} for all requested tids.
     """
 
+    logger = logger or DEFAULT_LOGGER
     tids_list: list[int] = list(tids)
-    if logger:
-        logger.debug("Extracting subtitles from %s (tids=%s)", video_path, ",".join(str(t) for t in tids_list))
+    logger.debug("Extracting subtitles from %s (tids=%s)", video_path, ",".join(str(t) for t in tids_list))
 
     # Map formats to file extensions
     ext_map = {
@@ -904,12 +926,11 @@ def extract_subtitle_to_temp(video_path: str, tids: list[int], output_base_path:
 
     # Discover formats using video_utils
     try:
-        info = get_video_data(video_path)
+        info = get_video_data(video_path, logger=logger)
         stream_fmt = {s.get("tid"): (s.get("format") or "").lower() for s in info.get("subtitle", [])}
     except Exception as e:
         stream_fmt = {}
-        if logger:
-            logger.debug(f"Failed to get stream info for '{video_path}': {e}")
+        logger.debug(f"Failed to get stream info for '{video_path}': {e}")
 
     # Build mkvextract options
     tid_to_path: dict[int, str] = {}
@@ -920,37 +941,41 @@ def extract_subtitle_to_temp(video_path: str, tids: list[int], output_base_path:
         out_path = f"{output_base_path}.{tid}{suffix}"
         tid_to_path[tid] = out_path
         options.append(f"{tid}:{out_path}")
-        if logger:
-            logger.debug("  tid #%s -> %s (format=%s)", tid, out_path, fmt or "unknown")
+        logger.debug("  tid #%s -> %s (format=%s)", tid, out_path, fmt or "unknown")
 
     try:
         start = time.perf_counter()
-        status = process_utils.start_process("mkvextract", options)
+        status = process_utils.start_process("mkvextract", options, logger=logger)
         elapsed = time.perf_counter() - start
-        if logger:
-            logger.debug("mkvextract finished in %.3fs (rc=%s)", elapsed, status.returncode)
-        if status.returncode != 0 and logger:
+        logger.debug("mkvextract finished in %.3fs (rc=%s)", elapsed, status.returncode)
+        if status.returncode != 0:
             logger.error(f"mkvextract failed for {video_path}: {status.stderr}")
 
     except Exception as e:
-        if logger:
-            logger.error(f"Subtitle extraction failed for {video_path}: {e}")
+        logger.error(f"Subtitle extraction failed for {video_path}: {e}")
 
-    if logger:
-        for tid, out_path in tid_to_path.items():
-            if os.path.exists(out_path):
-                try:
-                    size = os.path.getsize(out_path)
-                except OSError:
-                    size = -1
-                logger.debug("  extracted tid #%s -> %s (%s bytes)", tid, out_path, size)
-            else:
-                logger.debug("  missing output for tid #%s -> %s", tid, out_path)
+    for tid, out_path in tid_to_path.items():
+        if os.path.exists(out_path):
+            try:
+                size = os.path.getsize(out_path)
+            except OSError:
+                size = -1
+            logger.debug("  extracted tid #%s -> %s (%s bytes)", tid, out_path, size)
+        else:
+            logger.debug("  missing output for tid #%s -> %s", tid, out_path)
 
     return tid_to_path
 
 
-def generate_mkv(output_path: str, input_video: str, subtitles: list[SubtitleFile] | dict | None = None, audios: list[dict] | None = None, thumbnail: str | None = None):
+def generate_mkv(
+    output_path: str,
+    input_video: str,
+    subtitles: list[SubtitleFile] | dict | None = None,
+    audios: list[dict] | None = None,
+    thumbnail: str | None = None,
+    logger: logging.Logger | None = None,
+):
+    logger = logger or DEFAULT_LOGGER
     # RMVB/RM files cannot be reliably converted to MKV due to RealAudio "cook" codec issues.
     # mkvmerge produces broken files with audio sync problems.
     # See: https://gitlab.com/mbunkus/mkvtoolnix/-/issues/708
@@ -1008,19 +1033,19 @@ def generate_mkv(output_path: str, input_video: str, subtitles: list[SubtitleFil
         options.extend(["--attach-file", thumbnail])
 
     cmd = "mkvmerge"
-    result = process_utils.start_process(cmd, options)
+    result = process_utils.start_process(cmd, options, logger=logger)
 
     # validate result and output file
     # mkvmerge returns: 0 = success, 1 = success with warnings, 2 = error
     if result.returncode == 1:
         warnings = (result.stdout or "") + (result.stderr or "")
         if warnings.strip():
-            logging.warning(f"{cmd} completed with warnings: {warnings.strip()}")
+            logger.warning(f"{cmd} completed with warnings: {warnings.strip()}")
     elif result.returncode > 1:
         if os.path.exists(output_path):
             os.remove(output_path)
         raise RuntimeError(f"{cmd} exited with unexpected error:\n{result.stderr}\n\nAnd output: {result.stdout}")
 
     if not os.path.exists(output_path):
-        logging.error("Output file was not created")
+        logger.error("Output file was not created")
         raise RuntimeError(f"{cmd} did not create output file")

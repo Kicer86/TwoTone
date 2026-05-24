@@ -12,6 +12,9 @@ from ..utils.tmdb_cache import TmdbCache
 from .duplicates_source import DuplicatesSource
 
 
+DEFAULT_LOGGER = logging.getLogger("TwoTone.melt.jellyfin")
+
+
 class JellyfinSource(DuplicatesSource):
     def __init__(self, interruption: generic_utils.InterruptibleProcess, url: str, token: str, path_fix: tuple[str, str] | None, logger: logging.Logger | None = None) -> None:
         super().__init__(interruption)
@@ -19,8 +22,7 @@ class JellyfinSource(DuplicatesSource):
         self.url = url
         self.token = token
         self.path_fix = path_fix
-        # allow injecting a logger for better control in callers/tests
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or DEFAULT_LOGGER
         self.tmdb_id_by_path: dict[str, str] = {}
         self.tmdb_cache = TmdbCache(logger=self.logger)
 

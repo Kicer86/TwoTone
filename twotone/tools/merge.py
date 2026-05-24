@@ -16,7 +16,7 @@ from twotone.tools.utils import files_utils, generic_utils, subtitles_utils, vid
 class Merge(generic_utils.InterruptibleProcess):
 
     def __init__(self, logger: logging.Logger, language: str, lang_priority: str, working_dir: str) -> None:
-        super().__init__()
+        super().__init__(logger)
         self.logger = logger
         self.language = language
         self.lang_priority = lang_priority.split(",") if lang_priority else []
@@ -26,7 +26,7 @@ class Merge(generic_utils.InterruptibleProcess):
     def _build_subtitle_from_path(self, path: str) -> subtitles_utils.SubtitleFile:
         language = None if self.language == "auto" else self.language
 
-        return subtitles_utils.build_subtitle_from_path(path, language)
+        return subtitles_utils.build_subtitle_from_path(path, language, logger=self.logger)
 
     def _directory_subtitle_matcher(self, dir_path: str) -> dict[str, list[subtitles_utils.SubtitleFile]]:
         """
@@ -43,7 +43,7 @@ class Merge(generic_utils.InterruptibleProcess):
                     path = entry.path
                     if video_utils.is_video(path):
                         videos.append(path)
-                    elif subtitles_utils.is_subtitle(path):
+                    elif subtitles_utils.is_subtitle(path, logger=self.logger):
                         subtitles.append(path)
 
         # sort both lists by length
@@ -88,7 +88,7 @@ class Merge(generic_utils.InterruptibleProcess):
                         # if there is a video file then all possible subtitles at this level (and below) belong to
                         # it, quit recursion for current directory
                         return []
-                    elif subtitles_utils.is_subtitle(entry.path):
+                    elif subtitles_utils.is_subtitle(entry.path, logger=self.logger):
                         found_subtitles.append(entry.path)
 
         # if we got here, then no video was found at this level
@@ -107,13 +107,14 @@ class Merge(generic_utils.InterruptibleProcess):
         subtitles = []
         directory = Path(path).parent
 
-        for entry in os.scandir(directory):
-            if entry.is_dir():
-                sub_subtitles = self._recursive_subtitle_search(entry.path)
-                subtitles.extend(sub_subtitles)
-            elif entry.is_file() and subtitles_utils.is_subtitle(entry.path):
-                subtitle = self._build_subtitle_from_path(entry.path)
-                subtitles.append(subtitle)
+        with os.scandir(directory) as it:
+            for entry in it:
+                if entry.is_dir():
+                    sub_subtitles = self._recursive_subtitle_search(entry.path)
+                    subtitles.extend(sub_subtitles)
+                elif entry.is_file() and subtitles_utils.is_subtitle(entry.path, logger=self.logger):
+                    subtitle = self._build_subtitle_from_path(entry.path)
+                    subtitles.append(subtitle)
 
         return subtitles
 
@@ -158,7 +159,7 @@ class Merge(generic_utils.InterruptibleProcess):
             raise RuntimeError(f"Unsupported subtitle format: {input_file}")
 
         fps = generic_utils.fps_str_to_float(video_fps)
-        subs = subtitles_utils.open_subtitle_file(input_file, fps=fps)
+        subs = subtitles_utils.open_subtitle_file(input_file, fps=fps, logger=self.logger)
         if subs is None:
             raise RuntimeError(f"Failed to open subtitle: {input_file}")
 
@@ -181,7 +182,7 @@ class Merge(generic_utils.InterruptibleProcess):
         temporary_output_video = video_dir + "/_tt_merge_" + video_name + "." + "mkv"
 
         # collect details about input file
-        input_file_details = video_utils.get_video_data(input_video)
+        input_file_details = video_utils.get_video_data(input_video, logger=self.logger)
 
         input_files: set[str] = set()
 
@@ -234,7 +235,12 @@ class Merge(generic_utils.InterruptibleProcess):
 
         # perform
         self.logger.debug("\tMerge in progress...")
-        video_utils.generate_mkv(input_video=input_video, output_path=temporary_output_video, subtitles=prepared_subtitles)
+        video_utils.generate_mkv(
+            input_video=input_video,
+            output_path=temporary_output_video,
+            subtitles=prepared_subtitles,
+            logger=self.logger,
+        )
 
         # Remove all inputs
         for input in input_files:

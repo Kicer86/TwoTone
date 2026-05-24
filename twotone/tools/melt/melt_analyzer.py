@@ -168,9 +168,8 @@ class MeltAnalyzer:
             file_id = ids[path]
             self.logger.debug(f"Attachment ID #{tid} from file #{file_id}")
 
-    @staticmethod
-    def _probe_inputs(files: Sequence[str]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-        details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True) for file in files}
+    def _probe_inputs(self, files: Sequence[str]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True, logger=self.logger) for file in files}
         attachments = {file: info["attachments"] for file, info in details_full.items()}
         tracks = {file: info["tracks"] for file, info in details_full.items()}
         return details_full, attachments, tracks
