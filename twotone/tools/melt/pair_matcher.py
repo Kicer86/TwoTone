@@ -484,14 +484,17 @@ class PairMatcher:
         lhs_keys = sorted(lhs_all_frames.keys())
         rhs_keys = sorted(rhs_all_frames.keys())
 
+        last_lhs_timestamp = lhs_keys[-1]
+        last_rhs_timestamp = rhs_keys[-1]
+
         first_lhs = lhs_by_frame.get(first_lhs_frame,
                         PairMatcher._snap_to_nearest_frame(lhs_keys, 0))
         first_rhs = rhs_by_frame.get(first_rhs_frame,
                         PairMatcher._snap_to_nearest_frame(rhs_keys, 0))
         last_lhs = lhs_by_frame.get(last_lhs_frame,
-                        PairMatcher._snap_to_nearest_frame(lhs_keys, lhs_keys[-1]))
+                        PairMatcher._snap_to_nearest_frame(lhs_keys, last_lhs_timestamp))
         last_rhs = rhs_by_frame.get(last_rhs_frame,
-                        PairMatcher._snap_to_nearest_frame(rhs_keys, rhs_keys[-1]))
+                        PairMatcher._snap_to_nearest_frame(rhs_keys, last_rhs_timestamp))
 
         # log details of calculations
         self.logger.debug(
@@ -506,8 +509,8 @@ class PairMatcher:
         rhs_duration = self.rhs_duration_ms if self.rhs_duration_ms is not None else (max(rhs_keys) if rhs_keys else None)
         lhs_duration_text = generic_utils.ms_to_time(lhs_duration) if lhs_duration is not None else "?"
         rhs_duration_text = generic_utils.ms_to_time(rhs_duration) if rhs_duration is not None else "?"
-        lhs_ref = f"{self.lhs_label} ({os.path.basename(self.lhs_path)})"
-        rhs_ref = f"{self.rhs_label} ({os.path.basename(self.rhs_path)})"
+        lhs_ref = f"{self.lhs_label}"
+        rhs_ref = f"{self.rhs_label}"
 
         if k > 0:
             offset_description = (
@@ -522,10 +525,10 @@ class PairMatcher:
         else:
             offset_description = "no frame offset"
 
+        self.logger.info("Files %s and %s are similar with %s. ", lhs_ref, rhs_ref, offset_description)
+
         self.logger.info(
-            "Files %s and %s have the same content with %s. "
             "Common section: %s %s-%s of %s; %s %s-%s of %s.",
-            lhs_ref, rhs_ref, offset_description,
             self.lhs_label,
             generic_utils.ms_to_time(first_lhs),
             generic_utils.ms_to_time(last_lhs),
