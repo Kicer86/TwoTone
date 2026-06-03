@@ -278,6 +278,52 @@ class PairMatcherUnitTest(unittest.TestCase):
         # last_lhs_frame=min(250,250+3)=250 → ts=10000, last_rhs_frame=247 → ts=9880
         self.assertEqual(result[-1], (10000, 9880))
 
+    def test_constant_offset_logs_technical_details_at_debug_and_summary_at_info(self):
+        """Constant-offset logs should keep technical details out of info."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        matching_pairs = [
+            (2120, 2000),
+            (4120, 4000),
+            (6120, 6000),
+            (8120, 8000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        with self.assertLogs("test.PairMatcher", level="DEBUG") as captured:
+            pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        debug_messages = [
+            record.getMessage() for record in captured.records
+            if record.levelno == logging.DEBUG
+        ]
+        info_messages = [
+            record.getMessage() for record in captured.records
+            if record.levelno == logging.INFO
+        ]
+
+        self.assertTrue(any(
+            "Constant offset detected: 3 frame(s) (median=3.0, std=0.00)." in message
+            for message in debug_messages
+        ))
+        self.assertFalse(any("median=" in message for message in info_messages))
+        self.assertTrue(any(
+            "Files #1 (lhs.mp4) and #2 (rhs.mp4) have the same content" in message
+            for message in info_messages
+        ))
+        self.assertTrue(any(
+            "small constant frame offset of 3 frame(s)" in message
+            for message in info_messages
+        ))
+        self.assertTrue(any(
+            "Common section: #1 00:00:00,120-00:00:10,000 of 00:00:10,000; "
+            "#2 00:00:00,000-00:00:09,880 of 00:00:10,000." in message
+            for message in info_messages
+        ))
+
     def test_constant_offset_negative(self):
         """When offset is negative (rhs ahead of lhs), boundaries are correct."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)

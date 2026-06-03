@@ -43,8 +43,12 @@ class PairMatcher:
         self.logger = logger
         self.cache = cache
         self.phash = PhashCache()
-        self.lhs_fps = generic_utils.fps_str_to_float(video_utils.get_video_data(lhs_path, logger=self.logger)["video"][0]["fps"])
-        self.rhs_fps = generic_utils.fps_str_to_float(video_utils.get_video_data(rhs_path, logger=self.logger)["video"][0]["fps"])
+        lhs_video_data = video_utils.get_video_data(lhs_path, logger=self.logger)["video"][0]
+        rhs_video_data = video_utils.get_video_data(rhs_path, logger=self.logger)["video"][0]
+        self.lhs_fps = generic_utils.fps_str_to_float(lhs_video_data["fps"])
+        self.rhs_fps = generic_utils.fps_str_to_float(rhs_video_data["fps"])
+        self.lhs_duration_ms: int | None = lhs_video_data.get("length")
+        self.rhs_duration_ms: int | None = rhs_video_data.get("length")
 
         lhs_wd = os.path.join(self.wd, "lhs")
         rhs_wd = os.path.join(self.wd, "rhs")
@@ -463,7 +467,7 @@ class PairMatcher:
 
         k = round(median_offset)  # frame-number offset
 
-        # Build frame_id → timestamp lookup for boundary extrapolation
+        # Build frame_id -> timestamp lookup for boundary extrapolation
         lhs_by_frame = {int(info["frame_id"]): ts for ts, info in lhs_all_frames.items()}
         rhs_by_frame = {int(info["frame_id"]): ts for ts, info in rhs_all_frames.items()}
 
@@ -489,12 +493,50 @@ class PairMatcher:
         last_rhs = rhs_by_frame.get(last_rhs_frame,
                         PairMatcher._snap_to_nearest_frame(rhs_keys, rhs_keys[-1]))
 
-        self.logger.info(
-            f"Constant offset detected: {k} frame(s) "
-            f"(median={median_offset:.1f}, std={std_offset:.2f}). "
-            f"Extrapolated boundaries: ({first_lhs}, {first_rhs}) – ({last_lhs}, {last_rhs})"
+        # log details of calculations
+        self.logger.debug(
+            "Constant offset detected: %d frame(s) "
+            "(median=%.1f, std=%.2f). "
+            "Extrapolated boundaries: (%d, %d) - (%d, %d)",
+            k, median_offset, std_offset,
+            first_lhs, first_rhs, last_lhs, last_rhs,
         )
 
+        lhs_duration = self.lhs_duration_ms if self.lhs_duration_ms is not None else (max(lhs_keys) if lhs_keys else None)
+        rhs_duration = self.rhs_duration_ms if self.rhs_duration_ms is not None else (max(rhs_keys) if rhs_keys else None)
+        lhs_duration_text = generic_utils.ms_to_time(lhs_duration) if lhs_duration is not None else "?"
+        rhs_duration_text = generic_utils.ms_to_time(rhs_duration) if rhs_duration is not None else "?"
+        lhs_ref = f"{self.lhs_label} ({os.path.basename(self.lhs_path)})"
+        rhs_ref = f"{self.rhs_label} ({os.path.basename(self.rhs_path)})"
+
+        if k > 0:
+            offset_description = (
+                f"a small constant frame offset of {k} frame(s); "
+                f"{self.lhs_label} starts the shared content later than {self.rhs_label}"
+            )
+        elif k < 0:
+            offset_description = (
+                f"a small constant frame offset of {-k} frame(s); "
+                f"{self.rhs_label} starts the shared content later than {self.lhs_label}"
+            )
+        else:
+            offset_description = "no frame offset"
+
+        self.logger.info(
+            "Files %s and %s have the same content with %s. "
+            "Common section: %s %s-%s of %s; %s %s-%s of %s.",
+            lhs_ref, rhs_ref, offset_description,
+            self.lhs_label,
+            generic_utils.ms_to_time(first_lhs),
+            generic_utils.ms_to_time(last_lhs),
+            lhs_duration_text,
+            self.rhs_label,
+            generic_utils.ms_to_time(first_rhs),
+            generic_utils.ms_to_time(last_rhs),
+            rhs_duration_text,
+        )
+
+        # build result
         result = list(matching_pairs)
 
         if (first_lhs, first_rhs) != result[0]:
