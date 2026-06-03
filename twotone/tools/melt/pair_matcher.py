@@ -98,8 +98,7 @@ class PairMatcher:
         """Compute a human-readable coverage summary for matched files.
 
         Returns a dict with:
-        - ``full_coverage``: True when first/last pairs are within one frame
-          (40 ms) of both video edges
+        - ``full_coverage``: True when videos have equal length
         - ``lhs_start_gap_s`` / ``rhs_start_gap_s``: unmatched seconds at start
         - ``lhs_end_gap_s`` / ``rhs_end_gap_s``: unmatched seconds at end
         - ``ratio``: speed ratio between the two files
@@ -112,13 +111,7 @@ class PairMatcher:
         lhs_end_gap = max(0, lhs_duration_ms - last[0])
         rhs_end_gap = max(0, rhs_duration_ms - last[1])
 
-        edge_tolerance_ms = 100  # ~2-3 frames; last extracted frame may not reach video end
-        full_coverage = (
-            lhs_start_gap <= edge_tolerance_ms
-            and rhs_start_gap <= edge_tolerance_ms
-            and lhs_end_gap <= edge_tolerance_ms
-            and rhs_end_gap <= edge_tolerance_ms
-        )
+        full_coverage = lhs_duration_ms == rhs_duration_ms
 
         return {
             "full_coverage": full_coverage,
