@@ -288,16 +288,7 @@ class MeltPerformer:
 
         # Fast path: no head/tail + fps ratio ≈ 1.0 → stream-copy, no re-encoding at all
         if not has_head and not has_tail and not needs_scaling:
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y",
-                    "-ss", str(seg2_start / 1000),
-                    "-to", str(seg2_end / 1000),
-                    "-i", source_video,
-                    "-map", "0:a:0", "-c:a", "copy",
-                    output_path,
-                ], logger=self.logger)
-            )
+            self._copy_audio_range_no_reencode(source_video, output_path, seg2_start, seg2_end)
             actual_dur = video_utils.get_video_duration(output_path, logger=self.logger)
             deficit = source_dur - actual_dur
 
@@ -947,6 +938,28 @@ class MeltPerformer:
         )
         shutil.copy2(input_path, output_path)
 
+    def _copy_audio_range_no_reencode(
+        self,
+        source_video: str,
+        output_path: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> None:
+        """Copy an audio range while keeping trim points close to packet boundaries."""
+        # Keep -ss/-to as output options. With input-side seek and -c copy,
+        # ffmpeg can preserve preroll packets before start_ms, which shifts
+        # short-offset tracks early by the amount we meant to trim.
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", [
+                "-y",
+                "-i", source_video,
+                "-ss", str(start_ms / 1000),
+                "-to", str(end_ms / 1000),
+                "-map", "0:a:0", "-c:a", "copy",
+                output_path,
+            ], logger=self.logger)
+        )
+
     def _shift_audio_no_reencode(
         self,
         source_video: str,
@@ -963,16 +976,7 @@ class MeltPerformer:
         sync_offset = seg.lhs_start
         expected_dur = seg2_end - seg2_start
 
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", [
-                "-y",
-                "-ss", str(seg2_start / 1000),
-                "-to", str(seg2_end / 1000),
-                "-i", source_video,
-                "-map", "0:a:0", "-c:a", "copy",
-                output_path,
-            ], logger=self.logger)
-        )
+        self._copy_audio_range_no_reencode(source_video, output_path, seg2_start, seg2_end)
 
         actual_dur = video_utils.get_video_duration(output_path, logger=self.logger)
         self._validate_audio_duration(actual_dur, expected_dur, "stream-copied audio (no reencode)")

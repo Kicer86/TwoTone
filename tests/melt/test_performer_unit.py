@@ -398,6 +398,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
         # Should be a single ffmpeg call with -c:a copy
         self.assertEqual(len(calls), 1, "Fast path should produce exactly one ffmpeg call")
         self.assertIn("copy", calls[0][1], "Fast path should use -c:a copy")
+        args = calls[0][1]
+        self.assertLess(
+            args.index("-i"),
+            args.index("-ss"),
+            "Fast path should use output-side -ss so stream-copy does not keep preroll audio",
+        )
         # No FLAC, no AAC, no concat
         aac_calls = [c for c in calls if any("aac" in str(a) for a in c[1])]
         self.assertEqual(aac_calls, [], "Fast path should not encode to AAC")
@@ -538,6 +544,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertIn("copy", calls[0][1], "Should use stream-copy")
         # Verify trim points
         args = calls[0][1]
+        self.assertLess(
+            args.index("-i"),
+            args.index("-ss"),
+            "Stream-copy trimming should use output-side -ss to avoid preserving preroll audio",
+        )
         ss_idx = args.index("-ss")
         to_idx = args.index("-to")
         self.assertEqual(args[ss_idx + 1], "1.0", "Should trim from seg2_start")
