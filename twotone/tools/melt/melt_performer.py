@@ -453,9 +453,9 @@ class MeltPerformer:
         if t_max - t_min <= 0:
             return []
 
-        _THRESH = 0.1  # ignore gaps smaller than 100ms
+        _THRESH = 0.0  # ignore gaps smaller than _THRESH
         _MIN_GAP = 6   # minimum column width for a visible gap
-        _W = 70         # total diagram width in columns
+        _W = 70        # total diagram width in columns
 
         left_gap = abs(lhs_s - rhs_s)
         right_gap = abs(lhs_e - rhs_e)
@@ -552,13 +552,13 @@ class MeltPerformer:
 
             if lhs_sg > 0.04 or rhs_sg > 0.04:
                 parts.append(
-                    f"shared content starts at {lhs_sg:.1f}s in {lhs_name} "
-                    f"and {rhs_sg:.1f}s in {rhs_name}"
+                    f"shared content starts at {lhs_sg:.1f}s in #{lhs_id} "
+                    f"and {rhs_sg:.1f}s in #{rhs_id}"
                 )
             if lhs_eg > 0.04 or rhs_eg > 0.04:
                 parts.append(
-                    f"shared content ends {lhs_eg:.1f}s before end of {lhs_name} "
-                    f"and {rhs_eg:.1f}s before end of {rhs_name}"
+                    f"shared content ends {lhs_eg:.1f}s before end of #{lhs_id} "
+                    f"and {rhs_eg:.1f}s before end of #{rhs_id}"
                 )
 
             detail = "; ".join(parts) if parts else "partial overlap"
@@ -1039,14 +1039,14 @@ class MeltPerformer:
 
             self._log_coverage(video_path_base, audio_path, mapping, base_duration, duration, lhs_id, rhs_id)
 
-            self.logger.info(
+            self.logger.debug(
                 "Audio patching: base_duration=%d ms, source_duration=%d ms, "
                 "mapping_relation=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
                 base_duration, duration, mapping_relation.value,
                 match_result.lhs_fps, match_result.rhs_fps, len(mapping),
             )
             if mapping:
-                self.logger.info(
+                self.logger.debug(
                     "  Mapping range: lhs=[%d … %d] ms, rhs=[%d … %d] ms",
                     mapping[0][0], mapping[-1][0], mapping[0][1], mapping[-1][1],
                 )
