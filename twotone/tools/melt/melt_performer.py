@@ -995,7 +995,7 @@ class MeltPerformer:
         video_path_base: str,
         audio_stream: tuple[str, int],
         base_duration: int,
-        file_ids: dict[str, int] | None,
+        file_ids: dict[str, int],
     ) -> tuple[str, int]:
         """Run PairMatcher and apply the appropriate audio patching strategy.
 
@@ -1004,8 +1004,8 @@ class MeltPerformer:
         audio_path, stream_index = audio_stream
         with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
-            lhs_id = file_ids.get(video_path_base, 1) if file_ids else 1
-            rhs_id = file_ids.get(audio_path, 2) if file_ids else 2
+            lhs_id = file_ids[video_path_base]
+            rhs_id = file_ids[audio_path]
             cache_key = (video_path_base, audio_path)
             match_result = self._pair_match_cache.get(cache_key)
 
@@ -1123,7 +1123,7 @@ class MeltPerformer:
         subtitle_streams: Sequence[tuple[str, int, str | None]],
         required_input_files: set[str],
         attachments: Sequence[tuple[str, int]],
-        file_ids: dict[str, int] | None = None,
+        file_ids: dict[str, int],
         files_details: dict[str, Any] | None = None,
     ) -> list[tuple[str, int, str, str | None]]:
         streams_list: list[tuple[str, int, str, str | None]] = []
