@@ -83,7 +83,7 @@ PAIR_CASES = [
 ]
 
 
-
+@pytest.mark.slow
 class AudioAlignmentTest(TwoToneTestCase):
     """Verify melt keeps alternate audio streams sample-aligned.
 

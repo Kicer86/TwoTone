@@ -35,3 +35,8 @@ twotone = "twotone.twotone:main"
 
 [tool.setuptools.packages.find]
 include = ["twotone*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: expensive tests that generate media or run full external-tool pipelines",
+]
