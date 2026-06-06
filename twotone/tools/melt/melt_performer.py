@@ -1131,18 +1131,22 @@ class MeltPerformer:
     _MKVMERGE_PRESERVES_START_EXTENSIONS = frozenset({".mkv", ".mk3d", ".mka", ".webm"})
 
     @staticmethod
-    def _start_offset_to_preserve_for_mkvmerge(path: str) -> int:
-        """Return positive container start offset that mkvmerge would otherwise normalize away."""
-        extension = os.path.splitext(path)[1].lower()
-        if extension in MeltPerformer._MKVMERGE_PRESERVES_START_EXTENSIONS:
-            return 0
-
+    def _container_start_offset_ms(path: str) -> int:
+        """Return positive container start offset from ffprobe format metadata."""
         info = video_utils.get_video_full_info(path)
         try:
             start_time = float(info.get("format", {}).get("start_time") or 0.0)
         except (TypeError, ValueError):
             return 0
         return max(0, round(start_time * 1000))
+
+    @staticmethod
+    def _file_sync_offset_to_preserve_for_mkvmerge(path: str, container_start_offset_ms: int) -> int:
+        """Return offset needed for mkvmerge to preserve a source container's positive start."""
+        extension = os.path.splitext(path)[1].lower()
+        if extension in MeltPerformer._MKVMERGE_PRESERVES_START_EXTENSIONS:
+            return 0
+        return container_start_offset_ms
 
     def _prepare_stream_entries(
         self,
@@ -1158,9 +1162,13 @@ class MeltPerformer:
         video_path_base, _, _ = video_streams[0]
         details = files_details or {}
         base_duration = self._video_track_duration(video_path_base, details, logger=self.logger)
-        self._output_timeline_offset_ms = self._start_offset_to_preserve_for_mkvmerge(video_path_base)
-        if self._output_timeline_offset_ms:
-            self._file_sync_offsets[video_path_base] = self._output_timeline_offset_ms
+        self._output_timeline_offset_ms = self._container_start_offset_ms(video_path_base)
+        base_file_sync_offset = self._file_sync_offset_to_preserve_for_mkvmerge(
+            video_path_base,
+            self._output_timeline_offset_ms,
+        )
+        if base_file_sync_offset:
+            self._file_sync_offsets[video_path_base] = base_file_sync_offset
         protected_paths = (
             {p for (p, _, _) in video_streams}
             | {p for (p, _, _) in subtitle_streams}

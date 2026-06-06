@@ -712,22 +712,32 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertIn("2:471", sync_values)
         self.assertIn("0:492", sync_values)
 
-    def test_start_offset_to_preserve_for_mkvmerge_ignores_matroska(self):
+    def test_container_start_offset_reads_matroska_format_start(self):
+        with patch.object(
+            video_utils,
+            "get_video_full_info",
+            return_value={"format": {"start_time": "0.510000"}},
+        ):
+            offset = MeltPerformer._container_start_offset_ms("/tmp/base.mkv")
+
+        self.assertEqual(offset, 510)
+
+    def test_file_sync_offset_to_preserve_for_mkvmerge_ignores_matroska(self):
         with patch.object(video_utils, "get_video_full_info") as probe:
-            offset = MeltPerformer._start_offset_to_preserve_for_mkvmerge("/tmp/base.mkv")
+            offset = MeltPerformer._file_sync_offset_to_preserve_for_mkvmerge("/tmp/base.mkv", 510)
 
         self.assertEqual(offset, 0)
         probe.assert_not_called()
 
-    def test_start_offset_to_preserve_for_mkvmerge_uses_non_matroska_format_start(self):
+    def test_file_sync_offset_to_preserve_for_mkvmerge_uses_non_matroska_format_start(self):
         with patch.object(
             video_utils,
             "get_video_full_info",
-            return_value={"format": {"start_time": "0.471000"}},
-        ):
-            offset = MeltPerformer._start_offset_to_preserve_for_mkvmerge("/tmp/base.mov")
+        ) as probe:
+            offset = MeltPerformer._file_sync_offset_to_preserve_for_mkvmerge("/tmp/base.mov", 471)
 
         self.assertEqual(offset, 471)
+        probe.assert_not_called()
 
     def test_patch_audio_fps_mismatch_with_audio_deficit(self):
         """Exact scenario: 23.976fps base + 25fps AVI source with audio deficit.
