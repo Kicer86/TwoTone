@@ -763,13 +763,18 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertIn(f"asetrate={expected_rate:.6f}", filter_arg)
         self.assertIn("aresample=48000", filter_arg)
 
-        # --- Trim timestamps must match mapping endpoints ---
+        # --- Trim timestamps must match mapping endpoints sample-accurately ---
         ffmpeg_args = [c[1] for c in calls if c[0] == "ffmpeg"]
         trim_call = next(a for a in ffmpeg_args if "source_trimmed" in str(a))
-        ss_idx = trim_call.index("-ss")
-        to_idx = trim_call.index("-to")
-        self.assertAlmostEqual(float(trim_call[ss_idx + 1]), seg2_start / 1000, places=2)
-        self.assertAlmostEqual(float(trim_call[to_idx + 1]), seg2_end / 1000, places=2)
+        self.assertNotIn("-ss", trim_call)
+        self.assertNotIn("-to", trim_call)
+        self.assertLess(trim_call.index("-i"), trim_call.index("-filter:a"))
+        trim_filter = trim_call[trim_call.index("-filter:a") + 1]
+        self.assertIn(
+            f"atrim=start={seg2_start / 1000:.6f}:end={seg2_end / 1000:.6f}",
+            trim_filter,
+        )
+        self.assertIn("asetpts=PTS-STARTPTS", trim_filter)
 
         # --- No head/tail extraction (use_silence=True) ---
         head_tail_calls = [c for c in calls if any("head" in str(a) or "tail" in str(a) for a in c[1])]

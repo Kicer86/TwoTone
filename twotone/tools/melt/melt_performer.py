@@ -310,13 +310,16 @@ class MeltPerformer:
             )
 
         trimmed_audio = os.path.join(wd, "source_trimmed.flac")
+        trim_filter = (
+            f"atrim=start={seg2_start / 1000:.6f}:end={seg2_end / 1000:.6f},"
+            "asetpts=PTS-STARTPTS"
+        )
         process_utils.raise_on_error(
                 process_utils.start_process("ffmpeg", [
                     "-y",
-                    "-ss", str(seg2_start / 1000),
-                    "-to", str(seg2_end / 1000),
                     "-i", source_video,
                     "-map", "0:a:0",
+                    "-filter:a", trim_filter,
                     "-sample_fmt", self._flac_safe_fmt(source_params[2]),
                     "-c:a", "flac",
                     trimmed_audio,
