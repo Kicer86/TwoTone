@@ -221,9 +221,9 @@ class AudioAlignmentTest(TwoToneTestCase):
 
         filter_complex = (
             f"[0:v]trim=start={video_start:.6f}:end={video_end:.6f},"
-            "setpts=PTS-STARTPTS,"
-            f"setpts=PTS/{spec.speed:.8f},"
-            f"scale={spec.width}:{spec.height},fps={cls.FPS},"
+            # Speed variants keep frame indexes stable; only frame duration/effective FPS changes.
+            f"setpts=N/({cls.FPS}*{spec.speed:.8f})/TB,"
+            f"scale={spec.width}:{spec.height},"
             f"setpts=PTS+{video_offset:.8f}/TB[v];"
             f"[0:a]atrim=start={audio_start:.6f}:end={audio_end:.6f},"
             "asetpts=PTS-STARTPTS,"
@@ -238,6 +238,8 @@ class AudioAlignmentTest(TwoToneTestCase):
                 "-filter_complex", filter_complex,
                 "-map", "[v]",
                 "-map", "[a]",
+                "-fps_mode", "passthrough",
+                "-enc_time_base:v", "1:1000000",
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
                 "-crf", "22",
