@@ -273,6 +273,38 @@ class AudioAlignmentTest(TwoToneTestCase):
         except (TypeError, ValueError):
             return 0.0
 
+    @staticmethod
+    def _stream_duration_seconds(stream: dict) -> float | None:
+        value = stream.get("duration")
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                pass
+
+        tag_duration = stream.get("tags", {}).get("DURATION")
+        if tag_duration is not None:
+            return generic_utils.time_to_ms(tag_duration) / 1000
+
+        return None
+
+    @classmethod
+    def _playback_end_ms(cls, path: str) -> int | None:
+        info = video_utils.get_video_full_info(path)
+        ends = []
+        for stream in info["streams"]:
+            if stream.get("codec_type") not in ("audio", "video"):
+                continue
+            duration = cls._stream_duration_seconds(stream)
+            if duration is None:
+                continue
+            start = float(stream.get("start_time", 0.0) or 0.0)
+            ends.append(round((start + duration) * 1000))
+
+        if ends:
+            return max(ends)
+        return video_utils.get_video_duration(path)
+
     @classmethod
     def _expected_beep_centers(cls, spec: VariantSpec) -> list[float]:
         return [value / spec.speed for value in cls.beep_centers]
@@ -463,7 +495,7 @@ class AudioAlignmentTest(TwoToneTestCase):
         output_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_data["tracks"]["audio"]), 2)
 
-        actual_duration = video_utils.get_video_duration(output_file)
+        actual_duration = self._playback_end_ms(output_file)
         expected_duration = self._expected_duration_ms(expected_base)
         self.assertIsNotNone(actual_duration)
         self.assertAlmostEqual(

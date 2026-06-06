@@ -679,6 +679,56 @@ class MeltPerformerUnitTest(unittest.TestCase):
         sync_idx = args.index("--sync")
         self.assertEqual(args[sync_idx + 1], "0:0", "Sync should be TID:0")
 
+    def test_build_mkvmerge_args_applies_file_sync_offset_to_all_timed_tracks(self):
+        performer = self._make_performer()
+
+        base_file = "/tmp/base.mov"
+        patched_file = "/tmp/patched.mka"
+        performer._file_sync_offsets[base_file] = 471
+        performer._sync_offsets[patched_file] = 492
+
+        streams = [
+            ("video", 0, base_file, None),
+            ("audio", 1, base_file, "pol"),
+            ("subtitle", 2, base_file, "eng"),
+            ("audio", 0, patched_file, "eng"),
+        ]
+
+        args = performer.build_mkvmerge_args(
+            "/tmp/out.mkv",
+            streams,
+            attachments=[],
+            preferred_audio=None,
+            required_input_files=[base_file, patched_file],
+        )
+
+        sync_values = [
+            args[index + 1]
+            for index, value in enumerate(args)
+            if value == "--sync"
+        ]
+        self.assertIn("0:471", sync_values)
+        self.assertIn("1:471", sync_values)
+        self.assertIn("2:471", sync_values)
+        self.assertIn("0:492", sync_values)
+
+    def test_start_offset_to_preserve_for_mkvmerge_ignores_matroska(self):
+        with patch.object(video_utils, "get_video_full_info") as probe:
+            offset = MeltPerformer._start_offset_to_preserve_for_mkvmerge("/tmp/base.mkv")
+
+        self.assertEqual(offset, 0)
+        probe.assert_not_called()
+
+    def test_start_offset_to_preserve_for_mkvmerge_uses_non_matroska_format_start(self):
+        with patch.object(
+            video_utils,
+            "get_video_full_info",
+            return_value={"format": {"start_time": "0.471000"}},
+        ):
+            offset = MeltPerformer._start_offset_to_preserve_for_mkvmerge("/tmp/base.mov")
+
+        self.assertEqual(offset, 471)
+
     def test_patch_audio_fps_mismatch_with_audio_deficit(self):
         """Exact scenario: 23.976fps base + 25fps AVI source with audio deficit.
 

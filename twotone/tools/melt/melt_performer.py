@@ -55,6 +55,8 @@ class MeltPerformer:
         self.cache = cache
         self.fill_audio_gaps = fill_audio_gaps
         self._sync_offsets: dict[str, int] = {}
+        self._file_sync_offsets: dict[str, int] = {}
+        self._output_timeline_offset_ms = 0
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
         self.wd = _ensure_working_dir(working_dir)
 
@@ -103,6 +105,8 @@ class MeltPerformer:
                 else:
                     # Convert streams to unified list (and patch audios if needed)
                     self._sync_offsets.clear()
+                    self._file_sync_offsets.clear()
+                    self._output_timeline_offset_ms = 0
                     self._pair_match_cache.clear()
                     files_details = group.get("files_details", {})
                     streams_list = self._prepare_stream_entries(
@@ -196,9 +200,13 @@ class MeltPerformer:
                     generation_args.extend(["--default-track", f"{tid}:{flag}"])
 
             sync_offset = self._sync_offsets.get(file_path)
-            if sync_offset is not None:
-                for tid in fo["audio"]:
-                    generation_args.extend(["--sync", f"{tid}:{sync_offset}"])
+            file_sync_offset = self._file_sync_offsets.get(file_path, 0)
+            for tid in fo["video"] + fo["subtitle"]:
+                if file_sync_offset:
+                    generation_args.extend(["--sync", f"{tid}:{file_sync_offset}"])
+            for tid in fo["audio"]:
+                if sync_offset is not None or file_sync_offset:
+                    generation_args.extend(["--sync", f"{tid}:{file_sync_offset + (sync_offset or 0)}"])
 
             generation_args.append(file_path)
 
@@ -1065,7 +1073,7 @@ class MeltPerformer:
             if strategy == _AudioStrategy.STREAM_COPY:
                 patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
                 sync_offset = self._shift_audio_no_reencode(audio_path, patched_audio, mapping)
-                self._sync_offsets[patched_audio] = sync_offset
+                self._sync_offsets[patched_audio] = sync_offset + self._output_timeline_offset_ms
                 return patched_audio, 0
 
             patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
@@ -1076,8 +1084,9 @@ class MeltPerformer:
                 effective_sync = min(p[0] for p in mapping)
 
             if use_silence:
-                self._sync_offsets[patched_audio] = effective_sync
-                self.logger.info("  Sync offset (--sync): %d ms", effective_sync)
+                sync_offset = effective_sync + self._output_timeline_offset_ms
+                self._sync_offsets[patched_audio] = sync_offset
+                self.logger.info("  Sync offset (--sync): %d ms", sync_offset)
 
         return patched_audio, 0
 
@@ -1119,6 +1128,22 @@ class MeltPerformer:
                         return length
         return video_utils.get_video_duration(path, logger=logger)
 
+    _MKVMERGE_PRESERVES_START_EXTENSIONS = frozenset({".mkv", ".mk3d", ".mka", ".webm"})
+
+    @staticmethod
+    def _start_offset_to_preserve_for_mkvmerge(path: str) -> int:
+        """Return positive container start offset that mkvmerge would otherwise normalize away."""
+        extension = os.path.splitext(path)[1].lower()
+        if extension in MeltPerformer._MKVMERGE_PRESERVES_START_EXTENSIONS:
+            return 0
+
+        info = video_utils.get_video_full_info(path)
+        try:
+            start_time = float(info.get("format", {}).get("start_time") or 0.0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, round(start_time * 1000))
+
     def _prepare_stream_entries(
         self,
         video_streams: Sequence[tuple[str, int, str | None]],
@@ -1133,6 +1158,9 @@ class MeltPerformer:
         video_path_base, _, _ = video_streams[0]
         details = files_details or {}
         base_duration = self._video_track_duration(video_path_base, details, logger=self.logger)
+        self._output_timeline_offset_ms = self._start_offset_to_preserve_for_mkvmerge(video_path_base)
+        if self._output_timeline_offset_ms:
+            self._file_sync_offsets[video_path_base] = self._output_timeline_offset_ms
         protected_paths = (
             {p for (p, _, _) in video_streams}
             | {p for (p, _, _) in subtitle_streams}
