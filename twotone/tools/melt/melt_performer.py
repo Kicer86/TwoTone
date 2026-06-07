@@ -56,6 +56,8 @@ class MeltPerformer:
         self.fill_audio_gaps = fill_audio_gaps
         self._sync_offsets: dict[str, int] = {}
         self._file_sync_offsets: dict[str, int] = {}
+        self._track_sync_offsets: dict[tuple[str, int], int] = {}
+        self._normalized_audio_cache: dict[tuple[str, int], str] = {}
         self._output_timeline_offset_ms = 0
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
         self.wd = _ensure_working_dir(working_dir)
@@ -106,6 +108,8 @@ class MeltPerformer:
                     # Convert streams to unified list (and patch audios if needed)
                     self._sync_offsets.clear()
                     self._file_sync_offsets.clear()
+                    self._track_sync_offsets.clear()
+                    self._normalized_audio_cache.clear()
                     self._output_timeline_offset_ms = 0
                     self._pair_match_cache.clear()
                     files_details = group.get("files_details", {})
@@ -202,11 +206,15 @@ class MeltPerformer:
             sync_offset = self._sync_offsets.get(file_path)
             file_sync_offset = self._file_sync_offsets.get(file_path, 0)
             for tid in fo["video"] + fo["subtitle"]:
-                if file_sync_offset:
-                    generation_args.extend(["--sync", f"{tid}:{file_sync_offset}"])
+                track_sync_offset = self._track_sync_offsets.get((file_path, tid), 0)
+                total_sync_offset = file_sync_offset + track_sync_offset
+                if total_sync_offset:
+                    generation_args.extend(["--sync", f"{tid}:{total_sync_offset}"])
             for tid in fo["audio"]:
-                if sync_offset is not None or file_sync_offset:
-                    generation_args.extend(["--sync", f"{tid}:{file_sync_offset + (sync_offset or 0)}"])
+                track_sync_offset = self._track_sync_offsets.get((file_path, tid), 0)
+                total_sync_offset = file_sync_offset + track_sync_offset + (sync_offset or 0)
+                if sync_offset is not None or total_sync_offset:
+                    generation_args.extend(["--sync", f"{tid}:{total_sync_offset}"])
 
             generation_args.append(file_path)
 
@@ -1148,6 +1156,74 @@ class MeltPerformer:
             return 0
         return container_start_offset_ms
 
+    @staticmethod
+    def _stream_info(path: str, stream_type: str, stream_index: int) -> dict[str, Any] | None:
+        info = video_utils.get_video_full_info(path)
+        for stream in info.get("streams", []):
+            if stream.get("codec_type") != stream_type:
+                continue
+            try:
+                probed_index = int(stream.get("index", -1))
+            except (TypeError, ValueError):
+                continue
+            if probed_index == stream_index:
+                return stream
+        return None
+
+    @staticmethod
+    def _audio_stream_info(path: str, stream_index: int) -> dict[str, Any] | None:
+        return MeltPerformer._stream_info(path, "audio", stream_index)
+
+    @staticmethod
+    def _stream_start_offset_ms(stream: dict[str, Any] | None) -> int:
+        if stream is None:
+            return 0
+        try:
+            start_time = float(stream.get("start_time") or 0.0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, round(start_time * 1000))
+
+    def _audio_needs_mkvmerge_normalization(self, path: str, stream_index: int) -> bool:
+        """Return True when direct mkvmerge remux can shift decoded AAC timing."""
+        extension = os.path.splitext(path)[1].lower()
+        if extension in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
+            return False
+        stream = self._audio_stream_info(path, stream_index)
+        return stream is not None and stream.get("codec_name") == "aac"
+
+    def _normalize_audio_for_mkvmerge(self, source_path: str, stream_index: int) -> tuple[str, int]:
+        """Re-encode AAC through FFmpeg so mkvmerge keeps decoded timing intact."""
+        cache_key = (source_path, stream_index)
+        cached_path = self._normalized_audio_cache.get(cache_key)
+        if cached_path is not None:
+            return cached_path, 0
+
+        source_stream = self._audio_stream_info(source_path, stream_index)
+        output_path = os.path.join(
+            self.wd,
+            f"tmp_{os.getpid()}_normalized_audio_{len(self._normalized_audio_cache)}_{stream_index}.mka",
+        )
+
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", [
+                "-y",
+                "-i", source_path,
+                "-map", f"0:{stream_index}",
+                "-c:a", "aac",
+                output_path,
+            ], logger=self.logger)
+        )
+
+        source_start_offset = self._stream_start_offset_ms(source_stream)
+        normalized_start_offset = self._stream_start_offset_ms(self._audio_stream_info(output_path, 0))
+        sync_offset = source_start_offset - normalized_start_offset
+        if sync_offset:
+            self._sync_offsets[output_path] = sync_offset
+
+        self._normalized_audio_cache[cache_key] = output_path
+        return output_path, 0
+
     def _prepare_stream_entries(
         self,
         video_streams: Sequence[tuple[str, int, str | None]],
@@ -1159,7 +1235,7 @@ class MeltPerformer:
         files_details: dict[str, Any] | None = None,
     ) -> list[tuple[str, int, str, str | None]]:
         streams_list: list[tuple[str, int, str, str | None]] = []
-        video_path_base, _, _ = video_streams[0]
+        video_path_base, video_stream_index_base, _ = video_streams[0]
         details = files_details or {}
         base_duration = self._video_track_duration(video_path_base, details, logger=self.logger)
         self._output_timeline_offset_ms = self._container_start_offset_ms(video_path_base)
@@ -1169,6 +1245,12 @@ class MeltPerformer:
         )
         if base_file_sync_offset:
             self._file_sync_offsets[video_path_base] = base_file_sync_offset
+        base_video_start_offset = self._stream_start_offset_ms(
+            self._stream_info(video_path_base, "video", video_stream_index_base)
+        )
+        base_video_extra_sync_offset = max(0, base_video_start_offset - self._output_timeline_offset_ms)
+        if base_video_extra_sync_offset:
+            self._track_sync_offsets[(video_path_base, video_stream_index_base)] = base_video_extra_sync_offset
         protected_paths = (
             {p for (p, _, _) in video_streams}
             | {p for (p, _, _) in subtitle_streams}
@@ -1186,6 +1268,12 @@ class MeltPerformer:
                 path, stream_index = self._patch_mismatched_audio(
                     video_path_base, (path, stream_index), base_duration, file_ids,
                 )
+                required_input_files.add(path)
+                if original_path not in protected_paths:
+                    required_input_files.discard(original_path)
+            elif self._audio_needs_mkvmerge_normalization(path, stream_index):
+                original_path = path
+                path, stream_index = self._normalize_audio_for_mkvmerge(path, stream_index)
                 required_input_files.add(path)
                 if original_path not in protected_paths:
                     required_input_files.discard(original_path)

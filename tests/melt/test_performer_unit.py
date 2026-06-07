@@ -712,6 +712,33 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertIn("2:471", sync_values)
         self.assertIn("0:492", sync_values)
 
+    def test_build_mkvmerge_args_applies_track_sync_offset_only_to_selected_track(self):
+        performer = self._make_performer()
+
+        base_file = "/tmp/base.mov"
+        performer._track_sync_offsets[(base_file, 0)] = 492
+
+        streams = [
+            ("video", 0, base_file, None),
+            ("audio", 1, base_file, "pol"),
+        ]
+
+        args = performer.build_mkvmerge_args(
+            "/tmp/out.mkv",
+            streams,
+            attachments=[],
+            preferred_audio=None,
+            required_input_files=[base_file],
+        )
+
+        sync_values = [
+            args[index + 1]
+            for index, value in enumerate(args)
+            if value == "--sync"
+        ]
+        self.assertIn("0:492", sync_values)
+        self.assertNotIn("1:492", sync_values)
+
     def test_container_start_offset_reads_matroska_format_start(self):
         with patch.object(
             video_utils,
@@ -738,6 +765,88 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         self.assertEqual(offset, 471)
         probe.assert_not_called()
+
+    def test_aac_from_non_matroska_needs_mkvmerge_normalization(self):
+        performer = self._make_performer()
+        fake_full_info = {
+            "streams": [
+                {"codec_type": "video", "index": 0, "codec_name": "h264"},
+                {"codec_type": "audio", "index": 1, "codec_name": "aac"},
+            ]
+        }
+
+        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info):
+            self.assertTrue(performer._audio_needs_mkvmerge_normalization("/tmp/source.mov", 1))
+            self.assertFalse(performer._audio_needs_mkvmerge_normalization("/tmp/source.mkv", 1))
+
+    def test_normalize_audio_for_mkvmerge_does_not_double_preserved_audio_start(self):
+        performer = self._make_performer()
+        calls = []
+        source_full_info = {
+            "streams": [
+                {"codec_type": "video", "index": 0, "codec_name": "h264"},
+                {"codec_type": "audio", "index": 1, "codec_name": "aac", "start_time": "0.471000"},
+            ]
+        }
+        normalized_full_info = {
+            "streams": [
+                {"codec_type": "audio", "index": 0, "codec_name": "aac", "start_time": "0.471000"},
+            ]
+        }
+
+        def fake_start_process(tool, args, **kwargs):
+            calls.append((tool, list(args)))
+            return _FAKE_PROCESS_OK
+
+        def fake_full_info(path):
+            if path == "/tmp/source.mov":
+                return source_full_info
+            return normalized_full_info
+
+        with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info), \
+             patch.object(process_utils, "start_process", side_effect=fake_start_process), \
+             patch.object(process_utils, "raise_on_error", lambda r: None):
+            normalized_path, normalized_index = performer._normalize_audio_for_mkvmerge("/tmp/source.mov", 1)
+            cached_path, cached_index = performer._normalize_audio_for_mkvmerge("/tmp/source.mov", 1)
+
+        self.assertEqual(normalized_index, 0)
+        self.assertEqual(cached_index, 0)
+        self.assertEqual(cached_path, normalized_path)
+        self.assertNotIn(normalized_path, performer._sync_offsets)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "ffmpeg")
+        args = calls[0][1]
+        self.assertIn("-map", args)
+        self.assertEqual(args[args.index("-map") + 1], "0:1")
+        self.assertIn("-c:a", args)
+        self.assertEqual(args[args.index("-c:a") + 1], "aac")
+        self.assertEqual(args[-1], normalized_path)
+
+    def test_normalize_audio_for_mkvmerge_compensates_when_audio_start_is_lost(self):
+        performer = self._make_performer()
+        source_full_info = {
+            "streams": [
+                {"codec_type": "audio", "index": 1, "codec_name": "aac", "start_time": "0.471000"},
+            ]
+        }
+        normalized_full_info = {
+            "streams": [
+                {"codec_type": "audio", "index": 0, "codec_name": "aac", "start_time": "0.000000"},
+            ]
+        }
+
+        def fake_full_info(path):
+            if path == "/tmp/source.mov":
+                return source_full_info
+            return normalized_full_info
+
+        with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info), \
+             patch.object(process_utils, "start_process", return_value=_FAKE_PROCESS_OK), \
+             patch.object(process_utils, "raise_on_error", lambda r: None):
+            normalized_path, normalized_index = performer._normalize_audio_for_mkvmerge("/tmp/source.mov", 1)
+
+        self.assertEqual(normalized_index, 0)
+        self.assertEqual(performer._sync_offsets[normalized_path], 471)
 
     def test_patch_audio_fps_mismatch_with_audio_deficit(self):
         """Exact scenario: 23.976fps base + 25fps AVI source with audio deficit.
