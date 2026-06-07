@@ -54,11 +54,9 @@ class MeltPerformer:
         self.tolerance_ms = tolerance_ms
         self.cache = cache
         self.fill_audio_gaps = fill_audio_gaps
-        self._sync_offsets: dict[str, int] = {}
-        self._file_sync_offsets: dict[str, int] = {}
         self._track_sync_offsets: dict[tuple[str, int], int] = {}
         self._normalized_audio_cache: dict[tuple[str, int], str] = {}
-        self._output_timeline_offset_ms = 0
+        self._temporary_audio_counter = 0
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
         self.wd = _ensure_working_dir(working_dir)
 
@@ -106,11 +104,9 @@ class MeltPerformer:
                     self._copy_single_input(first_file_path, output)
                 else:
                     # Convert streams to unified list (and patch audios if needed)
-                    self._sync_offsets.clear()
-                    self._file_sync_offsets.clear()
                     self._track_sync_offsets.clear()
                     self._normalized_audio_cache.clear()
-                    self._output_timeline_offset_ms = 0
+                    self._temporary_audio_counter = 0
                     self._pair_match_cache.clear()
                     files_details = group.get("files_details", {})
                     streams_list = self._prepare_stream_entries(
@@ -203,18 +199,10 @@ class MeltPerformer:
                     flag = "yes" if tid in fo["defaults"] else "no"
                     generation_args.extend(["--default-track", f"{tid}:{flag}"])
 
-            sync_offset = self._sync_offsets.get(file_path)
-            file_sync_offset = self._file_sync_offsets.get(file_path, 0)
-            for tid in fo["video"] + fo["subtitle"]:
-                track_sync_offset = self._track_sync_offsets.get((file_path, tid), 0)
-                total_sync_offset = file_sync_offset + track_sync_offset
-                if total_sync_offset:
-                    generation_args.extend(["--sync", f"{tid}:{total_sync_offset}"])
-            for tid in fo["audio"]:
-                track_sync_offset = self._track_sync_offsets.get((file_path, tid), 0)
-                total_sync_offset = file_sync_offset + track_sync_offset + (sync_offset or 0)
-                if sync_offset is not None or total_sync_offset:
-                    generation_args.extend(["--sync", f"{tid}:{total_sync_offset}"])
+            for tid in fo["video"] + fo["audio"] + fo["subtitle"]:
+                track_key = (file_path, tid)
+                if track_key in self._track_sync_offsets:
+                    generation_args.extend(["--sync", f"{tid}:{self._track_sync_offsets[track_key]}"])
 
             generation_args.append(file_path)
 
@@ -302,29 +290,6 @@ class MeltPerformer:
         #    stream in the container is shorter than the video, the deficit
         #    is handled via sync_offset (start) and natural end (no padding).
 
-        # Fast path: no head/tail + fps ratio ≈ 1.0 → stream-copy, no re-encoding at all
-        if not has_head and not has_tail and not needs_scaling:
-            self._copy_audio_range_no_reencode(source_video, output_path, seg2_start, seg2_end)
-            actual_dur = video_utils.get_video_duration(output_path, logger=self.logger)
-            deficit = source_dur - actual_dur
-
-            if not use_silence and deficit > 50:
-                raise RuntimeError(
-                    f"Audio deficit of {deficit} ms detected in fill-audio-gaps mode. "
-                    f"The source container's audio starts later than its video, "
-                    f"which cannot be compensated when head/tail are filled from "
-                    f"the base file. Use default (silence) mode instead."
-                )
-
-            self._validate_audio_duration(actual_dur, source_dur, "stream-copied audio")
-            source_start_delay_ms = self._audio_video_start_delay_ms(source_video)
-            return self._sync_offset_from_deficit(
-                seg1_start,
-                deficit,
-                video_ratio,
-                source_start_delay_ms=source_start_delay_ms,
-            )
-
         trimmed_audio = os.path.join(wd, "source_trimmed.flac")
         trim_filter = (
             f"atrim=start={seg2_start / 1000:.6f}:end={seg2_end / 1000:.6f},"
@@ -360,13 +325,22 @@ class MeltPerformer:
                 f"the base file. Use default (silence) mode instead."
             )
 
-        source_start_delay_ms = self._audio_video_start_delay_ms(source_video)
+        source_start_delay_ms = self._audio_video_start_delay_ms(source_video, trim_start_ms=seg2_start)
         sync_offset = self._sync_offset_from_deficit(
             seg1_start,
             deficit,
             video_ratio,
             source_start_delay_ms=source_start_delay_ms,
         )
+        source_timeline_delay_ms = self._source_positive_timeline_start_delay_ms(source_video, seg2_start)
+        if source_timeline_delay_ms > 50:
+            correction = max(0, round(source_timeline_delay_ms * video_ratio) - seg1_start)
+            sync_offset += correction
+            self.logger.info(
+                "Source positive timeline start: %d ms → sync correction: %d ms",
+                source_timeline_delay_ms,
+                correction,
+            )
 
         # Scale with VIDEO-frame ratio (true fps relationship)
         scaled_audio = os.path.join(wd, "source_scaled.flac")
@@ -628,10 +602,16 @@ class MeltPerformer:
         how much audio is missing at the start.  We shift the sync offset
         forward by ``deficit * video_ratio`` to compensate.
         """
-        # Prefer explicit stream start delay when available. The measured
-        # duration deficit can also come from missing tail audio and should not
-        # be treated as an initial delay.
-        effective_delay = source_start_delay_ms if source_start_delay_ms is not None else deficit
+        # Prefer explicit stream start delay only when the produced trim is
+        # actually short. Some decoded/filter trims already include the source
+        # stream's delayed silence; adding the stream start again would double
+        # the offset by ~0.5s.
+        if source_start_delay_ms is None:
+            effective_delay = deficit
+        elif source_start_delay_ms > 50 and deficit > 50:
+            effective_delay = source_start_delay_ms
+        else:
+            effective_delay = 0
         if effective_delay <= 50:
             return seg1_start
         correction = round(effective_delay * video_ratio)
@@ -644,7 +624,7 @@ class MeltPerformer:
         return sync_offset
 
     @staticmethod
-    def _audio_video_start_delay_ms(source_video: str) -> int:
+    def _audio_video_start_delay_ms(source_video: str, trim_start_ms: int | None = None) -> int:
         """Return non-negative (audio_start - video_start) in milliseconds."""
         info = video_utils.get_video_full_info(source_video)
         video_stream = next((s for s in info["streams"] if s.get("codec_type") == "video"), None)
@@ -656,7 +636,28 @@ class MeltPerformer:
             audio_start = float(audio_stream.get("start_time", 0.0) or 0.0)
         except (TypeError, ValueError):
             return 0
-        return max(0, round((audio_start - video_start) * 1000.0))
+        audio_start_ms = round(audio_start * 1000.0)
+        if trim_start_ms is not None and trim_start_ms >= audio_start_ms:
+            return 0
+        return max(0, audio_start_ms - round(video_start * 1000.0))
+
+    def _source_positive_timeline_start_delay_ms(self, source_video: str, trim_start_ms: int) -> int:
+        """Return positive source timeline start lost by decoded audio trimming."""
+        info = video_utils.get_video_full_info(source_video)
+        try:
+            container_start = float(info.get("format", {}).get("start_time") or 0.0)
+        except (TypeError, ValueError):
+            container_start = 0.0
+        if container_start <= 0:
+            return 0
+        video_stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
+        audio_stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "audio"), None)
+        video_start = self._stream_start_offset_ms(video_stream)
+        audio_start = self._stream_start_offset_ms(audio_stream)
+        timeline_start = max(video_start, audio_start)
+        if trim_start_ms < timeline_start:
+            return timeline_start
+        return 0
 
     _FPS_RATIO_TOLERANCE = 0.001
 
@@ -1001,7 +1002,7 @@ class MeltPerformer:
         self._validate_audio_duration(actual_dur, expected_dur, "stream-copied audio (no reencode)")
         deficit = expected_dur - actual_dur
 
-        source_start_delay_ms = self._audio_video_start_delay_ms(source_video)
+        source_start_delay_ms = self._audio_video_start_delay_ms(source_video, trim_start_ms=seg2_start)
         return self._sync_offset_from_deficit(
             sync_offset,
             deficit,
@@ -1015,10 +1016,10 @@ class MeltPerformer:
         audio_stream: tuple[str, int],
         base_duration: int,
         file_ids: dict[str, int],
-    ) -> tuple[str, int]:
+    ) -> tuple[str, int, int | None]:
         """Run PairMatcher and apply the appropriate audio patching strategy.
 
-        Returns (patched_path, new_stream_index).
+        Returns (patched_path, new_stream_index, desired_start_ms).
         """
         audio_path, stream_index = audio_stream
         with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
@@ -1059,6 +1060,35 @@ class MeltPerformer:
             rhs_all_frames = match_result.rhs_all_frames
             mapping_relation = match_result.mapping_relation
             duration = match_result.source_duration
+            mapping = self._strict_audio_mapping(mapping)
+
+            extrapolated_mapping = None
+            if mapping_relation == MappingRelation.GENERIC:
+                extrapolated_mapping = self._try_effective_fps_audio_mapping(
+                    video_path_base,
+                    audio_path,
+                    mapping,
+                    lhs_all_frames,
+                    rhs_all_frames,
+                )
+            if extrapolated_mapping is None:
+                extrapolated_mapping = self._try_sparse_linear_audio_extrapolation(
+                    mapping,
+                    lhs_all_frames,
+                    rhs_all_frames,
+                    match_result.lhs_fps,
+                    match_result.rhs_fps,
+                )
+            if extrapolated_mapping is not None:
+                mapping = extrapolated_mapping
+                mapping_relation = MappingRelation.LINEAR_FRAME_DRIFT
+                self.logger.info(
+                    "  Sparse linear audio extrapolation: using %s-%s ↔ %s-%s",
+                    generic_utils.ms_to_time(mapping[0][0]),
+                    generic_utils.ms_to_time(mapping[-1][0]),
+                    generic_utils.ms_to_time(mapping[0][1]),
+                    generic_utils.ms_to_time(mapping[-1][1]),
+                )
 
             self._log_coverage(video_path_base, audio_path, mapping, base_duration, duration, lhs_id, rhs_id)
 
@@ -1080,9 +1110,8 @@ class MeltPerformer:
 
             if strategy == _AudioStrategy.STREAM_COPY:
                 patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
-                sync_offset = self._shift_audio_no_reencode(audio_path, patched_audio, mapping)
-                self._sync_offsets[patched_audio] = sync_offset + self._output_timeline_offset_ms
-                return patched_audio, 0
+                desired_start_ms = self._shift_audio_no_reencode(audio_path, patched_audio, mapping)
+                return patched_audio, 0, desired_start_ms
 
             patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
             if strategy == _AudioStrategy.CONSTANT_OFFSET:
@@ -1092,11 +1121,11 @@ class MeltPerformer:
                 effective_sync = min(p[0] for p in mapping)
 
             if use_silence:
-                sync_offset = effective_sync + self._output_timeline_offset_ms
-                self._sync_offsets[patched_audio] = sync_offset
-                self.logger.info("  Sync offset (--sync): %d ms", sync_offset)
+                desired_start_ms = effective_sync
+                self.logger.info("  Desired audio start: %d ms", desired_start_ms)
+                return patched_audio, 0, desired_start_ms
 
-        return patched_audio, 0
+        return patched_audio, 0, None
 
     def _choose_audio_strategy(
         self,
@@ -1105,16 +1134,209 @@ class MeltPerformer:
         mapping: list[tuple[int, int]],
     ) -> _AudioStrategy:
         """Pick the lightest audio patching strategy that fits the constraints."""
-        if mapping_relation != MappingRelation.CONSTANT_FRAME_OFFSET:
+        if mapping_relation not in (MappingRelation.CONSTANT_FRAME_OFFSET, MappingRelation.LINEAR_FRAME_DRIFT):
             return _AudioStrategy.SUBSEGMENT
-        if use_silence:
-            seg = self._segment_range(mapping)
-            source_dur = seg.rhs_end - seg.rhs_start
-            target_dur = seg.lhs_end - seg.lhs_start
-            ratio = source_dur / target_dur if target_dur else 1.0
-            if not self._needs_fps_scaling(ratio):
-                return _AudioStrategy.STREAM_COPY
         return _AudioStrategy.CONSTANT_OFFSET
+
+    @staticmethod
+    def _strict_audio_mapping(mapping: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Collapse duplicate boundary matches before deriving audio trim ranges."""
+        if len(mapping) < 2:
+            return mapping
+
+        latest_lhs_for_rhs: dict[int, int] = {}
+        for lhs_time, rhs_time in sorted(mapping):
+            latest_lhs_for_rhs[rhs_time] = max(
+                lhs_time,
+                latest_lhs_for_rhs.get(rhs_time, lhs_time),
+            )
+
+        earliest_rhs_for_lhs: dict[int, int] = {}
+        for rhs_time, lhs_time in latest_lhs_for_rhs.items():
+            earliest_rhs_for_lhs[lhs_time] = min(
+                rhs_time,
+                earliest_rhs_for_lhs.get(lhs_time, rhs_time),
+            )
+
+        result: list[tuple[int, int]] = []
+        last_rhs: int | None = None
+        for lhs_time, rhs_time in sorted(earliest_rhs_for_lhs.items()):
+            if last_rhs is not None and rhs_time <= last_rhs:
+                continue
+            result.append((lhs_time, rhs_time))
+            last_rhs = rhs_time
+
+        return result if result else mapping
+
+    @staticmethod
+    def _video_playable_duration_ms(path: str) -> int | None:
+        info = video_utils.get_video_full_info(path)
+        stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
+        if stream is None:
+            return None
+
+        duration = stream.get("duration")
+        if duration is not None:
+            try:
+                return round(float(duration) * 1000)
+            except (TypeError, ValueError):
+                pass
+
+        tag_duration = stream.get("tags", {}).get("DURATION")
+        if tag_duration is None:
+            return None
+
+        tag_duration_ms = generic_utils.time_to_ms(tag_duration)
+        start_ms = MeltPerformer._stream_start_offset_ms(stream)
+        if start_ms > 0 and tag_duration_ms > start_ms:
+            return tag_duration_ms - start_ms
+        return tag_duration_ms
+
+    @staticmethod
+    def _effective_video_fps(path: str, frames: FramesInfo) -> float | None:
+        if len(frames) < 2:
+            return None
+
+        duration_ms = MeltPerformer._video_playable_duration_ms(path)
+        if duration_ms is None or duration_ms <= 0:
+            return None
+
+        frame_span = MeltPerformer._video_frame_span(path, frames)
+        if frame_span <= 0:
+            return None
+
+        return frame_span * 1000 / duration_ms
+
+    @staticmethod
+    def _video_frame_span(path: str, frames: FramesInfo) -> int:
+        info = video_utils.get_video_full_info(path)
+        stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
+        if stream is not None:
+            try:
+                frame_count = int(stream.get("nb_frames") or 0)
+            except (TypeError, ValueError):
+                frame_count = 0
+            if frame_count > 1:
+                return frame_count - 1
+        return len(frames) - 1
+
+    @staticmethod
+    def _try_effective_fps_audio_mapping(
+        base_video: str,
+        source_video: str,
+        mapping: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+    ) -> list[tuple[int, int]] | None:
+        """Build a linear audio mapping from effective video FPS when matches are generic."""
+        if len(mapping) < 2:
+            return None
+
+        lhs_effective_fps = MeltPerformer._effective_video_fps(base_video, lhs_all_frames)
+        rhs_effective_fps = MeltPerformer._effective_video_fps(source_video, rhs_all_frames)
+        if lhs_effective_fps is None or rhs_effective_fps is None or rhs_effective_fps <= 0:
+            return None
+
+        tempo_ratio = lhs_effective_fps / rhs_effective_fps
+        if abs(tempo_ratio - 1.0) < 0.005:
+            return None
+
+        seg = MeltPerformer._segment_range(mapping)
+        target_duration = seg.lhs_end - seg.lhs_start
+        if target_duration <= 0:
+            return None
+
+        lhs_frame_duration = max(lhs_all_frames) - min(lhs_all_frames)
+        if lhs_frame_duration > 0 and target_duration < lhs_frame_duration * 0.80:
+            return None
+
+        source_duration = round(target_duration * tempo_ratio)
+        if source_duration <= 0:
+            return None
+
+        return [
+            (seg.lhs_start, seg.rhs_start),
+            (seg.lhs_end, seg.rhs_start + source_duration),
+        ]
+
+    @staticmethod
+    def _try_sparse_linear_audio_extrapolation(
+        mapping: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+        lhs_fps: float,
+        rhs_fps: float,
+    ) -> list[tuple[int, int]] | None:
+        """Extrapolate sparse but linear mappings for global audio time-scaling."""
+        if len(mapping) < 3 or not lhs_all_frames or not rhs_all_frames:
+            return None
+
+        pairs = sorted(mapping)
+        first_lhs, first_rhs = pairs[0]
+        last_lhs, last_rhs = pairs[-1]
+        lhs_span = last_lhs - first_lhs
+        if lhs_span <= 0:
+            return None
+
+        rhs_per_lhs = (last_rhs - first_rhs) / lhs_span
+        if rhs_per_lhs <= 0:
+            return None
+
+        max_residual_ms = 1000
+        for lhs_time, rhs_time in pairs[1:-1]:
+            predicted_rhs = first_rhs + (lhs_time - first_lhs) * rhs_per_lhs
+            if abs(predicted_rhs - rhs_time) > max_residual_ms:
+                return None
+
+        lhs_start = min(lhs_all_frames)
+        lhs_end = max(lhs_all_frames)
+        rhs_start = min(rhs_all_frames)
+        rhs_end = max(rhs_all_frames)
+        actual_rhs_start = rhs_start
+        actual_rhs_end = rhs_end
+        lhs_effective_fps = (
+            (len(lhs_all_frames) - 1) * 1000 / (lhs_end - lhs_start)
+            if len(lhs_all_frames) > 1 and lhs_end > lhs_start
+            else lhs_fps
+        )
+        rhs_effective_fps = (
+            (len(rhs_all_frames) - 1) * 1000 / (rhs_end - rhs_start)
+            if len(rhs_all_frames) > 1 and rhs_end > rhs_start
+            else rhs_fps
+        )
+        if lhs_effective_fps > 0 and rhs_effective_fps > 0:
+            fps_projected_rhs_end = rhs_start + round((lhs_end - lhs_start) * lhs_effective_fps / rhs_effective_fps)
+            rhs_end = max(rhs_end, fps_projected_rhs_end)
+
+        predicted_rhs_start = round(first_rhs + (lhs_start - first_lhs) * rhs_per_lhs)
+        extrapolated_rhs_start = max(rhs_start, min(rhs_end, predicted_rhs_start))
+        if lhs_effective_fps > 0 and rhs_effective_fps > 0:
+            extrapolated_rhs_end = extrapolated_rhs_start + round(
+                (lhs_end - lhs_start) * lhs_effective_fps / rhs_effective_fps
+            )
+        else:
+            predicted_rhs_end = round(first_rhs + (lhs_end - first_lhs) * rhs_per_lhs)
+            extrapolated_rhs_end = max(rhs_start, min(rhs_end, predicted_rhs_end))
+
+        if extrapolated_rhs_end <= extrapolated_rhs_start:
+            return None
+
+        result = list(pairs)
+        if lhs_start < first_lhs and actual_rhs_start < first_rhs and extrapolated_rhs_start < first_rhs:
+            result.insert(0, (lhs_start, extrapolated_rhs_start))
+        if lhs_end > last_lhs and actual_rhs_end > last_rhs and extrapolated_rhs_end > last_rhs:
+            result.append((lhs_end, extrapolated_rhs_end))
+
+        if len(result) == len(pairs):
+            return None
+
+        result = MeltPerformer._strict_audio_mapping(result)
+        start_extended = result[0] != pairs[0]
+        end_extended = result[-1] != pairs[-1]
+        if not start_extended and not end_extended:
+            return None
+
+        return result
 
     @staticmethod
     def _video_track_duration(
@@ -1137,24 +1359,6 @@ class MeltPerformer:
         return video_utils.get_video_duration(path, logger=logger)
 
     _MKVMERGE_PRESERVES_START_EXTENSIONS = frozenset({".mkv", ".mk3d", ".mka", ".webm"})
-
-    @staticmethod
-    def _container_start_offset_ms(path: str) -> int:
-        """Return positive container start offset from ffprobe format metadata."""
-        info = video_utils.get_video_full_info(path)
-        try:
-            start_time = float(info.get("format", {}).get("start_time") or 0.0)
-        except (TypeError, ValueError):
-            return 0
-        return max(0, round(start_time * 1000))
-
-    @staticmethod
-    def _file_sync_offset_to_preserve_for_mkvmerge(path: str, container_start_offset_ms: int) -> int:
-        """Return offset needed for mkvmerge to preserve a source container's positive start."""
-        extension = os.path.splitext(path)[1].lower()
-        if extension in MeltPerformer._MKVMERGE_PRESERVES_START_EXTENSIONS:
-            return 0
-        return container_start_offset_ms
 
     @staticmethod
     def _stream_info(path: str, stream_type: str, stream_index: int) -> dict[str, Any] | None:
@@ -1184,6 +1388,62 @@ class MeltPerformer:
             return 0
         return max(0, round(start_time * 1000))
 
+    @staticmethod
+    def _stream_duration_ms(stream: dict[str, Any] | None) -> int | None:
+        if stream is None:
+            return None
+        duration = stream.get("duration")
+        if duration is not None:
+            try:
+                return round(float(duration) * 1000)
+            except (TypeError, ValueError):
+                pass
+        tag_duration = stream.get("tags", {}).get("DURATION")
+        if tag_duration is not None:
+            return generic_utils.time_to_ms(tag_duration)
+        return None
+
+    def _source_stream_start_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int:
+        return self._stream_start_offset_ms(self._stream_info(path, stream_type, stream_index))
+
+    def _source_stream_end_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int | None:
+        stream = self._stream_info(path, stream_type, stream_index)
+        if stream is None:
+            return None
+
+        duration = stream.get("duration")
+        if duration is not None:
+            try:
+                return self._stream_start_offset_ms(stream) + round(float(duration) * 1000)
+            except (TypeError, ValueError):
+                pass
+
+        tag_duration = stream.get("tags", {}).get("DURATION")
+        if tag_duration is not None:
+            return generic_utils.time_to_ms(tag_duration)
+
+        return None
+
+    def _mkvmerge_input_start_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int:
+        extension = os.path.splitext(path)[1].lower()
+        if extension in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
+            return self._source_stream_start_offset_ms(path, stream_type, stream_index)
+        return 0
+
+    def _set_track_desired_start(
+        self,
+        path: str,
+        stream_type: str,
+        stream_index: int,
+        desired_start_ms: int | None,
+    ) -> None:
+        if desired_start_ms is None:
+            return
+        input_start_ms = self._mkvmerge_input_start_offset_ms(path, stream_type, stream_index)
+        sync_offset_ms = desired_start_ms - input_start_ms
+        if sync_offset_ms:
+            self._track_sync_offsets[(path, stream_index)] = sync_offset_ms
+
     def _audio_needs_mkvmerge_normalization(self, path: str, stream_index: int) -> bool:
         """Return True when direct mkvmerge remux can shift decoded AAC timing."""
         extension = os.path.splitext(path)[1].lower()
@@ -1192,6 +1452,14 @@ class MeltPerformer:
         stream = self._audio_stream_info(path, stream_index)
         return stream is not None and stream.get("codec_name") == "aac"
 
+    def _temporary_audio_path(self, label: str, stream_index: int) -> str:
+        path = os.path.join(
+            self.wd,
+            f"tmp_{os.getpid()}_{label}_{self._temporary_audio_counter}_{stream_index}.mka",
+        )
+        self._temporary_audio_counter += 1
+        return path
+
     def _normalize_audio_for_mkvmerge(self, source_path: str, stream_index: int) -> tuple[str, int]:
         """Re-encode AAC through FFmpeg so mkvmerge keeps decoded timing intact."""
         cache_key = (source_path, stream_index)
@@ -1199,11 +1467,7 @@ class MeltPerformer:
         if cached_path is not None:
             return cached_path, 0
 
-        source_stream = self._audio_stream_info(source_path, stream_index)
-        output_path = os.path.join(
-            self.wd,
-            f"tmp_{os.getpid()}_normalized_audio_{len(self._normalized_audio_cache)}_{stream_index}.mka",
-        )
+        output_path = self._temporary_audio_path("normalized_audio", stream_index)
 
         process_utils.raise_on_error(
             process_utils.start_process("ffmpeg", [
@@ -1215,14 +1479,52 @@ class MeltPerformer:
             ], logger=self.logger)
         )
 
-        source_start_offset = self._stream_start_offset_ms(source_stream)
-        normalized_start_offset = self._stream_start_offset_ms(self._audio_stream_info(output_path, 0))
-        sync_offset = source_start_offset - normalized_start_offset
-        if sync_offset:
-            self._sync_offsets[output_path] = sync_offset
-
         self._normalized_audio_cache[cache_key] = output_path
         return output_path, 0
+
+    def _trim_audio_to_timeline_end(
+        self,
+        source_path: str,
+        stream_index: int,
+        desired_end_ms: int,
+    ) -> tuple[str, int]:
+        source_start_ms = self._source_stream_start_offset_ms(source_path, "audio", stream_index)
+        relative_end_ms = max(0, desired_end_ms - source_start_ms)
+        output_path = self._temporary_audio_path("trimmed_audio", stream_index)
+        trim_filter = (
+            f"atrim=start=0.000000:end={relative_end_ms / 1000:.6f},"
+            "asetpts=PTS-STARTPTS"
+        )
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", [
+                "-y",
+                "-i", source_path,
+                "-map", f"0:{stream_index}",
+                "-filter:a", trim_filter,
+                "-c:a", "aac",
+                output_path,
+            ], logger=self.logger)
+        )
+        return output_path, 0
+
+    def _base_output_end_ms(
+        self,
+        video_path_base: str,
+        video_streams: Sequence[tuple[str, int, str | None]],
+        audio_streams: Sequence[tuple[str, int, str | None]],
+    ) -> int | None:
+        ends: list[int] = []
+        for path, stream_index, _language in video_streams:
+            if path == video_path_base:
+                end = self._source_stream_end_offset_ms(path, "video", stream_index)
+                if end is not None:
+                    ends.append(end)
+        for path, stream_index, _language in audio_streams:
+            if path == video_path_base:
+                end = self._source_stream_end_offset_ms(path, "audio", stream_index)
+                if end is not None:
+                    ends.append(end)
+        return max(ends) if ends else None
 
     def _prepare_stream_entries(
         self,
@@ -1235,22 +1537,10 @@ class MeltPerformer:
         files_details: dict[str, Any] | None = None,
     ) -> list[tuple[str, int, str, str | None]]:
         streams_list: list[tuple[str, int, str, str | None]] = []
-        video_path_base, video_stream_index_base, _ = video_streams[0]
+        video_path_base, _, _ = video_streams[0]
         details = files_details or {}
         base_duration = self._video_track_duration(video_path_base, details, logger=self.logger)
-        self._output_timeline_offset_ms = self._container_start_offset_ms(video_path_base)
-        base_file_sync_offset = self._file_sync_offset_to_preserve_for_mkvmerge(
-            video_path_base,
-            self._output_timeline_offset_ms,
-        )
-        if base_file_sync_offset:
-            self._file_sync_offsets[video_path_base] = base_file_sync_offset
-        base_video_start_offset = self._stream_start_offset_ms(
-            self._stream_info(video_path_base, "video", video_stream_index_base)
-        )
-        base_video_extra_sync_offset = max(0, base_video_start_offset - self._output_timeline_offset_ms)
-        if base_video_extra_sync_offset:
-            self._track_sync_offsets[(video_path_base, video_stream_index_base)] = base_video_extra_sync_offset
+        base_output_end_ms = self._base_output_end_ms(video_path_base, video_streams, audio_streams)
         protected_paths = (
             {p for (p, _, _) in video_streams}
             | {p for (p, _, _) in subtitle_streams}
@@ -1259,13 +1549,16 @@ class MeltPerformer:
 
         for (path, stream_index, language) in video_streams:
             streams_list.append(("video", stream_index, path, language))
+            desired_start_ms = self._source_stream_start_offset_ms(path, "video", stream_index)
+            self._set_track_desired_start(path, "video", stream_index, desired_start_ms)
 
         for (path, stream_index, language) in audio_streams:
+            desired_start_ms: int | None = self._source_stream_start_offset_ms(path, "audio", stream_index)
             duration = self._video_track_duration(path, details, logger=self.logger)
             if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
                 assert base_duration is not None  # guaranteed by _is_length_mismatch
                 original_path = path
-                path, stream_index = self._patch_mismatched_audio(
+                path, stream_index, desired_start_ms = self._patch_mismatched_audio(
                     video_path_base, (path, stream_index), base_duration, file_ids,
                 )
                 required_input_files.add(path)
@@ -1277,10 +1570,21 @@ class MeltPerformer:
                 required_input_files.add(path)
                 if original_path not in protected_paths:
                     required_input_files.discard(original_path)
+            if path != video_path_base and desired_start_ms is not None and base_output_end_ms is not None:
+                audio_end_ms = self._source_stream_end_offset_ms(path, "audio", stream_index)
+                if audio_end_ms is not None and audio_end_ms > base_output_end_ms + self.tolerance_ms:
+                    original_path = path
+                    path, stream_index = self._trim_audio_to_timeline_end(path, stream_index, base_output_end_ms)
+                    required_input_files.add(path)
+                    if original_path not in protected_paths:
+                        required_input_files.discard(original_path)
             streams_list.append(("audio", stream_index, path, language))
+            self._set_track_desired_start(path, "audio", stream_index, desired_start_ms)
 
         for (path, stream_index, language) in subtitle_streams:
             streams_list.append(("subtitle", stream_index, path, language))
+            desired_start_ms = self._source_stream_start_offset_ms(path, "subtitle", stream_index)
+            self._set_track_desired_start(path, "subtitle", stream_index, desired_start_ms)
 
         return streams_list
 
