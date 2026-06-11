@@ -1406,22 +1406,22 @@ class MeltPerformer:
         )
 
         for (path, stream_index, language) in video_streams:
-            desired_start_ms = self._source_stream_start_offset_ms(path, "video", stream_index)
+            video_desired_start_ms = self._source_stream_start_offset_ms(path, "video", stream_index)
             streams_list.append(_StreamEntry(
                 "video",
                 stream_index,
                 path,
                 language,
-                self._track_sync_offset_ms(path, "video", stream_index, desired_start_ms),
+                self._track_sync_offset_ms(path, "video", stream_index, video_desired_start_ms),
             ))
 
         for (path, stream_index, language) in audio_streams:
-            desired_start_ms: int | None = self._source_stream_start_offset_ms(path, "audio", stream_index)
+            audio_desired_start_ms: int | None = self._source_stream_start_offset_ms(path, "audio", stream_index)
             duration = self._video_track_duration(path, details, logger=self.logger)
             if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
                 assert base_duration is not None  # guaranteed by _is_length_mismatch
                 original_path = path
-                path, stream_index, desired_start_ms = self._patch_mismatched_audio(
+                path, stream_index, audio_desired_start_ms = self._patch_mismatched_audio(
                     video_path_base, (path, stream_index), base_duration, file_ids,
                 )
                 input_files.add(path)
@@ -1433,7 +1433,7 @@ class MeltPerformer:
                 input_files.add(path)
                 if original_path not in protected_paths:
                     input_files.discard(original_path)
-            if path != video_path_base and desired_start_ms is not None and base_output_end_ms is not None:
+            if path != video_path_base and audio_desired_start_ms is not None and base_output_end_ms is not None:
                 audio_end_ms = self._source_stream_end_offset_ms(path, "audio", stream_index)
                 if audio_end_ms is not None and audio_end_ms > base_output_end_ms + self.tolerance_ms:
                     original_path = path
@@ -1446,7 +1446,7 @@ class MeltPerformer:
                 stream_index,
                 path,
                 language,
-                self._track_sync_offset_ms(path, "audio", stream_index, desired_start_ms),
+                self._track_sync_offset_ms(path, "audio", stream_index, audio_desired_start_ms),
             ))
 
         for (path, stream_index, language) in subtitle_streams:

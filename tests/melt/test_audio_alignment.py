@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from itertools import permutations, product
 from parameterized import parameterized
 from pathlib import Path
+from typing import ClassVar
 
 from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
 from twotone.tools.melt.melt_cache import MeltCache
@@ -103,6 +104,15 @@ class AudioAlignmentTest(TwoToneTestCase):
     AUDIO_ALIGNMENT_TOLERANCE_SECONDS = 0.020
     EXPECTED_POSITION_TOLERANCE_SECONDS = 0.060
     OUTPUT_DURATION_TOLERANCE_MS = 300
+
+    source_video: ClassVar[str]
+    source_duration_seconds: ClassVar[float]
+    total_duration_seconds: ClassVar[float]
+    beep_times: ClassVar[list[float]]
+    beep_centers: ClassVar[list[float]]
+    canonical_video: ClassVar[str]
+    variant_paths: ClassVar[dict[str, str]]
+    melt_cache: ClassVar[MeltCache]
 
     @classmethod
     def setUpClass(cls):
@@ -497,7 +507,8 @@ class AudioAlignmentTest(TwoToneTestCase):
 
         actual_duration = self._playback_end_ms(output_file)
         expected_duration = self._expected_duration_ms(expected_base)
-        self.assertIsNotNone(actual_duration)
+        if actual_duration is None:
+            self.fail("Could not determine output playback duration")
         self.assertAlmostEqual(
             expected_duration,
             actual_duration,
