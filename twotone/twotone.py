@@ -267,10 +267,32 @@ class CustomLoggerFormatter(logging.Formatter):
 
 
 def main() -> None:
+    def is_git_repo(path: str) -> bool:
+        """
+        Check if the given path is part of a Git repository.
+        Returns True if the top-level Git repo exists and is accessible.
+        """
+
+        # Use --show-toplevel to find the repo root; -C ensures it's from `path`
+        result = process_utils.start_process(
+            "git",
+            ["rev-parse", "--show-toplevel"],
+            cwd = script_dir,
+        )
+        return bool(result.stdout.strip())  # Non-empty if in repo
+
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(CustomLoggerFormatter())
 
     logging.basicConfig(level=logging.INFO, handlers=[console_handler])
+
+    script_path = __file__
+    script_path = os.path.abspath(os.path.expanduser(script_path))
+    script_dir = os.path.dirname(script_path)
+
+    if is_git_repo(script_dir):
+        result = process_utils.start_process("git", ['log', '-1', '--pretty=format:"%H"'], cwd = script_dir)
+        logging.info(f"Running from a git repo. Current commit hash: {result.stdout}")
 
     try:
         execute(sys.argv[1:])
