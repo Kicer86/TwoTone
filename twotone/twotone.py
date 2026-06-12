@@ -292,7 +292,7 @@ def main() -> None:
 
     if is_git_repo(script_dir):
         result = process_utils.start_process("git", ['log', '-1', '--pretty=format:"%H"'], cwd = script_dir)
-        logging.info(f"Running from a git repo. Current commit hash: {result.stdout}")
+        logging.getLogger("TwoTone").info(f"Running from a git repo. Current commit hash: {result.stdout}")
 
     try:
         execute(sys.argv[1:])
