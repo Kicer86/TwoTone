@@ -1,14 +1,11 @@
 
 import unittest
 
-import pytest
-
 from twotone.tools.transcode import Transcoder
 from common import TwoToneTestCase, get_video, add_test_media, hashes, run_twotone
 
 
 class TranscoderTests(TwoToneTestCase):
-    @pytest.mark.slow
     def test_video_1_for_best_crf(self):
         test_video = get_video("big_buck_bunny_720p_2mb.mp4")
         best_enc = Transcoder(self.wd.path, self.logger).find_optimal_crf(test_video, allow_segments=False)
@@ -25,7 +22,6 @@ class TranscoderTests(TwoToneTestCase):
         hashes_after = hashes(self.wd.path)
         self.assertEqual(hashes_after, hashes_before)
 
-    @pytest.mark.slow
     def test_transcoding_on_short_videos_live_run(self):
         # VID_20240412_181520.mp4 does not transcode properly with ffmpeg 7.0. With 7.1 it works.
         # Disable as of now

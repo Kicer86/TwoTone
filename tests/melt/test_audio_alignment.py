@@ -1,7 +1,6 @@
 
 import numpy as np
 import os
-import pytest
 import wave
 import unittest
 
@@ -84,7 +83,6 @@ PAIR_CASES = [
 ]
 
 
-@pytest.mark.slow
 class AudioAlignmentTest(TwoToneTestCase):
     """Verify melt keeps alternate audio streams sample-aligned.
 
