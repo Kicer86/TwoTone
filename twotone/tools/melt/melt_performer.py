@@ -1061,7 +1061,7 @@ class MeltPerformer(TrackTimelineMixin):
 
             fill_gaps = self.fill_audio_gaps
 
-            patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
+            patched_audio = self._temporary_audio_path("patched_audio", stream_index)
             if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
                 timeline_start_ms = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, fill_gaps_from_base=fill_gaps)
             else:
