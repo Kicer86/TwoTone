@@ -98,7 +98,7 @@ class PairMatcher:
         """Compute a human-readable coverage summary for matched files.
 
         Returns a dict with:
-        - ``full_coverage``: True when videos have equal length
+        - ``full_coverage``: True when matched content reaches both video edges
         - ``lhs_start_gap_s`` / ``rhs_start_gap_s``: unmatched seconds at start
         - ``lhs_end_gap_s`` / ``rhs_end_gap_s``: unmatched seconds at end
         - ``ratio``: speed ratio between the two files
@@ -111,7 +111,11 @@ class PairMatcher:
         lhs_end_gap = max(0, lhs_duration_ms - last[0])
         rhs_end_gap = max(0, rhs_duration_ms - last[1])
 
-        full_coverage = lhs_duration_ms == rhs_duration_ms
+        edge_tolerance_ms = 1000
+        full_coverage = all(
+            gap <= edge_tolerance_ms
+            for gap in (lhs_start_gap, rhs_start_gap, lhs_end_gap, rhs_end_gap)
+        )
 
         return {
             "full_coverage": full_coverage,
@@ -502,8 +506,8 @@ class PairMatcher:
         rhs_duration = self.rhs_duration_ms if self.rhs_duration_ms is not None else (max(rhs_keys) if rhs_keys else None)
         lhs_duration_text = generic_utils.ms_to_time(lhs_duration) if lhs_duration is not None else "?"
         rhs_duration_text = generic_utils.ms_to_time(rhs_duration) if rhs_duration is not None else "?"
-        lhs_ref = f"{self.lhs_label}"
-        rhs_ref = f"{self.rhs_label}"
+        lhs_ref = f"{self.lhs_label} ({os.path.basename(self.lhs_path)})"
+        rhs_ref = f"{self.rhs_label} ({os.path.basename(self.rhs_path)})"
 
         if k > 0:
             offset_description = (
@@ -518,7 +522,7 @@ class PairMatcher:
         else:
             offset_description = "no frame offset"
 
-        self.logger.info("Files %s and %s are similar with %s. ", lhs_ref, rhs_ref, offset_description)
+        self.logger.info("Files %s and %s have the same content with %s.", lhs_ref, rhs_ref, offset_description)
 
         self.logger.info(
             "Common section: %s %s-%s of %s; %s %s-%s of %s.",
