@@ -309,6 +309,11 @@ class MeltPerformer:
         process_utils.raise_on_error(
             process_utils.start_process("ffmpeg", [
                 "-y",
+                # Keep container timestamps so the lossy-codec encoder-delay priming
+                # stays at negative time and atrim (start >= 0) drops it deterministically.
+                # Without this, some ffmpeg builds retain the priming as real leading
+                # samples in the raw FLAC, shifting the patched track by one frame.
+                "-copyts",
                 "-i", source_video,
                 "-map", "0:a:0",
                 "-filter:a", trim_filter,
