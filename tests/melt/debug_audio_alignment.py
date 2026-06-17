@@ -689,6 +689,81 @@ def _stage_verification(
     return report
 
 
+def _extraction_candidates(
+    source_path: str,
+    work_dir: str,
+    logger: logging.Logger | None = None,
+) -> dict[str, Any]:
+    """Probe several source-audio extraction recipes and report where each lands.
+
+    The +21 ms regression originates when the source AAC is decoded to a raw FLAC
+    intermediate: some ffmpeg builds retain the AAC encoder-delay priming as real
+    samples, and FLAC has no field to compensate it.  This runs candidate recipes on
+    the source with the active (CI) toolchain so we can pick one that strips the
+    priming consistently (leading silence identical to local) instead of guessing.
+    """
+    meta = _audio_stream_meta(source_path, 0, logger=logger)
+    info = video_utils.get_video_full_info(source_path, logger=logger)
+    audio = next((s for s in info.get("streams", []) if s.get("codec_type") == "audio"), {})
+    try:
+        sample_rate = int(audio.get("sample_rate") or 48000)
+    except (TypeError, ValueError):
+        sample_rate = 48000
+    try:
+        pad = int(meta.get("initial_padding") or 0)
+    except (TypeError, ValueError):
+        pad = 0
+    pad_s = pad / sample_rate if sample_rate else 0.0
+
+    candidates: list[dict[str, Any]] = [
+        {"name": "baseline_atrim_asetpts", "pre_input": [], "filt": "atrim=start=0,asetpts=PTS-STARTPTS"},
+        {"name": "atrim_no_asetpts", "pre_input": [], "filt": "atrim=start=0"},
+        {"name": "plain_decode", "pre_input": [], "filt": None},
+        {"name": "aresample_async", "pre_input": [], "filt": "aresample=async=1,asetpts=PTS-STARTPTS"},
+        {"name": "input_seek_0", "pre_input": ["-ss", "0"], "filt": None},
+    ]
+    if pad_s > 0:
+        candidates.append({
+            "name": "explicit_pad_trim",
+            "pre_input": [],
+            "filt": f"atrim=start={pad_s:.6f},asetpts=PTS-STARTPTS",
+        })
+        # Deterministic across ffmpeg builds: disable automatic priming skip
+        # (always keep it), then trim exactly initial_padding ourselves.
+        candidates.append({
+            "name": "skip_manual_pad_trim",
+            "pre_input": ["-flags2", "+skip_manual"],
+            "filt": f"atrim=start={pad_s:.6f},asetpts=PTS-STARTPTS",
+        })
+
+    cand_dir = os.path.join(work_dir, "extraction_candidates")
+    os.makedirs(cand_dir, exist_ok=True)
+
+    results: list[dict[str, Any]] = []
+    for cand in candidates:
+        out_path = os.path.join(cand_dir, f"{cand['name']}.flac")
+        args = ["-y", *cand["pre_input"], "-i", source_path, "-map", "0:a:0"]
+        if cand["filt"]:
+            args += ["-filter:a", cand["filt"]]
+        args += ["-sample_fmt", "s32", "-c:a", "flac", out_path]
+        entry: dict[str, Any] = {"name": cand["name"], "ffmpeg_args": args}
+        try:
+            run_ffmpeg(args, expected_path=out_path)
+            entry["measurement"] = _measure_audio_landing(
+                out_path, 0, cand_dir, f"cand::{cand['name']}", logger=logger,
+            )
+        except Exception as err:  # noqa: BLE001 - diagnostics must never abort the run
+            entry["error"] = repr(err)
+        results.append(entry)
+
+    return {
+        "source_stream": meta,
+        "source_sample_rate": sample_rate,
+        "encoder_delay_ms": round(pad_s * 1000, 3),
+        "candidates": results,
+    }
+
+
 def _prepare_output_dir(path: Path, overwrite: bool) -> None:
     if path.exists() and any(path.iterdir()):
         if not overwrite:
@@ -875,6 +950,9 @@ def run(args: argparse.Namespace) -> int:
                         "audio_alignment": _audio_alignment_report(output_file, str(work_dir)),
                         "stage_verification": _stage_verification(
                             output_file, rhs_work_path, str(work_dir), logger,
+                        ),
+                        "extraction_candidates": _extraction_candidates(
+                            rhs_work_path, str(work_dir), logger,
                         ),
                     }
                 else:
