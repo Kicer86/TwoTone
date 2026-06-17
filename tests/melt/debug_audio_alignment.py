@@ -721,6 +721,11 @@ def _extraction_candidates(
         {"name": "plain_decode", "pre_input": [], "filt": None},
         {"name": "aresample_async", "pre_input": [], "filt": "aresample=async=1,asetpts=PTS-STARTPTS"},
         {"name": "input_seek_0", "pre_input": ["-ss", "0"], "filt": None},
+        # Timeline-anchored: -copyts keeps container timestamps so the encoder-delay
+        # priming stays at negative time and atrim=start=0 drops it deterministically,
+        # regardless of whether the decoder would have auto-skipped it.
+        {"name": "copyts_atrim0", "pre_input": ["-copyts"], "filt": "atrim=start=0,asetpts=PTS-STARTPTS"},
+        {"name": "copyts_start_at_zero", "pre_input": ["-copyts", "-start_at_zero"], "filt": "atrim=start=0,asetpts=PTS-STARTPTS"},
     ]
     if pad_s > 0:
         candidates.append({
