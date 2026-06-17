@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import glob
 import hashlib
 import importlib.metadata
 import json
@@ -35,6 +36,8 @@ REPO_ROOT = SCRIPT_PATH.parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(TESTS_DIR))
 
+import numpy as np  # noqa: E402
+
 from common import add_to_test_dir, hashes, run_ffmpeg  # noqa: E402
 from melt.test_audio_alignment import (  # noqa: E402
     AudioAlignmentTest,
@@ -42,7 +45,7 @@ from melt.test_audio_alignment import (  # noqa: E402
 )
 from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, PairMatcher, StaticSource  # noqa: E402
 from twotone.tools.melt.melt_cache import MeltCache  # noqa: E402
-from twotone.tools.utils import generic_utils, process_utils, video_utils  # noqa: E402
+from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils  # noqa: E402
 
 
 Json = dict[str, Any] | list[Any] | str | int | float | bool | None
@@ -445,7 +448,14 @@ def _instrument(recorder: Recorder) -> Iterator[None]:
         })
         return result
 
+    # Keep melt's scratch directories (matching/audio_extraction/…) on disk so the
+    # intermediate FLAC/AAC files survive into the uploaded artifact and can be
+    # measured with the CI toolchain.  Without this they are rmtree'd on scope exit.
+    def scoped_dir_keep_exit(self: files_utils.ScopedDirectory, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        return None
+
     with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(files_utils.ScopedDirectory, "__exit__", scoped_dir_keep_exit))
         stack.enter_context(patch.object(process_utils, "start_process", start_process_wrapper))
         stack.enter_context(patch.object(PairMatcher, "_detect_scenes_for", detect_scenes_for_wrapper))
         stack.enter_context(patch.object(PairMatcher, "_probe_frames_for", probe_frames_for_wrapper))
@@ -571,6 +581,112 @@ def _audio_alignment_report(output_file: str, work_dir: str) -> dict[str, Any]:
         "tolerance": AudioAlignmentTest.AUDIO_ALIGNMENT_TOLERANCE_SECONDS,
         "passes_tolerance": max(offsets, default=0.0) <= AudioAlignmentTest.AUDIO_ALIGNMENT_TOLERANCE_SECONDS,
     }
+
+
+def _audio_stream_meta(path: str, audio_index: int, logger: logging.Logger | None = None) -> dict[str, Any]:
+    """Container-level priming metadata for one audio stream, as the CI toolchain reports it."""
+    info = video_utils.get_video_full_info(path, logger=logger)
+    audio_streams = [s for s in info.get("streams", []) if s.get("codec_type") == "audio"]
+    if audio_index >= len(audio_streams):
+        return {"present": False}
+    stream = audio_streams[audio_index]
+    return {
+        "present": True,
+        "codec_name": stream.get("codec_name"),
+        "start_time": stream.get("start_time"),
+        "start_pts": stream.get("start_pts"),
+        "initial_padding": stream.get("initial_padding"),
+        "nb_samples": stream.get("nb_samples") or stream.get("nb_read_samples"),
+        "duration": stream.get("duration"),
+        "time_base": stream.get("time_base"),
+    }
+
+
+def _measure_audio_landing(
+    path: str,
+    audio_index: int,
+    work_dir: str,
+    label: str,
+    logger: logging.Logger | None = None,
+) -> dict[str, Any]:
+    """Decode one audio stream with the active (CI) ffmpeg and report where its content lands.
+
+    Captures the first detected beep centre and the leading-silence offset, alongside the
+    container priming metadata, so a single pair run shows *at which pipeline stage* a
+    sample-level shift (e.g. AAC encoder delay) enters — measured entirely by CI tools.
+    """
+    result: dict[str, Any] = {"label": label, "path": path, "audio_index": audio_index}
+    result["stream"] = _audio_stream_meta(path, audio_index, logger=logger)
+    if not result["stream"].get("present"):
+        return result
+
+    safe_label = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{label}_a{audio_index}")
+    wav_path = os.path.join(work_dir, f"verify_{safe_label}.wav")
+    try:
+        run_ffmpeg(
+            [
+                "-y", "-i", path,
+                "-map", f"0:a:{audio_index}",
+                "-ac", "1", "-ar", str(AudioAlignmentTest.SAMPLE_RATE),
+                "-c:a", "pcm_s16le", wav_path,
+            ],
+            expected_path=wav_path,
+        )
+    except Exception as err:  # noqa: BLE001 - diagnostics must never abort the run
+        result["decode_error"] = repr(err)
+        return result
+
+    _sample_rate, samples = AudioAlignmentTest._read_mono_wav(wav_path)
+    centers = AudioAlignmentTest._detect_beep_centers(wav_path)
+    loud = np.flatnonzero(np.abs(samples) > 0.02)
+    result["first_beep_center"] = round(centers[0], 12) if centers else None
+    result["beep_count"] = len(centers)
+    result["leading_silence_ms"] = (
+        round(float(loud[0]) / AudioAlignmentTest.SAMPLE_RATE * 1000, 3) if loud.size else None
+    )
+    return result
+
+
+def _stage_verification(
+    output_file: str,
+    rhs_work_path: str,
+    work_dir: str,
+    logger: logging.Logger | None = None,
+) -> dict[str, Any]:
+    """Trace beep landing through every pipeline stage, measured with the CI toolchain.
+
+    Goal: localise where the patched track gains its offset.  Compare ``rhs_input`` →
+    intermediate ``.flac``/``.mka`` (pre-mkvmerge) → ``output_track_1`` (post-mkvmerge).
+    If the ``.mka`` already lands late, the encoder step leaks; if it is clean but the
+    output is late, the mux/extract step does.
+    """
+    def _curated(patterns: list[str], limit: int) -> list[str]:
+        found: list[str] = []
+        for pattern in patterns:
+            found.extend(sorted(glob.glob(os.path.join(work_dir, pattern), recursive=True)))
+        unique = list(dict.fromkeys(found))
+        return unique[:limit]
+
+    mka_files = _curated(["**/*.mka"], limit=8)
+    flac_files = _curated(
+        ["**/source_trimmed*.flac", "**/source_scaled*.flac", "**/v2_audio*.flac", "**/scaled_*.flac"],
+        limit=8,
+    )
+
+    report: dict[str, Any] = {
+        "rhs_input": _measure_audio_landing(rhs_work_path, 0, work_dir, "rhs_input", logger=logger),
+        "intermediate_flac": [
+            _measure_audio_landing(path, 0, work_dir, f"flac::{os.path.basename(path)}", logger=logger)
+            for path in flac_files
+        ],
+        "intermediate_mka": [
+            _measure_audio_landing(path, 0, work_dir, f"mka::{os.path.basename(path)}", logger=logger)
+            for path in mka_files
+        ],
+        "output_track_0": _measure_audio_landing(output_file, 0, work_dir, "output_track_0", logger=logger),
+        "output_track_1": _measure_audio_landing(output_file, 1, work_dir, "output_track_1", logger=logger),
+    }
+    return report
 
 
 def _prepare_output_dir(path: Path, overwrite: bool) -> None:
@@ -757,6 +873,9 @@ def run(args: argparse.Namespace) -> int:
                         "media": _media_report(output_file, "output", logger),
                         "playback_end_ms": AudioAlignmentTest._playback_end_ms(output_file),
                         "audio_alignment": _audio_alignment_report(output_file, str(work_dir)),
+                        "stage_verification": _stage_verification(
+                            output_file, rhs_work_path, str(work_dir), logger,
+                        ),
                     }
                 else:
                     report["output_error"] = f"Expected exactly one output file, got {len(output_hashes)}"
