@@ -302,25 +302,17 @@ class MeltPerformer:
         #    relationship), NOT from measured audio duration.
 
         trimmed_audio = os.path.join(wd, "source_trimmed.flac")
-        trim_filter = (
-            f"atrim=start={seg2_start / 1000:.6f}:end={seg2_end / 1000:.6f},"
-            "asetpts=PTS-STARTPTS"
-        )
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", [
-                "-y",
-                # Keep container timestamps so the lossy-codec encoder-delay priming
-                # stays at negative time and atrim (start >= 0) drops it deterministically.
-                # Without this, some ffmpeg builds retain the priming as real leading
-                # samples in the raw FLAC, shifting the patched track by one frame.
-                "-copyts",
-                "-i", source_video,
-                "-map", "0:a:0",
-                "-filter:a", trim_filter,
-                "-sample_fmt", self._flac_safe_fmt(source_params[2]),
-                "-c:a", "flac",
-                trimmed_audio,
-            ], logger=self.logger)
+        # Decode the [seg2_start, seg2_end] window of the source audio, with the
+        # lossy-codec encoder-delay priming removed deterministically so the patched
+        # track is not shifted by one AAC frame (~21 ms) on ffmpeg builds that decode
+        # the priming as real samples.
+        self._decode_source_audio_to_flac(
+            source_video,
+            trimmed_audio,
+            sample_fmt=self._flac_safe_fmt(source_params[2]),
+            trim_start_ms=seg2_start,
+            trim_end_ms=seg2_end,
+            logger=self.logger,
         )
 
         actual_source_dur = video_utils.get_video_duration(trimmed_audio, logger=self.logger)
@@ -557,15 +549,102 @@ class MeltPerformer:
             if diagram:
                 self.logger.info("Overlap diagram:\n%s", "\n".join(diagram))
 
-    @staticmethod
-    def _extract_audio_to_flac(video_path: str, output_path: str, logger: logging.Logger | None = None) -> None:
-        process_utils.raise_on_error(
-            process_utils.start_process(
-                "ffmpeg",
-                ["-y", "-i", video_path, "-map", "0:a:0", "-sample_fmt", "s32", "-c:a", "flac", output_path],
-                logger=logger,
+    @classmethod
+    def _source_audio_priming(cls, video_path: str, logger: logging.Logger | None = None) -> tuple[str | None, int, int, int]:
+        """Return (codec_name, initial_padding_samples, sample_rate, start_offset_ms).
+
+        ``initial_padding`` is the lossy-codec encoder-delay (priming) sample count the
+        container signals via Matroska *CodecDelay*; it is 0 for MP4/MOV (where the same
+        delay is carried by an edit list that every ffmpeg build honours on decode).
+        ``start_offset_ms`` is the audio stream's container start time, which a
+        filtergraph normally exposes as the frames' presentation timestamps.
+        """
+        info = video_utils.get_video_full_info(video_path, logger=logger)
+        stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "audio"), {})
+        codec = stream.get("codec_name")
+        try:
+            init_pad = int(stream.get("initial_padding") or 0)
+        except (TypeError, ValueError):
+            init_pad = 0
+        try:
+            sample_rate = int(stream.get("sample_rate") or 0)
+        except (TypeError, ValueError):
+            sample_rate = 0
+        return codec, init_pad, sample_rate, cls._stream_start_offset_ms(stream)
+
+    @classmethod
+    def _decode_source_audio_to_flac(
+        cls,
+        source_video: str,
+        output_path: str,
+        *,
+        sample_fmt: str = "s32",
+        trim_start_ms: int | None = None,
+        trim_end_ms: int | None = None,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        """Decode the first audio stream of *source_video* to FLAC with the lossy-codec
+        encoder-delay priming removed deterministically across all ffmpeg builds.
+
+        AAC and similar lapped-transform codecs prepend ``initial_padding`` priming
+        samples that must be skipped on decode.  Some ffmpeg builds skip them
+        automatically (honouring Matroska *CodecDelay*), others decode them as real
+        leading samples — shifting the track by ~21 ms (one AAC frame).  To get
+        identical output everywhere, when the source carries CodecDelay priming we
+        strip that signalling by remuxing the AAC bitstream to ADTS (which has no
+        priming metadata), decode the now-always-present priming, and trim exactly
+        ``initial_padding`` samples ourselves.
+
+        ``trim_start_ms`` / ``trim_end_ms`` select a window of the *priming-free*
+        stream, matching what a priming-honouring decoder would have produced.  These
+        bounds are expressed on the source's container timeline (the timestamps a
+        filtergraph normally sees); when the priming strip drops that container start
+        offset we re-anchor the window to it so it keeps selecting the same content.
+        """
+        codec, init_pad, sample_rate, start_offset_ms = cls._source_audio_priming(source_video, logger=logger)
+
+        prime_offset_s = 0.0
+        window_anchor_ms = 0
+        input_path = source_video
+        adts_path: str | None = None
+        if codec == "aac" and init_pad > 0 and sample_rate > 0:
+            adts_path = f"{output_path}.priming.aac"
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", [
+                    "-y", "-i", source_video, "-map", "0:a:0",
+                    "-c:a", "copy", "-f", "adts", adts_path,
+                ], logger=logger)
             )
-        )
+            input_path = adts_path
+            prime_offset_s = init_pad / sample_rate
+            # ADTS carries no container timestamps, so the decoded frames start at 0
+            # instead of the source's container start time.  Shift the trim window by
+            # that lost offset (the plain-decode path keeps it via the frame PTS).
+            window_anchor_ms = start_offset_ms
+
+        filters: list[str] = []
+        if prime_offset_s or trim_start_ms is not None or trim_end_ms is not None:
+            start_s = prime_offset_s + max(0, (trim_start_ms or 0) - window_anchor_ms) / 1000
+            atrim = f"atrim=start={start_s:.6f}"
+            if trim_end_ms is not None:
+                end_s = prime_offset_s + max(0, trim_end_ms - window_anchor_ms) / 1000
+                atrim += f":end={end_s:.6f}"
+            filters.append(atrim)
+            filters.append("asetpts=PTS-STARTPTS")
+
+        args = ["-y", "-i", input_path, "-map", "0:a:0"]
+        if filters:
+            args += ["-filter:a", ",".join(filters)]
+        args += ["-sample_fmt", sample_fmt, "-c:a", "flac", output_path]
+        try:
+            process_utils.raise_on_error(process_utils.start_process("ffmpeg", args, logger=logger))
+        finally:
+            if adts_path and os.path.exists(adts_path):
+                os.remove(adts_path)
+
+    @classmethod
+    def _extract_audio_to_flac(cls, video_path: str, output_path: str, logger: logging.Logger | None = None) -> None:
+        cls._decode_source_audio_to_flac(video_path, output_path, sample_fmt="s32", logger=logger)
 
     @staticmethod
     def _segment_range(pairs: Sequence[tuple[int, int]]) -> _SegmentRange:
