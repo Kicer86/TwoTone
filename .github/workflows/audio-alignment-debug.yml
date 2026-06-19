@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   debug:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     env:
       AUDIO_DEBUG_LHS: ${{ github.event.inputs.lhs || 'v00_asR_vsR_aeR_veR' }}
