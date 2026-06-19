@@ -27,7 +27,11 @@ concurrency:
 
 jobs:
   debug:
-    runs-on: ubuntu-26.04
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, macos-latest]
 
     env:
       AUDIO_DEBUG_LHS: ${{ github.event.inputs.lhs || 'v00_asR_vsR_aeR_veR' }}
@@ -45,12 +49,19 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install required tools
+      - name: Install required tools (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             ffmpeg \
             mkvtoolnix
+
+      - name: Install required tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install ffmpeg mkvtoolnix
 
       - name: Run audio alignment diagnostic
         run: |
@@ -64,7 +75,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: audio-alignment-debug-${{ github.run_id }}
+          name: audio-alignment-debug-${{ matrix.os }}-${{ github.run_id }}
           path: audio-alignment-debug/
           if-no-files-found: error
           retention-days: 14
