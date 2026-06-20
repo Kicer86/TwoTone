@@ -63,6 +63,7 @@ class MeltPerformer:
         self._normalized_audio_cache: dict[tuple[str, int], str] = {}
         self._temporary_audio_counter = 0
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
+        self._aac_priming_exposed_cache: bool | None = None
         self.wd = _ensure_working_dir(working_dir)
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
@@ -666,6 +667,59 @@ class MeltPerformer:
         stream = next(s for s in info["streams"] if s["codec_type"] == "audio")
         return stream.get("channel_layout") or None
 
+    def _aac_priming_exposed(self) -> bool:
+        """Whether this ffmpeg build exposes AAC encoder-delay priming as a negative
+        container start time instead of absorbing it.
+
+        Builds disagree: some report a freshly encoded AAC stream's ``start_time`` as
+        ``-encoder_delay`` (priming exposed, kept in the decoded samples), others as 0
+        (priming absorbed).  The same convention applies when *reading* a source AAC
+        stream, so on exposing builds a positive-offset (asO) audio stream's reported
+        ``start_time`` is short by one frame (~21 ms) — which otherwise mis-places the
+        patched track by exactly that frame.  Detected once and cached per run.
+        """
+        if self._aac_priming_exposed_cache is None:
+            exposed = False
+            probe = os.path.join(self.wd, f"_priming_probe_{os.getpid()}.mka")
+            try:
+                process_utils.raise_on_error(
+                    process_utils.start_process("ffmpeg", [
+                        "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
+                        "-t", "0.5", "-c:a", "aac", probe,
+                    ], logger=self.logger)
+                )
+                info = video_utils.get_video_full_info(probe, logger=self.logger)
+                stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "audio"), {})
+                exposed = float(stream.get("start_time") or 0.0) < -0.001
+            except Exception:  # noqa: BLE001 - detection failure falls back to "absorbed"
+                exposed = False
+            finally:
+                if os.path.exists(probe):
+                    os.remove(probe)
+            self._aac_priming_exposed_cache = exposed
+        return self._aac_priming_exposed_cache
+
+    def _audio_content_start_ms(self, stream: dict[str, Any] | None) -> int:
+        """Audio stream's true content start (ms), priming-convention independent.
+
+        On builds that expose AAC priming, the reported ``start_time`` is short by the
+        encoder delay; add it back so positive-offset placement matches absorbing
+        builds.  ``_stream_start_offset_ms`` clamps negatives to 0, so asR streams are
+        unaffected; only positive (asO) offsets carry the leaked frame.
+        """
+        base = self._stream_start_offset_ms(stream)
+        if not stream or stream.get("codec_name") != "aac" or not self._aac_priming_exposed():
+            return base
+        try:
+            pad = int(stream.get("initial_padding") or 0)
+            sample_rate = int(stream.get("sample_rate") or 0)
+            raw_start = float(stream.get("start_time") or 0.0)
+        except (TypeError, ValueError):
+            return base
+        if pad <= 0 or sample_rate <= 0:
+            return base
+        return max(0, round((raw_start + pad / sample_rate) * 1000))
+
     def _patched_audio_start_ms(
         self,
         source_video: str,
@@ -678,7 +732,7 @@ class MeltPerformer:
         video_stream = next((s for s in info["streams"] if s.get("codec_type") == "video"), None)
         audio_stream = next((s for s in info["streams"] if s.get("codec_type") == "audio"), None)
         video_start_ms = self._stream_start_offset_ms(video_stream)
-        audio_start_ms = self._stream_start_offset_ms(audio_stream)
+        audio_start_ms = self._audio_content_start_ms(audio_stream)
 
         audio_start_correction = 0
         if audio_start_ms > video_start_ms and audio_start_ms > seg2_start:
