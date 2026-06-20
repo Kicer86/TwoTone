@@ -60,7 +60,7 @@ class MeltPerformer:
         self.tolerance_ms = tolerance_ms
         self.cache = cache
         self.fill_audio_gaps = fill_audio_gaps
-        self._normalized_audio_cache: dict[tuple[str, int], str] = {}
+        self._normalized_audio_cache: dict[tuple[str, int, int | None], str] = {}
         self._temporary_audio_counter = 0
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
         self._aac_priming_exposed_cache: bool | None = None
@@ -551,7 +551,13 @@ class MeltPerformer:
                 self.logger.info("Overlap diagram:\n%s", "\n".join(diagram))
 
     @classmethod
-    def _source_audio_priming(cls, video_path: str, logger: logging.Logger | None = None) -> tuple[str | None, int, int, int]:
+    def _source_audio_priming(
+        cls,
+        video_path: str,
+        logger: logging.Logger | None = None,
+        *,
+        audio_stream_index: int | None = None,
+    ) -> tuple[str | None, int, int, int]:
         """Return (codec_name, initial_padding_samples, sample_rate, start_offset_ms).
 
         ``initial_padding`` is the lossy-codec encoder-delay (priming) sample count the
@@ -559,9 +565,20 @@ class MeltPerformer:
         delay is carried by an edit list that every ffmpeg build honours on decode).
         ``start_offset_ms`` is the audio stream's container start time, which a
         filtergraph normally exposes as the frames' presentation timestamps.
+
+        ``audio_stream_index`` selects a specific stream by its absolute container
+        index; when omitted the first audio stream is used.
         """
         info = video_utils.get_video_full_info(video_path, logger=logger)
-        stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "audio"), {})
+        streams = info.get("streams", [])
+        if audio_stream_index is not None:
+            stream = next(
+                (s for s in streams
+                 if s.get("codec_type") == "audio" and s.get("index") == audio_stream_index),
+                {},
+            )
+        else:
+            stream = next((s for s in streams if s.get("codec_type") == "audio"), {})
         codec = stream.get("codec_name")
         try:
             init_pad = int(stream.get("initial_padding") or 0)
@@ -582,6 +599,7 @@ class MeltPerformer:
         sample_fmt: str = "s32",
         trim_start_ms: int | None = None,
         trim_end_ms: int | None = None,
+        audio_stream_index: int | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         """Decode the first audio stream of *source_video* to FLAC with the lossy-codec
@@ -602,21 +620,26 @@ class MeltPerformer:
         filtergraph normally sees); when the priming strip drops that container start
         offset we re-anchor the window to it so it keeps selecting the same content.
         """
-        codec, init_pad, sample_rate, start_offset_ms = cls._source_audio_priming(source_video, logger=logger)
+        codec, init_pad, sample_rate, start_offset_ms = cls._source_audio_priming(
+            source_video, logger=logger, audio_stream_index=audio_stream_index,
+        )
+        source_map = f"0:{audio_stream_index}" if audio_stream_index is not None else "0:a:0"
 
         prime_offset_s = 0.0
         window_anchor_ms = 0
         input_path = source_video
+        input_map = source_map
         adts_path: str | None = None
         if codec == "aac" and init_pad > 0 and sample_rate > 0:
             adts_path = f"{output_path}.priming.aac"
             process_utils.raise_on_error(
                 process_utils.start_process("ffmpeg", [
-                    "-y", "-i", source_video, "-map", "0:a:0",
+                    "-y", "-i", source_video, "-map", source_map,
                     "-c:a", "copy", "-f", "adts", adts_path,
                 ], logger=logger)
             )
             input_path = adts_path
+            input_map = "0:a:0"  # the remuxed ADTS file carries only the selected stream
             prime_offset_s = init_pad / sample_rate
             # ADTS carries no container timestamps, so the decoded frames start at 0
             # instead of the source's container start time.  Shift the trim window by
@@ -633,7 +656,7 @@ class MeltPerformer:
             filters.append(atrim)
             filters.append("asetpts=PTS-STARTPTS")
 
-        args = ["-y", "-i", input_path, "-map", "0:a:0"]
+        args = ["-y", "-i", input_path, "-map", input_map]
         if filters:
             args += ["-filter:a", ",".join(filters)]
         args += ["-sample_fmt", sample_fmt, "-c:a", "flac", output_path]
@@ -1455,51 +1478,64 @@ class MeltPerformer:
         self._temporary_audio_counter += 1
         return path
 
-    def _normalize_audio_for_mkvmerge(self, source_path: str, stream_index: int) -> tuple[str, int]:
-        """Re-encode AAC through FFmpeg so mkvmerge keeps decoded timing intact."""
-        cache_key = (source_path, stream_index)
+    def _prepare_passthrough_audio(
+        self,
+        source_path: str,
+        stream_index: int,
+        desired_end_ms: int | None = None,
+    ) -> tuple[str, int]:
+        """Prepare an unscaled (length-matching) audio stream for mkvmerge through a
+        single FLAC-domain flow: decode to a priming-free FLAC, optionally trim its
+        tail to the output-timeline end, then encode to AAC exactly once.
+
+        Feeding AAC straight to mkvmerge, or re-encoding AAC→AAC, re-applies the
+        encoder-delay priming on ffmpeg builds that expose it, accumulating ~21 ms
+        per pass and shifting the track.  Routing every processing step through FLAC
+        and encoding AAC only once keeps decoded timing identical across builds —
+        the same single-encode discipline the constant-offset patch path relies on.
+        """
+        cache_key = (source_path, stream_index, desired_end_ms)
         cached_path = self._normalized_audio_cache.get(cache_key)
         if cached_path is not None:
             return cached_path, 0
 
-        output_path = self._temporary_audio_path("normalized_audio", stream_index)
+        flac_path = self._temporary_audio_path("passthrough_flac", stream_index)
+        self._decode_source_audio_to_flac(
+            source_path,
+            flac_path,
+            sample_fmt="s32",
+            audio_stream_index=stream_index,
+            logger=self.logger,
+        )
 
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", [
-                "-y",
-                "-i", source_path,
-                "-map", f"0:{stream_index}",
-                "-c:a", "aac",
-                output_path,
-            ], logger=self.logger)
+        prepared_flac = flac_path
+        if desired_end_ms is not None:
+            flac_start_ms = self._source_stream_start_offset_ms(flac_path, "audio", 0)
+            relative_end_ms = max(0, desired_end_ms - flac_start_ms)
+            prepared_flac = self._temporary_audio_path("passthrough_trim", stream_index)
+            trim_filter = (
+                f"atrim=start=0.000000:end={relative_end_ms / 1000:.6f},"
+                "asetpts=PTS-STARTPTS"
+            )
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", [
+                    "-y", "-i", flac_path, "-map", "0:a:0",
+                    "-filter:a", trim_filter,
+                    "-sample_fmt", "s32", "-c:a", "flac", prepared_flac,
+                ], logger=self.logger)
+            )
+
+        output_path = self._temporary_audio_path("passthrough_audio", stream_index)
+        channel_layout = self._get_audio_channel_layout(source_path, logger=self.logger)
+        self._concat_and_encode(
+            [prepared_flac], False, "", False, "",
+            os.path.join(self.wd, f"passthrough_concat_{os.getpid()}_{stream_index}.txt"),
+            output_path,
+            channel_layout=channel_layout,
+            logger=self.logger,
         )
 
         self._normalized_audio_cache[cache_key] = output_path
-        return output_path, 0
-
-    def _trim_audio_to_timeline_end(
-        self,
-        source_path: str,
-        stream_index: int,
-        desired_end_ms: int,
-    ) -> tuple[str, int]:
-        source_start_ms = self._source_stream_start_offset_ms(source_path, "audio", stream_index)
-        relative_end_ms = max(0, desired_end_ms - source_start_ms)
-        output_path = self._temporary_audio_path("trimmed_audio", stream_index)
-        trim_filter = (
-            f"atrim=start=0.000000:end={relative_end_ms / 1000:.6f},"
-            "asetpts=PTS-STARTPTS"
-        )
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", [
-                "-y",
-                "-i", source_path,
-                "-map", f"0:{stream_index}",
-                "-filter:a", trim_filter,
-                "-c:a", "aac",
-                output_path,
-            ], logger=self.logger)
-        )
         return output_path, 0
 
     def _base_output_end_ms(
@@ -1565,17 +1601,24 @@ class MeltPerformer:
                 input_files.add(path)
                 if original_path not in protected_paths:
                     input_files.discard(original_path)
-            elif self._audio_needs_mkvmerge_normalization(path, stream_index):
-                original_path = path
-                path, stream_index = self._normalize_audio_for_mkvmerge(path, stream_index)
-                input_files.add(path)
-                if original_path not in protected_paths:
-                    input_files.discard(original_path)
-            if path != video_path_base and audio_desired_start_ms is not None and base_output_end_ms is not None:
-                audio_end_ms = self._source_stream_end_offset_ms(path, "audio", stream_index)
-                if audio_end_ms is not None and audio_end_ms > base_output_end_ms + self.tolerance_ms:
+            else:
+                # Length-matching audio is passed through unchanged, except for two
+                # mkvmerge concerns handled by a single FLAC-domain flow (decode →
+                # optional tail trim → one AAC encode): AAC needs priming-free remux
+                # for non-Matroska inputs, and audio overrunning the output timeline
+                # must be trimmed.  Both used to be separate AAC re-encodes that
+                # accumulated encoder-delay priming on builds that expose it.
+                needs_normalization = self._audio_needs_mkvmerge_normalization(path, stream_index)
+                trim_end_ms: int | None = None
+                if path != video_path_base and audio_desired_start_ms is not None and base_output_end_ms is not None:
+                    audio_end_ms = self._source_stream_end_offset_ms(path, "audio", stream_index)
+                    if audio_end_ms is not None and audio_end_ms > base_output_end_ms + self.tolerance_ms:
+                        trim_end_ms = base_output_end_ms
+                if needs_normalization or trim_end_ms is not None:
                     original_path = path
-                    path, stream_index = self._trim_audio_to_timeline_end(path, stream_index, base_output_end_ms)
+                    path, stream_index = self._prepare_passthrough_audio(
+                        path, stream_index, desired_end_ms=trim_end_ms,
+                    )
                     input_files.add(path)
                     if original_path not in protected_paths:
                         input_files.discard(original_path)

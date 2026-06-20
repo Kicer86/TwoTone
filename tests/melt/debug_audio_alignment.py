@@ -411,25 +411,14 @@ def _instrument(recorder: Recorder) -> Iterator[None]:
         })
         return result
 
-    original_normalize_audio = MeltPerformer._normalize_audio_for_mkvmerge
+    original_prepare_passthrough = MeltPerformer._prepare_passthrough_audio
 
-    def normalize_audio_wrapper(self: MeltPerformer, *args: Any, **kwargs: Any) -> Any:
-        result = original_normalize_audio(self, *args, **kwargs)
-        recorder.add_event("melt_performer.normalize_audio_for_mkvmerge", {
+    def prepare_passthrough_wrapper(self: MeltPerformer, *args: Any, **kwargs: Any) -> Any:
+        result = original_prepare_passthrough(self, *args, **kwargs)
+        recorder.add_event("melt_performer.prepare_passthrough_audio", {
             "source_path": args[0],
             "stream_index": args[1],
-            "result": result,
-        })
-        return result
-
-    original_trim_audio = MeltPerformer._trim_audio_to_timeline_end
-
-    def trim_audio_wrapper(self: MeltPerformer, *args: Any, **kwargs: Any) -> Any:
-        result = original_trim_audio(self, *args, **kwargs)
-        recorder.add_event("melt_performer.trim_audio_to_timeline_end", {
-            "source_path": args[0],
-            "stream_index": args[1],
-            "desired_end_ms": args[2],
+            "desired_end_ms": kwargs.get("desired_end_ms", args[2] if len(args) > 2 else None),
             "result": result,
         })
         return result
@@ -471,8 +460,7 @@ def _instrument(recorder: Recorder) -> Iterator[None]:
         stack.enter_context(patch.object(MeltPerformer, "patch_audio_constant_offset", patch_audio_constant_offset_wrapper))
         stack.enter_context(patch.object(MeltPerformer, "_patch_audio_segment", patch_audio_segment_wrapper))
         stack.enter_context(patch.object(MeltPerformer, "_track_sync_offset_ms", track_sync_offset_wrapper))
-        stack.enter_context(patch.object(MeltPerformer, "_normalize_audio_for_mkvmerge", normalize_audio_wrapper))
-        stack.enter_context(patch.object(MeltPerformer, "_trim_audio_to_timeline_end", trim_audio_wrapper))
+        stack.enter_context(patch.object(MeltPerformer, "_prepare_passthrough_audio", prepare_passthrough_wrapper))
         stack.enter_context(patch.object(MeltPerformer, "build_mkvmerge_args", build_mkvmerge_args_wrapper))
         yield
 

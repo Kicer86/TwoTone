@@ -917,7 +917,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             self.assertTrue(performer._audio_needs_mkvmerge_normalization("/tmp/source.mov", 1))
             self.assertFalse(performer._audio_needs_mkvmerge_normalization("/tmp/source.mkv", 1))
 
-    def test_normalize_audio_for_mkvmerge_does_not_double_preserved_audio_start(self):
+    def test_prepare_passthrough_audio_decodes_via_flac_then_encodes_aac_once(self):
         performer = self._make_performer()
         calls = []
         source_full_info = {
@@ -926,38 +926,42 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 {"codec_type": "audio", "index": 1, "codec_name": "aac", "start_time": "0.471000"},
             ]
         }
-        normalized_full_info = {
-            "streams": [
-                {"codec_type": "audio", "index": 0, "codec_name": "aac", "start_time": "0.471000"},
-            ]
-        }
 
         def fake_start_process(tool, args, **kwargs):
             calls.append((tool, list(args)))
             return _FAKE_PROCESS_OK
 
-        def fake_full_info(path):
-            if path == "/tmp/source.mov":
-                return source_full_info
-            return normalized_full_info
+        def fake_full_info(path, logger=None):
+            return source_full_info
 
         with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info), \
              patch.object(process_utils, "start_process", side_effect=fake_start_process), \
              patch.object(process_utils, "raise_on_error", lambda r: None):
-            normalized_path, normalized_index = performer._normalize_audio_for_mkvmerge("/tmp/source.mov", 1)
-            cached_path, cached_index = performer._normalize_audio_for_mkvmerge("/tmp/source.mov", 1)
+            prepared_path, prepared_index = performer._prepare_passthrough_audio("/tmp/source.mov", 1)
+            cached_path, cached_index = performer._prepare_passthrough_audio("/tmp/source.mov", 1)
 
-        self.assertEqual(normalized_index, 0)
+        self.assertEqual(prepared_index, 0)
         self.assertEqual(cached_index, 0)
-        self.assertEqual(cached_path, normalized_path)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0], "ffmpeg")
-        args = calls[0][1]
-        self.assertIn("-map", args)
-        self.assertEqual(args[args.index("-map") + 1], "0:1")
-        self.assertIn("-c:a", args)
-        self.assertEqual(args[args.index("-c:a") + 1], "aac")
-        self.assertEqual(args[-1], normalized_path)
+        self.assertEqual(cached_path, prepared_path)
+
+        # The flow runs exactly twice: decode the source to a priming-free FLAC,
+        # then encode that FLAC to AAC a single time.  No AAC→AAC re-encode that
+        # could re-apply encoder-delay priming.  The second call is fully cached.
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(tool == "ffmpeg" for tool, _ in calls))
+
+        decode_args = calls[0][1]
+        self.assertEqual(decode_args[decode_args.index("-map") + 1], "0:1")
+        self.assertEqual(decode_args[decode_args.index("-c:a") + 1], "flac")
+
+        encode_args = calls[1][1]
+        self.assertEqual(encode_args[encode_args.index("-c:a") + 1], "aac")
+        self.assertEqual(encode_args[-1], prepared_path)
+        # Source AAC must never be encoded straight to AAC.
+        self.assertFalse(any(
+            "aac" in args[args.index("-c:a") + 1:] and "/tmp/source.mov" in args
+            for _tool, args in calls if "-c:a" in args
+        ))
 
     def test_track_sync_offset_compensates_when_normalized_audio_start_is_lost(self):
         performer = self._make_performer()
