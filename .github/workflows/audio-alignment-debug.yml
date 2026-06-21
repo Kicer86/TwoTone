@@ -63,6 +63,10 @@ jobs:
           brew update
           brew install ffmpeg mkvtoolnix
 
+      - name: Probe AAC priming (build-dependent)
+        run: |
+          python tests/melt/probe_priming.py
+
       - name: Run audio alignment diagnostic
         run: |
           python tests/melt/debug_audio_alignment.py run \
