@@ -917,6 +917,29 @@ class MeltPerformerUnitTest(unittest.TestCase):
             self.assertTrue(performer._audio_needs_mkvmerge_normalization("/tmp/source.mov", 1))
             self.assertFalse(performer._audio_needs_mkvmerge_normalization("/tmp/source.mkv", 1))
 
+    def test_matroska_aac_with_priming_needs_mkvmerge_normalization(self):
+        """Matroska AAC carrying CodecDelay priming must go through the FLAC flow:
+        a raw remux places it build-dependently (~21 ms off on exposing builds)."""
+        performer = self._make_performer()
+
+        def fake_full_info(padded):
+            return {
+                "streams": [
+                    {"codec_type": "video", "index": 0, "codec_name": "h264"},
+                    {
+                        "codec_type": "audio",
+                        "index": 1,
+                        "codec_name": "aac",
+                        "initial_padding": 1024 if padded else 0,
+                    },
+                ]
+            }
+
+        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info(True)):
+            self.assertTrue(performer._audio_needs_mkvmerge_normalization("/tmp/source.mkv", 1))
+        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info(False)):
+            self.assertFalse(performer._audio_needs_mkvmerge_normalization("/tmp/source.mkv", 1))
+
     def test_prepare_passthrough_audio_decodes_via_flac_then_encodes_aac_once(self):
         performer = self._make_performer()
         calls = []

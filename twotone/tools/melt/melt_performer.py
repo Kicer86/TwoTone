@@ -1463,12 +1463,28 @@ class MeltPerformer:
         return sync_offset_ms if sync_offset_ms else None
 
     def _audio_needs_mkvmerge_normalization(self, path: str, stream_index: int) -> bool:
-        """Return True when direct mkvmerge remux can shift decoded AAC timing."""
-        extension = os.path.splitext(path)[1].lower()
-        if extension in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
-            return False
+        """Return True when direct mkvmerge remux can shift decoded AAC timing.
+
+        Non-Matroska AAC always needs a priming-free remux: mkvmerge would otherwise
+        drop the container start offset.  Matroska normally preserves start, so raw
+        passthrough is fine -- *except* when the AAC stream carries encoder-delay
+        priming (CodecDelay / ``initial_padding``).  Remuxed raw, such a stream is
+        placed build-dependently: builds that expose priming shift its decoded
+        content by one frame (~21 ms) relative to a priming-stripped base track.
+        Route those through the FLAC-domain flow too so the priming is removed
+        deterministically, exactly as for non-Matroska inputs.
+        """
         stream = self._audio_stream_info(path, stream_index)
-        return stream is not None and stream.get("codec_name") == "aac"
+        if stream is None or stream.get("codec_name") != "aac":
+            return False
+        extension = os.path.splitext(path)[1].lower()
+        if extension not in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
+            return True
+        try:
+            init_pad = int(stream.get("initial_padding") or 0)
+        except (TypeError, ValueError):
+            init_pad = 0
+        return init_pad > 0
 
     def _temporary_audio_path(self, label: str, stream_index: int) -> str:
         path = os.path.join(
@@ -1590,7 +1606,13 @@ class MeltPerformer:
             ))
 
         for (path, stream_index, language) in audio_streams:
-            audio_desired_start_ms: int | None = self._source_stream_start_offset_ms(path, "audio", stream_index)
+            # Priming-convention independent content start: on builds that expose AAC
+            # encoder-delay priming, a positive-offset (asO) stream's raw start_time is
+            # short by one frame; _audio_content_start_ms adds it back so placement
+            # matches absorbing builds (a no-op for non-AAC / asR streams).
+            audio_desired_start_ms: int | None = self._audio_content_start_ms(
+                self._stream_info(path, "audio", stream_index)
+            )
             duration = self._video_track_duration(path, details, logger=self.logger)
             if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
                 assert base_duration is not None  # guaranteed by _is_length_mismatch
