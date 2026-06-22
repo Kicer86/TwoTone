@@ -557,15 +557,12 @@ class MeltPerformer:
         logger: logging.Logger | None = None,
         *,
         audio_stream_index: int | None = None,
-    ) -> tuple[str | None, int, int, int]:
-        """Return (codec_name, initial_padding_samples, sample_rate, start_offset_ms).
+    ) -> tuple[str | None, int, int, dict[str, Any]]:
+        """Return (codec_name, initial_padding_samples, sample_rate, stream).
 
         ``initial_padding`` is the lossy-codec encoder-delay (priming) sample count the
         container signals via Matroska *CodecDelay*; it is 0 for MP4/MOV (where the same
         delay is carried by an edit list that every ffmpeg build honours on decode).
-        ``start_offset_ms`` is the audio stream's container start time, which a
-        filtergraph normally exposes as the frames' presentation timestamps.
-
         ``audio_stream_index`` selects a specific stream by its absolute container
         index; when omitted the first audio stream is used.
         """
@@ -588,11 +585,10 @@ class MeltPerformer:
             sample_rate = int(stream.get("sample_rate") or 0)
         except (TypeError, ValueError):
             sample_rate = 0
-        return codec, init_pad, sample_rate, cls._stream_start_offset_ms(stream)
+        return codec, init_pad, sample_rate, stream
 
-    @classmethod
     def _decode_source_audio_to_flac(
-        cls,
+        self,
         source_video: str,
         output_path: str,
         *,
@@ -616,11 +612,11 @@ class MeltPerformer:
 
         ``trim_start_ms`` / ``trim_end_ms`` select a window of the *priming-free*
         stream, matching what a priming-honouring decoder would have produced.  These
-        bounds are expressed on the source's container timeline (the timestamps a
-        filtergraph normally sees); when the priming strip drops that container start
-        offset we re-anchor the window to it so it keeps selecting the same content.
+        bounds are expressed on the source's content timeline.  When the priming strip
+        drops the container timestamps, re-anchor the window to the priming-independent
+        content start so exposing and absorbing ffmpeg builds select identical samples.
         """
-        codec, init_pad, sample_rate, start_offset_ms = cls._source_audio_priming(
+        codec, init_pad, sample_rate, stream = self._source_audio_priming(
             source_video, logger=logger, audio_stream_index=audio_stream_index,
         )
         source_map = f"0:{audio_stream_index}" if audio_stream_index is not None else "0:a:0"
@@ -642,9 +638,10 @@ class MeltPerformer:
             input_map = "0:a:0"  # the remuxed ADTS file carries only the selected stream
             prime_offset_s = init_pad / sample_rate
             # ADTS carries no container timestamps, so the decoded frames start at 0
-            # instead of the source's container start time.  Shift the trim window by
-            # that lost offset (the plain-decode path keeps it via the frame PTS).
-            window_anchor_ms = start_offset_ms
+            # instead of the source's content start.  The raw start_time on builds
+            # exposing AAC priming is one encoder-delay frame too early, so use the
+            # same priming-independent content start as final track placement.
+            window_anchor_ms = self._audio_content_start_ms(stream)
 
         filters: list[str] = []
         if prime_offset_s or trim_start_ms is not None or trim_end_ms is not None:
@@ -666,9 +663,8 @@ class MeltPerformer:
             if adts_path and os.path.exists(adts_path):
                 os.remove(adts_path)
 
-    @classmethod
-    def _extract_audio_to_flac(cls, video_path: str, output_path: str, logger: logging.Logger | None = None) -> None:
-        cls._decode_source_audio_to_flac(video_path, output_path, sample_fmt="s32", logger=logger)
+    def _extract_audio_to_flac(self, video_path: str, output_path: str, logger: logging.Logger | None = None) -> None:
+        self._decode_source_audio_to_flac(video_path, output_path, sample_fmt="s32", logger=logger)
 
     @staticmethod
     def _segment_range(pairs: Sequence[tuple[int, int]]) -> _SegmentRange:

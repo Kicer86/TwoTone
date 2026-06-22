@@ -576,6 +576,56 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(len(concat_calls), 1)
         self.assertIn("aac", concat_calls[0])
 
+    @parameterized.expand([
+        ("absorbed", "0.500000", False),
+        ("exposed", "0.479000", True),
+    ])
+    def test_aac_trim_window_is_anchored_to_content_start(
+        self,
+        _name,
+        stream_start,
+        priming_exposed,
+    ):
+        performer = self._make_performer()
+        calls = []
+        source_info = {
+            "streams": [
+                {"codec_type": "video", "index": 0, "start_time": "0.000000"},
+                {
+                    "codec_type": "audio",
+                    "index": 1,
+                    "codec_name": "aac",
+                    "initial_padding": 1024,
+                    "sample_rate": "48000",
+                    "start_time": stream_start,
+                },
+            ]
+        }
+
+        def fake_start_process(tool, args, **_kwargs):
+            calls.append((tool, list(args)))
+            return _FAKE_PROCESS_OK
+
+        with patch.object(video_utils, "get_video_full_info", return_value=source_info), \
+             patch.object(performer, "_aac_priming_exposed", return_value=priming_exposed), \
+             patch.object(process_utils, "start_process", side_effect=fake_start_process), \
+             patch.object(process_utils, "raise_on_error", lambda result: None), \
+             patch.object(os.path, "exists", return_value=False):
+            performer._decode_source_audio_to_flac(
+                "/tmp/source.mkv",
+                "/tmp/output.flac",
+                trim_start_ms=500,
+                trim_end_ms=63250,
+                audio_stream_index=1,
+            )
+
+        decode_args = calls[1][1]
+        trim_filter = decode_args[decode_args.index("-filter:a") + 1]
+        self.assertEqual(
+            trim_filter,
+            "atrim=start=0.021333:end=62.771333,asetpts=PTS-STARTPTS",
+        )
+
     def test_patch_audio_constant_offset_concat_single_pass(self):
         """When head/tail needed, concat should encode to AAC in a single pass (no intermediate FLAC)."""
         performer = self._make_performer()
