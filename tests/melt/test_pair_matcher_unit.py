@@ -450,8 +450,8 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertIsNone(result)
 
-    def test_constant_offset_too_few_pairs(self):
-        """With fewer than 3 pairs, constant-offset detection is skipped."""
+    def test_constant_offset_two_nearby_pairs_are_insufficient(self):
+        """Two nearby pairs do not cover enough content to prove a constant offset."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
 
         matching_pairs = [(2120, 2000), (4120, 4000)]
@@ -464,6 +464,25 @@ class PairMatcherUnitTest(unittest.TestCase):
         result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNone(result)
+
+    def test_constant_offset_two_widely_separated_pairs_are_sufficient(self):
+        """Two distant pairs can prove the constant frame offset seen on Ubuntu CI."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        lhs_keys = list(range(480, 60441, 40))
+        rhs_keys = list(range(0, 60441, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        matching_pairs = [
+            (10480, 10480),
+            (50480, 50480),
+        ]
+
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], (480, 480))
+        self.assertEqual(result[-1], (60440, 60440))
 
     def test_constant_offset_slight_jitter_within_tolerance(self):
         """Small jitter (< 1 frame) in frame-number offsets should still be accepted."""

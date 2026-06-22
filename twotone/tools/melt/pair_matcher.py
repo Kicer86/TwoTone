@@ -431,17 +431,37 @@ class PairMatcher:
         constant shift regardless of whether FPS differs between files
         (e.g. 23.976 vs 25 — same frames, different timing).
 
+        Two matches are accepted only when they span at least 250 frames.
+        The large span makes the ratio check meaningful while still handling
+        platforms where scene detection yields only two reliable key frames.
+
         Returns an updated pair list with extrapolated first/last entries,
         or ``None`` if the frame-number offset is not sufficiently constant.
         """
-        if len(matching_pairs) < 3:
+        if len(matching_pairs) < 2:
             return None
 
         # Use frame_id from FramesInfo instead of computing from FPS
-        frame_offsets = np.array([
-            int(lhs_all_frames[l]["frame_id"]) - int(rhs_all_frames[r]["frame_id"])
-            for l, r in matching_pairs
+        lhs_frame_ids = np.array([
+            int(lhs_all_frames[l]["frame_id"]) for l, _ in matching_pairs
         ])
+        rhs_frame_ids = np.array([
+            int(rhs_all_frames[r]["frame_id"]) for _, r in matching_pairs
+        ])
+
+        if len(matching_pairs) == 2:
+            frame_span = min(
+                int(np.ptp(lhs_frame_ids)),
+                int(np.ptp(rhs_frame_ids)),
+            )
+            if frame_span < 250:
+                self.logger.debug(
+                    f"Constant-offset check: only two pairs spanning "
+                    f"{frame_span} frames — skipping"
+                )
+                return None
+
+        frame_offsets = lhs_frame_ids - rhs_frame_ids
         median_offset = float(np.median(frame_offsets))
         std_offset = float(np.std(frame_offsets))
 
