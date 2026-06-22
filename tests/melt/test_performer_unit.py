@@ -255,7 +255,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
     def _collect_ffmpeg_calls(self, performer, segment_pairs, base_duration_ms,
                                source_sample_rate=48000, source_channels=2, source_sample_fmt="s16",
                                source_channel_layout=None,
-                               use_silence=False):
+                               use_silence=False, lhs_fps=None, rhs_fps=None):
         """Run patch_audio_constant_offset with mocked externals and return captured ffmpeg calls."""
         calls = []
 
@@ -291,6 +291,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 performer.patch_audio_constant_offset(
                     wd, "/base.mkv", "/source.mkv", output_path, segment_pairs,
                     use_silence=use_silence,
+                    lhs_fps=lhs_fps,
+                    rhs_fps=rhs_fps,
                 )
 
         return calls
@@ -311,7 +313,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
         performer = self._make_performer()
         # seg1: 0..4000 (4s), seg2: 0..4100 (4.1s) — ratio ≈ 1.025
         pairs = [(0, 0), (4000, 4100)]
-        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=4000, source_sample_rate=48000)
+        calls = self._collect_ffmpeg_calls(
+            performer,
+            pairs,
+            base_duration_ms=4000,
+            source_sample_rate=48000,
+            lhs_fps=24.0,
+            rhs_fps=24.0,
+        )
 
         filter_calls = [c for c in calls if any("asetrate" in str(a) for a in c[1])]
         self.assertEqual(len(filter_calls), 1, "asetrate should be used once")
@@ -320,6 +329,78 @@ class MeltPerformerUnitTest(unittest.TestCase):
         # adjusted_rate = 48000 * 4100 / 4000 = 49200
         self.assertIn("asetrate=49200", filter_arg)
         self.assertIn("aresample=48000", filter_arg)
+
+    def test_constant_offset_ignores_spurious_edge_drift_for_equal_fps(self):
+        """Low-entropy edge extrapolation must not invent an audio speed change."""
+        performer = self._make_performer()
+        calls = []
+        reliable_pairs = [
+            (500, 0),
+            (16583, 16583),
+            (26208, 26208),
+            (62791, 62791),
+        ]
+        extrapolated_mapping = [
+            (500, 0),
+            (62791, 62791),
+        ]
+        source_info = {
+            "streams": [
+                {"codec_type": "video", "index": 0, "start_time": "0.000000"},
+                {
+                    "codec_type": "audio",
+                    "index": 1,
+                    "codec_name": "aac",
+                    "channels": 1,
+                    "sample_rate": "48000",
+                    "sample_fmt": "fltp",
+                    "initial_padding": 1024,
+                    "start_time": "0.479000",
+                },
+            ],
+            "format": {"start_time": "0.000000"},
+        }
+
+        def fake_start_process(tool, args, **_kwargs):
+            calls.append((tool, list(args)))
+            return _FAKE_PROCESS_OK
+
+        def fake_duration(path, **_kwargs):
+            if "source_trimmed" in path:
+                return 62291
+            return 62791
+
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch.object(video_utils, "get_video_full_info", return_value=source_info), \
+             patch.object(video_utils, "get_video_duration", side_effect=fake_duration), \
+             patch.object(performer, "_aac_priming_exposed", return_value=True), \
+             patch.object(process_utils, "start_process", side_effect=fake_start_process), \
+             patch.object(process_utils, "raise_on_error", lambda result: None):
+            sync_offset = performer.patch_audio_constant_offset(
+                os.path.join(tmpdir, "work"),
+                "/base.mkv",
+                "/source.mkv",
+                os.path.join(tmpdir, "output.mka"),
+                extrapolated_mapping,
+                use_silence=True,
+                lhs_fps=24.0,
+                rhs_fps=24.0,
+                timing_reference_pairs=reliable_pairs,
+            )
+
+        self.assertEqual(sync_offset, 500)
+        ffmpeg_calls = [args for tool, args in calls if tool == "ffmpeg"]
+        trim_call = next(
+            args
+            for args in ffmpeg_calls
+            if "source_trimmed" in str(args) and "-filter:a" in args
+        )
+        trim_filter = trim_call[trim_call.index("-filter:a") + 1]
+        self.assertEqual(
+            trim_filter,
+            "atrim=start=0.021333:end=62.312333,asetpts=PTS-STARTPTS",
+        )
+        self.assertFalse(any("asetrate=" in str(args) for args in ffmpeg_calls))
 
     def test_patch_audio_constant_offset_head_and_tail_extraction(self):
         """Head and tail segments should be extracted from base audio."""

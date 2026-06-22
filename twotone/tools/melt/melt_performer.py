@@ -1,6 +1,8 @@
 import logging
+import math
 import os
 import shutil
+import statistics
 
 from typing import Any, Iterable, NamedTuple, Sequence
 from tqdm import tqdm
@@ -236,6 +238,9 @@ class MeltPerformer:
         segment_pairs: list[tuple[int, int]],
         *,
         use_silence: bool = False,
+        lhs_fps: float | None = None,
+        rhs_fps: float | None = None,
+        timing_reference_pairs: Sequence[tuple[int, int]] | None = None,
     ) -> int:
         """Replace audio using a single global time-scale for constant-offset cases.
 
@@ -268,7 +273,29 @@ class MeltPerformer:
         source_dur = seg2_end - seg2_start
         target_dur = seg1_end - seg1_start
         video_ratio = target_dur / source_dur if source_dur else 1.0
+        stable_timeline_offset: float | None = None
+        if lhs_fps and rhs_fps:
+            nominal_ratio = lhs_fps / rhs_fps
+            reference_pairs = list(timing_reference_pairs or segment_pairs)
+            mapping_ratio = PairMatcher.calculate_ratio(reference_pairs)
+            if (
+                abs(nominal_ratio - 1.0) < self._FPS_RATIO_TOLERANCE
+                and math.isfinite(mapping_ratio)
+                and abs(mapping_ratio - 1.0) < self._FPS_RATIO_TOLERANCE
+            ):
+                # Low-entropy boundary extrapolation can include a black intro on
+                # only one side.  The boundary span then suggests a false speed
+                # change even though the reliable interior pairs and nominal FPS
+                # both say 1:1.  Use the median interior timeline displacement so
+                # one ambiguous edge cannot affect either tempo or placement.
+                video_ratio = 1.0
+                stable_timeline_offset = statistics.median(
+                    lhs_time - rhs_time
+                    for lhs_time, rhs_time in reference_pairs
+                )
         fps_ratio = source_dur / target_dur if target_dur else 1.0
+        if stable_timeline_offset is not None:
+            fps_ratio = 1.0
         needs_scaling = self._needs_fps_scaling(fps_ratio)
 
         self.logger.info(
@@ -307,11 +334,22 @@ class MeltPerformer:
         # lossy-codec encoder-delay priming removed deterministically so the patched
         # track is not shifted by one AAC frame (~21 ms) on ffmpeg builds that decode
         # the priming as real samples.
+        source_trim_start = seg2_start
+        if stable_timeline_offset is not None:
+            _codec, _init_pad, _sample_rate, source_stream = self._source_audio_priming(
+                source_video,
+                logger=self.logger,
+            )
+            source_trim_start = max(
+                source_trim_start,
+                self._audio_content_start_ms(source_stream),
+            )
+
         self._decode_source_audio_to_flac(
             source_video,
             trimmed_audio,
             sample_fmt=self._flac_safe_fmt(source_params[2]),
-            trim_start_ms=seg2_start,
+            trim_start_ms=source_trim_start,
             trim_end_ms=seg2_end,
             logger=self.logger,
         )
@@ -319,12 +357,17 @@ class MeltPerformer:
         actual_source_dur = video_utils.get_video_duration(trimmed_audio, logger=self.logger)
         expected_scaled_dur = round(actual_source_dur * video_ratio)
 
-        sync_offset = self._patched_audio_start_ms(
-            source_video,
-            seg1_start,
-            seg2_start,
-            video_ratio,
-        )
+        if stable_timeline_offset is not None:
+            sync_offset = round(
+                stable_timeline_offset + source_trim_start * video_ratio
+            )
+        else:
+            sync_offset = self._patched_audio_start_ms(
+                source_video,
+                seg1_start,
+                seg2_start,
+                video_ratio,
+            )
         start_correction = sync_offset - seg1_start
         if not use_silence and start_correction > 50:
             raise RuntimeError(
@@ -1126,6 +1169,7 @@ class MeltPerformer:
             mapping_relation = match_result.mapping_relation
             duration = match_result.source_duration
             mapping = self._strict_audio_mapping(mapping)
+            timing_reference_pairs = list(mapping)
 
             extrapolated_mapping = None
             if mapping_relation == MappingRelation.GENERIC:
@@ -1178,7 +1222,17 @@ class MeltPerformer:
 
             patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
             if use_constant_offset:
-                effective_sync = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
+                effective_sync = self.patch_audio_constant_offset(
+                    mwd,
+                    video_path_base,
+                    audio_path,
+                    patched_audio,
+                    mapping,
+                    use_silence=use_silence,
+                    lhs_fps=match_result.lhs_fps,
+                    rhs_fps=match_result.rhs_fps,
+                    timing_reference_pairs=timing_reference_pairs,
+                )
             else:
                 self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames, use_silence=use_silence)
                 effective_sync = min(p[0] for p in mapping)
