@@ -52,7 +52,7 @@ Json = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 
 def _jsonable(value: Any) -> Json:
-    if dataclasses.is_dataclass(value):
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return _jsonable(dataclasses.asdict(value))
     if hasattr(value, "_asdict"):
         return _jsonable(value._asdict())
@@ -165,14 +165,18 @@ class Recorder:
         result: process_utils.ProcessResult | None,
         exception: BaseException | None,
     ) -> None:
+        normalized_args_after = self.normalizer.normalize_value(args_after)
+        if not isinstance(normalized_args_after, list):
+            raise TypeError("Normalized process arguments must remain a list")
+
         command: dict[str, Any] = {
             "index": len(self.commands),
             "phase": self.phase,
             "process": process,
             "args_before": args_before,
             "args_after": args_after,
-            "normalized_args_after": self.normalizer.normalize_value(args_after),
-            "normalized_command": [process, *self.normalizer.normalize_value(args_after)],
+            "normalized_args_after": normalized_args_after,
+            "normalized_command": [process, *normalized_args_after],
             "show_progress": show_progress,
             "cwd": cwd,
             "normalized_cwd": self.normalizer.normalize_value(cwd),
@@ -490,7 +494,7 @@ def _environment_report() -> dict[str, Any]:
         "mkvmerge": ["mkvmerge", "--version"],
         "mkvextract": ["mkvextract", "--version"],
     }
-    packages = {}
+    packages: dict[str, str | None] = {}
     for package in ("numpy", "opencv-python", "scikit-learn", "parameterized", "pytest"):
         try:
             packages[package] = importlib.metadata.version(package)
@@ -692,7 +696,10 @@ def _extraction_candidates(
     """
     meta = _audio_stream_meta(source_path, 0, logger=logger)
     info = video_utils.get_video_full_info(source_path, logger=logger)
-    audio = next((s for s in info.get("streams", []) if s.get("codec_type") == "audio"), {})
+    audio: dict[str, Any] = next(
+        (s for s in info.get("streams", []) if s.get("codec_type") == "audio"),
+        {},
+    )
     try:
         sample_rate = int(audio.get("sample_rate") or 48000)
     except (TypeError, ValueError):

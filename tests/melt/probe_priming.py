@@ -81,7 +81,7 @@ def _raw_ffprobe(path: str) -> dict[str, Any]:
 def _wrapper_fields(path: str) -> dict[str, Any]:
     """The same fields as our app sees them, through ``video_utils.get_video_full_info``."""
     info = video_utils.get_video_full_info(path)
-    audio = next(
+    audio: dict[str, Any] = next(
         (s for s in info.get("streams", []) if s.get("codec_type") == "audio"), {}
     )
     return {

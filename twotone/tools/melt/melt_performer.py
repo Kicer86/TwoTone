@@ -568,6 +568,7 @@ class MeltPerformer:
         """
         info = video_utils.get_video_full_info(video_path, logger=logger)
         streams = info.get("streams", [])
+        stream: dict[str, Any]
         if audio_stream_index is not None:
             stream = next(
                 (s for s in streams
@@ -708,7 +709,10 @@ class MeltPerformer:
                     ], logger=self.logger)
                 )
                 info = video_utils.get_video_full_info(probe, logger=self.logger)
-                stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "audio"), {})
+                stream: dict[str, Any] = next(
+                    (s for s in info.get("streams", []) if s.get("codec_type") == "audio"),
+                    {},
+                )
                 exposed = float(stream.get("start_time") or 0.0) < -0.001
             except Exception:  # noqa: BLE001 - detection failure falls back to "absorbed"
                 exposed = False
