@@ -111,7 +111,7 @@ class AudioAlignmentTest(TwoToneTestCase):
     beep_centers: ClassVar[list[float]]
     canonical_video: ClassVar[str]
     variant_paths: ClassVar[dict[str, str]]
-    melt_cache: ClassVar[MeltCache]
+    melt_cache: ClassVar[MeltCache | None]
 
     @classmethod
     def setUpClass(cls):
@@ -145,8 +145,14 @@ class AudioAlignmentTest(TwoToneTestCase):
             ))
             for spec in VARIANTS
         }
-        cache_dir = Path(file_cache.base_dir) / "audio_alignment_melt_cache"
-        cls.melt_cache = MeltCache(str(cache_dir), cls.logger.getChild("MeltCache"))
+        if os.name == "nt":
+            # Windows test inputs are copies, not symlinks. Since MeltCache keys
+            # entries by their resolved path, every parameterized case would
+            # create a single-use cache entry containing hundreds of PNG files.
+            cls.melt_cache = None
+        else:
+            cache_dir = Path(file_cache.base_dir) / "audio_alignment_melt_cache"
+            cls.melt_cache = MeltCache(str(cache_dir), cls.logger.getChild("MeltCache"))
 
     @staticmethod
     def _duration_seconds(path: str) -> float:
