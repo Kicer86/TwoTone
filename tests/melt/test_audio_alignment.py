@@ -17,7 +17,6 @@ from twotone.tools.utils import generic_utils, video_utils
 from common import (
     TwoToneTestCase,
     FileCache,
-    add_to_test_dir,
     get_video,
     hashes,
     run_ffmpeg,
@@ -145,14 +144,8 @@ class AudioAlignmentTest(TwoToneTestCase):
             ))
             for spec in VARIANTS
         }
-        if os.name == "nt":
-            # Windows test inputs are copies, not symlinks. Since MeltCache keys
-            # entries by their resolved path, every parameterized case would
-            # create a single-use cache entry containing hundreds of PNG files.
-            cls.melt_cache = None
-        else:
-            cache_dir = Path(file_cache.base_dir) / "audio_alignment_melt_cache"
-            cls.melt_cache = MeltCache(str(cache_dir), cls.logger.getChild("MeltCache"))
+        cache_dir = Path(file_cache.base_dir) / "audio_alignment_melt_cache"
+        cls.melt_cache = MeltCache(str(cache_dir), cls.logger.getChild("MeltCache"))
 
     @staticmethod
     def _duration_seconds(path: str) -> float:
@@ -397,8 +390,13 @@ class AudioAlignmentTest(TwoToneTestCase):
         return centers
 
     def _run_melt_pair(self, lhs_path: str, rhs_path: str) -> str:
-        file1 = add_to_test_dir(self.wd.path, lhs_path)
-        file2 = add_to_test_dir(self.wd.path, rhs_path)
+        # Feed melt the shared cached variant paths directly. Copying them into the
+        # per-test working dir (as add_to_test_dir does on Windows) would give every
+        # parameterized case a unique resolved path, defeating MeltCache — which keys
+        # entries by resolved input path — and bloating the cache with single-use
+        # entries. Melt only reads its inputs here, so sharing the fixtures is safe.
+        file1 = lhs_path
+        file2 = rhs_path
 
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
