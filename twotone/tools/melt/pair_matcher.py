@@ -33,6 +33,9 @@ class SegmentsMappingResult(NamedTuple):
 
 
 class PairMatcher:
+
+    _MAX_BOUNDARY_ERROR_FRAMES = 2
+
     def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2", cache: MeltCache | None = None) -> None:
         self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
@@ -94,11 +97,15 @@ class PairMatcher:
         mappings: list[tuple[int, int]],
         lhs_duration_ms: int,
         rhs_duration_ms: int,
+        *,
+        lhs_fps: float,
+        rhs_fps: float,
     ) -> dict[str, Any]:
         """Compute a human-readable coverage summary for matched files.
 
         Returns a dict with:
         - ``full_coverage``: True when matched content reaches both video edges
+          within at most two frames per input
         - ``lhs_start_gap_s`` / ``rhs_start_gap_s``: unmatched seconds at start
         - ``lhs_end_gap_s`` / ``rhs_end_gap_s``: unmatched seconds at end
         - ``ratio``: speed ratio between the two files
@@ -111,10 +118,27 @@ class PairMatcher:
         lhs_end_gap = max(0, lhs_duration_ms - last[0])
         rhs_end_gap = max(0, rhs_duration_ms - last[1])
 
-        edge_tolerance_ms = 1000
-        full_coverage = all(
-            gap <= edge_tolerance_ms
-            for gap in (lhs_start_gap, rhs_start_gap, lhs_end_gap, rhs_end_gap)
+        if lhs_fps <= 0 or rhs_fps <= 0:
+            raise ValueError("FPS values must be positive")
+
+        lhs_frame_duration_ms = 1000 / lhs_fps
+        rhs_frame_duration_ms = 1000 / rhs_fps
+        lhs_edge_tolerance_ms = (
+            PairMatcher._MAX_BOUNDARY_ERROR_FRAMES * lhs_frame_duration_ms
+        )
+        rhs_edge_tolerance_ms = (
+            PairMatcher._MAX_BOUNDARY_ERROR_FRAMES * rhs_frame_duration_ms
+        )
+
+        # A frame timestamp marks the start of the frame. The expected timestamp
+        # of the final frame is therefore one frame duration before the stream end.
+        lhs_end_error = max(0, lhs_end_gap - lhs_frame_duration_ms)
+        rhs_end_error = max(0, rhs_end_gap - rhs_frame_duration_ms)
+        full_coverage = (
+            lhs_start_gap <= lhs_edge_tolerance_ms
+            and lhs_end_error <= lhs_edge_tolerance_ms
+            and rhs_start_gap <= rhs_edge_tolerance_ms
+            and rhs_end_error <= rhs_edge_tolerance_ms
         )
 
         return {

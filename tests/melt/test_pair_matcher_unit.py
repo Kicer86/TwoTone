@@ -251,6 +251,47 @@ class PairMatcherUnitTest(unittest.TestCase):
         # RHS: 90ms > 80ms → does NOT snap
         self.assertEqual(result[0][1], 90)
 
+    def test_coverage_summary_accepts_at_most_2_frames_per_edge(self):
+        # The last frame starts one frame before the stream end, so an accepted
+        # 2-frame boundary error appears as a 3-frame timestamp gap at the end.
+        mappings = [(80, 40), (9880, 9940)]
+
+        result = PairMatcher.coverage_summary(
+            mappings,
+            10000,
+            10000,
+            lhs_fps=25.0,
+            rhs_fps=50.0,
+        )
+
+        self.assertTrue(result["full_coverage"])
+
+    def test_coverage_summary_rejects_more_than_2_frames_at_an_edge(self):
+        mappings = [(81, 40), (9920, 9960)]
+
+        result = PairMatcher.coverage_summary(
+            mappings,
+            10000,
+            10000,
+            lhs_fps=25.0,
+            rhs_fps=50.0,
+        )
+
+        self.assertFalse(result["full_coverage"])
+
+    def test_coverage_summary_rejects_more_than_2_frames_at_the_end(self):
+        mappings = [(80, 40), (9840, 9920)]
+
+        result = PairMatcher.coverage_summary(
+            mappings,
+            10000,
+            10000,
+            lhs_fps=25.0,
+            rhs_fps=50.0,
+        )
+
+        self.assertFalse(result["full_coverage"])
+
     # ---- try_constant_offset_extrapolation ----
 
     def test_constant_offset_detected_and_extrapolated(self):

@@ -500,11 +500,19 @@ class MeltPerformer:
         mappings: list[tuple[int, int]],
         lhs_duration_ms: int,
         rhs_duration_ms: int,
+        lhs_fps: float,
+        rhs_fps: float,
         lhs_id: int,
         rhs_id: int,
     ) -> None:
         """Log a human-readable coverage report after PairMatcher finishes."""
-        summary = PairMatcher.coverage_summary(mappings, lhs_duration_ms, rhs_duration_ms)
+        summary = PairMatcher.coverage_summary(
+            mappings,
+            lhs_duration_ms,
+            rhs_duration_ms,
+            lhs_fps=lhs_fps,
+            rhs_fps=rhs_fps,
+        )
         lhs_name = os.path.basename(lhs_path)
         rhs_name = os.path.basename(rhs_path)
 
@@ -1159,7 +1167,17 @@ class MeltPerformer:
                     generic_utils.ms_to_time(mapping[-1][1]),
                 )
 
-            self._log_coverage(video_path_base, audio_path, mapping, base_duration, duration, lhs_id, rhs_id)
+            self._log_coverage(
+                video_path_base,
+                audio_path,
+                mapping,
+                base_duration,
+                duration,
+                match_result.lhs_fps,
+                match_result.rhs_fps,
+                lhs_id,
+                rhs_id,
+            )
 
             self.logger.debug(
                 "Audio patching: base_duration=%d ms, source_duration=%d ms, "
