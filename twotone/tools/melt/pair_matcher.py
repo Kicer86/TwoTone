@@ -610,7 +610,7 @@ class PairMatcher:
         lhs_all_frames: FramesInfo,
         rhs_all_frames: FramesInfo,
         *,
-        max_slope_delta: float = 0.002,
+        max_slope_delta: float = 0.05,
         max_median_residual_frames: float = 1.5,
         max_p95_residual_frames: float = 4.0,
         max_outlier_ratio: float = 0.25,
@@ -618,10 +618,11 @@ class PairMatcher:
     ) -> list[tuple[int, int]] | None:
         """Extrapolate boundaries when frame-number offset drifts almost linearly.
 
-        This handles sources that are mostly frame-aligned but one side has an
-        occasional extra/dropped frame.  In that case ``lhs_frame_id -
-        rhs_frame_id`` is not constant, but matching scene pairs should still
-        fit a near-identity line:
+        This handles sources that are mostly frame-aligned but one side has
+        extra/dropped frames, for example true 24 fps <-> 25 fps frame-count
+        conversion.  In that case ``lhs_frame_id - rhs_frame_id`` is not
+        constant, but matching scene pairs should still fit a near-identity
+        line:
 
             rhs_frame_id ~= slope * lhs_frame_id + intercept
 
@@ -724,8 +725,23 @@ class PairMatcher:
             )
             return None
 
-        first_rhs_frame = int(round(slope * first_lhs_frame + intercept))
-        last_rhs_frame = int(round(slope * last_lhs_frame + intercept))
+        first_rhs_prediction = slope * first_lhs_frame + intercept
+        last_rhs_prediction = slope * last_lhs_frame + intercept
+        first_rhs_frame = int(round(first_rhs_prediction))
+        last_rhs_frame = int(round(last_rhs_prediction))
+
+        edge_snap_tolerance_frames = 0.75
+        if (
+            first_lhs_frame == lhs_min_frame
+            and abs(first_rhs_prediction - rhs_min_frame) < edge_snap_tolerance_frames
+        ):
+            first_rhs_frame = rhs_min_frame
+        if (
+            last_lhs_frame == lhs_max_frame
+            and abs(last_rhs_prediction - rhs_max_frame) < edge_snap_tolerance_frames
+        ):
+            last_rhs_frame = rhs_max_frame
+
         first_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, first_rhs_frame))
         last_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, last_rhs_frame))
 
@@ -850,29 +866,37 @@ class PairMatcher:
             lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames, debug,
         )
 
-        # Try constant-offset shortcut — when all pairs share a nearly
-        # constant lhs−rhs offset we can extrapolate boundaries directly,
-        # skipping the expensive iterative search.
+        # Try frame-space shortcuts first.  They extrapolate boundaries directly
+        # from reliable scene matches and skip the expensive iterative search.
         constant_offset_pairs = self.try_constant_offset_extrapolation(
             matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
         )
         relation = MappingRelation.GENERIC
 
-        if constant_offset_pairs is None:
+        if constant_offset_pairs is not None:
+            matching_pairs = constant_offset_pairs
+            relation = MappingRelation.CONSTANT_FRAME_OFFSET
+            debug.dump_matches(matching_pairs, "after constant-offset extrapolation")
+        else:
+            linear_drift_pairs = self.try_linear_frame_drift_extrapolation(
+                matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
+            )
+            if linear_drift_pairs is not None:
+                matching_pairs = linear_drift_pairs
+                relation = MappingRelation.LINEAR_FRAME_DRIFT
+                debug.dump_matches(matching_pairs, "after linear-drift extrapolation")
+
+        if relation == MappingRelation.GENERIC:
             matching_pairs = self._extract_and_refine_boundaries(
                 matching_pairs, lhs_scene_ranges, rhs_scene_ranges,
                 lhs_normalized_frames, rhs_normalized_frames, debug,
             )
-        else:
-            matching_pairs = constant_offset_pairs
-            relation = MappingRelation.CONSTANT_FRAME_OFFSET
-            debug.dump_matches(matching_pairs, "after constant-offset extrapolation")
 
         # Snap near-edge pairs only for heuristic boundary search results.
-        # Constant-offset extrapolation already yields exact frame-aligned
+        # Frame-space extrapolation already yields exact frame-aligned
         # boundaries, so applying timestamp-based edge snapping here could
-        # distort the precise offset.
-        if relation != MappingRelation.CONSTANT_FRAME_OFFSET:
+        # distort the precise offset or drift relation.
+        if relation == MappingRelation.GENERIC:
             matching_pairs = self.snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
 
         return SegmentsMappingResult(

@@ -4,8 +4,8 @@ import os
 import wave
 import unittest
 
-from dataclasses import dataclass
-from itertools import permutations, product
+from dataclasses import dataclass, replace
+from itertools import combinations, permutations, product
 from parameterized import parameterized
 from pathlib import Path
 from typing import ClassVar
@@ -76,10 +76,42 @@ def _make_variant_specs() -> list[VariantSpec]:
 
 VARIANTS = _make_variant_specs()
 VARIANT_BY_NAME = {spec.name: spec for spec in VARIANTS}
+FRAME_DRIFT_VARIANTS = [
+    replace(
+        spec,
+        name=f"fd{index:02d}_{'_'.join(spec.name.split('_')[1:])}",
+        speed=1.0,
+    )
+    for index, spec in enumerate(VARIANTS)
+]
+FRAME_DRIFT_VARIANT_BY_NAME = {spec.name: spec for spec in FRAME_DRIFT_VARIANTS}
+FRAME_DRIFT_FPS_BY_NAME = {
+    spec.name: 25 if index % 2 == 0 else 23
+    for index, spec in enumerate(FRAME_DRIFT_VARIANTS)
+}
 PAIR_CASES = [
     (f"{lhs.name}__{rhs.name}", lhs.name, rhs.name)
     for lhs, rhs in permutations(VARIANTS, 2)
 ]
+FRAME_DRIFT_PAIR_CASES = []
+for index, (first, second) in enumerate(combinations(FRAME_DRIFT_VARIANTS, 2)):
+    normal, drift = (first, second) if index % 2 == 0 else (second, first)
+    FRAME_DRIFT_PAIR_CASES.extend([
+        (
+            f"{normal.name}__frame_drift_{drift.name}",
+            normal.name,
+            False,
+            drift.name,
+            True,
+        ),
+        (
+            f"frame_drift_{drift.name}__{normal.name}",
+            drift.name,
+            True,
+            normal.name,
+            False,
+        ),
+    ])
 
 
 class AudioAlignmentTest(TwoToneTestCase):
@@ -89,9 +121,15 @@ class AudioAlignmentTest(TwoToneTestCase):
     different stream start offsets, trailing stream trims, containers, speeds,
     and minimally different resolutions.  The unique resolution ordering makes
     melt's base video choice deterministic for every pair.
+
+    The frame-drift group keeps the same stream offset/trim/container/resolution
+    matrix but fixes speed at 1.0 and gives one side real extra or dropped video
+    frames via 24<->25/23 fps resampling.  That isolates frame-number drift
+    detection from ordinary temporal speedup/slowdown.
     """
 
     CACHE_VERSION = "1"
+    FRAME_DRIFT_CACHE_VERSION = "1"
     BLACK_INTRO_SECONDS = 0.5
     BLACK_OUTRO_SECONDS = 0.5
     BEEP_DURATION_SECONDS = 0.12
@@ -110,6 +148,8 @@ class AudioAlignmentTest(TwoToneTestCase):
     beep_centers: ClassVar[list[float]]
     canonical_video: ClassVar[str]
     variant_paths: ClassVar[dict[str, str]]
+    frame_reference_variant_paths: ClassVar[dict[str, str]]
+    frame_drift_variant_paths: ClassVar[dict[str, str]]
     melt_cache: ClassVar[MeltCache | None]
 
     @classmethod
@@ -143,6 +183,24 @@ class AudioAlignmentTest(TwoToneTestCase):
                 lambda out_path, spec=spec: cls._generate_variant(spec, out_path),
             ))
             for spec in VARIANTS
+        }
+        cls.frame_reference_variant_paths = {
+            spec.name: str(file_cache.get_or_generate(
+                f"audio_align_frame_reference_{spec.name}",
+                cls.FRAME_DRIFT_CACHE_VERSION,
+                spec.extension,
+                lambda out_path, spec=spec: cls._generate_variant(spec, out_path),
+            ))
+            for spec in FRAME_DRIFT_VARIANTS
+        }
+        cls.frame_drift_variant_paths = {
+            spec.name: str(file_cache.get_or_generate(
+                f"audio_align_frame_drift_{spec.name}",
+                cls.FRAME_DRIFT_CACHE_VERSION,
+                spec.extension,
+                lambda out_path, spec=spec: cls._generate_frame_drift_variant(spec, out_path),
+            ))
+            for spec in FRAME_DRIFT_VARIANTS
         }
         cache_dir = Path(file_cache.base_dir) / "audio_alignment_melt_cache"
         cls.melt_cache = MeltCache(str(cache_dir), cls.logger.getChild("MeltCache"))
@@ -231,6 +289,61 @@ class AudioAlignmentTest(TwoToneTestCase):
             f"[0:v]trim=start={video_start:.6f}:end={video_end:.6f},"
             # Speed variants keep frame indexes stable; only frame duration/effective FPS changes.
             f"setpts=N/({cls.FPS}*{spec.speed:.8f})/TB,"
+            f"scale={spec.width}:{spec.height},"
+            f"setpts=PTS+{video_offset:.8f}/TB[v];"
+            f"[0:a]atrim=start={audio_start:.6f}:end={audio_end:.6f},"
+            "asetpts=PTS-STARTPTS,"
+            f"atempo={spec.speed:.8f},"
+            f"asetpts=PTS+{audio_offset:.8f}/TB[a]"
+        )
+
+        run_ffmpeg(
+            [
+                "-y",
+                "-i", cls.canonical_video,
+                "-filter_complex", filter_complex,
+                "-map", "[v]",
+                "-map", "[a]",
+                "-fps_mode", "passthrough",
+                "-enc_time_base:v", "1:1000000",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "22",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac",
+                "-ar", str(cls.SAMPLE_RATE),
+                "-ac", "1",
+                str(out_path),
+            ],
+            expected_path=str(out_path),
+        )
+
+    @classmethod
+    def _generate_frame_drift_variant(cls, spec: VariantSpec, out_path: Path) -> None:
+        video_start = cls.BLACK_INTRO_SECONDS if spec.video_start_offset else 0.0
+        audio_start = cls.BLACK_INTRO_SECONDS if spec.audio_start_offset else 0.0
+        video_end = (
+            cls.total_duration_seconds - cls.BLACK_OUTRO_SECONDS
+            if spec.video_end_trim
+            else cls.total_duration_seconds
+        )
+        audio_end = (
+            cls.total_duration_seconds - cls.BLACK_OUTRO_SECONDS
+            if spec.audio_end_trim
+            else cls.total_duration_seconds
+        )
+        video_offset = cls.BLACK_INTRO_SECONDS / spec.speed if spec.video_start_offset else 0.0
+        audio_offset = cls.BLACK_INTRO_SECONDS / spec.speed if spec.audio_start_offset else 0.0
+        drift_fps = FRAME_DRIFT_FPS_BY_NAME[spec.name]
+
+        filter_complex = (
+            f"[0:v]trim=start={video_start:.6f}:end={video_end:.6f},"
+            "setpts=PTS-STARTPTS,"
+            f"fps={drift_fps},"
+            # Unlike _generate_variant(), this really creates/drops frames before
+            # speed scaling.  A 24 fps source therefore maps frame 24 to frame 25
+            # for 25 fps drift variants, or frame 24 to frame 23 for 23 fps ones.
+            f"setpts=PTS/{spec.speed:.8f},"
             f"scale={spec.width}:{spec.height},"
             f"setpts=PTS+{video_offset:.8f}/TB[v];"
             f"[0:a]atrim=start={audio_start:.6f}:end={audio_end:.6f},"
@@ -494,16 +607,16 @@ class AudioAlignmentTest(TwoToneTestCase):
                 ),
             )
 
-    @parameterized.expand(PAIR_CASES)
-    def test_audio_alignment_after_melt(self, _case_name: str, lhs_name: str, rhs_name: str):
-        lhs = VARIANT_BY_NAME[lhs_name]
-        rhs = VARIANT_BY_NAME[rhs_name]
+    def _assert_melt_pair_alignment(
+        self,
+        lhs: VariantSpec,
+        rhs: VariantSpec,
+        lhs_path: str,
+        rhs_path: str,
+    ) -> None:
         expected_base = self._pick_expected_base(lhs, rhs)
 
-        output_file = self._run_melt_pair(
-            self.variant_paths[lhs.name],
-            self.variant_paths[rhs.name],
-        )
+        output_file = self._run_melt_pair(lhs_path, rhs_path)
 
         output_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_data["tracks"]["audio"]), 2)
@@ -528,6 +641,37 @@ class AudioAlignmentTest(TwoToneTestCase):
             for first, second in zip(first_centers, second_centers)
         ]
         self._assert_expected_positions(expected_centers, merged_centers)
+
+    @parameterized.expand(PAIR_CASES)
+    def test_audio_alignment_after_melt(self, _case_name: str, lhs_name: str, rhs_name: str):
+        lhs = VARIANT_BY_NAME[lhs_name]
+        rhs = VARIANT_BY_NAME[rhs_name]
+        self._assert_melt_pair_alignment(
+            lhs,
+            rhs,
+            self.variant_paths[lhs.name],
+            self.variant_paths[rhs.name],
+        )
+
+    @parameterized.expand(FRAME_DRIFT_PAIR_CASES)
+    def test_audio_alignment_after_melt_with_frame_drift(
+        self,
+        _case_name: str,
+        lhs_name: str,
+        lhs_frame_drift: bool,
+        rhs_name: str,
+        rhs_frame_drift: bool,
+    ):
+        lhs = FRAME_DRIFT_VARIANT_BY_NAME[lhs_name]
+        rhs = FRAME_DRIFT_VARIANT_BY_NAME[rhs_name]
+        lhs_paths = self.frame_drift_variant_paths if lhs_frame_drift else self.frame_reference_variant_paths
+        rhs_paths = self.frame_drift_variant_paths if rhs_frame_drift else self.frame_reference_variant_paths
+        self._assert_melt_pair_alignment(
+            lhs,
+            rhs,
+            lhs_paths[lhs.name],
+            rhs_paths[rhs.name],
+        )
 
 
 if __name__ == '__main__':

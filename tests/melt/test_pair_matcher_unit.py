@@ -472,18 +472,18 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(result[0], (0, 40))
         self.assertEqual(result[-1], (400000, 400440))
 
-    def test_linear_frame_drift_rejects_large_slope_delta(self):
-        """A substantial frame-rate conversion should not use slight-drift extrapolation."""
+    def test_linear_frame_drift_rejects_extreme_slope_delta(self):
+        """Extreme frame-count conversion should not use linear-drift extrapolation."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
 
         lhs_keys = list(range(0, 10001 * 40, 40))
-        rhs_keys = list(range(0, 10501 * 40, 40))
+        rhs_keys = list(range(0, 11001 * 40, 40))
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
         matching_frame_ids = [1000, 4000, 7000, 9000]
         matching_pairs = [
-            (lhs_id * 40, int(round(1.02 * lhs_id + 1)) * 40)
+            (lhs_id * 40, int(round(1.08 * lhs_id + 1)) * 40)
             for lhs_id in matching_frame_ids
         ]
 
