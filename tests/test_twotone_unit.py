@@ -31,8 +31,9 @@ class RuntimeVersionTest(unittest.TestCase):
             report = twotone._runtime_version_report()
 
         source_dir = os.path.dirname(os.path.abspath(twotone.__file__))
+        expected_launcher = os.path.abspath(os.path.expanduser(launcher))
         self.assertIn("TwoTone 1.3.0", report)
-        self.assertIn(f"Launcher: {launcher}", report)
+        self.assertIn(f"Launcher: {expected_launcher}", report)
         self.assertIn(f"Source: {source_dir}", report)
         self.assertIn(f"Python: {sys.executable}", report)
         self.assertIn("Git: v1.3.0-2-g1234567-dirty", report)
