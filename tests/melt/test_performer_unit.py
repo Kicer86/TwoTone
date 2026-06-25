@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from twotone.tools.utils import generic_utils, process_utils, video_utils
 from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltPerformer
+from twotone.tools.melt.melt_performer import _StreamEntry
 from common import run_ffmpeg
 from melt.helpers import _FAKE_PROCESS_OK
 
@@ -27,31 +28,31 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
     def test_stream_sorting_puts_unknown_languages_last(self):
         streams = [
-            ("audio", 1, "/a.mkv", None),
-            ("audio", 2, "/a.mkv", "eng"),
-            ("subtitle", 3, "/a.mkv", None),
-            ("subtitle", 4, "/a.mkv", "pol"),
-            ("subtitle", 5, "/a.mkv", "deu"),
+            _StreamEntry("audio", 1, "/a.mkv", None),
+            _StreamEntry("audio", 2, "/a.mkv", "eng"),
+            _StreamEntry("subtitle", 3, "/a.mkv", None),
+            _StreamEntry("subtitle", 4, "/a.mkv", "pol"),
+            _StreamEntry("subtitle", 5, "/a.mkv", "deu"),
         ]
 
-        sort_key = lambda stream: (stream[3] is None, stream[3] or "")
+        sort_key = lambda stream: (stream.language is None, stream.language or "")
         result = sorted(streams, key=sort_key)
 
-        languages = [s[3] for s in result]
+        languages = [s.language for s in result]
         self.assertEqual(languages, ["deu", "eng", "pol", None, None])
 
     def test_stream_sorting_alphabetical_when_all_known(self):
         streams = [
-            ("subtitle", 1, "/a.mkv", "pol"),
-            ("subtitle", 2, "/a.mkv", "eng"),
-            ("subtitle", 3, "/a.mkv", "deu"),
-            ("audio", 4, "/a.mkv", "jpn"),
+            _StreamEntry("subtitle", 1, "/a.mkv", "pol"),
+            _StreamEntry("subtitle", 2, "/a.mkv", "eng"),
+            _StreamEntry("subtitle", 3, "/a.mkv", "deu"),
+            _StreamEntry("audio", 4, "/a.mkv", "jpn"),
         ]
 
-        sort_key = lambda stream: (stream[3] is None, stream[3] or "")
+        sort_key = lambda stream: (stream.language is None, stream.language or "")
         result = sorted(streams, key=sort_key)
 
-        languages = [s[3] for s in result]
+        languages = [s.language for s in result]
         self.assertEqual(languages, ["deu", "eng", "jpn", "pol"])
 
     def test_build_mkvmerge_args_track_order_respects_unknown_last(self):
@@ -61,11 +62,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         file_b = "/tmp/b.mkv"
 
         streams_list_sorted = [
-            ("video", 0, file_a, None),
-            ("audio", 1, file_a, "eng"),
-            ("subtitle", 3, file_a, "deu"),
-            ("subtitle", 4, file_a, "pol"),
-            ("subtitle", 5, file_a, None),
+            _StreamEntry("video", 0, file_a, None),
+            _StreamEntry("audio", 1, file_a, "eng"),
+            _StreamEntry("subtitle", 3, file_a, "deu"),
+            _StreamEntry("subtitle", 4, file_a, "pol"),
+            _StreamEntry("subtitle", 5, file_a, None),
         ]
 
         args = performer.build_mkvmerge_args(
@@ -80,6 +81,174 @@ class MeltPerformerUnitTest(unittest.TestCase):
         track_order_idx = args.index("--track-order")
         track_order = args[track_order_idx + 1]
         self.assertEqual(track_order, "0:0,0:1,0:3,0:4,0:5")
+
+    def test_strict_audio_mapping_collapses_ambiguous_boundary_matches(self):
+        mapping = [
+            (0, 510),
+            (500, 510),
+            (24041, 24532),
+            (63250, 64540),
+            (63250, 65050),
+        ]
+
+        result = MeltPerformer._strict_audio_mapping(mapping)
+
+        self.assertEqual(
+            result,
+            [
+                (500, 510),
+                (24041, 24532),
+                (63250, 64540),
+            ],
+        )
+
+    def test_sparse_linear_audio_extrapolation_does_not_extend_one_sided_boundaries(self):
+        mapping = [
+            (500, 510),
+            (24041, 24532),
+            (63250, 64540),
+        ]
+        lhs_frames = {
+            0: {"path": "lhs_0.jpg"},
+            500: {"path": "lhs_500.jpg"},
+            63250: {"path": "lhs_63250.jpg"},
+        }
+        rhs_frames = {
+            510: {"path": "rhs_510.jpg"},
+            64540: {"path": "rhs_64540.jpg"},
+            65050: {"path": "rhs_65050.jpg"},
+        }
+
+        result = MeltPerformer._try_sparse_linear_audio_extrapolation(
+            mapping,
+            lhs_frames,
+            rhs_frames,
+            lhs_fps=24.0,
+            rhs_fps=24.0,
+        )
+
+        self.assertIsNone(result)
+
+    def test_sparse_linear_audio_extrapolation_does_not_project_past_source_frames(self):
+        mapping = [
+            (500, 500),
+            (13458, 13458),
+            (62791, 62791),
+        ]
+        lhs_frames = {
+            0: {"path": "lhs_0.jpg"},
+            500: {"path": "lhs_500.jpg"},
+            62791: {"path": "lhs_62791.jpg"},
+            63250: {"path": "lhs_63250.jpg"},
+        }
+        rhs_frames = {
+            500: {"path": "rhs_500.jpg"},
+            62791: {"path": "rhs_62791.jpg"},
+        }
+
+        result = MeltPerformer._try_sparse_linear_audio_extrapolation(
+            mapping,
+            lhs_frames,
+            rhs_frames,
+            lhs_fps=24.0,
+            rhs_fps=24.0,
+        )
+
+        self.assertIsNone(result)
+
+    def test_effective_fps_audio_mapping_uses_stream_duration_and_matroska_start(self):
+        mapping = [
+            (0, 0),
+            (63292, 63562),
+        ]
+        lhs_frames = {
+            round(index * 63292 / 1497): {"path": f"lhs_{index}.jpg"}
+            for index in range(1498)
+        }
+        rhs_frames = {
+            round(index * 64030 / 1506): {"path": f"rhs_{index}.jpg"}
+            for index in range(1507)
+        }
+
+        def fake_full_info(path):
+            if path == "/tmp/base.mp4":
+                return {
+                    "streams": [
+                        {
+                            "codec_type": "video",
+                            "start_time": "0.500000",
+                            "duration": "62.332000",
+                            "nb_frames": "1496",
+                        }
+                    ]
+                }
+            return {
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "start_time": "0.510000",
+                        "tags": {"DURATION": "00:01:04.581000000"},
+                    }
+                ]
+            }
+
+        with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info):
+            result = MeltPerformer._try_effective_fps_audio_mapping(
+                "/tmp/base.mp4",
+                "/tmp/source.mkv",
+                mapping,
+                lhs_frames,
+                rhs_frames,
+            )
+
+        self.assertEqual(result, [(0, 0), (63292, 64583)])
+
+    def test_effective_fps_audio_mapping_ignores_partial_coverage(self):
+        mapping = [
+            (5708, 4536),
+            (46208, 44438),
+        ]
+        lhs_frames = {
+            round(index * 63292 / 1497): {"path": f"lhs_{index}.jpg"}
+            for index in range(1498)
+        }
+        rhs_frames = {
+            round(index * 64030 / 1506): {"path": f"rhs_{index}.jpg"}
+            for index in range(1507)
+        }
+
+        def fake_full_info(path):
+            if path == "/tmp/base.mkv":
+                return {
+                    "streams": [
+                        {
+                            "codec_type": "video",
+                            "start_time": "0.000000",
+                            "tags": {"DURATION": "00:01:03.292000000"},
+                        }
+                    ]
+                }
+            return {
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "start_time": "0.492000",
+                        "duration": "61.863000",
+                        "nb_frames": "1507",
+                    }
+                ]
+            }
+
+        with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info):
+            result = MeltPerformer._try_effective_fps_audio_mapping(
+                "/tmp/base.mkv",
+                "/tmp/source.mov",
+                mapping,
+                lhs_frames,
+                rhs_frames,
+            )
+
+        self.assertIsNone(result)
 
     # ---- _patch_audio_constant_offset ----
 
@@ -388,19 +557,74 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertAlmostEqual(lhs_end_col, rhs_end_col, delta=8,
                                msg="Speed-adjusted rhs should end close to lhs (small gap)")
 
-    def test_patch_audio_constant_offset_stream_copy_fast_path(self):
-        """When ratio ≈ 1.0 and no head/tail, audio should be stream-copied without re-encoding."""
+    def test_patch_audio_constant_offset_reencodes_even_when_ratio_near_one(self):
+        """Even a 1:1 trim is decoded so AAC priming and source starts are normalized."""
         performer = self._make_performer()
         # seg1: 0..6000 (full base), seg2: 500..6500 — same duration, no head/tail
         pairs = [(0, 500), (6000, 6500)]
         calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=6000)
 
-        # Should be a single ffmpeg call with -c:a copy
-        self.assertEqual(len(calls), 1, "Fast path should produce exactly one ffmpeg call")
-        self.assertIn("copy", calls[0][1], "Fast path should use -c:a copy")
-        # No FLAC, no AAC, no concat
-        aac_calls = [c for c in calls if any("aac" in str(a) for a in c[1])]
-        self.assertEqual(aac_calls, [], "Fast path should not encode to AAC")
+        ffmpeg_calls = [c[1] for c in calls if c[0] == "ffmpeg"]
+        trim_call = next(a for a in ffmpeg_calls if "source_trimmed" in str(a))
+        self.assertNotIn("copy", trim_call)
+        self.assertIn("-filter:a", trim_call)
+        trim_filter = trim_call[trim_call.index("-filter:a") + 1]
+        self.assertIn("atrim=start=0.500000:end=6.500000", trim_filter)
+        self.assertIn("asetpts=PTS-STARTPTS", trim_filter)
+
+        concat_calls = [a for a in ffmpeg_calls if "concat" in str(a)]
+        self.assertEqual(len(concat_calls), 1)
+        self.assertIn("aac", concat_calls[0])
+
+    @parameterized.expand([
+        ("absorbed", "0.500000", False),
+        ("exposed", "0.479000", True),
+    ])
+    def test_aac_trim_window_is_anchored_to_content_start(
+        self,
+        _name,
+        stream_start,
+        priming_exposed,
+    ):
+        performer = self._make_performer()
+        calls = []
+        source_info = {
+            "streams": [
+                {"codec_type": "video", "index": 0, "start_time": "0.000000"},
+                {
+                    "codec_type": "audio",
+                    "index": 1,
+                    "codec_name": "aac",
+                    "initial_padding": 1024,
+                    "sample_rate": "48000",
+                    "start_time": stream_start,
+                },
+            ]
+        }
+
+        def fake_start_process(tool, args, **_kwargs):
+            calls.append((tool, list(args)))
+            return _FAKE_PROCESS_OK
+
+        with patch.object(video_utils, "get_video_full_info", return_value=source_info), \
+             patch.object(performer, "_aac_priming_exposed", return_value=priming_exposed), \
+             patch.object(process_utils, "start_process", side_effect=fake_start_process), \
+             patch.object(process_utils, "raise_on_error", lambda result: None), \
+             patch.object(os.path, "exists", return_value=False):
+            performer._decode_source_audio_to_flac(
+                "/tmp/source.mkv",
+                "/tmp/output.flac",
+                trim_start_ms=500,
+                trim_end_ms=63250,
+                audio_stream_index=1,
+            )
+
+        decode_args = calls[1][1]
+        trim_filter = decode_args[decode_args.index("-filter:a") + 1]
+        self.assertEqual(
+            trim_filter,
+            "atrim=start=0.021333:end=62.771333,asetpts=PTS-STARTPTS",
+        )
 
     def test_patch_audio_constant_offset_concat_single_pass(self):
         """When head/tail needed, concat should encode to AAC in a single pass (no intermediate FLAC)."""
@@ -499,136 +723,79 @@ class MeltPerformerUnitTest(unittest.TestCase):
         base_extract_calls = [s for s in ffmpeg_args_strs if "/base.mkv" in s]
         self.assertEqual(base_extract_calls, [], "Silence mode should not read from base video")
 
-    def test_silence_mode_uses_stream_copy_when_no_scaling(self):
-        """With use_silence=True and ratio ≈ 1.0, audio should be stream-copied."""
+    def test_silence_mode_reencodes_when_no_scaling(self):
+        """With use_silence=True and ratio ≈ 1.0, audio is still decoded for stable timing."""
         performer = self._make_performer()
         pairs = [(0, 500), (4000, 4500)]
         calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=6000, use_silence=True)
 
-        self.assertEqual(len(calls), 1, "Should produce exactly one ffmpeg call")
-        self.assertIn("copy", calls[0][1], "Should use stream-copy")
+        ffmpeg_calls = [c[1] for c in calls if c[0] == "ffmpeg"]
+        trim_call = next(a for a in ffmpeg_calls if "source_trimmed" in str(a))
+        self.assertNotIn("copy", trim_call)
+        self.assertIn("-filter:a", trim_call)
+        concat_calls = [a for a in ffmpeg_calls if "concat" in str(a)]
+        self.assertEqual(len(concat_calls), 1)
 
-    def test_shift_audio_no_reencode_uses_stream_copy(self):
-        """_shift_audio_no_reencode should trim with stream-copy and return correct sync offset."""
+    def test_patched_audio_start_preserves_audio_stream_start(self):
         performer = self._make_performer()
-        calls = []
+        fake_full_info = {
+            "format": {"start_time": "0.000000"},
+            "streams": [
+                {"codec_type": "video", "start_time": "0.000000"},
+                {"codec_type": "audio", "start_time": "0.468000"},
+            ]
+        }
 
-        def fake_start_process(tool, args, **kwargs):
-            calls.append((tool, list(args)))
-            return _FAKE_PROCESS_OK
+        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info):
+            self.assertEqual(
+                performer._patched_audio_start_ms(
+                    "/tmp/source.mov",
+                    seg1_start=510,
+                    seg2_start=0,
+                    video_ratio=1.0,
+                ),
+                978,
+            )
+            self.assertEqual(
+                performer._patched_audio_start_ms(
+                    "/tmp/source.mov",
+                    seg1_start=510,
+                    seg2_start=490,
+                    video_ratio=1.0,
+                ),
+                510,
+            )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = os.path.join(tmpdir, "out.mka")
-            pairs = [(2000, 1000), (8000, 7000)]
-            fake_full_info = {
-                "streams": [
-                    {"codec_type": "video", "start_time": "0.0"},
-                    {"codec_type": "audio", "start_time": "0.0"},
-                ]
-            }
-
-            with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
-                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
-                 patch.object(video_utils, 'get_video_duration', return_value=6000), \
-                 patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
-                sync_offset = performer._shift_audio_no_reencode("/source.mkv", output_path, pairs)
-
-        self.assertEqual(sync_offset, 2000, "Sync offset should be seg1_start")
-        self.assertEqual(len(calls), 1, "Should produce exactly one ffmpeg call")
-        self.assertIn("copy", calls[0][1], "Should use stream-copy")
-        # Verify trim points
-        args = calls[0][1]
-        ss_idx = args.index("-ss")
-        to_idx = args.index("-to")
-        self.assertEqual(args[ss_idx + 1], "1.0", "Should trim from seg2_start")
-        self.assertEqual(args[to_idx + 1], "7.0", "Should trim to seg2_end")
-
-    def test_shift_audio_no_reencode_validates_output_duration(self):
-        """_shift_audio_no_reencode should raise when output duration deviates too much."""
+    def test_patched_audio_start_ignores_tail_deficit_when_audio_starts_before_video(self):
         performer = self._make_performer()
+        fake_full_info = {
+            "format": {"start_time": "0.471000"},
+            "streams": [
+                {"codec_type": "video", "start_time": "0.492000"},
+                {"codec_type": "audio", "start_time": "0.471000"},
+            ]
+        }
 
-        def fake_start_process(tool, args, **kwargs):
-            return _FAKE_PROCESS_OK
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = os.path.join(tmpdir, "out.mka")
-            # seg2 range: 1000..7000 → expected duration ≈ 6000 ms
-            pairs = [(2000, 1000), (8000, 7000)]
-
-            with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
-                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
-                 patch.object(video_utils, 'get_video_duration', return_value=3000):
-                with self.assertRaises(RuntimeError, msg="Should raise on excessive duration deviation"):
-                    performer._shift_audio_no_reencode("/source.mkv", output_path, pairs)
-
-    def test_shift_audio_no_reencode_does_not_correct_on_tail_shortfall(self):
-        """Tail shortfall must not be treated as start delay for sync correction."""
-        performer = self._make_performer()
-        calls = []
-
-        def fake_start_process(tool, args, **kwargs):
-            calls.append((tool, list(args)))
-            return _FAKE_PROCESS_OK
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = os.path.join(tmpdir, "out.mka")
-            # seg2 range: 1000..7000 → expected duration 6000 ms
-            # seg1 range: 2000..8000 → sync_offset base = 2000
-            pairs = [(2000, 1000), (8000, 7000)]
-            # Audio deficit: 200 ms (got 5800 instead of 6000) — within 5% tolerance
-            actual_dur = 5800
-            fake_full_info = {
-                "streams": [
-                    {"codec_type": "video", "start_time": "0.0"},
-                    {"codec_type": "audio", "start_time": "0.0"},
-                ]
-            }
-
-            with patch.object(process_utils, 'start_process', side_effect=fake_start_process), \
-                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
-                 patch.object(video_utils, 'get_video_duration', return_value=actual_dur), \
-                 patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
-                sync_offset = performer._shift_audio_no_reencode("/source.mkv", output_path, pairs)
-
-        self.assertEqual(sync_offset, 2000,
-                         "Without audio start delay, sync offset should remain at seg1_start")
-
-    def test_shift_audio_no_reencode_corrects_when_audio_starts_late(self):
-        """Real audio start delay should shift sync offset forward."""
-        performer = self._make_performer()
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = os.path.join(tmpdir, "out.mka")
-            pairs = [(2000, 1000), (8000, 7000)]
-            actual_dur = 5800
-            fake_full_info = {
-                "streams": [
-                    {"codec_type": "video", "start_time": "0.0"},
-                    {"codec_type": "audio", "start_time": "0.2"},
-                ]
-            }
-
-            with patch.object(process_utils, 'start_process',
-                              side_effect=lambda t, a, **kw: _FAKE_PROCESS_OK), \
-                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
-                 patch.object(video_utils, 'get_video_duration', return_value=actual_dur), \
-                 patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
-                sync_offset = performer._shift_audio_no_reencode("/source.mkv", output_path, pairs)
-
-        self.assertEqual(sync_offset, 2200,
-                         "Audio start delay should be added to sync offset")
+        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info):
+            self.assertEqual(
+                performer._patched_audio_start_ms(
+                    "/tmp/source.mov",
+                    seg1_start=0,
+                    seg2_start=21,
+                    video_ratio=1.015,
+                ),
+                499,
+            )
 
     def test_build_mkvmerge_args_applies_sync_offset(self):
-        """When _sync_offsets has an entry, --sync should appear in mkvmerge args."""
         performer = self._make_performer()
 
         patched_file = "/tmp/patched.mka"
         base_file = "/tmp/base.mkv"
-        performer._sync_offsets[patched_file] = 3000
 
         streams = [
-            ("video", 0, base_file, None),
-            ("audio", 0, patched_file, "pol"),
+            _StreamEntry("video", 0, base_file, None),
+            _StreamEntry("audio", 0, patched_file, "pol", sync_offset_ms=3000),
         ]
 
         args = performer.build_mkvmerge_args(
@@ -644,16 +811,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(args[sync_idx + 1], "0:3000", "Sync should be TID:offset")
 
     def test_build_mkvmerge_args_applies_sync_offset_zero(self):
-        """When _sync_offsets has an entry with value 0, --sync 0:0 should still appear."""
         performer = self._make_performer()
 
         patched_file = "/tmp/patched.mka"
         base_file = "/tmp/base.mkv"
-        performer._sync_offsets[patched_file] = 0
 
         streams = [
-            ("video", 0, base_file, None),
-            ("audio", 0, patched_file, "pol"),
+            _StreamEntry("video", 0, base_file, None),
+            _StreamEntry("audio", 0, patched_file, "pol", sync_offset_ms=0),
         ]
 
         args = performer.build_mkvmerge_args(
@@ -668,20 +833,236 @@ class MeltPerformerUnitTest(unittest.TestCase):
         sync_idx = args.index("--sync")
         self.assertEqual(args[sync_idx + 1], "0:0", "Sync should be TID:0")
 
-    def test_patch_audio_fps_mismatch_with_audio_deficit(self):
-        """Exact scenario: 23.976fps base + 25fps AVI source with audio deficit.
+    def test_build_mkvmerge_args_applies_stream_sync_offsets_independently(self):
+        performer = self._make_performer()
+
+        base_file = "/tmp/base.mov"
+        patched_file = "/tmp/patched.mka"
+
+        streams = [
+            _StreamEntry("video", 0, base_file, None, sync_offset_ms=492),
+            _StreamEntry("audio", 1, base_file, "pol", sync_offset_ms=471),
+            _StreamEntry("subtitle", 2, base_file, "eng", sync_offset_ms=250),
+            _StreamEntry("audio", 0, patched_file, "eng", sync_offset_ms=500),
+        ]
+
+        args = performer.build_mkvmerge_args(
+            "/tmp/out.mkv",
+            streams,
+            attachments=[],
+            preferred_audio=None,
+            required_input_files=[base_file, patched_file],
+        )
+
+        sync_values = [
+            args[index + 1]
+            for index, value in enumerate(args)
+            if value == "--sync"
+        ]
+        self.assertIn("0:492", sync_values)
+        self.assertIn("1:471", sync_values)
+        self.assertIn("2:250", sync_values)
+        self.assertIn("0:500", sync_values)
+
+    def test_build_mkvmerge_args_applies_track_sync_offset_only_to_selected_track(self):
+        performer = self._make_performer()
+
+        base_file = "/tmp/base.mov"
+
+        streams = [
+            _StreamEntry("video", 0, base_file, None, sync_offset_ms=492),
+            _StreamEntry("audio", 1, base_file, "pol"),
+        ]
+
+        args = performer.build_mkvmerge_args(
+            "/tmp/out.mkv",
+            streams,
+            attachments=[],
+            preferred_audio=None,
+            required_input_files=[base_file],
+        )
+
+        sync_values = [
+            args[index + 1]
+            for index, value in enumerate(args)
+            if value == "--sync"
+        ]
+        self.assertIn("0:492", sync_values)
+        self.assertNotIn("1:492", sync_values)
+
+    def test_mkvmerge_input_start_offset_preserves_matroska_stream_start(self):
+        performer = self._make_performer()
+        with patch.object(
+            video_utils,
+            "get_video_full_info",
+            return_value={"streams": [{"codec_type": "video", "index": 0, "start_time": "0.510000"}]},
+        ):
+            offset = performer._mkvmerge_input_start_offset_ms("/tmp/base.mkv", "video", 0)
+
+        self.assertEqual(offset, 510)
+
+    def test_mkvmerge_input_start_offset_resets_non_matroska_stream_start(self):
+        performer = self._make_performer()
+        with patch.object(video_utils, "get_video_full_info") as probe:
+            offset = performer._mkvmerge_input_start_offset_ms("/tmp/base.mov", "video", 0)
+
+        self.assertEqual(offset, 0)
+        probe.assert_not_called()
+
+    def test_source_stream_end_uses_relative_duration_or_matroska_timeline_tag(self):
+        performer = self._make_performer()
+
+        def fake_full_info(path):
+            if path.endswith(".mp4"):
+                return {
+                    "streams": [
+                        {
+                            "codec_type": "video",
+                            "index": 0,
+                            "start_time": "0.500000",
+                            "duration": "62.332000",
+                        }
+                    ]
+                }
+            return {
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "index": 0,
+                        "start_time": "0.500000",
+                        "tags": {"DURATION": "00:01:02.832000000"},
+                    }
+                ]
+            }
+
+        with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info):
+            self.assertEqual(performer._source_stream_end_offset_ms("/tmp/source.mp4", "video", 0), 62832)
+            self.assertEqual(performer._source_stream_end_offset_ms("/tmp/source.mkv", "video", 0), 62832)
+
+    def test_track_sync_offset_compensates_for_mkvmerge_input_start(self):
+        performer = self._make_performer()
+
+        def fake_full_info(path):
+            if path.endswith(".mka"):
+                return {"streams": [{"codec_type": "audio", "index": 0, "start_time": "0.471000"}]}
+            return {"streams": [{"codec_type": "audio", "index": 1, "start_time": "0.471000"}]}
+
+        with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info):
+            mov_offset = performer._track_sync_offset_ms("/tmp/source.mov", "audio", 1, 471)
+            mka_offset = performer._track_sync_offset_ms("/tmp/normalized.mka", "audio", 0, 471)
+
+        self.assertEqual(mov_offset, 471)
+        self.assertIsNone(mka_offset)
+
+    def test_aac_from_non_matroska_needs_mkvmerge_normalization(self):
+        performer = self._make_performer()
+        fake_full_info = {
+            "streams": [
+                {"codec_type": "video", "index": 0, "codec_name": "h264"},
+                {"codec_type": "audio", "index": 1, "codec_name": "aac"},
+            ]
+        }
+
+        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info):
+            self.assertTrue(performer._audio_needs_mkvmerge_normalization("/tmp/source.mov", 1))
+            self.assertFalse(performer._audio_needs_mkvmerge_normalization("/tmp/source.mkv", 1))
+
+    def test_matroska_aac_with_priming_needs_mkvmerge_normalization(self):
+        """Matroska AAC carrying CodecDelay priming must go through the FLAC flow:
+        a raw remux places it build-dependently (~21 ms off on exposing builds)."""
+        performer = self._make_performer()
+
+        def fake_full_info(padded):
+            return {
+                "streams": [
+                    {"codec_type": "video", "index": 0, "codec_name": "h264"},
+                    {
+                        "codec_type": "audio",
+                        "index": 1,
+                        "codec_name": "aac",
+                        "initial_padding": 1024 if padded else 0,
+                    },
+                ]
+            }
+
+        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info(True)):
+            self.assertTrue(performer._audio_needs_mkvmerge_normalization("/tmp/source.mkv", 1))
+        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info(False)):
+            self.assertFalse(performer._audio_needs_mkvmerge_normalization("/tmp/source.mkv", 1))
+
+    def test_prepare_passthrough_audio_decodes_via_flac_then_encodes_aac_once(self):
+        performer = self._make_performer()
+        calls = []
+        source_full_info = {
+            "streams": [
+                {"codec_type": "video", "index": 0, "codec_name": "h264"},
+                {"codec_type": "audio", "index": 1, "codec_name": "aac", "start_time": "0.471000"},
+            ]
+        }
+
+        def fake_start_process(tool, args, **kwargs):
+            calls.append((tool, list(args)))
+            return _FAKE_PROCESS_OK
+
+        def fake_full_info(path, logger=None):
+            return source_full_info
+
+        with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info), \
+             patch.object(process_utils, "start_process", side_effect=fake_start_process), \
+             patch.object(process_utils, "raise_on_error", lambda r: None):
+            prepared_path, prepared_index = performer._prepare_passthrough_audio("/tmp/source.mov", 1)
+            cached_path, cached_index = performer._prepare_passthrough_audio("/tmp/source.mov", 1)
+
+        self.assertEqual(prepared_index, 0)
+        self.assertEqual(cached_index, 0)
+        self.assertEqual(cached_path, prepared_path)
+
+        # The flow runs exactly twice: decode the source to a priming-free FLAC,
+        # then encode that FLAC to AAC a single time.  No AAC→AAC re-encode that
+        # could re-apply encoder-delay priming.  The second call is fully cached.
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(tool == "ffmpeg" for tool, _ in calls))
+
+        decode_args = calls[0][1]
+        self.assertEqual(decode_args[decode_args.index("-map") + 1], "0:1")
+        self.assertEqual(decode_args[decode_args.index("-c:a") + 1], "flac")
+
+        encode_args = calls[1][1]
+        self.assertEqual(encode_args[encode_args.index("-c:a") + 1], "aac")
+        self.assertEqual(encode_args[-1], prepared_path)
+        # Source AAC must never be encoded straight to AAC.
+        self.assertFalse(any(
+            "aac" in args[args.index("-c:a") + 1:] and "/tmp/source.mov" in args
+            for _tool, args in calls if "-c:a" in args
+        ))
+
+    def test_track_sync_offset_compensates_when_normalized_audio_start_is_lost(self):
+        performer = self._make_performer()
+        normalized_full_info = {
+            "streams": [
+                {"codec_type": "audio", "index": 0, "codec_name": "aac", "start_time": "0.000000"},
+            ]
+        }
+
+        with patch.object(video_utils, "get_video_full_info", return_value=normalized_full_info):
+            offset = performer._track_sync_offset_ms("/tmp/normalized.mka", "audio", 0, 471)
+
+        self.assertEqual(offset, 471)
+
+    def test_patch_audio_fps_mismatch_with_audio_start_offset(self):
+        """Exact scenario: 23.976fps base + 25fps AVI source with audio start offset.
 
         Real-world case:
         - Base (4K MKV, 23.976fps): mapping lhs range [2420 … 6961247] ms
         - Source (AVI, 25fps): mapping rhs range [40 … 6673840] ms
         - source_dur = 6673800 ms, target_dur = 6958827 ms
         - fps_ratio ≈ 0.9590 → needs asetrate scaling
-        - Audio in the AVI container starts ~488 ms after the video:
-          requesting 6673800 ms of audio yields only 6673312 ms.
-        - deficit = 488 ms → sync offset must shift from 2420 to ~2929 ms
-          (correction = round(488 × 6958827/6673800) = 509 ms).
+        - Audio in the AVI container starts ~488 ms after the video.
+        - The common segment starts at 40 ms on the source timeline, so sync
+          offset must shift from 2420 to ~2887 ms
+          (correction = round((488 - 40) × 6958827/6673800) = 467 ms).
 
-        Without the deficit-based correction, audio arrives ~500 ms too early.
+        Without the start-offset correction, audio arrives ~450 ms too early.
         """
         performer = self._make_performer()
 
@@ -693,8 +1074,9 @@ class MeltPerformerUnitTest(unittest.TestCase):
         source_dur = seg2_end - seg2_start           # 6673800
         target_dur = seg1_end - seg1_start           # 6958827
         video_ratio = target_dur / source_dur        # ≈ 1.042714
-        audio_deficit_ms = 488                       # AVI audio is shorter
-        actual_trimmed_dur = source_dur - audio_deficit_ms  # 6673312
+        audio_start_ms = 488
+        start_gap_ms = audio_start_ms - seg2_start
+        actual_trimmed_dur = source_dur - start_gap_ms
 
         calls = []
         returned_sync_offset = None
@@ -704,7 +1086,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
             return _FAKE_PROCESS_OK
 
         def fake_get_duration(path, **_kwargs):
-            # Trimmed audio is shorter than requested → simulates AVI deficit
             if "source_trimmed" in path:
                 return actual_trimmed_dur
             if "source_scaled" in path:
@@ -713,7 +1094,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 return target_dur
             return 7000000  # base video duration (>seg1_end → has tail)
 
-        base_duration_ms = 7000000
         fake_full_info = {"streams": [
             {"codec_type": "video", "start_time": "0.0"},
             {"codec_type": "audio", "channels": 2, "sample_rate": "48000",
@@ -733,14 +1113,13 @@ class MeltPerformerUnitTest(unittest.TestCase):
                     use_silence=True,
                 )
 
-        # --- Sync offset must account for the audio deficit ---
-        expected_correction = round(audio_deficit_ms * video_ratio)  # 509
-        expected_sync = seg1_start + expected_correction             # 2929
+        expected_correction = round(start_gap_ms * video_ratio)
+        expected_sync = seg1_start + expected_correction
         self.assertEqual(returned_sync_offset, expected_sync,
                          f"Sync offset should be {seg1_start} + {expected_correction} = {expected_sync}, "
                          f"not {seg1_start} (the uncorrected value)")
         self.assertGreater(returned_sync_offset, seg1_start,
-                           "Deficit must push sync offset forward")
+                           "Audio stream start must push sync offset forward")
 
         # --- asetrate must be applied (fps differ) ---
         filter_calls = [c for c in calls if any("asetrate" in str(a) for a in c[1])]
@@ -752,20 +1131,25 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertIn(f"asetrate={expected_rate:.6f}", filter_arg)
         self.assertIn("aresample=48000", filter_arg)
 
-        # --- Trim timestamps must match mapping endpoints ---
+        # --- Trim timestamps must match mapping endpoints sample-accurately ---
         ffmpeg_args = [c[1] for c in calls if c[0] == "ffmpeg"]
         trim_call = next(a for a in ffmpeg_args if "source_trimmed" in str(a))
-        ss_idx = trim_call.index("-ss")
-        to_idx = trim_call.index("-to")
-        self.assertAlmostEqual(float(trim_call[ss_idx + 1]), seg2_start / 1000, places=2)
-        self.assertAlmostEqual(float(trim_call[to_idx + 1]), seg2_end / 1000, places=2)
+        self.assertNotIn("-ss", trim_call)
+        self.assertNotIn("-to", trim_call)
+        self.assertLess(trim_call.index("-i"), trim_call.index("-filter:a"))
+        trim_filter = trim_call[trim_call.index("-filter:a") + 1]
+        self.assertIn(
+            f"atrim=start={seg2_start / 1000:.6f}:end={seg2_end / 1000:.6f}",
+            trim_filter,
+        )
+        self.assertIn("asetpts=PTS-STARTPTS", trim_filter)
 
         # --- No head/tail extraction (use_silence=True) ---
         head_tail_calls = [c for c in calls if any("head" in str(a) or "tail" in str(a) for a in c[1])]
         self.assertEqual(head_tail_calls, [], "use_silence=True should skip head/tail")
 
-    def test_patch_audio_no_deficit_keeps_original_sync_offset(self):
-        """When the audio track has no deficit, sync offset equals seg1_start."""
+    def test_patch_audio_no_start_offset_keeps_original_sync_offset(self):
+        """When the audio track has no start offset, sync offset equals seg1_start."""
         performer = self._make_performer()
 
         seg1_start, seg2_start = 2420, 40
@@ -775,7 +1159,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         def fake_get_duration(path, **_kwargs):
             if "source_trimmed" in path or "source_scaled" in path or "out." in path:
-                return source_dur  # no deficit — actual equals requested
+                return source_dur
             return 7000000
 
         fake_full_info = {"streams": [{"codec_type": "audio", "channels": 2,
@@ -796,25 +1180,26 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 )
 
         self.assertEqual(sync, seg1_start,
-                         "Without deficit, sync offset should be the raw seg1_start")
+                         "Without audio start offset, sync offset should be the raw seg1_start")
 
-    def test_patch_audio_fill_gaps_raises_on_deficit(self):
-        """In fill-audio-gaps mode, audio deficit cannot be compensated — must raise."""
+    def test_patch_audio_adds_missing_positive_source_timeline_start(self):
         performer = self._make_performer()
-
-        seg1_start, seg2_start = 2420, 40
-        seg1_end, seg2_end = 6961247, 6673840
-        pairs = [(seg1_start, seg2_start), (seg1_end, seg2_end)]
-        source_dur = seg2_end - seg2_start
-        audio_deficit_ms = 488
+        source_dur = 60000
+        pairs = [(0, 0), (source_dur, source_dur)]
 
         def fake_get_duration(path, **_kwargs):
-            if "source_trimmed" in path:
-                return source_dur - audio_deficit_ms
-            return 7000000
+            if "source_trimmed" in path or "source_scaled" in path or "out." in path:
+                return source_dur
+            return source_dur
 
-        fake_full_info = {"streams": [{"codec_type": "audio", "channels": 2,
-                                       "sample_rate": "48000", "sample_fmt": "s16"}]}
+        fake_full_info = {
+            "format": {"start_time": "0.500000"},
+            "streams": [
+                {"codec_type": "video", "start_time": "0.500000"},
+                {"codec_type": "audio", "channels": 2, "sample_rate": "48000",
+                 "sample_fmt": "s16", "start_time": "0.500000"},
+            ],
+        }
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = os.path.join(tmpdir, "out.mka")
@@ -825,13 +1210,87 @@ class MeltPerformerUnitTest(unittest.TestCase):
                  patch.object(process_utils, 'raise_on_error', lambda r: None), \
                  patch.object(video_utils, 'get_video_duration', side_effect=fake_get_duration), \
                  patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
-                with self.assertRaises(RuntimeError, msg="Should raise on deficit in fill-audio-gaps mode") as ctx:
+                sync = performer.patch_audio_constant_offset(
+                    wd, "/base.mkv", "/source.mkv", output_path, pairs,
+                    use_silence=True,
+                )
+
+        self.assertEqual(sync, 500)
+
+    def test_patch_audio_does_not_double_positive_source_timeline_start(self):
+        performer = self._make_performer()
+        source_dur = 60000
+        pairs = [(500, 0), (60500, source_dur)]
+
+        def fake_get_duration(path, **_kwargs):
+            if "source_trimmed" in path or "source_scaled" in path or "out." in path:
+                return source_dur
+            return 60500
+
+        fake_full_info = {
+            "format": {"start_time": "0.500000"},
+            "streams": [
+                {"codec_type": "video", "start_time": "0.500000"},
+                {"codec_type": "audio", "channels": 2, "sample_rate": "48000",
+                 "sample_fmt": "s16", "start_time": "0.500000"},
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "out.mka")
+            wd = os.path.join(tmpdir, "work")
+
+            with patch.object(process_utils, 'start_process',
+                              side_effect=lambda t, a, **kw: _FAKE_PROCESS_OK), \
+                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
+                 patch.object(video_utils, 'get_video_duration', side_effect=fake_get_duration), \
+                 patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
+                sync = performer.patch_audio_constant_offset(
+                    wd, "/base.mkv", "/source.mkv", output_path, pairs,
+                    use_silence=True,
+                )
+
+        self.assertEqual(sync, 500)
+
+    def test_patch_audio_fill_gaps_raises_on_start_offset(self):
+        """In fill-audio-gaps mode, audio start correction cannot be compensated."""
+        performer = self._make_performer()
+
+        seg1_start, seg2_start = 2420, 40
+        seg1_end, seg2_end = 6961247, 6673840
+        pairs = [(seg1_start, seg2_start), (seg1_end, seg2_end)]
+        source_dur = seg2_end - seg2_start
+        audio_start_ms = 488
+        start_gap_ms = audio_start_ms - seg2_start
+
+        def fake_get_duration(path, **_kwargs):
+            if "source_trimmed" in path:
+                return source_dur - start_gap_ms
+            return 7000000
+
+        fake_full_info = {"streams": [{"codec_type": "audio", "channels": 2,
+                                       "sample_rate": "48000", "sample_fmt": "s16",
+                                       "start_time": "0.488"}]}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "out.mka")
+            wd = os.path.join(tmpdir, "work")
+
+            with patch.object(process_utils, 'start_process',
+                              side_effect=lambda t, a, **kw: _FAKE_PROCESS_OK), \
+                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
+                 patch.object(video_utils, 'get_video_duration', side_effect=fake_get_duration), \
+                 patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
+                with self.assertRaises(RuntimeError, msg="Should raise on start offset in fill-audio-gaps mode") as ctx:
                     performer.patch_audio_constant_offset(
                         wd, "/base.mkv", "/source.avi", output_path, pairs,
                         use_silence=False,
                     )
                 self.assertIn("fill-audio-gaps", str(ctx.exception))
-                self.assertIn(str(audio_deficit_ms), str(ctx.exception))
+                expected_correction = round(
+                    start_gap_ms * ((seg1_end - seg1_start) / source_dur)
+                )
+                self.assertIn(str(expected_correction), str(ctx.exception))
 
     def test_validate_audio_duration_raises_on_excessive_deviation(self):
         """_validate_audio_duration should raise when deviation exceeds 5%."""

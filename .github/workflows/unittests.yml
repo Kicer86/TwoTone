@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, ubuntu-26.04, macos-latest, windows-latest]
 
     steps:
     - uses: actions/checkout@v4
@@ -39,8 +39,6 @@ jobs:
 
     - name: Set up Python environment
       uses: ./.github/actions/setup-python-project
-      with:
-        python-version: '3.12'
 
     - name: Install required tools (Linux)
       if: runner.os == 'Linux'

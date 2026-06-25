@@ -5,6 +5,8 @@ import os
 import sys
 import shutil
 
+from importlib import metadata
+
 import argcomplete
 from overrides import override
 from tqdm.contrib.logging import logging_redirect_tqdm
@@ -29,6 +31,34 @@ TOOLS = {
     "transcode": (transcode.TranscodeTool(), "Transcode videos from provided directory preserving quality."),
     "utilities": (utilities.UtilitiesTool(), "Various smaller tools"),
 }
+
+
+def _runtime_version_report() -> str:
+    try:
+        version = metadata.version("twotone")
+    except metadata.PackageNotFoundError:
+        version = "unknown"
+
+    source_dir = os.path.dirname(os.path.abspath(__file__))
+    launcher = os.path.abspath(os.path.expanduser(sys.argv[0]))
+    lines = [
+        f"TwoTone {version}",
+        f"Launcher: {launcher}",
+        f"Source: {source_dir}",
+        f"Python: {sys.executable}",
+    ]
+
+    if shutil.which("git"):
+        result = process_utils.start_process(
+            "git",
+            ["describe", "--always", "--dirty", "--long"],
+            cwd=source_dir,
+        )
+        revision = result.stdout.strip()
+        if result.returncode == 0 and revision:
+            lines.append(f"Git: {revision}")
+
+    return "\n".join(lines)
 
 def _get_completion_dir() -> str:
     data_dir = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
@@ -112,6 +142,11 @@ def execute(argv: list[str]) -> None:
         help="Directory for temporary files",
     )
     parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Show version and runtime source details, then exit.",
+    )
+    parser.add_argument(
         "--install-completion",
         action="store_true",
         help="Install bash tab-completion and exit.",
@@ -134,6 +169,9 @@ def execute(argv: list[str]) -> None:
     argcomplete.autocomplete(parser)
     args = parser.parse_args(args = argv)
 
+    if args.version:
+        print(_runtime_version_report())
+        return
     if args.install_completion:
         _install_completion()
         return
@@ -271,11 +309,12 @@ def main() -> None:
     console_handler.setFormatter(CustomLoggerFormatter())
 
     logging.basicConfig(level=logging.INFO, handlers=[console_handler])
+    logger = logging.getLogger("TwoTone")
 
     try:
         execute(sys.argv[1:])
     except RuntimeError as e:
-        logging.getLogger("TwoTone").error(f"Error occurred: {e}. Terminating")
+        logger.error(f"Error occurred: {e}. Terminating")
     except ValueError as e:
         print(f"error: {e}")
 

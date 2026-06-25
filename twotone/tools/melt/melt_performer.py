@@ -1,4 +1,3 @@
-import enum
 import logging
 import os
 import shutil
@@ -9,8 +8,8 @@ from tqdm import tqdm
 from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
-from .pair_matcher import PairMatcher
-from .melt_common import FramesInfo, _ensure_working_dir, _is_length_mismatch
+from .pair_matcher import MappingRelation, PairMatcher
+from .melt_common import FramesInfo, StreamType, _ensure_working_dir, _is_length_mismatch
 
 
 class _SegmentRange(NamedTuple):
@@ -24,17 +23,24 @@ class _PairMatchResult(NamedTuple):
     mapping: list[tuple[int, int]]
     lhs_all_frames: FramesInfo
     rhs_all_frames: FramesInfo
-    constant_offset: bool
+    mapping_relation: MappingRelation
     base_duration: int
     source_duration: int
     lhs_fps: float
     rhs_fps: float
 
 
-class _AudioStrategy(enum.Enum):
-    STREAM_COPY = "stream_copy"        # no re-encoding, shift via --sync
-    CONSTANT_OFFSET = "constant_offset"  # single global time-scale
-    SUBSEGMENT = "subsegment"          # per-subsegment atempo
+class _StreamEntry(NamedTuple):
+    stream_type: StreamType
+    tid: int
+    path: str
+    language: str | None
+    sync_offset_ms: int | None = None
+
+
+class _PreparedStreams(NamedTuple):
+    entries: list[_StreamEntry]
+    input_files: set[str]
 
 
 class MeltPerformer:
@@ -54,8 +60,10 @@ class MeltPerformer:
         self.tolerance_ms = tolerance_ms
         self.cache = cache
         self.fill_audio_gaps = fill_audio_gaps
-        self._sync_offsets: dict[str, int] = {}
+        self._normalized_audio_cache: dict[tuple[str, int, int | None], str] = {}
+        self._temporary_audio_counter = 0
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
+        self._aac_priming_exposed_cache: bool | None = None
         self.wd = _ensure_working_dir(working_dir)
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
@@ -102,10 +110,11 @@ class MeltPerformer:
                     self._copy_single_input(first_file_path, output)
                 else:
                     # Convert streams to unified list (and patch audios if needed)
-                    self._sync_offsets.clear()
+                    self._normalized_audio_cache.clear()
+                    self._temporary_audio_counter = 0
                     self._pair_match_cache.clear()
                     files_details = group.get("files_details", {})
-                    streams_list = self._prepare_stream_entries(
+                    prepared_streams = self._prepare_stream_entries(
                         video_streams,
                         audio_streams,
                         subtitle_streams,
@@ -116,11 +125,14 @@ class MeltPerformer:
                     )
 
                     # Sort streams by language alphabetically, unknown languages last
-                    streams_list_sorted = sorted(streams_list, key=lambda stream: (stream[3] is None, stream[3] or ""))
+                    streams_list_sorted = sorted(
+                        prepared_streams.entries,
+                        key=lambda stream: (stream.language is None, stream.language or ""),
+                    )
 
                     # Decide which track should be default
-                    default_audio_stream = next((s for s in streams_list if s[0] == "audio"), None)
-                    default_audio_lang = default_audio_stream[3] if default_audio_stream else None
+                    default_audio_stream = next((s for s in prepared_streams.entries if s.stream_type == "audio"), None)
+                    default_audio_lang = default_audio_stream.language if default_audio_stream else None
                     preferred_audio = self._choose_preferred_audio(
                         group.get("audio_prod_lang"),
                         streams_list_sorted,
@@ -132,7 +144,7 @@ class MeltPerformer:
                         streams_list_sorted,
                         attachments,
                         preferred_audio,
-                        required_input_files,
+                        prepared_streams.input_files,
                     )
 
                     self.logger.info("Generating file: %s", self._display_path(output))
@@ -146,27 +158,37 @@ class MeltPerformer:
     def build_mkvmerge_args(
         self,
         output_path: str,
-        streams_list_sorted: Sequence[tuple[str, int, str, str | None]],
+        streams_list_sorted: Sequence[_StreamEntry],
         attachments: Sequence[tuple[str, int]],
-        preferred_audio: tuple[str, int, str, str | None] | None,
+        preferred_audio: _StreamEntry | None,
         required_input_files: Iterable[str],
     ) -> list[str]:
         generation_args: list[str] = ["-o", output_path]
         files_opts: dict[str, dict[str, Any]] = {
-            path: {"video": [], "audio": [], "subtitle": [], "attachments": [], "languages": {}, "defaults": set()}
+            path: {
+                "video": [],
+                "audio": [],
+                "subtitle": [],
+                "attachments": [],
+                "languages": {},
+                "defaults": set(),
+                "sync_offsets": {},
+            }
             for path in required_input_files
         }
 
         # Collect per-file options and track order
         track_order: list[str] = []
-        for stream_type, tid, file_path, language in streams_list_sorted:
-            fo: dict[str, Any] = files_opts[file_path]
-            fo[stream_type].append(tid)
-            fo["languages"][tid] = language or "und"
-            if stream_type in ("audio", "subtitle") and preferred_audio and (stream_type, tid, file_path, language) == preferred_audio:
-                fo["defaults"].add(tid)
-            file_index = generic_utils.get_key_position(files_opts, file_path)
-            track_order.append(f"{file_index}:{tid}")
+        for stream in streams_list_sorted:
+            fo: dict[str, Any] = files_opts[stream.path]
+            fo[stream.stream_type].append(stream.tid)
+            fo["languages"][stream.tid] = stream.language or "und"
+            if stream.stream_type in ("audio", "subtitle") and preferred_audio and stream == preferred_audio:
+                fo["defaults"].add(stream.tid)
+            if stream.sync_offset_ms is not None:
+                fo["sync_offsets"][stream.tid] = stream.sync_offset_ms
+            file_index = generic_utils.get_key_position(files_opts, stream.path)
+            track_order.append(f"{file_index}:{stream.tid}")
 
         for file_path, tid in attachments:
             fo = files_opts[file_path]
@@ -195,10 +217,8 @@ class MeltPerformer:
                     flag = "yes" if tid in fo["defaults"] else "no"
                     generation_args.extend(["--default-track", f"{tid}:{flag}"])
 
-            sync_offset = self._sync_offsets.get(file_path)
-            if sync_offset is not None:
-                for tid in fo["audio"]:
-                    generation_args.extend(["--sync", f"{tid}:{sync_offset}"])
+            for tid, offset_ms in fo["sync_offsets"].items():
+                generation_args.extend(["--sync", f"{tid}:{offset_ms}"])
 
             generation_args.append(file_path)
 
@@ -221,9 +241,7 @@ class MeltPerformer:
 
         Instead of splitting into many subsegments and applying per-segment atempo,
         this trims and time-scales the source audio directly from the video file,
-        avoiding full audio extraction. When the durations already match
-        (ratio ≈ 1.0) and no head/tail is needed, the audio is stream-copied
-        without any re-encoding.
+        avoiding full audio extraction.
 
         When *use_silence* is True, head/tail gaps are skipped entirely — the
         caller is expected to position the track via mkvmerge ``--sync``.
@@ -282,81 +300,40 @@ class MeltPerformer:
 
         # 2. Trim + time-scale source audio.
         #    The scaling ratio is derived from video-frame timestamps (fps
-        #    relationship), NOT from measured audio duration.  If the audio
-        #    stream in the container is shorter than the video, the deficit
-        #    is handled via sync_offset (start) and natural end (no padding).
-
-        # Fast path: no head/tail + fps ratio ≈ 1.0 → stream-copy, no re-encoding at all
-        if not has_head and not has_tail and not needs_scaling:
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y",
-                    "-ss", str(seg2_start / 1000),
-                    "-to", str(seg2_end / 1000),
-                    "-i", source_video,
-                    "-map", "0:a:0", "-c:a", "copy",
-                    output_path,
-                ], logger=self.logger)
-            )
-            actual_dur = video_utils.get_video_duration(output_path, logger=self.logger)
-            deficit = source_dur - actual_dur
-
-            if not use_silence and deficit > 50:
-                raise RuntimeError(
-                    f"Audio deficit of {deficit} ms detected in fill-audio-gaps mode. "
-                    f"The source container's audio starts later than its video, "
-                    f"which cannot be compensated when head/tail are filled from "
-                    f"the base file. Use default (silence) mode instead."
-                )
-
-            self._validate_audio_duration(actual_dur, source_dur, "stream-copied audio")
-            source_start_delay_ms = self._audio_video_start_delay_ms(source_video)
-            return self._sync_offset_from_deficit(
-                seg1_start,
-                deficit,
-                video_ratio,
-                source_start_delay_ms=source_start_delay_ms,
-            )
+        #    relationship), NOT from measured audio duration.
 
         trimmed_audio = os.path.join(wd, "source_trimmed.flac")
-        process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y",
-                    "-ss", str(seg2_start / 1000),
-                    "-to", str(seg2_end / 1000),
-                    "-i", source_video,
-                    "-map", "0:a:0",
-                    "-sample_fmt", self._flac_safe_fmt(source_params[2]),
-                    "-c:a", "flac",
-                    trimmed_audio,
-                ], logger=self.logger)
+        # Decode the [seg2_start, seg2_end] window of the source audio, with the
+        # lossy-codec encoder-delay priming removed deterministically so the patched
+        # track is not shifted by one AAC frame (~21 ms) on ffmpeg builds that decode
+        # the priming as real samples.
+        self._decode_source_audio_to_flac(
+            source_video,
+            trimmed_audio,
+            sample_fmt=self._flac_safe_fmt(source_params[2]),
+            trim_start_ms=seg2_start,
+            trim_end_ms=seg2_end,
+            logger=self.logger,
         )
 
         actual_source_dur = video_utils.get_video_duration(trimmed_audio, logger=self.logger)
         expected_scaled_dur = round(actual_source_dur * video_ratio)
 
-        # Compute sync offset from the measured trim deficit.
-        # If the audio stream starts later than the -ss timestamp (common in
-        # AVI), the trimmed output is shorter than requested.  The deficit
-        # tells us how much audio is missing at the start, so the sync offset
-        # must shift forward to compensate.
-        deficit = source_dur - actual_source_dur
-
-        if not use_silence and deficit > 50:
+        sync_offset = self._patched_audio_start_ms(
+            source_video,
+            seg1_start,
+            seg2_start,
+            video_ratio,
+        )
+        start_correction = sync_offset - seg1_start
+        if not use_silence and start_correction > 50:
             raise RuntimeError(
-                f"Audio deficit of {deficit} ms detected in fill-audio-gaps mode. "
+                f"Audio start correction of {start_correction} ms detected "
+                f"in fill-audio-gaps mode. "
                 f"The source container's audio starts later than its video, "
                 f"which cannot be compensated when head/tail are filled from "
                 f"the base file. Use default (silence) mode instead."
             )
-
-        source_start_delay_ms = self._audio_video_start_delay_ms(source_video)
-        sync_offset = self._sync_offset_from_deficit(
-            seg1_start,
-            deficit,
-            video_ratio,
-            source_start_delay_ms=source_start_delay_ms,
-        )
 
         # Scale with VIDEO-frame ratio (true fps relationship)
         scaled_audio = os.path.join(wd, "source_scaled.flac")
@@ -453,9 +430,9 @@ class MeltPerformer:
         if t_max - t_min <= 0:
             return []
 
-        _THRESH = 0.1  # ignore gaps smaller than 100ms
+        _THRESH = 0.0  # ignore gaps smaller than _THRESH
         _MIN_GAP = 6   # minimum column width for a visible gap
-        _W = 70         # total diagram width in columns
+        _W = 70        # total diagram width in columns
 
         left_gap = abs(lhs_s - rhs_s)
         right_gap = abs(lhs_e - rhs_e)
@@ -523,11 +500,19 @@ class MeltPerformer:
         mappings: list[tuple[int, int]],
         lhs_duration_ms: int,
         rhs_duration_ms: int,
+        lhs_fps: float,
+        rhs_fps: float,
         lhs_id: int,
         rhs_id: int,
     ) -> None:
         """Log a human-readable coverage report after PairMatcher finishes."""
-        summary = PairMatcher.coverage_summary(mappings, lhs_duration_ms, rhs_duration_ms)
+        summary = PairMatcher.coverage_summary(
+            mappings,
+            lhs_duration_ms,
+            rhs_duration_ms,
+            lhs_fps=lhs_fps,
+            rhs_fps=rhs_fps,
+        )
         lhs_name = os.path.basename(lhs_path)
         rhs_name = os.path.basename(rhs_path)
 
@@ -552,13 +537,13 @@ class MeltPerformer:
 
             if lhs_sg > 0.04 or rhs_sg > 0.04:
                 parts.append(
-                    f"shared content starts at {lhs_sg:.1f}s in {lhs_name} "
-                    f"and {rhs_sg:.1f}s in {rhs_name}"
+                    f"shared content starts at {lhs_sg:.1f}s in #{lhs_id} "
+                    f"and {rhs_sg:.1f}s in #{rhs_id}"
                 )
             if lhs_eg > 0.04 or rhs_eg > 0.04:
                 parts.append(
-                    f"shared content ends {lhs_eg:.1f}s before end of {lhs_name} "
-                    f"and {rhs_eg:.1f}s before end of {rhs_name}"
+                    f"shared content ends {lhs_eg:.1f}s before end of #{lhs_id} "
+                    f"and {rhs_eg:.1f}s before end of #{rhs_id}"
                 )
 
             detail = "; ".join(parts) if parts else "partial overlap"
@@ -573,15 +558,122 @@ class MeltPerformer:
             if diagram:
                 self.logger.info("Overlap diagram:\n%s", "\n".join(diagram))
 
-    @staticmethod
-    def _extract_audio_to_flac(video_path: str, output_path: str, logger: logging.Logger | None = None) -> None:
-        process_utils.raise_on_error(
-            process_utils.start_process(
-                "ffmpeg",
-                ["-y", "-i", video_path, "-map", "0:a:0", "-sample_fmt", "s32", "-c:a", "flac", output_path],
-                logger=logger,
+    @classmethod
+    def _source_audio_priming(
+        cls,
+        video_path: str,
+        logger: logging.Logger | None = None,
+        *,
+        audio_stream_index: int | None = None,
+    ) -> tuple[str | None, int, int, dict[str, Any]]:
+        """Return (codec_name, initial_padding_samples, sample_rate, stream).
+
+        ``initial_padding`` is the lossy-codec encoder-delay (priming) sample count the
+        container signals via Matroska *CodecDelay*; it is 0 for MP4/MOV (where the same
+        delay is carried by an edit list that every ffmpeg build honours on decode).
+        ``audio_stream_index`` selects a specific stream by its absolute container
+        index; when omitted the first audio stream is used.
+        """
+        info = video_utils.get_video_full_info(video_path, logger=logger)
+        streams = info.get("streams", [])
+        stream: dict[str, Any]
+        if audio_stream_index is not None:
+            stream = next(
+                (s for s in streams
+                 if s.get("codec_type") == "audio" and s.get("index") == audio_stream_index),
+                {},
             )
+        else:
+            stream = next((s for s in streams if s.get("codec_type") == "audio"), {})
+        codec = stream.get("codec_name")
+        try:
+            init_pad = int(stream.get("initial_padding") or 0)
+        except (TypeError, ValueError):
+            init_pad = 0
+        try:
+            sample_rate = int(stream.get("sample_rate") or 0)
+        except (TypeError, ValueError):
+            sample_rate = 0
+        return codec, init_pad, sample_rate, stream
+
+    def _decode_source_audio_to_flac(
+        self,
+        source_video: str,
+        output_path: str,
+        *,
+        sample_fmt: str = "s32",
+        trim_start_ms: int | None = None,
+        trim_end_ms: int | None = None,
+        audio_stream_index: int | None = None,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        """Decode the first audio stream of *source_video* to FLAC with the lossy-codec
+        encoder-delay priming removed deterministically across all ffmpeg builds.
+
+        AAC and similar lapped-transform codecs prepend ``initial_padding`` priming
+        samples that must be skipped on decode.  Some ffmpeg builds skip them
+        automatically (honouring Matroska *CodecDelay*), others decode them as real
+        leading samples — shifting the track by ~21 ms (one AAC frame).  To get
+        identical output everywhere, when the source carries CodecDelay priming we
+        strip that signalling by remuxing the AAC bitstream to ADTS (which has no
+        priming metadata), decode the now-always-present priming, and trim exactly
+        ``initial_padding`` samples ourselves.
+
+        ``trim_start_ms`` / ``trim_end_ms`` select a window of the *priming-free*
+        stream, matching what a priming-honouring decoder would have produced.  These
+        bounds are expressed on the source's content timeline.  When the priming strip
+        drops the container timestamps, re-anchor the window to the priming-independent
+        content start so exposing and absorbing ffmpeg builds select identical samples.
+        """
+        codec, init_pad, sample_rate, stream = self._source_audio_priming(
+            source_video, logger=logger, audio_stream_index=audio_stream_index,
         )
+        source_map = f"0:{audio_stream_index}" if audio_stream_index is not None else "0:a:0"
+
+        prime_offset_s = 0.0
+        window_anchor_ms = 0
+        input_path = source_video
+        input_map = source_map
+        adts_path: str | None = None
+        if codec == "aac" and init_pad > 0 and sample_rate > 0:
+            adts_path = f"{output_path}.priming.aac"
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", [
+                    "-y", "-i", source_video, "-map", source_map,
+                    "-c:a", "copy", "-f", "adts", adts_path,
+                ], logger=logger)
+            )
+            input_path = adts_path
+            input_map = "0:a:0"  # the remuxed ADTS file carries only the selected stream
+            prime_offset_s = init_pad / sample_rate
+            # ADTS carries no container timestamps, so the decoded frames start at 0
+            # instead of the source's content start.  The raw start_time on builds
+            # exposing AAC priming is one encoder-delay frame too early, so use the
+            # same priming-independent content start as final track placement.
+            window_anchor_ms = self._audio_content_start_ms(stream)
+
+        filters: list[str] = []
+        if prime_offset_s or trim_start_ms is not None or trim_end_ms is not None:
+            start_s = prime_offset_s + max(0, (trim_start_ms or 0) - window_anchor_ms) / 1000
+            atrim = f"atrim=start={start_s:.6f}"
+            if trim_end_ms is not None:
+                end_s = prime_offset_s + max(0, trim_end_ms - window_anchor_ms) / 1000
+                atrim += f":end={end_s:.6f}"
+            filters.append(atrim)
+            filters.append("asetpts=PTS-STARTPTS")
+
+        args = ["-y", "-i", input_path, "-map", input_map]
+        if filters:
+            args += ["-filter:a", ",".join(filters)]
+        args += ["-sample_fmt", sample_fmt, "-c:a", "flac", output_path]
+        try:
+            process_utils.raise_on_error(process_utils.start_process("ffmpeg", args, logger=logger))
+        finally:
+            if adts_path and os.path.exists(adts_path):
+                os.remove(adts_path)
+
+    def _extract_audio_to_flac(self, video_path: str, output_path: str, logger: logging.Logger | None = None) -> None:
+        self._decode_source_audio_to_flac(video_path, output_path, sample_fmt="s32", logger=logger)
 
     @staticmethod
     def _segment_range(pairs: Sequence[tuple[int, int]]) -> _SegmentRange:
@@ -603,50 +695,98 @@ class MeltPerformer:
         stream = next(s for s in info["streams"] if s["codec_type"] == "audio")
         return stream.get("channel_layout") or None
 
-    def _sync_offset_from_deficit(
-        self,
-        seg1_start: int,
-        deficit: int,
-        video_ratio: float,
-        source_start_delay_ms: int | None = None,
-    ) -> int:
-        """Compute mkvmerge --sync offset from the measured trim deficit.
+    def _aac_priming_exposed(self) -> bool:
+        """Whether this ffmpeg build exposes AAC encoder-delay priming as a negative
+        container start time instead of absorbing it.
 
-        When the audio stream in a container starts later than the video
-        (common in AVI), trimming from a video-frame timestamp yields output
-        shorter than requested.  The *deficit* (requested − actual) tells us
-        how much audio is missing at the start.  We shift the sync offset
-        forward by ``deficit * video_ratio`` to compensate.
+        Builds disagree: some report a freshly encoded AAC stream's ``start_time`` as
+        ``-encoder_delay`` (priming exposed, kept in the decoded samples), others as 0
+        (priming absorbed).  The same convention applies when *reading* a source AAC
+        stream, so on exposing builds a positive-offset (asO) audio stream's reported
+        ``start_time`` is short by one frame (~21 ms) — which otherwise mis-places the
+        patched track by exactly that frame.  Detected once and cached per run.
         """
-        # Prefer explicit stream start delay when available. The measured
-        # duration deficit can also come from missing tail audio and should not
-        # be treated as an initial delay.
-        effective_delay = source_start_delay_ms if source_start_delay_ms is not None else deficit
-        if effective_delay <= 50:
-            return seg1_start
-        correction = round(effective_delay * video_ratio)
-        sync_offset = seg1_start + correction
-        self.logger.info(
-            "Audio start delay: %d ms (deficit: %d ms) → sync offset: %d ms "
-            "(base: %d + correction: %d)",
-            effective_delay, deficit, sync_offset, seg1_start, correction,
-        )
-        return sync_offset
+        if self._aac_priming_exposed_cache is None:
+            exposed = False
+            probe = os.path.join(self.wd, f"_priming_probe_{os.getpid()}.mka")
+            try:
+                process_utils.raise_on_error(
+                    process_utils.start_process("ffmpeg", [
+                        "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
+                        "-t", "0.5", "-c:a", "aac", probe,
+                    ], logger=self.logger)
+                )
+                info = video_utils.get_video_full_info(probe, logger=self.logger)
+                stream: dict[str, Any] = next(
+                    (s for s in info.get("streams", []) if s.get("codec_type") == "audio"),
+                    {},
+                )
+                exposed = float(stream.get("start_time") or 0.0) < -0.001
+            except Exception:  # noqa: BLE001 - detection failure falls back to "absorbed"
+                exposed = False
+            finally:
+                if os.path.exists(probe):
+                    os.remove(probe)
+            self._aac_priming_exposed_cache = exposed
+        return self._aac_priming_exposed_cache
 
-    @staticmethod
-    def _audio_video_start_delay_ms(source_video: str) -> int:
-        """Return non-negative (audio_start - video_start) in milliseconds."""
+    def _audio_content_start_ms(self, stream: dict[str, Any] | None) -> int:
+        """Audio stream's true content start (ms), priming-convention independent.
+
+        On builds that expose AAC priming, the reported ``start_time`` is short by the
+        encoder delay; add it back so positive-offset placement matches absorbing
+        builds.  ``_stream_start_offset_ms`` clamps negatives to 0, so asR streams are
+        unaffected; only positive (asO) offsets carry the leaked frame.
+        """
+        base = self._stream_start_offset_ms(stream)
+        if not stream or stream.get("codec_name") != "aac" or not self._aac_priming_exposed():
+            return base
+        try:
+            pad = int(stream.get("initial_padding") or 0)
+            sample_rate = int(stream.get("sample_rate") or 0)
+            raw_start = float(stream.get("start_time") or 0.0)
+        except (TypeError, ValueError):
+            return base
+        if pad <= 0 or sample_rate <= 0:
+            return base
+        return max(0, round((raw_start + pad / sample_rate) * 1000))
+
+    def _patched_audio_start_ms(
+        self,
+        source_video: str,
+        seg1_start: int,
+        seg2_start: int,
+        video_ratio: float,
+    ) -> int:
+        """Return timeline start for a decoded source-audio trim."""
         info = video_utils.get_video_full_info(source_video)
         video_stream = next((s for s in info["streams"] if s.get("codec_type") == "video"), None)
         audio_stream = next((s for s in info["streams"] if s.get("codec_type") == "audio"), None)
-        if video_stream is None or audio_stream is None:
-            return 0
+        video_start_ms = self._stream_start_offset_ms(video_stream)
+        audio_start_ms = self._audio_content_start_ms(audio_stream)
+
+        audio_start_correction = 0
+        if audio_start_ms > video_start_ms and audio_start_ms > seg2_start:
+            audio_start_correction = round((audio_start_ms - seg2_start) * video_ratio)
+
         try:
-            video_start = float(video_stream.get("start_time", 0.0) or 0.0)
-            audio_start = float(audio_stream.get("start_time", 0.0) or 0.0)
+            container_start = float(info.get("format", {}).get("start_time") or 0.0)
         except (TypeError, ValueError):
-            return 0
-        return max(0, round((audio_start - video_start) * 1000.0))
+            container_start = 0.0
+
+        positive_timeline_correction = 0
+        timeline_start_ms = max(video_start_ms, audio_start_ms)
+        if container_start > 0 and timeline_start_ms > seg2_start:
+            positive_timeline_correction = max(0, round(timeline_start_ms * video_ratio) - seg1_start)
+
+        correction = max(audio_start_correction, positive_timeline_correction)
+        if correction > 50:
+            self.logger.info(
+                "Audio trim start correction: %d ms → sync offset: %d ms",
+                correction,
+                seg1_start + correction,
+            )
+        return seg1_start + correction
 
     _FPS_RATIO_TOLERANCE = 0.001
 
@@ -947,61 +1087,22 @@ class MeltPerformer:
         )
         shutil.copy2(input_path, output_path)
 
-    def _shift_audio_no_reencode(
-        self,
-        source_video: str,
-        output_path: str,
-        segment_pairs: list[tuple[int, int]],
-    ) -> int:
-        """Trim source audio with stream-copy and return a sync offset for mkvmerge.
-
-        For the simplest case (constant offset, ratio ≈ 1.0): no decoding at all.
-        The returned offset (ms) should be applied as ``--sync TID:<offset>`` in mkvmerge.
-        """
-        seg = self._segment_range(segment_pairs)
-        seg2_start, seg2_end = seg.rhs_start, seg.rhs_end
-        sync_offset = seg.lhs_start
-        expected_dur = seg2_end - seg2_start
-
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", [
-                "-y",
-                "-ss", str(seg2_start / 1000),
-                "-to", str(seg2_end / 1000),
-                "-i", source_video,
-                "-map", "0:a:0", "-c:a", "copy",
-                output_path,
-            ], logger=self.logger)
-        )
-
-        actual_dur = video_utils.get_video_duration(output_path, logger=self.logger)
-        self._validate_audio_duration(actual_dur, expected_dur, "stream-copied audio (no reencode)")
-        deficit = expected_dur - actual_dur
-
-        source_start_delay_ms = self._audio_video_start_delay_ms(source_video)
-        return self._sync_offset_from_deficit(
-            sync_offset,
-            deficit,
-            1.0,
-            source_start_delay_ms=source_start_delay_ms,
-        )
-
     def _patch_mismatched_audio(
         self,
         video_path_base: str,
         audio_stream: tuple[str, int],
         base_duration: int,
-        file_ids: dict[str, int] | None,
-    ) -> tuple[str, int]:
+        file_ids: dict[str, int],
+    ) -> tuple[str, int, int | None]:
         """Run PairMatcher and apply the appropriate audio patching strategy.
 
-        Returns (patched_path, new_stream_index).
+        Returns (patched_path, new_stream_index, desired_start_ms).
         """
         audio_path, stream_index = audio_stream
         with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
-            lhs_id = file_ids.get(video_path_base, 1) if file_ids else 1
-            rhs_id = file_ids.get(audio_path, 2) if file_ids else 2
+            lhs_id = file_ids[video_path_base]
+            rhs_id = file_ids[audio_path]
             cache_key = (video_path_base, audio_path)
             match_result = self._pair_match_cache.get(cache_key)
 
@@ -1013,12 +1114,12 @@ class MeltPerformer:
                     lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
                     cache=self.cache,
                 )
-                mapping, lhs_all_frames, rhs_all_frames, constant_offset = matcher.create_segments_mapping()
+                mapping_result = matcher.create_segments_mapping()
                 match_result = _PairMatchResult(
-                    mapping=mapping,
-                    lhs_all_frames=lhs_all_frames,
-                    rhs_all_frames=rhs_all_frames,
-                    constant_offset=constant_offset,
+                    mapping=mapping_result.mapping,
+                    lhs_all_frames=mapping_result.lhs_all_frames,
+                    rhs_all_frames=mapping_result.rhs_all_frames,
+                    mapping_relation=mapping_result.relation,
                     base_duration=base_duration,
                     source_duration=duration,
                     lhs_fps=matcher.lhs_fps,
@@ -1034,63 +1135,257 @@ class MeltPerformer:
             mapping = match_result.mapping
             lhs_all_frames = match_result.lhs_all_frames
             rhs_all_frames = match_result.rhs_all_frames
-            constant_offset = match_result.constant_offset
+            mapping_relation = match_result.mapping_relation
             duration = match_result.source_duration
+            mapping = self._strict_audio_mapping(mapping)
 
-            self._log_coverage(video_path_base, audio_path, mapping, base_duration, duration, lhs_id, rhs_id)
+            extrapolated_mapping = None
+            if mapping_relation == MappingRelation.GENERIC:
+                extrapolated_mapping = self._try_effective_fps_audio_mapping(
+                    video_path_base,
+                    audio_path,
+                    mapping,
+                    lhs_all_frames,
+                    rhs_all_frames,
+                )
+            if extrapolated_mapping is None:
+                extrapolated_mapping = self._try_sparse_linear_audio_extrapolation(
+                    mapping,
+                    lhs_all_frames,
+                    rhs_all_frames,
+                    match_result.lhs_fps,
+                    match_result.rhs_fps,
+                )
+            if extrapolated_mapping is not None:
+                mapping = extrapolated_mapping
+                mapping_relation = MappingRelation.LINEAR_FRAME_DRIFT
+                self.logger.info(
+                    "  Sparse linear audio extrapolation: using %s-%s ↔ %s-%s",
+                    generic_utils.ms_to_time(mapping[0][0]),
+                    generic_utils.ms_to_time(mapping[-1][0]),
+                    generic_utils.ms_to_time(mapping[0][1]),
+                    generic_utils.ms_to_time(mapping[-1][1]),
+                )
 
-            self.logger.info(
+            self._log_coverage(
+                video_path_base,
+                audio_path,
+                mapping,
+                base_duration,
+                duration,
+                match_result.lhs_fps,
+                match_result.rhs_fps,
+                lhs_id,
+                rhs_id,
+            )
+
+            self.logger.debug(
                 "Audio patching: base_duration=%d ms, source_duration=%d ms, "
-                "constant_offset=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
-                base_duration, duration, constant_offset,
+                "mapping_relation=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
+                base_duration, duration, mapping_relation.value,
                 match_result.lhs_fps, match_result.rhs_fps, len(mapping),
             )
             if mapping:
-                self.logger.info(
+                self.logger.debug(
                     "  Mapping range: lhs=[%d … %d] ms, rhs=[%d … %d] ms",
                     mapping[0][0], mapping[-1][0], mapping[0][1], mapping[-1][1],
                 )
 
             use_silence = not self.fill_audio_gaps
-            strategy = self._choose_audio_strategy(constant_offset, use_silence, mapping)
-            self.logger.info("  Audio strategy: %s", strategy.value)
-
-            if strategy == _AudioStrategy.STREAM_COPY:
-                patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
-                sync_offset = self._shift_audio_no_reencode(audio_path, patched_audio, mapping)
-                self._sync_offsets[patched_audio] = sync_offset
-                return patched_audio, 0
+            use_constant_offset = mapping_relation in (
+                MappingRelation.CONSTANT_FRAME_OFFSET,
+                MappingRelation.LINEAR_FRAME_DRIFT,
+            )
+            self.logger.info("  Audio strategy: %s", "constant_offset" if use_constant_offset else "subsegment")
 
             patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
-            if strategy == _AudioStrategy.CONSTANT_OFFSET:
+            if use_constant_offset:
                 effective_sync = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
             else:
                 self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames, use_silence=use_silence)
                 effective_sync = min(p[0] for p in mapping)
 
             if use_silence:
-                self._sync_offsets[patched_audio] = effective_sync
-                self.logger.info("  Sync offset (--sync): %d ms", effective_sync)
+                desired_start_ms = effective_sync
+                self.logger.info("  Desired audio start: %d ms", desired_start_ms)
+                return patched_audio, 0, desired_start_ms
 
-        return patched_audio, 0
+        return patched_audio, 0, None
 
-    def _choose_audio_strategy(
-        self,
-        constant_offset: bool,
-        use_silence: bool,
+    @staticmethod
+    def _strict_audio_mapping(mapping: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Collapse duplicate boundary matches before deriving audio trim ranges."""
+        if len(mapping) < 2:
+            return mapping
+
+        result: list[tuple[int, int]] = []
+        for lhs_time, rhs_time in sorted(mapping):
+            if result and rhs_time == result[-1][1]:
+                result[-1] = (lhs_time, rhs_time)
+                continue
+            if result and (lhs_time <= result[-1][0] or rhs_time < result[-1][1]):
+                continue
+            result.append((lhs_time, rhs_time))
+
+        return result if result else mapping
+
+    @staticmethod
+    def _video_playable_duration_ms(path: str) -> int | None:
+        info = video_utils.get_video_full_info(path)
+        stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
+        if stream is None:
+            return None
+
+        end_ms = MeltPerformer._stream_end_offset_ms(stream)
+        if end_ms is None:
+            return None
+        return max(0, end_ms - MeltPerformer._stream_start_offset_ms(stream))
+
+    @staticmethod
+    def _effective_video_fps(path: str, frames: FramesInfo) -> float | None:
+        if len(frames) < 2:
+            return None
+
+        duration_ms = MeltPerformer._video_playable_duration_ms(path)
+        if duration_ms is None or duration_ms <= 0:
+            return None
+
+        frame_span = MeltPerformer._video_frame_span(path, frames)
+        if frame_span <= 0:
+            return None
+
+        return frame_span * 1000 / duration_ms
+
+    @staticmethod
+    def _video_frame_span(path: str, frames: FramesInfo) -> int:
+        info = video_utils.get_video_full_info(path)
+        stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
+        if stream is not None:
+            try:
+                frame_count = int(stream.get("nb_frames") or 0)
+            except (TypeError, ValueError):
+                frame_count = 0
+            if frame_count > 1:
+                return frame_count - 1
+        return len(frames) - 1
+
+    @staticmethod
+    def _try_effective_fps_audio_mapping(
+        base_video: str,
+        source_video: str,
         mapping: list[tuple[int, int]],
-    ) -> _AudioStrategy:
-        """Pick the lightest audio patching strategy that fits the constraints."""
-        if not constant_offset:
-            return _AudioStrategy.SUBSEGMENT
-        if use_silence:
-            seg = self._segment_range(mapping)
-            source_dur = seg.rhs_end - seg.rhs_start
-            target_dur = seg.lhs_end - seg.lhs_start
-            ratio = source_dur / target_dur if target_dur else 1.0
-            if not self._needs_fps_scaling(ratio):
-                return _AudioStrategy.STREAM_COPY
-        return _AudioStrategy.CONSTANT_OFFSET
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+    ) -> list[tuple[int, int]] | None:
+        """Build a linear audio mapping from effective video FPS when matches are generic."""
+        if len(mapping) < 2:
+            return None
+
+        lhs_effective_fps = MeltPerformer._effective_video_fps(base_video, lhs_all_frames)
+        rhs_effective_fps = MeltPerformer._effective_video_fps(source_video, rhs_all_frames)
+        if lhs_effective_fps is None or rhs_effective_fps is None or rhs_effective_fps <= 0:
+            return None
+
+        tempo_ratio = lhs_effective_fps / rhs_effective_fps
+        if abs(tempo_ratio - 1.0) < 0.005:
+            return None
+
+        seg = MeltPerformer._segment_range(mapping)
+        target_duration = seg.lhs_end - seg.lhs_start
+        if target_duration <= 0:
+            return None
+
+        lhs_frame_duration = max(lhs_all_frames) - min(lhs_all_frames)
+        if lhs_frame_duration > 0 and target_duration < lhs_frame_duration * 0.80:
+            return None
+
+        source_duration = round(target_duration * tempo_ratio)
+        if source_duration <= 0:
+            return None
+
+        return [
+            (seg.lhs_start, seg.rhs_start),
+            (seg.lhs_end, seg.rhs_start + source_duration),
+        ]
+
+    @staticmethod
+    def _try_sparse_linear_audio_extrapolation(
+        mapping: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+        lhs_fps: float,
+        rhs_fps: float,
+    ) -> list[tuple[int, int]] | None:
+        """Extrapolate sparse but linear mappings for global audio time-scaling."""
+        if len(mapping) < 3 or not lhs_all_frames or not rhs_all_frames:
+            return None
+
+        pairs = sorted(mapping)
+        first_lhs, first_rhs = pairs[0]
+        last_lhs, last_rhs = pairs[-1]
+        lhs_span = last_lhs - first_lhs
+        if lhs_span <= 0:
+            return None
+
+        rhs_per_lhs = (last_rhs - first_rhs) / lhs_span
+        if rhs_per_lhs <= 0:
+            return None
+
+        max_residual_ms = 1000
+        for lhs_time, rhs_time in pairs[1:-1]:
+            predicted_rhs = first_rhs + (lhs_time - first_lhs) * rhs_per_lhs
+            if abs(predicted_rhs - rhs_time) > max_residual_ms:
+                return None
+
+        lhs_start = min(lhs_all_frames)
+        lhs_end = max(lhs_all_frames)
+        rhs_start = min(rhs_all_frames)
+        rhs_end = max(rhs_all_frames)
+        actual_rhs_start = rhs_start
+        actual_rhs_end = rhs_end
+        lhs_effective_fps = (
+            (len(lhs_all_frames) - 1) * 1000 / (lhs_end - lhs_start)
+            if len(lhs_all_frames) > 1 and lhs_end > lhs_start
+            else lhs_fps
+        )
+        rhs_effective_fps = (
+            (len(rhs_all_frames) - 1) * 1000 / (rhs_end - rhs_start)
+            if len(rhs_all_frames) > 1 and rhs_end > rhs_start
+            else rhs_fps
+        )
+        if lhs_effective_fps > 0 and rhs_effective_fps > 0:
+            fps_projected_rhs_end = rhs_start + round((lhs_end - lhs_start) * lhs_effective_fps / rhs_effective_fps)
+            rhs_end = max(rhs_end, fps_projected_rhs_end)
+
+        predicted_rhs_start = round(first_rhs + (lhs_start - first_lhs) * rhs_per_lhs)
+        extrapolated_rhs_start = max(rhs_start, min(rhs_end, predicted_rhs_start))
+        if lhs_effective_fps > 0 and rhs_effective_fps > 0:
+            extrapolated_rhs_end = extrapolated_rhs_start + round(
+                (lhs_end - lhs_start) * lhs_effective_fps / rhs_effective_fps
+            )
+        else:
+            predicted_rhs_end = round(first_rhs + (lhs_end - first_lhs) * rhs_per_lhs)
+            extrapolated_rhs_end = max(rhs_start, min(rhs_end, predicted_rhs_end))
+
+        if extrapolated_rhs_end <= extrapolated_rhs_start:
+            return None
+
+        result = list(pairs)
+        if lhs_start < first_lhs and actual_rhs_start < first_rhs and extrapolated_rhs_start < first_rhs:
+            result.insert(0, (lhs_start, extrapolated_rhs_start))
+        if lhs_end > last_lhs and actual_rhs_end > last_rhs and extrapolated_rhs_end > last_rhs:
+            result.append((lhs_end, extrapolated_rhs_end))
+
+        if len(result) == len(pairs):
+            return None
+
+        result = MeltPerformer._strict_audio_mapping(result)
+        start_extended = result[0] != pairs[0]
+        end_extended = result[-1] != pairs[-1]
+        if not start_extended and not end_extended:
+            return None
+
+        return result
 
     @staticmethod
     def _video_track_duration(
@@ -1112,6 +1407,190 @@ class MeltPerformer:
                         return length
         return video_utils.get_video_duration(path, logger=logger)
 
+    _MKVMERGE_PRESERVES_START_EXTENSIONS = frozenset({".mkv", ".mk3d", ".mka", ".webm"})
+
+    @staticmethod
+    def _stream_info(path: str, stream_type: str, stream_index: int) -> dict[str, Any] | None:
+        info = video_utils.get_video_full_info(path)
+        for stream in info.get("streams", []):
+            if stream.get("codec_type") != stream_type:
+                continue
+            try:
+                probed_index = int(stream.get("index", -1))
+            except (TypeError, ValueError):
+                continue
+            if probed_index == stream_index:
+                return stream
+        return None
+
+    @staticmethod
+    def _audio_stream_info(path: str, stream_index: int) -> dict[str, Any] | None:
+        return MeltPerformer._stream_info(path, "audio", stream_index)
+
+    @staticmethod
+    def _stream_start_offset_ms(stream: dict[str, Any] | None) -> int:
+        if stream is None:
+            return 0
+        try:
+            start_time = float(stream.get("start_time") or 0.0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, round(start_time * 1000))
+
+    @staticmethod
+    def _stream_end_offset_ms(stream: dict[str, Any] | None) -> int | None:
+        if stream is None:
+            return None
+
+        duration = stream.get("duration")
+        if duration is not None:
+            try:
+                return MeltPerformer._stream_start_offset_ms(stream) + round(float(duration) * 1000)
+            except (TypeError, ValueError):
+                pass
+
+        tag_duration = stream.get("tags", {}).get("DURATION")
+        if tag_duration is not None:
+            return generic_utils.time_to_ms(tag_duration)
+
+        return None
+
+    def _source_stream_start_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int:
+        return self._stream_start_offset_ms(self._stream_info(path, stream_type, stream_index))
+
+    def _source_stream_end_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int | None:
+        return self._stream_end_offset_ms(self._stream_info(path, stream_type, stream_index))
+
+    def _mkvmerge_input_start_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int:
+        extension = os.path.splitext(path)[1].lower()
+        if extension in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
+            return self._source_stream_start_offset_ms(path, stream_type, stream_index)
+        return 0
+
+    def _track_sync_offset_ms(
+        self,
+        path: str,
+        stream_type: str,
+        stream_index: int,
+        desired_start_ms: int | None,
+    ) -> int | None:
+        if desired_start_ms is None:
+            return None
+        input_start_ms = self._mkvmerge_input_start_offset_ms(path, stream_type, stream_index)
+        sync_offset_ms = desired_start_ms - input_start_ms
+        return sync_offset_ms if sync_offset_ms else None
+
+    def _audio_needs_mkvmerge_normalization(self, path: str, stream_index: int) -> bool:
+        """Return True when direct mkvmerge remux can shift decoded AAC timing.
+
+        Non-Matroska AAC always needs a priming-free remux: mkvmerge would otherwise
+        drop the container start offset.  Matroska normally preserves start, so raw
+        passthrough is fine -- *except* when the AAC stream carries encoder-delay
+        priming (CodecDelay / ``initial_padding``).  Remuxed raw, such a stream is
+        placed build-dependently: builds that expose priming shift its decoded
+        content by one frame (~21 ms) relative to a priming-stripped base track.
+        Route those through the FLAC-domain flow too so the priming is removed
+        deterministically, exactly as for non-Matroska inputs.
+        """
+        stream = self._audio_stream_info(path, stream_index)
+        if stream is None or stream.get("codec_name") != "aac":
+            return False
+        extension = os.path.splitext(path)[1].lower()
+        if extension not in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
+            return True
+        try:
+            init_pad = int(stream.get("initial_padding") or 0)
+        except (TypeError, ValueError):
+            init_pad = 0
+        return init_pad > 0
+
+    def _temporary_audio_path(self, label: str, stream_index: int) -> str:
+        path = os.path.join(
+            self.wd,
+            f"tmp_{os.getpid()}_{label}_{self._temporary_audio_counter}_{stream_index}.mka",
+        )
+        self._temporary_audio_counter += 1
+        return path
+
+    def _prepare_passthrough_audio(
+        self,
+        source_path: str,
+        stream_index: int,
+        desired_end_ms: int | None = None,
+    ) -> tuple[str, int]:
+        """Prepare an unscaled (length-matching) audio stream for mkvmerge through a
+        single FLAC-domain flow: decode to a priming-free FLAC, optionally trim its
+        tail to the output-timeline end, then encode to AAC exactly once.
+
+        Feeding AAC straight to mkvmerge, or re-encoding AAC→AAC, re-applies the
+        encoder-delay priming on ffmpeg builds that expose it, accumulating ~21 ms
+        per pass and shifting the track.  Routing every processing step through FLAC
+        and encoding AAC only once keeps decoded timing identical across builds —
+        the same single-encode discipline the constant-offset patch path relies on.
+        """
+        cache_key = (source_path, stream_index, desired_end_ms)
+        cached_path = self._normalized_audio_cache.get(cache_key)
+        if cached_path is not None:
+            return cached_path, 0
+
+        flac_path = self._temporary_audio_path("passthrough_flac", stream_index)
+        self._decode_source_audio_to_flac(
+            source_path,
+            flac_path,
+            sample_fmt="s32",
+            audio_stream_index=stream_index,
+            logger=self.logger,
+        )
+
+        prepared_flac = flac_path
+        if desired_end_ms is not None:
+            flac_start_ms = self._source_stream_start_offset_ms(flac_path, "audio", 0)
+            relative_end_ms = max(0, desired_end_ms - flac_start_ms)
+            prepared_flac = self._temporary_audio_path("passthrough_trim", stream_index)
+            trim_filter = (
+                f"atrim=start=0.000000:end={relative_end_ms / 1000:.6f},"
+                "asetpts=PTS-STARTPTS"
+            )
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", [
+                    "-y", "-i", flac_path, "-map", "0:a:0",
+                    "-filter:a", trim_filter,
+                    "-sample_fmt", "s32", "-c:a", "flac", prepared_flac,
+                ], logger=self.logger)
+            )
+
+        output_path = self._temporary_audio_path("passthrough_audio", stream_index)
+        channel_layout = self._get_audio_channel_layout(source_path, logger=self.logger)
+        self._concat_and_encode(
+            [prepared_flac], False, "", False, "",
+            os.path.join(self.wd, f"passthrough_concat_{os.getpid()}_{stream_index}.txt"),
+            output_path,
+            channel_layout=channel_layout,
+            logger=self.logger,
+        )
+
+        self._normalized_audio_cache[cache_key] = output_path
+        return output_path, 0
+
+    def _base_output_end_ms(
+        self,
+        video_path_base: str,
+        video_streams: Sequence[tuple[str, int, str | None]],
+        audio_streams: Sequence[tuple[str, int, str | None]],
+    ) -> int | None:
+        ends: list[int] = []
+        for path, stream_index, _language in video_streams:
+            if path == video_path_base:
+                end = self._source_stream_end_offset_ms(path, "video", stream_index)
+                if end is not None:
+                    ends.append(end)
+        for path, stream_index, _language in audio_streams:
+            if path == video_path_base:
+                end = self._source_stream_end_offset_ms(path, "audio", stream_index)
+                if end is not None:
+                    ends.append(end)
+        return max(ends) if ends else None
+
     def _prepare_stream_entries(
         self,
         video_streams: Sequence[tuple[str, int, str | None]],
@@ -1119,13 +1598,15 @@ class MeltPerformer:
         subtitle_streams: Sequence[tuple[str, int, str | None]],
         required_input_files: set[str],
         attachments: Sequence[tuple[str, int]],
-        file_ids: dict[str, int] | None = None,
+        file_ids: dict[str, int],
         files_details: dict[str, Any] | None = None,
-    ) -> list[tuple[str, int, str, str | None]]:
-        streams_list: list[tuple[str, int, str, str | None]] = []
+    ) -> _PreparedStreams:
+        streams_list: list[_StreamEntry] = []
+        input_files = set(required_input_files)
         video_path_base, _, _ = video_streams[0]
         details = files_details or {}
         base_duration = self._video_track_duration(video_path_base, details, logger=self.logger)
+        base_output_end_ms = self._base_output_end_ms(video_path_base, video_streams, audio_streams)
         protected_paths = (
             {p for (p, _, _) in video_streams}
             | {p for (p, _, _) in subtitle_streams}
@@ -1133,36 +1614,84 @@ class MeltPerformer:
         )
 
         for (path, stream_index, language) in video_streams:
-            streams_list.append(("video", stream_index, path, language))
+            video_desired_start_ms = self._source_stream_start_offset_ms(path, "video", stream_index)
+            streams_list.append(_StreamEntry(
+                "video",
+                stream_index,
+                path,
+                language,
+                self._track_sync_offset_ms(path, "video", stream_index, video_desired_start_ms),
+            ))
 
         for (path, stream_index, language) in audio_streams:
+            # Priming-convention independent content start: on builds that expose AAC
+            # encoder-delay priming, a positive-offset (asO) stream's raw start_time is
+            # short by one frame; _audio_content_start_ms adds it back so placement
+            # matches absorbing builds (a no-op for non-AAC / asR streams).
+            audio_desired_start_ms: int | None = self._audio_content_start_ms(
+                self._stream_info(path, "audio", stream_index)
+            )
             duration = self._video_track_duration(path, details, logger=self.logger)
             if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
                 assert base_duration is not None  # guaranteed by _is_length_mismatch
                 original_path = path
-                path, stream_index = self._patch_mismatched_audio(
+                path, stream_index, audio_desired_start_ms = self._patch_mismatched_audio(
                     video_path_base, (path, stream_index), base_duration, file_ids,
                 )
-                required_input_files.add(path)
+                input_files.add(path)
                 if original_path not in protected_paths:
-                    required_input_files.discard(original_path)
-            streams_list.append(("audio", stream_index, path, language))
+                    input_files.discard(original_path)
+            else:
+                # Length-matching audio is passed through unchanged, except for two
+                # mkvmerge concerns handled by a single FLAC-domain flow (decode →
+                # optional tail trim → one AAC encode): AAC needs priming-free remux
+                # for non-Matroska inputs, and audio overrunning the output timeline
+                # must be trimmed.  Both used to be separate AAC re-encodes that
+                # accumulated encoder-delay priming on builds that expose it.
+                needs_normalization = self._audio_needs_mkvmerge_normalization(path, stream_index)
+                trim_end_ms: int | None = None
+                if path != video_path_base and audio_desired_start_ms is not None and base_output_end_ms is not None:
+                    audio_end_ms = self._source_stream_end_offset_ms(path, "audio", stream_index)
+                    if audio_end_ms is not None and audio_end_ms > base_output_end_ms + self.tolerance_ms:
+                        trim_end_ms = base_output_end_ms
+                if needs_normalization or trim_end_ms is not None:
+                    original_path = path
+                    path, stream_index = self._prepare_passthrough_audio(
+                        path, stream_index, desired_end_ms=trim_end_ms,
+                    )
+                    input_files.add(path)
+                    if original_path not in protected_paths:
+                        input_files.discard(original_path)
+            streams_list.append(_StreamEntry(
+                "audio",
+                stream_index,
+                path,
+                language,
+                self._track_sync_offset_ms(path, "audio", stream_index, audio_desired_start_ms),
+            ))
 
         for (path, stream_index, language) in subtitle_streams:
-            streams_list.append(("subtitle", stream_index, path, language))
+            desired_start_ms = self._source_stream_start_offset_ms(path, "subtitle", stream_index)
+            streams_list.append(_StreamEntry(
+                "subtitle",
+                stream_index,
+                path,
+                language,
+                self._track_sync_offset_ms(path, "subtitle", stream_index, desired_start_ms),
+            ))
 
-        return streams_list
+        return _PreparedStreams(streams_list, input_files)
 
     def _choose_preferred_audio(
         self,
         audio_prod_lang: str | None,
-        streams_list_sorted: Sequence[tuple[str, int, str, str | None]],
+        streams_list_sorted: Sequence[_StreamEntry],
         default_audio_lang: str | None,
-    ) -> tuple[str, int, str, str | None] | None:
+    ) -> _StreamEntry | None:
         preferred_lang = language_utils.unify_lang(audio_prod_lang) if audio_prod_lang else default_audio_lang
 
         preferred_audio = next(
-            (info for info in streams_list_sorted if info[0] == "audio" and info[3] == preferred_lang),
+            (info for info in streams_list_sorted if info.stream_type == "audio" and info.language == preferred_lang),
             None,
         )
         if audio_prod_lang:

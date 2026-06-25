@@ -33,6 +33,7 @@ def start_process(
     args: list[str],
     show_progress: bool = False,
     logger: logging.Logger | None = None,
+    cwd: str | None = None
 ) -> ProcessResult:
     logger = logger or DEFAULT_LOGGER
     defaults = DEFAULT_TOOL_OPTIONS.get(process, [])
@@ -52,6 +53,7 @@ def start_process(
         "encoding": "utf-8",
         "errors": "replace",
         "bufsize": 1,
+        "cwd": cwd,
     }
 
     if platform.system() == "Windows":

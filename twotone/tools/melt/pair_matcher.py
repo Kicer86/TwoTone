@@ -1,7 +1,6 @@
 
-from typing import Any
-
 import cv2 as cv
+import enum
 import logging
 import numpy as np
 import os
@@ -9,7 +8,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from tqdm import tqdm
-from typing import Callable
+from typing import Any, Callable, NamedTuple
 
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
@@ -18,7 +17,25 @@ from .phash_cache import PhashCache
 from ..utils import files_utils, generic_utils, image_utils, video_utils
 
 
+class MappingRelation(enum.Enum):
+    """Detected relation between matching video frames."""
+
+    GENERIC = "generic"
+    CONSTANT_FRAME_OFFSET = "constant_frame_offset"
+    LINEAR_FRAME_DRIFT = "linear_frame_drift"
+
+
+class SegmentsMappingResult(NamedTuple):
+    mapping: list[tuple[int, int]]
+    lhs_all_frames: FramesInfo
+    rhs_all_frames: FramesInfo
+    relation: MappingRelation
+
+
 class PairMatcher:
+
+    _MAX_BOUNDARY_ERROR_FRAMES = 2
+
     def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2", cache: MeltCache | None = None) -> None:
         self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
@@ -29,8 +46,12 @@ class PairMatcher:
         self.logger = logger
         self.cache = cache
         self.phash = PhashCache()
-        self.lhs_fps = generic_utils.fps_str_to_float(video_utils.get_video_data(lhs_path, logger=self.logger)["video"][0]["fps"])
-        self.rhs_fps = generic_utils.fps_str_to_float(video_utils.get_video_data(rhs_path, logger=self.logger)["video"][0]["fps"])
+        lhs_video_data = video_utils.get_video_data(lhs_path, logger=self.logger)["video"][0]
+        rhs_video_data = video_utils.get_video_data(rhs_path, logger=self.logger)["video"][0]
+        self.lhs_fps = generic_utils.fps_str_to_float(lhs_video_data["fps"])
+        self.rhs_fps = generic_utils.fps_str_to_float(rhs_video_data["fps"])
+        self.lhs_duration_ms: int | None = lhs_video_data.get("length")
+        self.rhs_duration_ms: int | None = rhs_video_data.get("length")
 
         lhs_wd = os.path.join(self.wd, "lhs")
         rhs_wd = os.path.join(self.wd, "rhs")
@@ -76,12 +97,15 @@ class PairMatcher:
         mappings: list[tuple[int, int]],
         lhs_duration_ms: int,
         rhs_duration_ms: int,
+        *,
+        lhs_fps: float,
+        rhs_fps: float,
     ) -> dict[str, Any]:
         """Compute a human-readable coverage summary for matched files.
 
         Returns a dict with:
-        - ``full_coverage``: True when first/last pairs are within one frame
-          (40 ms) of both video edges
+        - ``full_coverage``: True when matched content reaches both video edges
+          within at most two frames per input
         - ``lhs_start_gap_s`` / ``rhs_start_gap_s``: unmatched seconds at start
         - ``lhs_end_gap_s`` / ``rhs_end_gap_s``: unmatched seconds at end
         - ``ratio``: speed ratio between the two files
@@ -94,12 +118,27 @@ class PairMatcher:
         lhs_end_gap = max(0, lhs_duration_ms - last[0])
         rhs_end_gap = max(0, rhs_duration_ms - last[1])
 
-        edge_tolerance_ms = 100  # ~2-3 frames; last extracted frame may not reach video end
+        if lhs_fps <= 0 or rhs_fps <= 0:
+            raise ValueError("FPS values must be positive")
+
+        lhs_frame_duration_ms = 1000 / lhs_fps
+        rhs_frame_duration_ms = 1000 / rhs_fps
+        lhs_edge_tolerance_ms = (
+            PairMatcher._MAX_BOUNDARY_ERROR_FRAMES * lhs_frame_duration_ms
+        )
+        rhs_edge_tolerance_ms = (
+            PairMatcher._MAX_BOUNDARY_ERROR_FRAMES * rhs_frame_duration_ms
+        )
+
+        # A frame timestamp marks the start of the frame. The expected timestamp
+        # of the final frame is therefore one frame duration before the stream end.
+        lhs_end_error = max(0, lhs_end_gap - lhs_frame_duration_ms)
+        rhs_end_error = max(0, rhs_end_gap - rhs_frame_duration_ms)
         full_coverage = (
-            lhs_start_gap <= edge_tolerance_ms
-            and rhs_start_gap <= edge_tolerance_ms
-            and lhs_end_gap <= edge_tolerance_ms
-            and rhs_end_gap <= edge_tolerance_ms
+            lhs_start_gap <= lhs_edge_tolerance_ms
+            and lhs_end_error <= lhs_edge_tolerance_ms
+            and rhs_start_gap <= rhs_edge_tolerance_ms
+            and rhs_end_error <= rhs_edge_tolerance_ms
         )
 
         return {
@@ -416,17 +455,37 @@ class PairMatcher:
         constant shift regardless of whether FPS differs between files
         (e.g. 23.976 vs 25 — same frames, different timing).
 
+        Two matches are accepted only when they span at least 250 frames.
+        The large span makes the ratio check meaningful while still handling
+        platforms where scene detection yields only two reliable key frames.
+
         Returns an updated pair list with extrapolated first/last entries,
         or ``None`` if the frame-number offset is not sufficiently constant.
         """
-        if len(matching_pairs) < 3:
+        if len(matching_pairs) < 2:
             return None
 
         # Use frame_id from FramesInfo instead of computing from FPS
-        frame_offsets = np.array([
-            int(lhs_all_frames[l]["frame_id"]) - int(rhs_all_frames[r]["frame_id"])
-            for l, r in matching_pairs
+        lhs_frame_ids = np.array([
+            int(lhs_all_frames[l]["frame_id"]) for l, _ in matching_pairs
         ])
+        rhs_frame_ids = np.array([
+            int(rhs_all_frames[r]["frame_id"]) for _, r in matching_pairs
+        ])
+
+        if len(matching_pairs) == 2:
+            frame_span = min(
+                int(np.ptp(lhs_frame_ids)),
+                int(np.ptp(rhs_frame_ids)),
+            )
+            if frame_span < 250:
+                self.logger.debug(
+                    f"Constant-offset check: only two pairs spanning "
+                    f"{frame_span} frames — skipping"
+                )
+                return None
+
+        frame_offsets = lhs_frame_ids - rhs_frame_ids
         median_offset = float(np.median(frame_offsets))
         std_offset = float(np.std(frame_offsets))
 
@@ -449,7 +508,7 @@ class PairMatcher:
 
         k = round(median_offset)  # frame-number offset
 
-        # Build frame_id → timestamp lookup for boundary extrapolation
+        # Build frame_id -> timestamp lookup for boundary extrapolation
         lhs_by_frame = {int(info["frame_id"]): ts for ts, info in lhs_all_frames.items()}
         rhs_by_frame = {int(info["frame_id"]): ts for ts, info in rhs_all_frames.items()}
 
@@ -466,21 +525,62 @@ class PairMatcher:
         lhs_keys = sorted(lhs_all_frames.keys())
         rhs_keys = sorted(rhs_all_frames.keys())
 
+        last_lhs_timestamp = lhs_keys[-1]
+        last_rhs_timestamp = rhs_keys[-1]
+
         first_lhs = lhs_by_frame.get(first_lhs_frame,
                         PairMatcher._snap_to_nearest_frame(lhs_keys, 0))
         first_rhs = rhs_by_frame.get(first_rhs_frame,
                         PairMatcher._snap_to_nearest_frame(rhs_keys, 0))
         last_lhs = lhs_by_frame.get(last_lhs_frame,
-                        PairMatcher._snap_to_nearest_frame(lhs_keys, lhs_keys[-1]))
+                        PairMatcher._snap_to_nearest_frame(lhs_keys, last_lhs_timestamp))
         last_rhs = rhs_by_frame.get(last_rhs_frame,
-                        PairMatcher._snap_to_nearest_frame(rhs_keys, rhs_keys[-1]))
+                        PairMatcher._snap_to_nearest_frame(rhs_keys, last_rhs_timestamp))
 
-        self.logger.info(
-            f"Constant offset detected: {k} frame(s) "
-            f"(median={median_offset:.1f}, std={std_offset:.2f}). "
-            f"Extrapolated boundaries: ({first_lhs}, {first_rhs}) – ({last_lhs}, {last_rhs})"
+        # log details of calculations
+        self.logger.debug(
+            "Constant offset detected: %d frame(s) "
+            "(median=%.1f, std=%.2f). "
+            "Extrapolated boundaries: (%d, %d) - (%d, %d)",
+            k, median_offset, std_offset,
+            first_lhs, first_rhs, last_lhs, last_rhs,
         )
 
+        lhs_duration = self.lhs_duration_ms if self.lhs_duration_ms is not None else (max(lhs_keys) if lhs_keys else None)
+        rhs_duration = self.rhs_duration_ms if self.rhs_duration_ms is not None else (max(rhs_keys) if rhs_keys else None)
+        lhs_duration_text = generic_utils.ms_to_time(lhs_duration) if lhs_duration is not None else "?"
+        rhs_duration_text = generic_utils.ms_to_time(rhs_duration) if rhs_duration is not None else "?"
+        lhs_ref = f"{self.lhs_label} ({os.path.basename(self.lhs_path)})"
+        rhs_ref = f"{self.rhs_label} ({os.path.basename(self.rhs_path)})"
+
+        if k > 0:
+            offset_description = (
+                f"a small constant frame offset of {k} frame(s); "
+                f"{self.lhs_label} starts the shared content later than {self.rhs_label}"
+            )
+        elif k < 0:
+            offset_description = (
+                f"a small constant frame offset of {-k} frame(s); "
+                f"{self.rhs_label} starts the shared content later than {self.lhs_label}"
+            )
+        else:
+            offset_description = "no frame offset"
+
+        self.logger.info("Files %s and %s have the same content with %s.", lhs_ref, rhs_ref, offset_description)
+
+        self.logger.info(
+            "Common section: %s %s-%s of %s; %s %s-%s of %s.",
+            self.lhs_label,
+            generic_utils.ms_to_time(first_lhs),
+            generic_utils.ms_to_time(last_lhs),
+            lhs_duration_text,
+            self.rhs_label,
+            generic_utils.ms_to_time(first_rhs),
+            generic_utils.ms_to_time(last_rhs),
+            rhs_duration_text,
+        )
+
+        # build result
         result = list(matching_pairs)
 
         if (first_lhs, first_rhs) != result[0]:
@@ -733,7 +833,7 @@ class PairMatcher:
 
         return matching_pairs
 
-    def create_segments_mapping(self) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo, bool]:
+    def create_segments_mapping(self) -> SegmentsMappingResult:
 
         lhs_scene_changes, rhs_scene_changes = self._detect_scenes()
         self._probe_frames()
@@ -756,7 +856,7 @@ class PairMatcher:
         constant_offset_pairs = self.try_constant_offset_extrapolation(
             matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
         )
-        used_constant_offset_extrapolation = constant_offset_pairs is not None
+        relation = MappingRelation.GENERIC
 
         if constant_offset_pairs is None:
             matching_pairs = self._extract_and_refine_boundaries(
@@ -765,16 +865,22 @@ class PairMatcher:
             )
         else:
             matching_pairs = constant_offset_pairs
+            relation = MappingRelation.CONSTANT_FRAME_OFFSET
             debug.dump_matches(matching_pairs, "after constant-offset extrapolation")
 
         # Snap near-edge pairs only for heuristic boundary search results.
         # Constant-offset extrapolation already yields exact frame-aligned
         # boundaries, so applying timestamp-based edge snapping here could
         # distort the precise offset.
-        if not used_constant_offset_extrapolation:
+        if relation != MappingRelation.CONSTANT_FRAME_OFFSET:
             matching_pairs = self.snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
 
-        return matching_pairs, self.lhs_all_frames, self.rhs_all_frames, used_constant_offset_extrapolation
+        return SegmentsMappingResult(
+            mapping=matching_pairs,
+            lhs_all_frames=self.lhs_all_frames,
+            rhs_all_frames=self.rhs_all_frames,
+            relation=relation,
+        )
 
     def _normalize_frames(self, frames_info: FramesInfo, wd: str, desc: str = "Normalizing frames", prefix: str = "") -> FramesInfo:
         PairMatcher._assert_frames_extracted(frames_info, f"_normalize_frames({desc})")

@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from twotone.tools.utils import generic_utils, video_utils
-from twotone.tools.melt.melt import PairMatcher
+from twotone.tools.melt.melt import MappingRelation, PairMatcher
 
 
 class PairMatcherUnitTest(unittest.TestCase):
@@ -251,6 +251,47 @@ class PairMatcherUnitTest(unittest.TestCase):
         # RHS: 90ms > 80ms → does NOT snap
         self.assertEqual(result[0][1], 90)
 
+    def test_coverage_summary_accepts_at_most_2_frames_per_edge(self):
+        # The last frame starts one frame before the stream end, so an accepted
+        # 2-frame boundary error appears as a 3-frame timestamp gap at the end.
+        mappings = [(80, 40), (9880, 9940)]
+
+        result = PairMatcher.coverage_summary(
+            mappings,
+            10000,
+            10000,
+            lhs_fps=25.0,
+            rhs_fps=50.0,
+        )
+
+        self.assertTrue(result["full_coverage"])
+
+    def test_coverage_summary_rejects_more_than_2_frames_at_an_edge(self):
+        mappings = [(81, 40), (9920, 9960)]
+
+        result = PairMatcher.coverage_summary(
+            mappings,
+            10000,
+            10000,
+            lhs_fps=25.0,
+            rhs_fps=50.0,
+        )
+
+        self.assertFalse(result["full_coverage"])
+
+    def test_coverage_summary_rejects_more_than_2_frames_at_the_end(self):
+        mappings = [(80, 40), (9840, 9920)]
+
+        result = PairMatcher.coverage_summary(
+            mappings,
+            10000,
+            10000,
+            lhs_fps=25.0,
+            rhs_fps=50.0,
+        )
+
+        self.assertFalse(result["full_coverage"])
+
     # ---- try_constant_offset_extrapolation ----
 
     def test_constant_offset_detected_and_extrapolated(self):
@@ -277,6 +318,52 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(result[0], (120, 0))
         # last_lhs_frame=min(250,250+3)=250 → ts=10000, last_rhs_frame=247 → ts=9880
         self.assertEqual(result[-1], (10000, 9880))
+
+    def test_constant_offset_logs_technical_details_at_debug_and_summary_at_info(self):
+        """Constant-offset logs should keep technical details out of info."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        matching_pairs = [
+            (2120, 2000),
+            (4120, 4000),
+            (6120, 6000),
+            (8120, 8000),
+        ]
+
+        lhs_keys = list(range(0, 10040, 40))
+        rhs_keys = list(range(0, 10040, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        with self.assertLogs("test.PairMatcher", level="DEBUG") as captured:
+            pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        debug_messages = [
+            record.getMessage() for record in captured.records
+            if record.levelno == logging.DEBUG
+        ]
+        info_messages = [
+            record.getMessage() for record in captured.records
+            if record.levelno == logging.INFO
+        ]
+
+        self.assertTrue(any(
+            "Constant offset detected: 3 frame(s) (median=3.0, std=0.00)." in message
+            for message in debug_messages
+        ))
+        self.assertFalse(any("median=" in message for message in info_messages))
+        self.assertTrue(any(
+            "Files #1 (lhs.mp4) and #2 (rhs.mp4) have the same content" in message
+            for message in info_messages
+        ))
+        self.assertTrue(any(
+            "small constant frame offset of 3 frame(s)" in message
+            for message in info_messages
+        ))
+        self.assertTrue(any(
+            "Common section: #1 00:00:00,120-00:00:10,000 of 00:00:10,000; "
+            "#2 00:00:00,000-00:00:09,880 of 00:00:10,000." in message
+            for message in info_messages
+        ))
 
     def test_constant_offset_negative(self):
         """When offset is negative (rhs ahead of lhs), boundaries are correct."""
@@ -404,8 +491,8 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertIsNone(result)
 
-    def test_constant_offset_too_few_pairs(self):
-        """With fewer than 3 pairs, constant-offset detection is skipped."""
+    def test_constant_offset_two_nearby_pairs_are_insufficient(self):
+        """Two nearby pairs do not cover enough content to prove a constant offset."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
 
         matching_pairs = [(2120, 2000), (4120, 4000)]
@@ -418,6 +505,25 @@ class PairMatcherUnitTest(unittest.TestCase):
         result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNone(result)
+
+    def test_constant_offset_two_widely_separated_pairs_are_sufficient(self):
+        """Two distant pairs can prove the constant frame offset seen on Ubuntu CI."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        lhs_keys = list(range(480, 60441, 40))
+        rhs_keys = list(range(0, 60441, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        matching_pairs = [
+            (10480, 10480),
+            (50480, 50480),
+        ]
+
+        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], (480, 480))
+        self.assertEqual(result[-1], (60440, 60440))
 
     def test_constant_offset_slight_jitter_within_tolerance(self):
         """Small jitter (< 1 frame) in frame-number offsets should still be accepted."""
@@ -532,10 +638,10 @@ class PairMatcherUnitTest(unittest.TestCase):
             debug.dump_frames.return_value = None
             debug.dump_matches.return_value = None
 
-            mappings, _, _, is_constant = pm.create_segments_mapping()
+            result = pm.create_segments_mapping()
 
-        self.assertTrue(is_constant)
-        self.assertEqual(mappings, extrapolated_pairs)
+        self.assertEqual(result.relation, MappingRelation.CONSTANT_FRAME_OFFSET)
+        self.assertEqual(result.mapping, extrapolated_pairs)
 
     # ---- _look_for_boundaries: look_ahead robustness ----
 

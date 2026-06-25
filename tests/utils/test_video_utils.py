@@ -2,7 +2,9 @@
 import os
 import unittest
 from parameterized import parameterized
+from unittest.mock import patch
 
+from twotone.tools.utils import process_utils
 from twotone.tools.utils import subtitles_utils, video_utils
 from common import TwoToneTestCase, get_video, remove_key, write_subtitle, generate_subtitles
 
@@ -89,6 +91,48 @@ class UtilsTests(TwoToneTestCase):
 
         subtitle = subtitles_utils.build_subtitle_from_path(subtitle_path, language=None)
         self.assertEqual(subtitle.language, "zho")
+
+    @parameterized.expand([
+        ("negative_start", "-0.021000", -21),
+        ("zero_start", "0.000000", 0),
+        ("positive_start", "0.510000", 0),
+    ])
+    def test_showinfo_timestamp_correction_uses_only_negative_container_start(
+        self,
+        _name: str,
+        ffprobe_output: str,
+        expected_correction_ms: int,
+    ):
+        result = process_utils.ProcessResult(0, ffprobe_output, "")
+        with patch.object(process_utils, "start_process", return_value=result):
+            correction = video_utils._showinfo_timestamp_correction_ms("input.mkv", self.logger)
+
+        self.assertEqual(expected_correction_ms, correction)
+
+    def test_probe_frame_timestamps_corrects_negative_container_start(self):
+        stderr_lines = [
+            "[Parsed_showinfo_0] n:   0 pts:     21 pts_time:0.021\n",
+            "[Parsed_showinfo_0] n:   1 pts:     62 pts_time:0.062\n",
+        ]
+        proc = unittest.mock.Mock(returncode=0)
+
+        def fake_start_ffmpeg_streaming(args, interruption=None, on_line=None, logger=None):
+            for line in stderr_lines:
+                on_line(line)
+            return proc, stderr_lines
+
+        with patch.object(video_utils, "get_video_frames_count", return_value=2), \
+             patch.object(video_utils, "_showinfo_timestamp_correction_ms", return_value=-21), \
+             patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start_ffmpeg_streaming):
+            mapping = video_utils.probe_frame_timestamps("input.mkv", logger=self.logger)
+
+        self.assertEqual(
+            {
+                0: {"frame_id": 0, "path": None},
+                41: {"frame_id": 1, "path": None},
+            },
+            mapping,
+        )
 
 
     test_videos = [

@@ -16,6 +16,8 @@ from .generic_utils import InterruptibleProcess, fps_str_to_float, get_tqdm_defa
 from .subtitles_utils import SubtitleFile
 
 DEFAULT_LOGGER = logging.getLogger("TwoTone.utils.video_utils")
+_SHOWINFO_PTS_TIME_RE = re.compile(r"pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))")
+_SHOWINFO_FRAME_RE = re.compile(r"n: *(\d+).*pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))")
 
 
 def _start_ffmpeg_streaming(
@@ -102,6 +104,42 @@ def get_video_frames_count(video_file: str, logger: logging.Logger | None = None
         return None
 
 
+def _showinfo_timestamp_correction_ms(video_path: str, logger: logging.Logger | None = None) -> int:
+    """Return the correction needed for ffmpeg ``showinfo`` timestamps.
+
+    Some ffmpeg versions expose a negative container start caused by AAC codec
+    delay as a positive offset in video-filter ``pts_time`` values.  Matroska
+    keeps that delay on the audio track; video blocks can still start at zero.
+    Only negative container starts are compensated here so real positive stream
+    offsets remain visible to callers.
+    """
+    logger = logger or DEFAULT_LOGGER
+    result = process_utils.start_process(
+        "ffprobe",
+        [
+            "-v", "error",
+            "-show_entries", "format=start_time",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path,
+        ],
+        logger=logger,
+    )
+    if result.returncode != 0:
+        logger.warning("Could not probe format start time for %s", video_path)
+        return 0
+
+    try:
+        start_time = float(result.stdout.strip() or 0.0)
+    except ValueError:
+        return 0
+
+    return min(0, round(start_time * 1000))
+
+
+def _showinfo_timestamp_ms(pts_time: str, correction_ms: int = 0) -> int:
+    return max(0, round(float(pts_time) * 1000) + correction_ms)
+
+
 def detect_scene_changes(
     file_path: str,
     threshold: float = 0.4,
@@ -134,7 +172,7 @@ def detect_scene_changes(
 
     duration_ms = get_video_duration(file_path, logger=logger)
     duration_s = (duration_ms / 1000.0) if duration_ms else None
-    pts_time_re = re.compile(r"pts_time:(\d+\.?\d*)")
+    timestamp_correction_ms = _showinfo_timestamp_correction_ms(file_path, logger=logger)
 
     pbar = tqdm(
         total=duration_s,
@@ -146,9 +184,9 @@ def detect_scene_changes(
 
     def _on_line(line: str) -> None:
         nonlocal last_time
-        m = pts_time_re.search(line)
+        m = _SHOWINFO_PTS_TIME_RE.search(line)
         if m:
-            t = float(m.group(1))
+            t = _showinfo_timestamp_ms(m.group(1), timestamp_correction_ms) / 1000
             delta = t - last_time
             if delta > 0:
                 pbar.update(delta)
@@ -164,12 +202,10 @@ def detect_scene_changes(
 
     # Look for lines with "pts_time:"; these indicate the timestamp of a scene change.
     scene_times = []
-    pattern = re.compile(r"pts_time:(\d+\.?\d*)")
     for line in stderr_lines:
-        match = pattern.search(line)
+        match = _SHOWINFO_PTS_TIME_RE.search(line)
         if match:
-            time_s = float(match.group(1))
-            time_ms = int(round(time_s * 1000))
+            time_ms = _showinfo_timestamp_ms(match.group(1), timestamp_correction_ms)
             scene_times.append(time_ms)
 
     logger.debug(f"Detected {len(scene_times)} scene changes in {basename}")
@@ -288,7 +324,7 @@ def extract_all_frames(
         [],
     ]
 
-    frame_pattern = re.compile(r"n: *(\d+).*pts_time:([\d.]+)")
+    timestamp_correction_ms = _showinfo_timestamp_correction_ms(video_path, logger=logger)
     showinfo_entries: list[tuple[int, int]] = []      # (frame_number, timestamp_ms)
 
     last_stderr: list[str] = []
@@ -305,10 +341,10 @@ def extract_all_frames(
         )
 
         def _on_line(line: str) -> None:
-            match = frame_pattern.search(line)
+            match = _SHOWINFO_FRAME_RE.search(line)
             if match:
                 frame_number = int(match.group(1))
-                timestamp_ms = int(round(float(match.group(2)) * 1000))
+                timestamp_ms = _showinfo_timestamp_ms(match.group(2), timestamp_correction_ms)
                 showinfo_entries.append((frame_number, timestamp_ms))
                 pbar.update(1)
 
@@ -377,7 +413,7 @@ def probe_frame_timestamps(
 
     total_frames = get_video_frames_count(video_path, logger=logger)
 
-    frame_pattern = re.compile(r"n: *(\d+).*pts_time:([\d.]+)")
+    timestamp_correction_ms = _showinfo_timestamp_correction_ms(video_path, logger=logger)
     entries: list[tuple[int, int]] = []
 
     pbar = tqdm(
@@ -388,10 +424,10 @@ def probe_frame_timestamps(
     )
 
     def _on_line(line: str) -> None:
-        match = frame_pattern.search(line)
+        match = _SHOWINFO_FRAME_RE.search(line)
         if match:
             frame_number = int(match.group(1))
-            timestamp_ms = int(round(float(match.group(2)) * 1000))
+            timestamp_ms = _showinfo_timestamp_ms(match.group(2), timestamp_correction_ms)
             entries.append((frame_number, timestamp_ms))
             pbar.update(1)
 
@@ -483,7 +519,7 @@ def extract_frames_at_ranges(
     basename = os.path.basename(video_path)
     bar_desc = desc or f"Extracting frames: {basename}"
 
-    frame_pattern = re.compile(r"n: *(\d+).*pts_time:([\d.]+)")
+    timestamp_correction_ms = _showinfo_timestamp_correction_ms(video_path, logger=logger)
     showinfo_entries: list[tuple[int, int]] = []  # (output_seq, timestamp_ms)
 
     pbar = tqdm(
@@ -494,10 +530,10 @@ def extract_frames_at_ranges(
     )
 
     def _on_line(line: str) -> None:
-        match = frame_pattern.search(line)
+        match = _SHOWINFO_FRAME_RE.search(line)
         if match:
             output_seq = int(match.group(1))
-            timestamp_ms = int(round(float(match.group(2)) * 1000))
+            timestamp_ms = _showinfo_timestamp_ms(match.group(2), timestamp_correction_ms)
             showinfo_entries.append((output_seq, timestamp_ms))
             pbar.update(1)
 

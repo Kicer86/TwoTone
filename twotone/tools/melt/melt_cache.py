@@ -77,7 +77,7 @@ class MeltCache:
                 return False
 
             link_path = os.path.join(target_dir, filename)
-            os.symlink(cached_frame, link_path)
+            self._materialize_cached_frame(cached_frame, link_path)
 
             if ts in probed_metadata:
                 probed_metadata[ts]["path"] = link_path
@@ -120,6 +120,25 @@ class MeltCache:
         self.logger.debug("Cached %d frames for %s", len(frame_meta), os.path.basename(video_path))
 
     # -- internals -----------------------------------------------------------
+
+    @staticmethod
+    def _materialize_cached_frame(src: str, dst: str) -> None:
+        """Make *dst* refer to cached frame *src*, preferring a symlink.
+
+        Falls back to a hard link and finally a copy on platforms or drives that
+        forbid symlinks (e.g. Windows without the symlink privilege), so cache
+        restoration works everywhere instead of only where symlinks are allowed.
+        """
+        try:
+            os.symlink(src, dst)
+            return
+        except OSError:
+            pass
+        try:
+            os.link(src, dst)
+            return
+        except OSError:
+            shutil.copy2(src, dst)
 
     def _cache_key(self, video_path: str) -> str:
         real = os.path.realpath(video_path)
