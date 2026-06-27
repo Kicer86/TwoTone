@@ -451,26 +451,45 @@ class PairMatcherUnitTest(unittest.TestCase):
 
     def test_linear_frame_drift_extrapolates_boundaries(self):
         """Slight linear frame drift should extrapolate common boundaries."""
-        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        pm = self._make_pair_matcher(lhs_fps=24.0, rhs_fps=23.0)
 
-        # RHS has an initial +1 frame offset and slowly gains one extra frame
-        # per 1000 LHS frames: rhs_frame = 1.001 * lhs_frame + 1.
+        # RHS has 23 frames for each 24 LHS frames while preserving playback
+        # time: rhs_frame = 23/24 * lhs_frame + 1.
         lhs_keys = list(range(0, 10001 * 40, 40))
-        rhs_keys = list(range(0, 10021 * 40, 40))
+        rhs_keys = list(range(0, 9590 * 40, 40))
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
         matching_frame_ids = [1000, 4000, 7000, 9000]
         matching_pairs = [
-            (lhs_id * 40, int(round(1.001 * lhs_id + 1)) * 40)
+            (lhs_id * 40, int(round((23 / 24) * lhs_id + 1)) * 40)
             for lhs_id in matching_frame_ids
         ]
 
         result = pm.try_linear_frame_drift_extrapolation(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
-        self.assertEqual(result[0], (0, 40))
-        self.assertEqual(result[-1], (400000, 400440))
+        self.assertEqual(result[0], (0, 0))
+        self.assertEqual(result[-1], (400000, 383360))
+
+    def test_linear_frame_drift_rejects_time_scale_change(self):
+        """Frame slope alone is not enough when FPS implies a real speed change."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=26.5)
+
+        lhs_keys = list(range(0, 10001 * 40, 40))
+        rhs_keys = list(range(0, 10291 * 40, 40))
+        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
+        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+
+        matching_frame_ids = [1000, 4000, 7000, 9000]
+        matching_pairs = [
+            (lhs_id * 40, int(round(1.028 * lhs_id)) * 40)
+            for lhs_id in matching_frame_ids
+        ]
+
+        result = pm.try_linear_frame_drift_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNone(result)
 
     def test_linear_frame_drift_rejects_extreme_slope_delta(self):
         """Extreme frame-count conversion should not use linear-drift extrapolation."""

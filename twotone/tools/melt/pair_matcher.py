@@ -614,6 +614,7 @@ class PairMatcher:
         max_median_residual_frames: float = 1.5,
         max_p95_residual_frames: float = 4.0,
         max_outlier_ratio: float = 0.25,
+        max_time_scale_delta: float = 0.005,
         min_span_frames: int = 250,
     ) -> list[tuple[int, int]] | None:
         """Extrapolate boundaries when frame-number offset drifts almost linearly.
@@ -694,6 +695,16 @@ class PairMatcher:
             self.logger.debug(
                 f"Linear-drift check: slope={slope:.6f} differs from 1.0 "
                 f"by {slope_delta:.6f}, max {max_slope_delta:.6f} — skipping"
+            )
+            return None
+
+        time_scale = slope * self.lhs_fps / self.rhs_fps
+        time_scale_delta = abs(time_scale - 1.0)
+        if time_scale_delta > max_time_scale_delta:
+            self.logger.debug(
+                f"Linear-drift check: frame slope={slope:.6f} gives "
+                f"time scale {time_scale:.6f}, which differs from 1.0 "
+                f"by {time_scale_delta:.6f}, max {max_time_scale_delta:.6f} — skipping"
             )
             return None
 
