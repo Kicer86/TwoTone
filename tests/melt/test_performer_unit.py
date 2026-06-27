@@ -250,6 +250,60 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_effective_fps_audio_mapping_ignores_frame_rate_only_drift(self):
+        mapping = [
+            (739, 0),
+            (16522, 16063),
+            (26217, 25730),
+            (53609, 53147),
+            (62739, 62272),
+            (62826, 62814),
+        ]
+        lhs_frames = {
+            0: {"path": "lhs_0.jpg"},
+            62826: {"path": "lhs_62826.jpg"},
+        }
+        rhs_frames = {
+            0: {"path": "rhs_0.jpg"},
+            62814: {"path": "rhs_62814.jpg"},
+        }
+
+        def fake_full_info(path):
+            if path == "/tmp/base.mkv":
+                return {
+                    "streams": [
+                        {
+                            "codec_type": "video",
+                            "start_time": "0.000000",
+                            "duration": "62.826000",
+                            "nb_frames": "1446",
+                        }
+                    ]
+                }
+            return {
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "start_time": "0.500000",
+                        "duration": "62.332000",
+                        "nb_frames": "1496",
+                    }
+                ]
+            }
+
+        with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info):
+            result = MeltPerformer._try_effective_fps_audio_mapping(
+                "/tmp/base.mkv",
+                "/tmp/source.mp4",
+                mapping,
+                lhs_frames,
+                rhs_frames,
+                lhs_nominal_fps=23.0,
+                rhs_nominal_fps=24.0,
+            )
+
+        self.assertIsNone(result)
+
     # ---- _patch_audio_constant_offset ----
 
     def _collect_ffmpeg_calls(self, performer, segment_pairs, base_duration_ms,
@@ -787,6 +841,89 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 499,
             )
 
+    def test_patched_audio_start_uses_positive_aac_stream_start(self):
+        performer = self._make_performer()
+        fake_full_info = {
+            "streams": [
+                {"codec_type": "video", "start_time": "0.478000"},
+                {
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "initial_padding": 1024,
+                    "sample_rate": "48000",
+                    "start_time": "0.500000",
+                },
+            ],
+        }
+
+        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info):
+            self.assertEqual(
+                performer._patched_audio_start_ms(
+                    "/tmp/source.mkv",
+                    seg1_start=22,
+                    seg2_start=3,
+                    video_ratio=1.0,
+                ),
+                519,
+            )
+
+    def test_source_audio_trim_range_shifts_when_audio_starts_before_video(self):
+        performer = self._make_performer()
+        fake_full_info = {
+            "streams": [
+                {"codec_type": "video", "start_time": "0.478000"},
+                {"codec_type": "audio", "start_time": "0.000000"},
+            ],
+        }
+
+        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info):
+            self.assertEqual(
+                performer._source_audio_trim_range(
+                    "/tmp/source.mov",
+                    video_trim_start_ms=478,
+                    video_trim_end_ms=62782,
+                ),
+                (0, 62782),
+            )
+
+    def test_source_audio_trim_range_keeps_video_range_when_audio_starts_later(self):
+        performer = self._make_performer()
+        fake_full_info = {
+            "streams": [
+                {"codec_type": "video", "start_time": "0.000000"},
+                {"codec_type": "audio", "start_time": "0.488000"},
+            ],
+        }
+
+        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info):
+            self.assertEqual(
+                performer._source_audio_trim_range(
+                    "/tmp/source.mov",
+                    video_trim_start_ms=40,
+                    video_trim_end_ms=6673840,
+                ),
+                (40, 6673840),
+            )
+
+    def test_source_audio_trim_range_ignores_aac_sized_start_difference(self):
+        performer = self._make_performer()
+        fake_full_info = {
+            "streams": [
+                {"codec_type": "video", "start_time": "0.500000"},
+                {"codec_type": "audio", "start_time": "0.478000"},
+            ],
+        }
+
+        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info):
+            self.assertEqual(
+                performer._source_audio_trim_range(
+                    "/tmp/source.mov",
+                    video_trim_start_ms=23,
+                    video_trim_end_ms=62772,
+                ),
+                (23, 62772),
+            )
+
     def test_build_mkvmerge_args_applies_sync_offset(self):
         performer = self._make_performer()
 
@@ -1181,6 +1318,87 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         self.assertEqual(sync, seg1_start,
                          "Without audio start offset, sync offset should be the raw seg1_start")
+
+    def test_patch_audio_compensates_source_only_aac_padding(self):
+        performer = self._make_performer()
+        pairs = [(22, 3), (62313, 62305)]
+        source_dur = 62302
+        target_dur = 62291
+
+        def fake_get_duration(path, **_kwargs):
+            if "source_trimmed" in path:
+                return source_dur
+            if "source_scaled" in path or "out." in path:
+                return target_dur
+            return 63000
+
+        def fake_full_info(path, **_kwargs):
+            if path == "/base.mp4":
+                return {"streams": [
+                    {"codec_type": "video", "start_time": "0.500000"},
+                    {"codec_type": "audio", "codec_name": "aac", "channels": 1,
+                     "sample_rate": "48000", "sample_fmt": "fltp",
+                     "start_time": "0.478000", "initial_padding": 0},
+                ]}
+            return {"streams": [
+                {"codec_type": "video", "start_time": "0.478000"},
+                {"codec_type": "audio", "codec_name": "aac", "channels": 1,
+                 "sample_rate": "48000", "sample_fmt": "fltp",
+                 "start_time": "0.500000", "initial_padding": 1024},
+            ]}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "out.mka")
+            wd = os.path.join(tmpdir, "work")
+
+            with patch.object(process_utils, 'start_process',
+                              side_effect=lambda t, a, **kw: _FAKE_PROCESS_OK), \
+                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
+                 patch.object(video_utils, 'get_video_duration', side_effect=fake_get_duration), \
+                 patch.object(video_utils, 'get_video_full_info', side_effect=fake_full_info):
+                sync = performer.patch_audio_constant_offset(
+                    wd, "/base.mp4", "/source.mkv", output_path, pairs,
+                    use_silence=True,
+                )
+
+        self.assertEqual(sync, 520)
+
+    def test_patch_audio_keeps_sync_when_base_and_source_have_aac_padding(self):
+        performer = self._make_performer()
+        pairs = [(0, 0), (62291, 62305)]
+        source_dur = 62305
+        target_dur = 62291
+
+        def fake_get_duration(path, **_kwargs):
+            if "source_trimmed" in path:
+                return source_dur
+            if "source_scaled" in path or "out." in path:
+                return target_dur
+            return 63000
+
+        def fake_full_info(_path, **_kwargs):
+            return {"streams": [
+                {"codec_type": "video", "start_time": "0.478000"},
+                {"codec_type": "audio", "codec_name": "aac", "channels": 1,
+                 "sample_rate": "48000", "sample_fmt": "fltp",
+                 "start_time": "0.500000", "initial_padding": 1024},
+            ]}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "out.mka")
+            wd = os.path.join(tmpdir, "work")
+
+            with patch.object(process_utils, 'start_process',
+                              side_effect=lambda t, a, **kw: _FAKE_PROCESS_OK), \
+                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
+                 patch.object(video_utils, 'get_video_duration', side_effect=fake_get_duration), \
+                 patch.object(video_utils, 'get_video_full_info', side_effect=fake_full_info):
+                sync = performer.patch_audio_constant_offset(
+                    wd, "/base.mkv", "/source.mkv", output_path, pairs,
+                    use_silence=True,
+                )
+
+        self.assertEqual(sync, 500)
 
     def test_patch_audio_adds_missing_positive_source_timeline_start(self):
         performer = self._make_performer()
