@@ -264,13 +264,12 @@ class MeltPerformer:
         has_head = seg1_start > 0 and not use_silence
         has_tail = seg1_end < base_duration_ms and not use_silence
 
-        # Video-frame ratio (true fps relationship, independent of audio track)
-        audio_trim_start_ms, audio_trim_end_ms = self._source_audio_trim_range(
-            source_video,
-            seg2_start,
-            seg2_end,
-        )
-        source_dur = audio_trim_end_ms - audio_trim_start_ms
+        # Video-frame ratio (true fps relationship, independent of audio track).
+        # Both spans come from matched video frames, so the ratio captures only the
+        # real playback-rate relationship.  It must not be skewed by where the audio
+        # stream happens to start relative to its video, otherwise a constant-offset
+        # source whose audio merely leads its video gets a spurious global time-scale.
+        source_dur = seg2_end - seg2_start
         target_dur = seg1_end - seg1_start
         video_ratio = target_dur / source_dur if source_dur else 1.0
         fps_ratio = source_dur / target_dur if target_dur else 1.0
@@ -315,8 +314,8 @@ class MeltPerformer:
             source_video,
             trimmed_audio,
             sample_fmt=self._flac_safe_fmt(source_params[2]),
-            trim_start_ms=audio_trim_start_ms,
-            trim_end_ms=audio_trim_end_ms,
+            trim_start_ms=seg2_start,
+            trim_end_ms=seg2_end,
             logger=self.logger,
         )
 
@@ -329,11 +328,21 @@ class MeltPerformer:
             seg2_start,
             video_ratio,
         )
+        # Undo the encoder-delay priming that _audio_content_start_ms folds into the
+        # sync offset, but only on builds that actually expose AAC priming.  On those
+        # builds the source's reported content start is one priming frame late while
+        # the decoded (priming-stripped) audio is not, so the source-only CodecDelay
+        # must be subtracted back out.  Absorbing builds never add it, so subtracting
+        # here would shift the track one priming frame early.  _aac_priming_exposed()
+        # probes ffmpeg, so it is checked last — only when there is padding to undo.
         source_padding_ms = self._audio_initial_padding_ms(source_video, logger=self.logger)
         base_padding_ms = self._audio_initial_padding_ms(base_video, logger=self.logger)
-        if source_padding_ms > 0 and base_padding_ms == 0:
+        if (
+            source_padding_ms > 0
+            and base_padding_ms == 0
+            and self._aac_priming_exposed()
+        ):
             sync_offset = max(seg1_start, sync_offset - round(source_padding_ms * video_ratio))
-        sync_offset += self._audio_starts_just_before_video_adjustment_ms(base_video)
         start_correction = sync_offset - seg1_start
         if not use_silence and start_correction > 50:
             raise RuntimeError(
@@ -373,30 +382,6 @@ class MeltPerformer:
         )
 
         return sync_offset
-
-    def _source_audio_trim_range(
-        self,
-        source_video: str,
-        video_trim_start_ms: int,
-        video_trim_end_ms: int,
-    ) -> tuple[int, int]:
-        """Expand a video mapping range when source audio starts before video."""
-        info = video_utils.get_video_full_info(source_video)
-        video_stream = next((s for s in info["streams"] if s.get("codec_type") == "video"), None)
-        audio_stream = next((s for s in info["streams"] if s.get("codec_type") == "audio"), None)
-        video_start_ms = self._stream_start_offset_ms(video_stream)
-        audio_start_ms = self._audio_content_start_ms(audio_stream)
-
-        if audio_start_ms >= video_start_ms:
-            return video_trim_start_ms, video_trim_end_ms
-
-        start_delta_ms = video_start_ms - audio_start_ms
-        if start_delta_ms <= 50:
-            return video_trim_start_ms, video_trim_end_ms
-
-        trim_start_ms = max(0, video_trim_start_ms - start_delta_ms)
-        trim_end_ms = max(trim_start_ms, video_trim_end_ms)
-        return trim_start_ms, trim_end_ms
 
     @staticmethod
     def _collect_required_input_files(

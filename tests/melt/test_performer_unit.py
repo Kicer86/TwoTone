@@ -867,63 +867,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 519,
             )
 
-    def test_source_audio_trim_range_shifts_when_audio_starts_before_video(self):
-        performer = self._make_performer()
-        fake_full_info = {
-            "streams": [
-                {"codec_type": "video", "start_time": "0.478000"},
-                {"codec_type": "audio", "start_time": "0.000000"},
-            ],
-        }
-
-        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info):
-            self.assertEqual(
-                performer._source_audio_trim_range(
-                    "/tmp/source.mov",
-                    video_trim_start_ms=478,
-                    video_trim_end_ms=62782,
-                ),
-                (0, 62782),
-            )
-
-    def test_source_audio_trim_range_keeps_video_range_when_audio_starts_later(self):
-        performer = self._make_performer()
-        fake_full_info = {
-            "streams": [
-                {"codec_type": "video", "start_time": "0.000000"},
-                {"codec_type": "audio", "start_time": "0.488000"},
-            ],
-        }
-
-        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info):
-            self.assertEqual(
-                performer._source_audio_trim_range(
-                    "/tmp/source.mov",
-                    video_trim_start_ms=40,
-                    video_trim_end_ms=6673840,
-                ),
-                (40, 6673840),
-            )
-
-    def test_source_audio_trim_range_ignores_aac_sized_start_difference(self):
-        performer = self._make_performer()
-        fake_full_info = {
-            "streams": [
-                {"codec_type": "video", "start_time": "0.500000"},
-                {"codec_type": "audio", "start_time": "0.478000"},
-            ],
-        }
-
-        with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info):
-            self.assertEqual(
-                performer._source_audio_trim_range(
-                    "/tmp/source.mov",
-                    video_trim_start_ms=23,
-                    video_trim_end_ms=62772,
-                ),
-                (23, 62772),
-            )
-
     def test_build_mkvmerge_args_applies_sync_offset(self):
         performer = self._make_performer()
 
@@ -1319,8 +1262,13 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(sync, seg1_start,
                          "Without audio start offset, sync offset should be the raw seg1_start")
 
-    def test_patch_audio_compensates_source_only_aac_padding(self):
-        performer = self._make_performer()
+    def test_patch_audio_source_only_aac_padding_is_build_independent(self):
+        # A source carrying CodecDelay priming (mkv) patched onto a base that does not
+        # (mp4) must land at the same place regardless of whether the local ffmpeg
+        # build exposes AAC priming.  Exposing builds report the source content start
+        # one priming frame late (folded into the sync offset) but the decoded audio is
+        # priming-stripped, so that frame is subtracted back out; absorbing builds never
+        # add it, so nothing is subtracted.  Both conventions must agree.
         pairs = [(22, 3), (62313, 62305)]
         source_dur = 62302
         target_dur = 62291
@@ -1347,21 +1295,24 @@ class MeltPerformerUnitTest(unittest.TestCase):
                  "start_time": "0.500000", "initial_padding": 1024},
             ]}
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = os.path.join(tmpdir, "out.mka")
-            wd = os.path.join(tmpdir, "work")
+        for priming_exposed in (False, True):
+            performer = self._make_performer()
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_path = os.path.join(tmpdir, "out.mka")
+                wd = os.path.join(tmpdir, "work")
 
-            with patch.object(process_utils, 'start_process',
-                              side_effect=lambda t, a, **kw: _FAKE_PROCESS_OK), \
-                 patch.object(process_utils, 'raise_on_error', lambda r: None), \
-                 patch.object(video_utils, 'get_video_duration', side_effect=fake_get_duration), \
-                 patch.object(video_utils, 'get_video_full_info', side_effect=fake_full_info):
-                sync = performer.patch_audio_constant_offset(
-                    wd, "/base.mp4", "/source.mkv", output_path, pairs,
-                    use_silence=True,
-                )
+                with patch.object(process_utils, 'start_process',
+                                  side_effect=lambda t, a, **kw: _FAKE_PROCESS_OK), \
+                     patch.object(process_utils, 'raise_on_error', lambda r: None), \
+                     patch.object(performer, "_aac_priming_exposed", return_value=priming_exposed), \
+                     patch.object(video_utils, 'get_video_duration', side_effect=fake_get_duration), \
+                     patch.object(video_utils, 'get_video_full_info', side_effect=fake_full_info):
+                    sync = performer.patch_audio_constant_offset(
+                        wd, "/base.mp4", "/source.mkv", output_path, pairs,
+                        use_silence=True,
+                    )
 
-        self.assertEqual(sync, 520)
+            self.assertEqual(sync, 519, f"priming_exposed={priming_exposed}")
 
     def test_patch_audio_keeps_sync_when_base_and_source_have_aac_padding(self):
         performer = self._make_performer()
