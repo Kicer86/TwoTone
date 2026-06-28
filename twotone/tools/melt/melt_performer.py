@@ -322,27 +322,17 @@ class MeltPerformer:
         actual_source_dur = video_utils.get_video_duration(trimmed_audio, logger=self.logger)
         expected_scaled_dur = round(actual_source_dur * video_ratio)
 
+        # _patched_audio_start_ms already places the source by its priming-aware
+        # content start: on builds that expose AAC priming _audio_content_start_ms
+        # folds the encoder-delay frame into the offset to match the priming-exposed
+        # decode, and absorbing builds omit it.  That makes the offset correct on both
+        # conventions, so no extra per-container priming correction is applied here.
         sync_offset = self._patched_audio_start_ms(
             source_video,
             seg1_start,
             seg2_start,
             video_ratio,
         )
-        # Undo the encoder-delay priming that _audio_content_start_ms folds into the
-        # sync offset, but only on builds that actually expose AAC priming.  On those
-        # builds the source's reported content start is one priming frame late while
-        # the decoded (priming-stripped) audio is not, so the source-only CodecDelay
-        # must be subtracted back out.  Absorbing builds never add it, so subtracting
-        # here would shift the track one priming frame early.  _aac_priming_exposed()
-        # probes ffmpeg, so it is checked last — only when there is padding to undo.
-        source_padding_ms = self._audio_initial_padding_ms(source_video, logger=self.logger)
-        base_padding_ms = self._audio_initial_padding_ms(base_video, logger=self.logger)
-        if (
-            source_padding_ms > 0
-            and base_padding_ms == 0
-            and self._aac_priming_exposed()
-        ):
-            sync_offset = max(seg1_start, sync_offset - round(source_padding_ms * video_ratio))
         start_correction = sync_offset - seg1_start
         if not use_silence and start_correction > 50:
             raise RuntimeError(
@@ -613,17 +603,6 @@ class MeltPerformer:
         except (TypeError, ValueError):
             sample_rate = 0
         return codec, init_pad, sample_rate, stream
-
-    @classmethod
-    def _audio_initial_padding_ms(
-        cls,
-        video_path: str,
-        logger: logging.Logger | None = None,
-    ) -> int:
-        codec, init_pad, sample_rate, _stream = cls._source_audio_priming(video_path, logger=logger)
-        if codec == "aac" and init_pad > 0 and sample_rate > 0:
-            return round(init_pad * 1000 / sample_rate)
-        return 0
 
     def _audio_starts_just_before_video_adjustment_ms(self, path: str) -> int:
         info = video_utils.get_video_full_info(path)

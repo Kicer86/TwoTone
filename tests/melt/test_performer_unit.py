@@ -1262,13 +1262,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(sync, seg1_start,
                          "Without audio start offset, sync offset should be the raw seg1_start")
 
-    def test_patch_audio_source_only_aac_padding_is_build_independent(self):
-        # A source carrying CodecDelay priming (mkv) patched onto a base that does not
-        # (mp4) must land at the same place regardless of whether the local ffmpeg
-        # build exposes AAC priming.  Exposing builds report the source content start
-        # one priming frame late (folded into the sync offset) but the decoded audio is
-        # priming-stripped, so that frame is subtracted back out; absorbing builds never
-        # add it, so nothing is subtracted.  Both conventions must agree.
+    def test_patch_audio_keeps_priming_aware_source_start(self):
+        # A source carrying CodecDelay priming (mkv) patched onto a base that does
+        # not (mp4) must be placed by its priming-aware content start with no extra
+        # per-container correction.  On builds that expose AAC priming the offset
+        # carries the encoder-delay frame (matching the priming-exposed decode); on
+        # absorbing builds it does not.  The sync offset is therefore build-specific
+        # by design — it must not be "compensated" back, which would shift the track
+        # one priming frame on exposing builds (e.g. Ubuntu's ffmpeg).
         pairs = [(22, 3), (62313, 62305)]
         source_dur = 62302
         target_dur = 62291
@@ -1295,7 +1296,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
                  "start_time": "0.500000", "initial_padding": 1024},
             ]}
 
-        for priming_exposed in (False, True):
+        expected_by_exposure = {False: 519, True: 540}
+        for priming_exposed, expected in expected_by_exposure.items():
             performer = self._make_performer()
             with tempfile.TemporaryDirectory() as tmpdir:
                 output_path = os.path.join(tmpdir, "out.mka")
@@ -1312,7 +1314,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                         use_silence=True,
                     )
 
-            self.assertEqual(sync, 519, f"priming_exposed={priming_exposed}")
+            self.assertEqual(sync, expected, f"priming_exposed={priming_exposed}")
 
     def test_patch_audio_keeps_sync_when_base_and_source_have_aac_padding(self):
         performer = self._make_performer()
