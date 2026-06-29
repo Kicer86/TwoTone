@@ -175,6 +175,7 @@ class AudioAlignmentTest(TwoToneTestCase):
             "mkv",
             cls._generate_canonical_video,
         ))
+
         cls.variant_paths = {
             spec.name: str(file_cache.get_or_generate(
                 f"audio_align_{spec.name}",
@@ -184,6 +185,7 @@ class AudioAlignmentTest(TwoToneTestCase):
             ))
             for spec in VARIANTS
         }
+
         cls.frame_reference_variant_paths = {
             spec.name: str(file_cache.get_or_generate(
                 f"audio_align_frame_reference_{spec.name}",
@@ -193,6 +195,7 @@ class AudioAlignmentTest(TwoToneTestCase):
             ))
             for spec in FRAME_DRIFT_VARIANTS
         }
+
         cls.frame_drift_variant_paths = {
             spec.name: str(file_cache.get_or_generate(
                 f"audio_align_frame_drift_{spec.name}",
@@ -202,6 +205,7 @@ class AudioAlignmentTest(TwoToneTestCase):
             ))
             for spec in FRAME_DRIFT_VARIANTS
         }
+
         cache_dir = Path(file_cache.base_dir) / "audio_alignment_melt_cache"
         cls.melt_cache = MeltCache(str(cache_dir), cls.logger.getChild("MeltCache"))
 
