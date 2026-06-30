@@ -838,6 +838,11 @@ class PairMatcher:
             lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames, debug,
         )
 
+        # Diagnostic summary of the frame-space relationship.  Logged at INFO so
+        # the chosen relation (and the audio strategy that follows) can be
+        # understood without enabling --verbose.
+        self._log_relation_diagnostics(matching_pairs)
+
         # Try the frame-space shortcut first.  A single global linear map
         # (constant offset = slope 1, or a fitted near-identity drift)
         # extrapolates boundaries directly from reliable scene matches and skips
@@ -873,6 +878,60 @@ class PairMatcher:
             lhs_all_frames=self.lhs_all_frames,
             rhs_all_frames=self.rhs_all_frames,
             relation=relation,
+        )
+
+    def _log_relation_diagnostics(self, matching_pairs: list[tuple[int, int]]) -> None:
+        """Log the frame-space metrics that drive the mapping-relation choice.
+
+        Emitted at INFO so the constant-offset / linear-drift / generic decision
+        (and the audio strategy that follows from it) is visible without
+        --verbose.  The individual ``try_*`` methods still log their precise
+        rejection reasons at DEBUG.
+        """
+        expected_ratio = self.rhs_fps / self.lhs_fps if self.lhs_fps else float("nan")
+        self.logger.info(
+            "Relation diagnostics: %s fps=%.4f, %s fps=%.4f, "
+            "expected lhs/rhs time ratio=%.4f, matched pairs=%d",
+            self.lhs_label, self.lhs_fps, self.rhs_label, self.rhs_fps,
+            expected_ratio, len(matching_pairs),
+        )
+
+        if len(matching_pairs) < 2:
+            self.logger.info("  too few matched pairs for offset/drift analysis")
+            return
+
+        try:
+            lhs_frame_ids = np.array(
+                [int(self.lhs_all_frames[l]["frame_id"]) for l, _ in matching_pairs],
+                dtype=float,
+            )
+            rhs_frame_ids = np.array(
+                [int(self.rhs_all_frames[r]["frame_id"]) for _, r in matching_pairs],
+                dtype=float,
+            )
+        except KeyError:
+            self.logger.info("  matched frames lack frame_id; skipping offset/drift analysis")
+            return
+
+        frame_offsets = lhs_frame_ids - rhs_frame_ids
+        median_offset = float(np.median(frame_offsets))
+        std_offset = float(np.std(frame_offsets))
+        lhs_span = float(np.ptp(lhs_frame_ids))
+        ratio = PairMatcher.calculate_ratio(matching_pairs)
+
+        if lhs_span > 0:
+            slope = float(np.polyfit(lhs_frame_ids, rhs_frame_ids, 1)[0])
+        else:
+            slope = float("nan")
+        time_scale = slope * self.lhs_fps / self.rhs_fps if self.rhs_fps else float("nan")
+
+        self.logger.info(
+            "  frame-offset median=%.2f std=%.2f (constant offset needs std<=1.0, "
+            "else RANSAC drift with slope within 0.05 of 1.0); "
+            "matched frame span=%.0f; observed time ratio=%.4f; "
+            "frame slope=%.5f -> audio time scale=%.5f (audio is globally "
+            "time-scaled by this factor)",
+            median_offset, std_offset, lhs_span, ratio, slope, time_scale,
         )
 
     def _normalize_frames(self, frames_info: FramesInfo, wd: str, desc: str = "Normalizing frames", prefix: str = "") -> FramesInfo:
