@@ -292,7 +292,7 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertFalse(result["full_coverage"])
 
-    # ---- try_constant_offset_extrapolation ----
+    # ---- try_global_linear_mapping ----
 
     def test_constant_offset_detected_and_extrapolated(self):
         """When all pairs share a constant frame-number offset, boundaries are extrapolated."""
@@ -311,7 +311,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         # k=3: first_lhs_frame=3 → ts=120, first_rhs_frame=0 → ts=0
@@ -335,7 +335,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
         with self.assertLogs("test.PairMatcher", level="DEBUG") as captured:
-            pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+            pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
         debug_messages = [
             record.getMessage() for record in captured.records
@@ -380,7 +380,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         # k=-3: first_lhs_frame=0 → ts=0, first_rhs_frame=3 → ts=120
@@ -404,7 +404,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         self.assertEqual(result[0], (0, 0))
@@ -425,7 +425,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNone(result)
 
@@ -445,12 +445,12 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNone(result)
 
     def test_linear_frame_drift_extrapolates_boundaries(self):
-        """Slight linear frame drift should extrapolate common boundaries."""
+        """Slight linear frame drift extrapolates common boundaries via the line."""
         pm = self._make_pair_matcher(lhs_fps=24.0, rhs_fps=23.0)
 
         # RHS has 23 frames for each 24 LHS frames while preserving playback
@@ -466,14 +466,14 @@ class PairMatcherUnitTest(unittest.TestCase):
             for lhs_id in matching_frame_ids
         ]
 
-        result = pm.try_linear_frame_drift_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         self.assertEqual(result[0], (0, 0))
         self.assertEqual(result[-1], (400000, 383360))
 
-    def test_linear_frame_drift_rejects_time_scale_change(self):
-        """Frame slope alone is not enough when FPS implies a real speed change."""
+    def test_global_linear_accepts_time_scaled_drift(self):
+        """A near-identity frame slope with an FPS speed change is still accepted."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=26.5)
 
         lhs_keys = list(range(0, 10001 * 40, 40))
@@ -487,9 +487,12 @@ class PairMatcherUnitTest(unittest.TestCase):
             for lhs_id in matching_frame_ids
         ]
 
-        result = pm.try_linear_frame_drift_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
-        self.assertIsNone(result)
+        # The frame slope is near-identity, so the mapping is accepted; the audio
+        # is globally time-scaled downstream.  Boundaries extrapolate to the edges.
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], (0, 0))
 
     def test_linear_frame_drift_rejects_extreme_slope_delta(self):
         """Extreme frame-count conversion should not use linear-drift extrapolation."""
@@ -506,7 +509,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             for lhs_id in matching_frame_ids
         ]
 
-        result = pm.try_linear_frame_drift_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNone(result)
 
@@ -521,7 +524,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNone(result)
 
@@ -538,7 +541,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             (50480, 50480),
         ]
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         self.assertEqual(result[0], (480, 480))
@@ -560,7 +563,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         # Median frame offset is 3 → first=(120, 0), last=(10000, 9880)
@@ -583,7 +586,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         # k=3: first_lhs_frame=3 → ts=150, first_rhs_frame=0 → ts=0
@@ -606,15 +609,15 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
         rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        result = pm.try_global_linear_mapping(matching_pairs, lhs_frames, rhs_frames)
 
         self.assertIsNotNone(result)
         # First pair already matches extrapolated boundary → no duplicate
         self.assertEqual(result[0], (120, 0))
         self.assertEqual(len([p for p in result if p == (120, 0)]), 1)
 
-    def test_create_segments_mapping_skips_edge_snap_after_constant_offset(self):
-        """Constant-offset extrapolation should bypass timestamp-based edge snapping."""
+    def test_create_segments_mapping_skips_edge_snap_after_global_linear(self):
+        """Global-linear extrapolation should bypass timestamp-based edge snapping."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
         pm.lhs_all_wd = "/tmp/lhs_all"
         pm.rhs_all_wd = "/tmp/rhs_all"
@@ -650,7 +653,7 @@ class PairMatcherUnitTest(unittest.TestCase):
              patch('twotone.tools.melt.pair_matcher.DebugRoutines') as debug_cls, \
              patch.object(PairMatcher, '_normalize_frames', side_effect=fake_normalize), \
              patch.object(PairMatcher, '_make_pairs', return_value=[(40, 40)]), \
-             patch.object(PairMatcher, 'try_constant_offset_extrapolation', return_value=extrapolated_pairs), \
+             patch.object(PairMatcher, 'try_global_linear_mapping', return_value=extrapolated_pairs), \
              patch.object(PairMatcher, 'snap_to_edges', side_effect=AssertionError("snap_to_edges should not be called")):
 
             debug = debug_cls.return_value
@@ -659,7 +662,7 @@ class PairMatcherUnitTest(unittest.TestCase):
 
             result = pm.create_segments_mapping()
 
-        self.assertEqual(result.relation, MappingRelation.CONSTANT_FRAME_OFFSET)
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
         self.assertEqual(result.mapping, extrapolated_pairs)
 
     # ---- _look_for_boundaries: look_ahead robustness ----
