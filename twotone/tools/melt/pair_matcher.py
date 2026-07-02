@@ -35,9 +35,11 @@ class GlobalLinearFit(NamedTuple):
     """A detected global linear frame relation ``rhs_frame ~= slope*lhs + intercept``.
 
     ``is_constant_offset`` is True for the ``slope == 1`` special case.
-    ``time_scale = slope*lhs_fps/rhs_fps`` is the precise audio stretch factor
-    (rhs_ms/lhs_ms) derived from the fit over *all* matched pairs — more accurate
-    than a two-endpoint span ratio, so it is what the audio patch should use.
+    ``time_scale = slope*lhs_fps/rhs_fps`` is the *nominal-fps* stretch factor,
+    used only for plausibility checks and logging.  It must NOT be used to
+    scale audio: when the declared fps differs from the real timestamp ratio it
+    drifts audibly (~1.2 s across a film).  Audio scaling uses the matched-span
+    timestamp ratio instead (see ``MeltPerformer.patch_audio_constant_offset``).
     """
     slope: float
     intercept: float
