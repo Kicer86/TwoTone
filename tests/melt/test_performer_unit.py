@@ -806,7 +806,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                     "/tmp/source.mov",
                     seg1_start=510,
                     seg2_start=0,
-                    video_ratio=1.0,
+                    base_per_source=1.0,
                 ),
                 978,
             )
@@ -815,7 +815,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                     "/tmp/source.mov",
                     seg1_start=510,
                     seg2_start=490,
-                    video_ratio=1.0,
+                    base_per_source=1.0,
                 ),
                 510,
             )
@@ -836,7 +836,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                     "/tmp/source.mov",
                     seg1_start=0,
                     seg2_start=21,
-                    video_ratio=1.015,
+                    base_per_source=1.015,
                 ),
                 499,
             )
@@ -862,7 +862,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                     "/tmp/source.mkv",
                     seg1_start=22,
                     seg2_start=3,
-                    video_ratio=1.0,
+                    base_per_source=1.0,
                 ),
                 519,
             )

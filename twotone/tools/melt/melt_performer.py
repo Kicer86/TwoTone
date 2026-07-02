@@ -291,20 +291,23 @@ class MeltPerformer(TrackTimelineMixin):
         has_head = seg1_start > 0 and not use_silence
         has_tail = seg1_end < base_duration_ms and not use_silence
 
-        # Video-frame ratio (true fps relationship, independent of audio track).
-        # Both spans come from matched video frames, so the ratio captures only the
-        # real playback-rate relationship.  It must not be skewed by where the audio
-        # stream happens to start relative to its video, otherwise a constant-offset
-        # source whose audio merely leads its video gets a spurious global time-scale.
-        source_dur = seg2_end - seg2_start
-        target_dur = seg1_end - seg1_start
-        video_ratio = target_dur / source_dur if source_dur else 1.0
-        fps_ratio = source_dur / target_dur if target_dur else 1.0
-        needs_scaling = self._needs_fps_scaling(fps_ratio)
+        # Time-scale from matched video-frame spans (true playback-rate
+        # relationship, independent of audio track).  It must not be skewed by
+        # where the audio stream happens to start relative to its video,
+        # otherwise a constant-offset source whose audio merely leads its video
+        # gets a spurious global time-scale.
+        #
+        # Naming convention: ``x_per_y`` = x-timeline duration / y-timeline
+        # duration; multiplying a y-timeline duration by it yields x-timeline.
+        base_span_ms = seg1_end - seg1_start
+        source_span_ms = seg2_end - seg2_start
+        base_per_source = base_span_ms / source_span_ms if source_span_ms else 1.0
+        source_per_base = source_span_ms / base_span_ms if base_span_ms else 1.0
+        needs_scaling = self._needs_fps_scaling(source_per_base)
 
         self.logger.info(
-            "Audio patch (constant-offset): base=[%d…%d] ms, source=[%d…%d] ms, fps_ratio=%.4f",
-            seg1_start, seg1_end, seg2_start, seg2_end, fps_ratio,
+            "Audio patch (constant-offset): base=[%d…%d] ms, source=[%d…%d] ms, source/base span ratio=%.4f",
+            seg1_start, seg1_end, seg2_start, seg2_end, source_per_base,
         )
 
         head_path = os.path.join(wd, "head.flac")
@@ -344,7 +347,7 @@ class MeltPerformer(TrackTimelineMixin):
         )
 
         actual_source_dur = video_utils.get_video_duration(trimmed_audio, logger=self.logger)
-        expected_scaled_dur = round(actual_source_dur * video_ratio)
+        expected_scaled_dur = round(actual_source_dur * base_per_source)
 
         # The priming-aware content start (see track_timeline) already makes
         # this offset correct on both ffmpeg priming conventions.
@@ -352,7 +355,7 @@ class MeltPerformer(TrackTimelineMixin):
             source_video,
             seg1_start,
             seg2_start,
-            video_ratio,
+            base_per_source,
         )
         start_correction = sync_offset - seg1_start
         if not use_silence and start_correction > 50:
@@ -364,13 +367,13 @@ class MeltPerformer(TrackTimelineMixin):
                 f"the base file. Use default (silence) mode instead."
             )
 
-        # Scale with VIDEO-frame ratio (true fps relationship)
+        # Scale with the video-frame span ratio (true playback-rate relationship)
         scaled_audio = os.path.join(wd, "source_scaled.flac")
         if not needs_scaling:
             scaled_audio = trimmed_audio
         else:
             sample_rate = source_params[1]
-            adjusted_rate = sample_rate * fps_ratio
+            adjusted_rate = sample_rate * source_per_base
             process_utils.raise_on_error(
                 process_utils.start_process("ffmpeg", [
                     "-y", "-i", trimmed_audio,
@@ -612,9 +615,24 @@ class MeltPerformer(TrackTimelineMixin):
         source_video: str,
         seg1_start: int,
         seg2_start: int,
-        video_ratio: float,
+        base_per_source: float,
     ) -> int:
-        """Return timeline start for a decoded source-audio trim."""
+        """Return timeline start for a decoded source-audio trim.
+
+        The trim window starts at ``seg2_start`` on the source content
+        timeline, but the decoded audio may actually begin later than that:
+
+        - when the source audio stream starts after its video (and after the
+          window start), the first ``audio_start - seg2_start`` of the window
+          simply do not exist in the decode, or
+        - when the whole container starts at a positive offset, the decode is
+          shifted relative to the mapped video frames.
+
+        Each case yields a lower bound on how far past ``seg1_start`` the
+        decoded samples really begin (both estimate the same physical gap from
+        different metadata), so the larger bound wins and is added to the sync
+        offset.
+        """
         info = video_utils.get_video_full_info(source_video)
         video_stream = next((s for s in info["streams"] if s.get("codec_type") == "video"), None)
         audio_stream = next((s for s in info["streams"] if s.get("codec_type") == "audio"), None)
@@ -623,7 +641,7 @@ class MeltPerformer(TrackTimelineMixin):
 
         audio_start_correction = 0
         if audio_start_ms > video_start_ms and audio_start_ms > seg2_start:
-            audio_start_correction = round((audio_start_ms - seg2_start) * video_ratio)
+            audio_start_correction = round((audio_start_ms - seg2_start) * base_per_source)
 
         try:
             container_start = float(info.get("format", {}).get("start_time") or 0.0)
@@ -633,7 +651,7 @@ class MeltPerformer(TrackTimelineMixin):
         positive_timeline_correction = 0
         timeline_start_ms = max(video_start_ms, audio_start_ms)
         if container_start > 0 and timeline_start_ms > seg2_start:
-            positive_timeline_correction = max(0, round(timeline_start_ms * video_ratio) - seg1_start)
+            positive_timeline_correction = max(0, round(timeline_start_ms * base_per_source) - seg1_start)
 
         correction = max(audio_start_correction, positive_timeline_correction)
         if correction > 50:
@@ -887,9 +905,9 @@ class MeltPerformer(TrackTimelineMixin):
         for idx, (l_start, l_end, r_start, r_end) in enumerate(cleaned_pairs):
             left_duration = l_end - l_start
             right_duration = r_end - r_start
-            ratio = right_duration / left_duration if left_duration else 1.0
+            source_per_base = right_duration / left_duration if left_duration else 1.0
 
-            if abs(ratio - 1.0) > 0.10:
+            if abs(source_per_base - 1.0) > 0.10:
                 self.logger.error("Segment %d duration mismatch exceeds 10%%", idx)
 
             raw_cut = os.path.join(wd, f"cut_{idx}.flac")
@@ -914,7 +932,7 @@ class MeltPerformer(TrackTimelineMixin):
                     "ffmpeg", [
                         "-y",
                         "-i", raw_cut,
-                        "-filter:a", f"atempo={ratio:.3f}",
+                        "-filter:a", f"atempo={source_per_base:.3f}",
                         "-sample_fmt", "s32", "-c:a", "flac",
                         scaled_cut,
                     ],
@@ -1090,8 +1108,8 @@ class MeltPerformer(TrackTimelineMixin):
 
         seg_raw = self._segment_range(mapping)
         raw_source_span = seg_raw.rhs_end - seg_raw.rhs_start
-        raw_target_span = seg_raw.lhs_end - seg_raw.lhs_start
-        raw_fps_ratio = raw_source_span / raw_target_span if raw_target_span else 1.0
+        raw_base_span = seg_raw.lhs_end - seg_raw.lhs_start
+        raw_source_per_base = raw_source_span / raw_base_span if raw_base_span else 1.0
         frame_rate_only_drift = self._is_frame_rate_only_drift_mapping(
             video_path_base,
             audio_path,
@@ -1105,7 +1123,7 @@ class MeltPerformer(TrackTimelineMixin):
         if relation == MappingRelation.GLOBAL_LINEAR:
             # Scale only when the span ratio is a real speed change and not
             # merely a same-speed frame-rate conversion.
-            needs_scaling = self._needs_fps_scaling(raw_fps_ratio) and not frame_rate_only_drift
+            needs_scaling = self._needs_fps_scaling(raw_source_per_base) and not frame_rate_only_drift
             if not needs_scaling:
                 return _AudioStrategy.PASSTHROUGH, mapping
             return _AudioStrategy.GLOBAL_TIME_SCALE, self._strict_audio_mapping(mapping)
