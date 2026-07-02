@@ -55,6 +55,12 @@ class SegmentsMappingResult(NamedTuple):
 class PairMatcher:
 
     _MAX_BOUNDARY_ERROR_FRAMES = 2
+    # Minimum phash distance treated as "still the same frame".  The adaptive
+    # cutoff (median + 2*std of the matched pairs) collapses to 0 when the
+    # surviving matches are pixel-perfect; without a floor, any check keyed on it
+    # would then demand pixel-perfect frames — impossible across a speed or
+    # resolution difference — so it is floored to this value.
+    _MIN_PHASH_CUTOFF = 16
 
     def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2", cache: MeltCache | None = None) -> None:
         self.interruption = interruption
@@ -311,7 +317,7 @@ class PairMatcher:
         # Ensure cutoff is not absurdly tight — with few calibration pairs or
         # cropped frames the computed cutoff can be as low as 4, which makes the
         # search unable to extend even a single frame.
-        cutoff = max(cutoff, 16)
+        cutoff = max(cutoff, self._MIN_PHASH_CUTOFF)
 
         # --- Fast edge pre-check ---
         # Before the iterative search, check whether both videos share content
@@ -1498,7 +1504,16 @@ class PairMatcher:
         ]
         self.logger.debug(f"After ORB elimination:     {PairMatcher.summarize_pairs(self.phash, orb_filtered, lhs_all, rhs_all)}")
 
-        cutoff = self._calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
+        # The adaptive cutoff (median + 2*std) collapses to ~0 only when the
+        # surviving matches are pixel-perfect (identical content — e.g. re-muxed
+        # or container-offset variants of the same source).  In that degenerate
+        # case the temporal-consistency check below would demand pixel-perfect
+        # *neighbours* too — impossible across a speed/resolution difference — and
+        # would collapse a dozen good matches to one, dropping the pair into the
+        # GENERIC path.  Floor it there only; a normal (degraded) cutoff is left
+        # untouched so genuine mismatches stay rejected.
+        raw_cutoff = self._calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
+        cutoff = self._MIN_PHASH_CUTOFF if raw_cutoff < 1.0 else raw_cutoff
         final = [pair for pair in orb_filtered if self._check_history(pair, lhs_all, rhs_all, cutoff)]
         self.logger.debug(f"After history analysis:    {PairMatcher.summarize_pairs(self.phash, final, lhs_all, rhs_all)}")
 
