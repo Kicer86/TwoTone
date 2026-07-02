@@ -1,3 +1,4 @@
+import enum
 import logging
 import os
 import shutil
@@ -36,6 +37,19 @@ class _StreamEntry(NamedTuple):
     path: str
     language: str | None
     sync_offset_ms: int | None = None
+
+
+class _AudioStrategy(enum.Enum):
+    """How a mismatched source audio track is fitted to the base video."""
+
+    # No time-scale needed — keep the source audio exact (a single decode →
+    # encode pass) and position it by its content start via mkvmerge --sync.
+    PASSTHROUGH = "drift_passthrough"
+    # A real playback-speed difference with a global linear relation — trim
+    # and time-scale the whole track once (the constant-offset patcher).
+    GLOBAL_TIME_SCALE = "constant_offset"
+    # No clean global relation — patch per-scene subsegments with atempo.
+    SUBSEGMENT = "subsegment"
 
 
 class _PatchedAudio(NamedTuple):
@@ -1156,43 +1170,17 @@ class MeltPerformer:
                     lhs_id, rhs_id,
                 )
 
-            mapping = match_result.mapping
             lhs_all_frames = match_result.lhs_all_frames
             rhs_all_frames = match_result.rhs_all_frames
             mapping_relation = match_result.mapping_relation
             duration = match_result.source_duration
 
-            # The source audio is passed through unchanged when no global
-            # time-scale is needed: a same-speed global-linear relation (a
-            # constant offset, or a frame-rate conversion that preserves playback
-            # time — different fps but same speed), or a generic match that is a
-            # pure frame-rate drift.  Only a genuine playback-speed difference
-            # (e.g. a 25 fps PAL transfer vs 24 fps) is time-scaled.  Passthrough
-            # is exact and avoids a re-encode that could shift it by one frame.
-            seg_raw = self._segment_range(mapping)
-            raw_source_span = seg_raw.rhs_end - seg_raw.rhs_start
-            raw_target_span = seg_raw.lhs_end - seg_raw.lhs_start
-            raw_fps_ratio = raw_source_span / raw_target_span if raw_target_span else 1.0
-            frame_rate_only_drift = self._is_frame_rate_only_drift_mapping(
-                video_path_base,
-                audio_path,
-                mapping,
-                lhs_all_frames,
-                rhs_all_frames,
-                match_result.lhs_fps,
-                match_result.rhs_fps,
+            strategy, mapping = self._choose_audio_strategy(
+                video_path_base, audio_path, match_result,
             )
-            # Scale only when the span ratio is a real speed change and not merely
-            # a same-speed frame-rate conversion.
-            global_linear_needs_scaling = (
-                self._needs_fps_scaling(raw_fps_ratio) and not frame_rate_only_drift
-            )
+            self.logger.info("  Audio strategy: %s", strategy.value)
 
-            if (
-                (mapping_relation == MappingRelation.GLOBAL_LINEAR and not global_linear_needs_scaling)
-                or (mapping_relation == MappingRelation.GENERIC and frame_rate_only_drift)
-            ):
-                self.logger.info("  Audio strategy: drift_passthrough")
+            if strategy == _AudioStrategy.PASSTHROUGH:
                 desired_start_ms = self._audio_content_start_ms(
                     self._stream_info(audio_path, "audio", stream_index)
                 )
@@ -1204,40 +1192,6 @@ class MeltPerformer:
                 )
                 self.logger.info("  Desired audio start: %d ms", desired_start_ms)
                 return _PatchedAudio(patched_audio, patched_index, desired_start_ms)
-
-            mapping = self._strict_audio_mapping(mapping)
-
-            # Generic matches may still describe a clean global time-scale (e.g. a
-            # true 25 fps <-> 23 fps frame-rate conversion where the slope is too
-            # far from 1 for the frame-space shortcut).  Recover a 2-point linear
-            # audio mapping so the per-scene subsegment patcher scales correctly.
-            if mapping_relation == MappingRelation.GENERIC:
-                extrapolated_mapping = self._try_effective_fps_audio_mapping(
-                    video_path_base,
-                    audio_path,
-                    mapping,
-                    lhs_all_frames,
-                    rhs_all_frames,
-                    match_result.lhs_fps,
-                    match_result.rhs_fps,
-                )
-                if extrapolated_mapping is None:
-                    extrapolated_mapping = self._try_sparse_linear_audio_extrapolation(
-                        mapping,
-                        lhs_all_frames,
-                        rhs_all_frames,
-                        match_result.lhs_fps,
-                        match_result.rhs_fps,
-                    )
-                if extrapolated_mapping is not None:
-                    mapping = extrapolated_mapping
-                    self.logger.info(
-                        "  Sparse linear audio extrapolation: using %s-%s ↔ %s-%s",
-                        generic_utils.ms_to_time(mapping[0][0]),
-                        generic_utils.ms_to_time(mapping[-1][0]),
-                        generic_utils.ms_to_time(mapping[0][1]),
-                        generic_utils.ms_to_time(mapping[-1][1]),
-                    )
 
             self._log_coverage(
                 video_path_base,
@@ -1264,13 +1218,9 @@ class MeltPerformer:
                 )
 
             use_silence = not self.fill_audio_gaps
-            # Global linear with a real speed change → one global time-scale.
-            # Generic matches fall back to per-scene subsegments.
-            use_constant_offset = mapping_relation == MappingRelation.GLOBAL_LINEAR
-            self.logger.info("  Audio strategy: %s", "constant_offset" if use_constant_offset else "subsegment")
 
             patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
-            if use_constant_offset:
+            if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
                 timeline_start_ms = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
             else:
                 timeline_start_ms = self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames, use_silence=use_silence)
@@ -1282,6 +1232,94 @@ class MeltPerformer:
         # Gaps were filled from the base audio — the track embeds its own
         # alignment and must be muxed without repositioning.
         return _PatchedAudio(patched_audio, 0, None)
+
+    def _choose_audio_strategy(
+        self,
+        video_path_base: str,
+        audio_path: str,
+        match_result: "_PairMatchResult",
+    ) -> tuple[_AudioStrategy, list[tuple[int, int]]]:
+        """Pick the strategy for fitting the source audio to the base video.
+
+        Decision table (mapping relation × observed drift):
+
+        - GLOBAL_LINEAR, same speed          → PASSTHROUGH
+        - GLOBAL_LINEAR, real speed change   → GLOBAL_TIME_SCALE
+        - GENERIC, pure frame-rate drift     → PASSTHROUGH
+        - GENERIC otherwise                  → SUBSEGMENT
+
+        Passthrough applies when no global time-scale is needed: a same-speed
+        global-linear relation (a constant offset, or a frame-rate conversion
+        that preserves playback time — different fps but same speed), or a
+        generic match that is a pure frame-rate drift.  Only a genuine
+        playback-speed difference (e.g. a 25 fps PAL transfer vs 24 fps) is
+        time-scaled.  Passthrough is exact and avoids a re-encode that could
+        shift the track by one frame.
+
+        Returns ``(strategy, mapping)`` where *mapping* is the audio mapping
+        the strategy must be applied with.  For SUBSEGMENT the mapping may be
+        upgraded to a recovered 2-point linear one: generic matches can still
+        describe a clean global time-scale (e.g. a true 25 fps <-> 23 fps
+        frame-rate conversion where the slope is too far from 1 for the
+        frame-space shortcut), which makes the subsegment patcher scale
+        correctly.
+        """
+        mapping = match_result.mapping
+        relation = match_result.mapping_relation
+
+        seg_raw = self._segment_range(mapping)
+        raw_source_span = seg_raw.rhs_end - seg_raw.rhs_start
+        raw_target_span = seg_raw.lhs_end - seg_raw.lhs_start
+        raw_fps_ratio = raw_source_span / raw_target_span if raw_target_span else 1.0
+        frame_rate_only_drift = self._is_frame_rate_only_drift_mapping(
+            video_path_base,
+            audio_path,
+            mapping,
+            match_result.lhs_all_frames,
+            match_result.rhs_all_frames,
+            match_result.lhs_fps,
+            match_result.rhs_fps,
+        )
+
+        if relation == MappingRelation.GLOBAL_LINEAR:
+            # Scale only when the span ratio is a real speed change and not
+            # merely a same-speed frame-rate conversion.
+            needs_scaling = self._needs_fps_scaling(raw_fps_ratio) and not frame_rate_only_drift
+            if not needs_scaling:
+                return _AudioStrategy.PASSTHROUGH, mapping
+            return _AudioStrategy.GLOBAL_TIME_SCALE, self._strict_audio_mapping(mapping)
+
+        if frame_rate_only_drift:
+            return _AudioStrategy.PASSTHROUGH, mapping
+
+        mapping = self._strict_audio_mapping(mapping)
+        recovered_mapping = self._try_effective_fps_audio_mapping(
+            video_path_base,
+            audio_path,
+            mapping,
+            match_result.lhs_all_frames,
+            match_result.rhs_all_frames,
+            match_result.lhs_fps,
+            match_result.rhs_fps,
+        )
+        if recovered_mapping is None:
+            recovered_mapping = self._try_sparse_linear_audio_extrapolation(
+                mapping,
+                match_result.lhs_all_frames,
+                match_result.rhs_all_frames,
+                match_result.lhs_fps,
+                match_result.rhs_fps,
+            )
+        if recovered_mapping is not None:
+            mapping = recovered_mapping
+            self.logger.info(
+                "  Sparse linear audio extrapolation: using %s-%s ↔ %s-%s",
+                generic_utils.ms_to_time(mapping[0][0]),
+                generic_utils.ms_to_time(mapping[-1][0]),
+                generic_utils.ms_to_time(mapping[0][1]),
+                generic_utils.ms_to_time(mapping[-1][1]),
+            )
+        return _AudioStrategy.SUBSEGMENT, mapping
 
     @staticmethod
     def _strict_audio_mapping(mapping: list[tuple[int, int]]) -> list[tuple[int, int]]:
