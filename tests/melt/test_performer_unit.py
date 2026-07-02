@@ -309,7 +309,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
     def _collect_ffmpeg_calls(self, performer, segment_pairs, base_duration_ms,
                                source_sample_rate=48000, source_channels=2, source_sample_fmt="s16",
                                source_channel_layout=None,
-                               use_silence=False):
+                               fill_gaps_from_base=True):
         """Run patch_audio_constant_offset with mocked externals and return captured ffmpeg calls."""
         calls = []
 
@@ -344,7 +344,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                  patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
                 performer.patch_audio_constant_offset(
                     wd, "/base.mkv", "/source.mkv", output_path, segment_pairs,
-                    use_silence=use_silence,
+                    fill_gaps_from_base=fill_gaps_from_base,
                 )
 
         return calls
@@ -758,14 +758,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
         aformat_args = [a for a in args if isinstance(a, str) and "aformat" in a]
         self.assertEqual(aformat_args, [], "aformat should not be used when layout is unknown")
 
-    # ---- silence mode (use_silence=True) ----
+    # ---- silence mode (fill_gaps_from_base=False) ----
 
     def test_silence_mode_skips_head_and_tail(self):
-        """With use_silence=True, no head/tail extraction or generation should occur."""
+        """With fill_gaps_from_base=False, no head/tail extraction or generation should occur."""
         performer = self._make_performer()
         # Matching region: 2000..8000 in base (10s total) → would have head and tail
         pairs = [(2000, 1000), (8000, 7000)]
-        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=10000, use_silence=True)
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=10000, fill_gaps_from_base=False)
 
         ffmpeg_args_strs = [" ".join(str(a) for a in c[1]) for c in calls if c[0] == "ffmpeg"]
 
@@ -778,10 +778,10 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(base_extract_calls, [], "Silence mode should not read from base video")
 
     def test_silence_mode_reencodes_when_no_scaling(self):
-        """With use_silence=True and ratio ≈ 1.0, audio is still decoded for stable timing."""
+        """With fill_gaps_from_base=False and ratio ≈ 1.0, audio is still decoded for stable timing."""
         performer = self._make_performer()
         pairs = [(0, 500), (4000, 4500)]
-        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=6000, use_silence=True)
+        calls = self._collect_ffmpeg_calls(performer, pairs, base_duration_ms=6000, fill_gaps_from_base=False)
 
         ffmpeg_calls = [c[1] for c in calls if c[0] == "ffmpeg"]
         trim_call = next(a for a in ffmpeg_calls if "source_trimmed" in str(a))
@@ -1190,7 +1190,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                  patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
                 returned_sync_offset = performer.patch_audio_constant_offset(
                     wd, "/base.mkv", "/source.avi", output_path, pairs,
-                    use_silence=True,
+                    fill_gaps_from_base=False,
                 )
 
         expected_correction = round(start_gap_ms * video_ratio)
@@ -1224,9 +1224,9 @@ class MeltPerformerUnitTest(unittest.TestCase):
         )
         self.assertIn("asetpts=PTS-STARTPTS", trim_filter)
 
-        # --- No head/tail extraction (use_silence=True) ---
+        # --- No head/tail extraction (fill_gaps_from_base=False) ---
         head_tail_calls = [c for c in calls if any("head" in str(a) or "tail" in str(a) for a in c[1])]
-        self.assertEqual(head_tail_calls, [], "use_silence=True should skip head/tail")
+        self.assertEqual(head_tail_calls, [], "fill_gaps_from_base=False should skip head/tail")
 
     def test_patch_audio_no_start_offset_keeps_original_sync_offset(self):
         """When the audio track has no start offset, sync offset equals seg1_start."""
@@ -1256,7 +1256,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                  patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
                 sync = performer.patch_audio_constant_offset(
                     wd, "/base.mkv", "/source.mkv", output_path, pairs,
-                    use_silence=True,
+                    fill_gaps_from_base=False,
                 )
 
         self.assertEqual(sync, seg1_start,
@@ -1311,7 +1311,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                      patch.object(video_utils, 'get_video_full_info', side_effect=fake_full_info):
                     sync = performer.patch_audio_constant_offset(
                         wd, "/base.mp4", "/source.mkv", output_path, pairs,
-                        use_silence=True,
+                        fill_gaps_from_base=False,
                     )
 
             self.assertEqual(sync, expected, f"priming_exposed={priming_exposed}")
@@ -1348,7 +1348,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                  patch.object(video_utils, 'get_video_full_info', side_effect=fake_full_info):
                 sync = performer.patch_audio_constant_offset(
                     wd, "/base.mkv", "/source.mkv", output_path, pairs,
-                    use_silence=True,
+                    fill_gaps_from_base=False,
                 )
 
         self.assertEqual(sync, 500)
@@ -1383,7 +1383,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                  patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
                 sync = performer.patch_audio_constant_offset(
                     wd, "/base.mkv", "/source.mkv", output_path, pairs,
-                    use_silence=True,
+                    fill_gaps_from_base=False,
                 )
 
         self.assertEqual(sync, 500)
@@ -1418,7 +1418,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                  patch.object(video_utils, 'get_video_full_info', return_value=fake_full_info):
                 sync = performer.patch_audio_constant_offset(
                     wd, "/base.mkv", "/source.mkv", output_path, pairs,
-                    use_silence=True,
+                    fill_gaps_from_base=False,
                 )
 
         self.assertEqual(sync, 500)
@@ -1455,7 +1455,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError, msg="Should raise on start offset in fill-audio-gaps mode") as ctx:
                     performer.patch_audio_constant_offset(
                         wd, "/base.mkv", "/source.avi", output_path, pairs,
-                        use_silence=False,
+                        fill_gaps_from_base=True,
                     )
                 self.assertIn("fill-audio-gaps", str(ctx.exception))
                 expected_correction = round(

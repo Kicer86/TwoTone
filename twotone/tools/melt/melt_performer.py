@@ -262,7 +262,7 @@ class MeltPerformer(TrackTimelineMixin):
         output_path: str,
         segment_pairs: list[tuple[int, int]],
         *,
-        use_silence: bool = False,
+        fill_gaps_from_base: bool = True,
     ) -> int:
         """Replace audio using a single global time-scale for constant-offset cases.
 
@@ -270,8 +270,9 @@ class MeltPerformer(TrackTimelineMixin):
         this trims and time-scales the source audio directly from the video file,
         avoiding full audio extraction.
 
-        When *use_silence* is True, head/tail gaps are skipped entirely — the
-        caller is expected to position the track via mkvmerge ``--sync``.
+        When *fill_gaps_from_base* is False, head/tail gaps are skipped
+        entirely — the caller is expected to position the track via mkvmerge
+        ``--sync`` and leave the gaps silent.
 
         Returns the effective sync offset (ms) for positioning the produced
         audio track on the base-video timeline.
@@ -288,8 +289,8 @@ class MeltPerformer(TrackTimelineMixin):
         # 1. Extract head/tail directly from base video, normalized to source params
         source_params = self._get_audio_params(source_video, logger=self.logger)
         base_duration_ms = video_utils.get_video_duration(base_video, logger=self.logger)
-        has_head = seg1_start > 0 and not use_silence
-        has_tail = seg1_end < base_duration_ms and not use_silence
+        has_head = seg1_start > 0 and fill_gaps_from_base
+        has_tail = seg1_end < base_duration_ms and fill_gaps_from_base
 
         # Time-scale from matched video-frame spans (true playback-rate
         # relationship, independent of audio track).  It must not be skewed by
@@ -358,7 +359,7 @@ class MeltPerformer(TrackTimelineMixin):
             base_per_source,
         )
         start_correction = sync_offset - seg1_start
-        if not use_silence and start_correction > 50:
+        if fill_gaps_from_base and start_correction > 50:
             raise RuntimeError(
                 f"Audio start correction of {start_correction} ms detected "
                 f"in fill-audio-gaps mode. "
@@ -817,13 +818,14 @@ class MeltPerformer(TrackTimelineMixin):
         rhs_frames: FramesInfo,
         min_subsegment_duration: float = 30.0,
         *,
-        use_silence: bool = False,
+        fill_gaps_from_base: bool = True,
     ) -> int:
         """Replace an audio segment in the base video with time-adjusted audio from another video.
 
         The replacement is split into smaller, corresponding subsegments to better handle drift.
-        When *use_silence* is True, head/tail gaps are skipped entirely — the
-        caller is expected to position the track via mkvmerge ``--sync``.
+        When *fill_gaps_from_base* is False, head/tail gaps are skipped
+        entirely — the caller is expected to position the track via mkvmerge
+        ``--sync`` and leave the gaps silent.
 
         Returns the timeline start (ms) of the produced track on the base-video
         timeline, mirroring ``patch_audio_constant_offset``.
@@ -845,15 +847,15 @@ class MeltPerformer(TrackTimelineMixin):
         seg1_start, seg1_end = seg.lhs_start, seg.lhs_end
 
         # 1. Extract audio tracks
-        if not use_silence:
+        if fill_gaps_from_base:
             v1_audio = os.path.join(wd, "v1_audio.flac")
             self._extract_audio_to_flac(base_video, v1_audio, logger=self.logger)
         self._extract_audio_to_flac(source_video, v2_audio, logger=self.logger)
 
         source_params = self._get_audio_params(v2_audio, logger=self.logger)
 
-        # 2. Extract head/tail from base audio (skipped when use_silence — caller uses --sync)
-        if use_silence:
+        # 2. Extract head/tail from base audio (when skipped, caller uses --sync)
+        if not fill_gaps_from_base:
             has_head = False
             has_tail = False
         else:
@@ -1056,15 +1058,15 @@ class MeltPerformer(TrackTimelineMixin):
                     mapping[0][0], mapping[-1][0], mapping[0][1], mapping[-1][1],
                 )
 
-            use_silence = not self.fill_audio_gaps
+            fill_gaps = self.fill_audio_gaps
 
             patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
             if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
-                timeline_start_ms = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
+                timeline_start_ms = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, fill_gaps_from_base=fill_gaps)
             else:
-                timeline_start_ms = self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames, use_silence=use_silence)
+                timeline_start_ms = self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames, fill_gaps_from_base=fill_gaps)
 
-            if use_silence:
+            if not fill_gaps:
                 self.logger.info("  Desired audio start: %d ms", timeline_start_ms)
                 return _PatchedAudio(patched_audio, 0, timeline_start_ms)
 
