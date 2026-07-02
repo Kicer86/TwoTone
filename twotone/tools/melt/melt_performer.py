@@ -38,6 +38,19 @@ class _StreamEntry(NamedTuple):
     sync_offset_ms: int | None = None
 
 
+class _PatchedAudio(NamedTuple):
+    """An audio track prepared for muxing, with its placement decision.
+
+    ``timeline_start_ms`` is the absolute position of the track's first sample
+    on the output (base-video) timeline, to be applied via mkvmerge ``--sync``.
+    ``None`` means the track must be muxed as-is: it already embeds its own
+    alignment (head/tail gaps filled from the base audio).
+    """
+    path: str
+    stream_index: int
+    timeline_start_ms: int | None
+
+
 class _PreparedStreams(NamedTuple):
     entries: list[_StreamEntry]
     input_files: set[str]
@@ -952,12 +965,15 @@ class MeltPerformer:
         min_subsegment_duration: float = 30.0,
         *,
         use_silence: bool = False,
-    ) -> None:
+    ) -> int:
         """Replace an audio segment in the base video with time-adjusted audio from another video.
 
         The replacement is split into smaller, corresponding subsegments to better handle drift.
         When *use_silence* is True, head/tail gaps are skipped entirely — the
         caller is expected to position the track via mkvmerge ``--sync``.
+
+        Returns the timeline start (ms) of the produced track on the base-video
+        timeline, mirroring ``patch_audio_constant_offset``.
         """
 
         wd = os.path.join(wd, "audio_extraction")
@@ -1082,6 +1098,8 @@ class MeltPerformer:
             logger=self.logger,
         )
 
+        return seg1_start
+
     def _build_output_path(self, title: str, output_name: str) -> str:
         return os.path.join(self.output_dir, title, output_name + ".mkv")
 
@@ -1102,11 +1120,8 @@ class MeltPerformer:
         base_duration: int,
         base_audio_end: int | None,
         file_ids: dict[str, int],
-    ) -> tuple[str, int, int | None]:
-        """Run PairMatcher and apply the appropriate audio patching strategy.
-
-        Returns (patched_path, new_stream_index, desired_start_ms).
-        """
+    ) -> _PatchedAudio:
+        """Run PairMatcher and apply the appropriate audio patching strategy."""
         audio_path, stream_index = audio_stream
         with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
@@ -1188,7 +1203,7 @@ class MeltPerformer:
                     desired_start_ms=desired_start_ms,
                 )
                 self.logger.info("  Desired audio start: %d ms", desired_start_ms)
-                return patched_audio, patched_index, desired_start_ms
+                return _PatchedAudio(patched_audio, patched_index, desired_start_ms)
 
             mapping = self._strict_audio_mapping(mapping)
 
@@ -1256,17 +1271,17 @@ class MeltPerformer:
 
             patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
             if use_constant_offset:
-                effective_sync = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
+                timeline_start_ms = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
             else:
-                self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames, use_silence=use_silence)
-                effective_sync = min(p[0] for p in mapping)
+                timeline_start_ms = self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames, use_silence=use_silence)
 
             if use_silence:
-                desired_start_ms = effective_sync
-                self.logger.info("  Desired audio start: %d ms", desired_start_ms)
-                return patched_audio, 0, desired_start_ms
+                self.logger.info("  Desired audio start: %d ms", timeline_start_ms)
+                return _PatchedAudio(patched_audio, 0, timeline_start_ms)
 
-        return patched_audio, 0, None
+        # Gaps were filled from the base audio — the track embeds its own
+        # alignment and must be muxed without repositioning.
+        return _PatchedAudio(patched_audio, 0, None)
 
     @staticmethod
     def _strict_audio_mapping(mapping: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -1758,9 +1773,12 @@ class MeltPerformer:
             if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
                 assert base_duration is not None  # guaranteed by _is_length_mismatch
                 original_path = path
-                path, stream_index, audio_desired_start_ms = self._patch_mismatched_audio(
+                patched = self._patch_mismatched_audio(
                     video_path_base, (path, stream_index), base_duration, base_audio_end_ms, file_ids,
                 )
+                path = patched.path
+                stream_index = patched.stream_index
+                audio_desired_start_ms = patched.timeline_start_ms
                 input_files.add(path)
                 if original_path not in protected_paths:
                     input_files.discard(original_path)
