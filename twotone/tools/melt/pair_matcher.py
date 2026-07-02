@@ -67,6 +67,10 @@ class PairMatcher:
     # boundary-extrapolation frames still considered the same picture; see
     # _boundary_content_matches for the measured separation behind the value.
     _MAX_BOUNDARY_PHASH_DISTANCE = 96
+    # Global-linear detection thresholds, shared with the relation-diagnostics
+    # log so the quoted limits never drift from the real ones.
+    _MAX_CONSTANT_OFFSET_STD = 1.0
+    _MAX_DRIFT_SLOPE_DELTA = 0.05
 
     def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2", cache: MeltCache | None = None) -> None:
         self.interruption = interruption
@@ -479,12 +483,12 @@ class PairMatcher:
         lhs_all_frames: FramesInfo,
         rhs_all_frames: FramesInfo,
         *,
-        max_slope_delta: float = 0.05,
+        max_slope_delta: float = _MAX_DRIFT_SLOPE_DELTA,
         max_median_residual_frames: float = 1.5,
         max_p95_residual_frames: float = 4.0,
         max_outlier_ratio: float = 0.25,
         max_audio_time_scale_delta: float = 0.30,
-        max_constant_offset_std: float = 1.0,
+        max_constant_offset_std: float = _MAX_CONSTANT_OFFSET_STD,
         min_span_frames: int = 250,
     ) -> GlobalLinearFit | None:
         """Detect a single global linear frame relationship over the matched pairs.
@@ -1166,12 +1170,13 @@ class PairMatcher:
         time_scale = slope * self.lhs_fps / self.rhs_fps if self.rhs_fps else float("nan")
 
         self.logger.info(
-            "  frame-offset median=%.2f std=%.2f (constant offset needs std<=1.0, "
-            "else RANSAC drift with slope within 0.05 of 1.0); "
+            "  frame-offset median=%.2f std=%.2f (constant offset needs std<=%.1f, "
+            "else RANSAC drift with slope within %.2f of 1.0); "
             "matched frame span=%.0f; observed time ratio=%.4f; "
             "frame slope=%.5f -> audio time scale=%.5f (audio is globally "
             "time-scaled by this factor)",
-            median_offset, std_offset, lhs_span, ratio, slope, time_scale,
+            median_offset, std_offset, self._MAX_CONSTANT_OFFSET_STD,
+            self._MAX_DRIFT_SLOPE_DELTA, lhs_span, ratio, slope, time_scale,
         )
 
     def _normalize_frames(self, frames_info: FramesInfo, wd: str, desc: str = "Normalizing frames", prefix: str = "") -> FramesInfo:
