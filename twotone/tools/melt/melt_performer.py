@@ -604,17 +604,6 @@ class MeltPerformer:
             sample_rate = 0
         return codec, init_pad, sample_rate, stream
 
-    def _audio_starts_just_before_video_adjustment_ms(self, path: str) -> int:
-        info = video_utils.get_video_full_info(path)
-        video_stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
-        audio_stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "audio"), None)
-        video_start_ms = self._stream_start_offset_ms(video_stream)
-        audio_start_ms = self._audio_content_start_ms(audio_stream)
-        delta_ms = video_start_ms - audio_start_ms
-        if 0 < delta_ms <= 50:
-            return delta_ms
-        return 0
-
     def _decode_source_audio_to_flac(
         self,
         source_video: str,
