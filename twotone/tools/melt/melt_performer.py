@@ -11,6 +11,7 @@ from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
 from .pair_matcher import MappingRelation, PairMatcher
 from .melt_common import FramesInfo, StreamType, _ensure_working_dir, _is_length_mismatch
+from .track_timeline import TrackTimelineMixin
 
 
 class _SegmentRange(NamedTuple):
@@ -70,7 +71,7 @@ class _PreparedStreams(NamedTuple):
     input_files: set[str]
 
 
-class MeltPerformer:
+class MeltPerformer(TrackTimelineMixin):
     def __init__(
         self,
         logger: logging.Logger,
@@ -90,7 +91,6 @@ class MeltPerformer:
         self._normalized_audio_cache: dict[tuple[str, int, int | None, int | None], str] = {}
         self._temporary_audio_counter = 0
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
-        self._aac_priming_exposed_cache: bool | None = None
         self.wd = _ensure_working_dir(working_dir)
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
@@ -334,9 +334,6 @@ class MeltPerformer:
         #    relationship), NOT from measured audio duration.
 
         trimmed_audio = os.path.join(wd, "source_trimmed.flac")
-        # Decode the source audio window, with lossy-codec encoder-delay priming
-        # removed deterministically so the patched track is not shifted by one AAC
-        # frame (~21 ms) on ffmpeg builds that decode the priming as real samples.
         self._decode_source_audio_to_flac(
             source_video,
             trimmed_audio,
@@ -349,11 +346,8 @@ class MeltPerformer:
         actual_source_dur = video_utils.get_video_duration(trimmed_audio, logger=self.logger)
         expected_scaled_dur = round(actual_source_dur * video_ratio)
 
-        # _patched_audio_start_ms already places the source by its priming-aware
-        # content start: on builds that expose AAC priming _audio_content_start_ms
-        # folds the encoder-delay frame into the offset to match the priming-exposed
-        # decode, and absorbing builds omit it.  That makes the offset correct on both
-        # conventions, so no extra per-container priming correction is applied here.
+        # The priming-aware content start (see track_timeline) already makes
+        # this offset correct on both ffmpeg priming conventions.
         sync_offset = self._patched_audio_start_ms(
             source_video,
             seg1_start,
@@ -593,123 +587,6 @@ class MeltPerformer:
             if diagram:
                 self.logger.info("Overlap diagram:\n%s", "\n".join(diagram))
 
-    @classmethod
-    def _source_audio_priming(
-        cls,
-        video_path: str,
-        logger: logging.Logger | None = None,
-        *,
-        audio_stream_index: int | None = None,
-    ) -> tuple[str | None, int, int, dict[str, Any]]:
-        """Return (codec_name, initial_padding_samples, sample_rate, stream).
-
-        ``initial_padding`` is the lossy-codec encoder-delay (priming) sample count the
-        container signals via Matroska *CodecDelay*; it is 0 for MP4/MOV (where the same
-        delay is carried by an edit list that every ffmpeg build honours on decode).
-        ``audio_stream_index`` selects a specific stream by its absolute container
-        index; when omitted the first audio stream is used.
-        """
-        info = video_utils.get_video_full_info(video_path, logger=logger)
-        streams = info.get("streams", [])
-        stream: dict[str, Any]
-        if audio_stream_index is not None:
-            stream = next(
-                (s for s in streams
-                 if s.get("codec_type") == "audio" and s.get("index") == audio_stream_index),
-                {},
-            )
-        else:
-            stream = next((s for s in streams if s.get("codec_type") == "audio"), {})
-        codec = stream.get("codec_name")
-        try:
-            init_pad = int(stream.get("initial_padding") or 0)
-        except (TypeError, ValueError):
-            init_pad = 0
-        try:
-            sample_rate = int(stream.get("sample_rate") or 0)
-        except (TypeError, ValueError):
-            sample_rate = 0
-        return codec, init_pad, sample_rate, stream
-
-    def _decode_source_audio_to_flac(
-        self,
-        source_video: str,
-        output_path: str,
-        *,
-        sample_fmt: str = "s32",
-        trim_start_ms: int | None = None,
-        trim_end_ms: int | None = None,
-        audio_stream_index: int | None = None,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        """Decode the first audio stream of *source_video* to FLAC with the lossy-codec
-        encoder-delay priming removed deterministically across all ffmpeg builds.
-
-        AAC and similar lapped-transform codecs prepend ``initial_padding`` priming
-        samples that must be skipped on decode.  Some ffmpeg builds skip them
-        automatically (honouring Matroska *CodecDelay*), others decode them as real
-        leading samples — shifting the track by ~21 ms (one AAC frame).  To get
-        identical output everywhere, when the source carries CodecDelay priming we
-        strip that signalling by remuxing the AAC bitstream to ADTS (which has no
-        priming metadata), decode the now-always-present priming, and trim exactly
-        ``initial_padding`` samples ourselves.
-
-        ``trim_start_ms`` / ``trim_end_ms`` select a window of the *priming-free*
-        stream, matching what a priming-honouring decoder would have produced.  These
-        bounds are expressed on the source's content timeline.  When the priming strip
-        drops the container timestamps, re-anchor the window to the priming-independent
-        content start so exposing and absorbing ffmpeg builds select identical samples.
-        """
-        codec, init_pad, sample_rate, stream = self._source_audio_priming(
-            source_video, logger=logger, audio_stream_index=audio_stream_index,
-        )
-        source_map = f"0:{audio_stream_index}" if audio_stream_index is not None else "0:a:0"
-
-        prime_offset_s = 0.0
-        window_anchor_ms = 0
-        input_path = source_video
-        input_map = source_map
-        adts_path: str | None = None
-        if codec == "aac" and init_pad > 0 and sample_rate > 0:
-            adts_path = f"{output_path}.priming.aac"
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y", "-i", source_video, "-map", source_map,
-                    "-c:a", "copy", "-f", "adts", adts_path,
-                ], logger=logger)
-            )
-            input_path = adts_path
-            input_map = "0:a:0"  # the remuxed ADTS file carries only the selected stream
-            prime_offset_s = init_pad / sample_rate
-            # ADTS carries no container timestamps, so the decoded frames start at 0
-            # instead of the source's content start.  The raw start_time on builds
-            # exposing AAC priming is one encoder-delay frame too early, so use the
-            # same priming-independent content start as final track placement.
-            window_anchor_ms = self._audio_content_start_ms(stream)
-
-        filters: list[str] = []
-        if prime_offset_s or trim_start_ms is not None or trim_end_ms is not None:
-            start_s = prime_offset_s + max(0, (trim_start_ms or 0) - window_anchor_ms) / 1000
-            atrim = f"atrim=start={start_s:.6f}"
-            if trim_end_ms is not None:
-                end_s = prime_offset_s + max(0, trim_end_ms - window_anchor_ms) / 1000
-                atrim += f":end={end_s:.6f}"
-            filters.append(atrim)
-            filters.append("asetpts=PTS-STARTPTS")
-
-        args = ["-y", "-i", input_path, "-map", input_map]
-        if filters:
-            args += ["-filter:a", ",".join(filters)]
-        args += ["-sample_fmt", sample_fmt, "-c:a", "flac", output_path]
-        try:
-            process_utils.raise_on_error(process_utils.start_process("ffmpeg", args, logger=logger))
-        finally:
-            if adts_path and os.path.exists(adts_path):
-                os.remove(adts_path)
-
-    def _extract_audio_to_flac(self, video_path: str, output_path: str, logger: logging.Logger | None = None) -> None:
-        self._decode_source_audio_to_flac(video_path, output_path, sample_fmt="s32", logger=logger)
-
     @staticmethod
     def _segment_range(pairs: Sequence[tuple[int, int]]) -> _SegmentRange:
         """Return the bounding lhs/rhs range from a list of (lhs, rhs) pairs."""
@@ -729,62 +606,6 @@ class MeltPerformer:
         info = video_utils.get_video_full_info(audio_path, logger=logger)
         stream = next(s for s in info["streams"] if s["codec_type"] == "audio")
         return stream.get("channel_layout") or None
-
-    def _aac_priming_exposed(self) -> bool:
-        """Whether this ffmpeg build exposes AAC encoder-delay priming as a negative
-        container start time instead of absorbing it.
-
-        Builds disagree: some report a freshly encoded AAC stream's ``start_time`` as
-        ``-encoder_delay`` (priming exposed, kept in the decoded samples), others as 0
-        (priming absorbed).  The same convention applies when *reading* a source AAC
-        stream, so on exposing builds a positive-offset (asO) audio stream's reported
-        ``start_time`` is short by one frame (~21 ms) — which otherwise mis-places the
-        patched track by exactly that frame.  Detected once and cached per run.
-        """
-        if self._aac_priming_exposed_cache is None:
-            exposed = False
-            probe = os.path.join(self.wd, f"_priming_probe_{os.getpid()}.mka")
-            try:
-                process_utils.raise_on_error(
-                    process_utils.start_process("ffmpeg", [
-                        "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
-                        "-t", "0.5", "-c:a", "aac", probe,
-                    ], logger=self.logger)
-                )
-                info = video_utils.get_video_full_info(probe, logger=self.logger)
-                stream: dict[str, Any] = next(
-                    (s for s in info.get("streams", []) if s.get("codec_type") == "audio"),
-                    {},
-                )
-                exposed = float(stream.get("start_time") or 0.0) < -0.001
-            except Exception:  # noqa: BLE001 - detection failure falls back to "absorbed"
-                exposed = False
-            finally:
-                if os.path.exists(probe):
-                    os.remove(probe)
-            self._aac_priming_exposed_cache = exposed
-        return self._aac_priming_exposed_cache
-
-    def _audio_content_start_ms(self, stream: dict[str, Any] | None) -> int:
-        """Audio stream's true content start (ms), priming-convention independent.
-
-        On builds that expose AAC priming, the reported ``start_time`` is short by the
-        encoder delay; add it back so positive-offset placement matches absorbing
-        builds.  ``_stream_start_offset_ms`` clamps negatives to 0, so asR streams are
-        unaffected; only positive (asO) offsets carry the leaked frame.
-        """
-        base = self._stream_start_offset_ms(stream)
-        if not stream or stream.get("codec_name") != "aac" or not self._aac_priming_exposed():
-            return base
-        try:
-            pad = int(stream.get("initial_padding") or 0)
-            sample_rate = int(stream.get("sample_rate") or 0)
-            raw_start = float(stream.get("start_time") or 0.0)
-        except (TypeError, ValueError):
-            return base
-        if pad <= 0 or sample_rate <= 0:
-            return base
-        return max(0, round((raw_start + pad / sample_rate) * 1000))
 
     def _patched_audio_start_ms(
         self,
@@ -1567,103 +1388,6 @@ class MeltPerformer:
                         return length
         return video_utils.get_video_duration(path, logger=logger)
 
-    _MKVMERGE_PRESERVES_START_EXTENSIONS = frozenset({".mkv", ".mk3d", ".mka", ".webm"})
-
-    @staticmethod
-    def _stream_info(path: str, stream_type: str, stream_index: int) -> dict[str, Any] | None:
-        info = video_utils.get_video_full_info(path)
-        for stream in info.get("streams", []):
-            if stream.get("codec_type") != stream_type:
-                continue
-            try:
-                probed_index = int(stream.get("index", -1))
-            except (TypeError, ValueError):
-                continue
-            if probed_index == stream_index:
-                return stream
-        return None
-
-    @staticmethod
-    def _audio_stream_info(path: str, stream_index: int) -> dict[str, Any] | None:
-        return MeltPerformer._stream_info(path, "audio", stream_index)
-
-    @staticmethod
-    def _stream_start_offset_ms(stream: dict[str, Any] | None) -> int:
-        if stream is None:
-            return 0
-        try:
-            start_time = float(stream.get("start_time") or 0.0)
-        except (TypeError, ValueError):
-            return 0
-        return max(0, round(start_time * 1000))
-
-    @staticmethod
-    def _stream_end_offset_ms(stream: dict[str, Any] | None) -> int | None:
-        if stream is None:
-            return None
-
-        duration = stream.get("duration")
-        if duration is not None:
-            try:
-                return MeltPerformer._stream_start_offset_ms(stream) + round(float(duration) * 1000)
-            except (TypeError, ValueError):
-                pass
-
-        tag_duration = stream.get("tags", {}).get("DURATION")
-        if tag_duration is not None:
-            return generic_utils.time_to_ms(tag_duration)
-
-        return None
-
-    def _source_stream_start_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int:
-        return self._stream_start_offset_ms(self._stream_info(path, stream_type, stream_index))
-
-    def _source_stream_end_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int | None:
-        return self._stream_end_offset_ms(self._stream_info(path, stream_type, stream_index))
-
-    def _mkvmerge_input_start_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int:
-        extension = os.path.splitext(path)[1].lower()
-        if extension in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
-            return self._source_stream_start_offset_ms(path, stream_type, stream_index)
-        return 0
-
-    def _track_sync_offset_ms(
-        self,
-        path: str,
-        stream_type: str,
-        stream_index: int,
-        desired_start_ms: int | None,
-    ) -> int | None:
-        if desired_start_ms is None:
-            return None
-        input_start_ms = self._mkvmerge_input_start_offset_ms(path, stream_type, stream_index)
-        sync_offset_ms = desired_start_ms - input_start_ms
-        return sync_offset_ms if sync_offset_ms else None
-
-    def _audio_needs_mkvmerge_normalization(self, path: str, stream_index: int) -> bool:
-        """Return True when direct mkvmerge remux can shift decoded AAC timing.
-
-        Non-Matroska AAC always needs a priming-free remux: mkvmerge would otherwise
-        drop the container start offset.  Matroska normally preserves start, so raw
-        passthrough is fine -- *except* when the AAC stream carries encoder-delay
-        priming (CodecDelay / ``initial_padding``).  Remuxed raw, such a stream is
-        placed build-dependently: builds that expose priming shift its decoded
-        content by one frame (~21 ms) relative to a priming-stripped base track.
-        Route those through the FLAC-domain flow too so the priming is removed
-        deterministically, exactly as for non-Matroska inputs.
-        """
-        stream = self._audio_stream_info(path, stream_index)
-        if stream is None or stream.get("codec_name") != "aac":
-            return False
-        extension = os.path.splitext(path)[1].lower()
-        if extension not in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
-            return True
-        try:
-            init_pad = int(stream.get("initial_padding") or 0)
-        except (TypeError, ValueError):
-            init_pad = 0
-        return init_pad > 0
-
     def _temporary_audio_path(self, label: str, stream_index: int) -> str:
         path = os.path.join(
             self.wd,
@@ -1683,11 +1407,10 @@ class MeltPerformer:
         single FLAC-domain flow: decode to a priming-free FLAC, optionally trim its
         tail to the output-timeline end, then encode to AAC exactly once.
 
-        Feeding AAC straight to mkvmerge, or re-encoding AAC→AAC, re-applies the
-        encoder-delay priming on ffmpeg builds that expose it, accumulating ~21 ms
-        per pass and shifting the track.  Routing every processing step through FLAC
-        and encoding AAC only once keeps decoded timing identical across builds —
-        the same single-encode discipline the constant-offset patch path relies on.
+        Every extra AAC encode re-applies encoder-delay priming on builds that
+        expose it (see ``track_timeline``), shifting the track ~21 ms per pass —
+        hence the single-encode discipline, shared with the constant-offset
+        patch path.
         """
         cache_key = (source_path, stream_index, desired_end_ms, desired_start_ms)
         cached_path = self._normalized_audio_cache.get(cache_key)
@@ -1800,10 +1523,6 @@ class MeltPerformer:
             ))
 
         for (path, stream_index, language) in audio_streams:
-            # Priming-convention independent content start: on builds that expose AAC
-            # encoder-delay priming, a positive-offset (asO) stream's raw start_time is
-            # short by one frame; _audio_content_start_ms adds it back so placement
-            # matches absorbing builds (a no-op for non-AAC / asR streams).
             audio_desired_start_ms: int | None = self._audio_content_start_ms(
                 self._stream_info(path, "audio", stream_index)
             )
@@ -1821,12 +1540,10 @@ class MeltPerformer:
                 if original_path not in protected_paths:
                     input_files.discard(original_path)
             else:
-                # Length-matching audio is passed through unchanged, except for two
-                # mkvmerge concerns handled by a single FLAC-domain flow (decode →
-                # optional tail trim → one AAC encode): AAC needs priming-free remux
-                # for non-Matroska inputs, and audio overrunning the output timeline
-                # must be trimmed.  Both used to be separate AAC re-encodes that
-                # accumulated encoder-delay priming on builds that expose it.
+                # Length-matching audio is passed through unchanged, except for
+                # two mkvmerge concerns handled by the single FLAC-domain flow:
+                # AAC that needs a priming-free remux (see track_timeline), and
+                # audio overrunning the output timeline, which must be trimmed.
                 needs_normalization = self._audio_needs_mkvmerge_normalization(path, stream_index)
                 trim_end_ms: int | None = None
                 if path != video_path_base and audio_desired_start_ms is not None and base_output_end_ms is not None:
