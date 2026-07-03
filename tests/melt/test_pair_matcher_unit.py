@@ -5,8 +5,9 @@ import unittest
 
 from unittest.mock import patch
 
-from twotone.tools.utils import generic_utils, video_utils
+from twotone.tools.utils import generic_utils, image_utils, video_utils
 from twotone.tools.melt.melt import MappingRelation, PairMatcher
+from twotone.tools.melt.pair_matcher import GlobalLinearFit
 
 
 class PairMatcherUnitTest(unittest.TestCase):
@@ -292,13 +293,19 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertFalse(result["full_coverage"])
 
-    # ---- try_constant_offset_extrapolation ----
+    # ---- detect_global_linear ----
+    #
+    # detect_global_linear only *detects* the frame relation (slope / intercept /
+    # constant-offset / precise audio time-scale).  It no longer decides the
+    # first/last common pair — the boundaries come from the content/entropy-aware
+    # walk (covered by the integration tests), which uses the fit as a predictor
+    # and stops at genuine divergence.  These unit tests therefore assert the
+    # detection and the precision of the fit, not extrapolated boundaries.
 
-    def test_constant_offset_detected_and_extrapolated(self):
-        """When all pairs share a constant frame-number offset, boundaries are extrapolated."""
+    def test_constant_offset_detected(self):
+        """A constant +3 frame offset is detected as slope=1, intercept=-3."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
-        # frame_ms = 40ms, frame offset = 3
-        # Offset: all pairs at +3 frames (+120ms)
+        # frame offset lhs-rhs = +3 frames
         matching_pairs = [
             (2120, 2000),
             (4120, 4000),
@@ -306,18 +313,16 @@ class PairMatcherUnitTest(unittest.TestCase):
             (8120, 8000),
         ]
 
-        lhs_keys = list(range(0, 10040, 40))
-        rhs_keys = list(range(0, 10040, 40))
-        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
-        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        lhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
 
-        self.assertIsNotNone(result)
-        # k=3: first_lhs_frame=3 → ts=120, first_rhs_frame=0 → ts=0
-        self.assertEqual(result[0], (120, 0))
-        # last_lhs_frame=min(250,250+3)=250 → ts=10000, last_rhs_frame=247 → ts=9880
-        self.assertEqual(result[-1], (10000, 9880))
+        self.assertIsNotNone(fit)
+        self.assertTrue(fit.is_constant_offset)
+        self.assertEqual(fit.slope, 1.0)
+        self.assertEqual(fit.intercept, -3.0)   # rhs_frame = lhs_frame - 3
+        self.assertAlmostEqual(fit.time_scale, 1.0, places=6)   # same fps, same speed
 
     def test_constant_offset_logs_technical_details_at_debug_and_summary_at_info(self):
         """Constant-offset logs should keep technical details out of info."""
@@ -329,13 +334,11 @@ class PairMatcherUnitTest(unittest.TestCase):
             (8120, 8000),
         ]
 
-        lhs_keys = list(range(0, 10040, 40))
-        rhs_keys = list(range(0, 10040, 40))
-        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
-        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        lhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="rhs")
 
         with self.assertLogs("test.PairMatcher", level="DEBUG") as captured:
-            pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+            pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
 
         debug_messages = [
             record.getMessage() for record in captured.records
@@ -359,14 +362,9 @@ class PairMatcherUnitTest(unittest.TestCase):
             "small constant frame offset of 3 frame(s)" in message
             for message in info_messages
         ))
-        self.assertTrue(any(
-            "Common section: #1 00:00:00,120-00:00:10,000 of 00:00:10,000; "
-            "#2 00:00:00,000-00:00:09,880 of 00:00:10,000." in message
-            for message in info_messages
-        ))
 
     def test_constant_offset_negative(self):
-        """When offset is negative (rhs ahead of lhs), boundaries are correct."""
+        """A negative offset (rhs ahead of lhs) is detected as intercept=+3."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
 
         matching_pairs = [
@@ -375,21 +373,19 @@ class PairMatcherUnitTest(unittest.TestCase):
             (6000, 6120),
         ]
 
-        lhs_keys = list(range(0, 10040, 40))
-        rhs_keys = list(range(0, 10040, 40))
-        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
-        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        lhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
 
-        self.assertIsNotNone(result)
-        # k=-3: first_lhs_frame=0 → ts=0, first_rhs_frame=3 → ts=120
-        self.assertEqual(result[0], (0, 120))
-        # last_lhs_frame=min(250,250-3)=247 → ts=9880, last_rhs_frame=250 → ts=10000
-        self.assertEqual(result[-1], (9880, 10000))
+        self.assertIsNotNone(fit)
+        self.assertTrue(fit.is_constant_offset)
+        self.assertEqual(fit.slope, 1.0)
+        self.assertEqual(fit.intercept, 3.0)   # rhs_frame = lhs_frame + 3
+        self.assertAlmostEqual(fit.time_scale, 1.0, places=6)
 
     def test_constant_offset_zero(self):
-        """When offset is zero (identical timing), boundaries are at edges."""
+        """Identical timing is detected as slope=1, intercept=0."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
 
         matching_pairs = [
@@ -399,40 +395,38 @@ class PairMatcherUnitTest(unittest.TestCase):
             (8000, 8000),
         ]
 
-        lhs_keys = list(range(0, 10040, 40))
-        rhs_keys = list(range(0, 10040, 40))
-        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
-        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        lhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result[0], (0, 0))
-        self.assertEqual(result[-1], (10000, 10000))
+        self.assertIsNotNone(fit)
+        self.assertTrue(fit.is_constant_offset)
+        self.assertEqual(fit.slope, 1.0)
+        self.assertEqual(fit.intercept, 0.0)
+        self.assertAlmostEqual(fit.time_scale, 1.0, places=6)
 
     def test_constant_offset_rejected_high_std(self):
         """When frame-number offsets vary too much (std > 1), returns None."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
-        # frame offsets: 3, 5, 1 → std ≈ 1.63 > 1.0
+        # frame offsets: 3, 5, 1 → std ≈ 1.63 > 1.0; span too small for drift
         matching_pairs = [
             (2120, 2000),
             (4200, 4000),
             (6040, 6000),
         ]
 
-        lhs_keys = list(range(0, 10040, 40))
-        rhs_keys = list(range(0, 10040, 40))
-        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
-        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        lhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
 
-        self.assertIsNone(result)
+        self.assertIsNone(fit)
 
     def test_constant_offset_rejected_growing_offsets(self):
-        """When frame-number offsets grow (content plays at different rate), returns None."""
+        """Growing offsets over a short span fit neither constant offset nor drift."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
-        # frame offsets: 2, 4, 6, 8 → std ≈ 2.24 > 1.0
+        # frame offsets: 2, 4, 6, 8 → std ≈ 2.24 > 1.0; span 156 frames < min 250
         matching_pairs = [
             (2080, 2000),
             (4160, 4000),
@@ -440,56 +434,74 @@ class PairMatcherUnitTest(unittest.TestCase):
             (8320, 8000),
         ]
 
-        lhs_keys = list(range(0, 10040, 40))
-        rhs_keys = list(range(0, 10040, 40))
-        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
-        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        lhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
 
-        self.assertIsNone(result)
+        self.assertIsNone(fit)
 
-    def test_linear_frame_drift_extrapolates_boundaries(self):
-        """Slight linear frame drift should extrapolate common boundaries."""
-        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+    def test_linear_frame_drift_detected(self):
+        """A 23/24 frame-count conversion (same speed) is detected as a drift."""
+        pm = self._make_pair_matcher(lhs_fps=24.0, rhs_fps=23.0)
 
-        # RHS has an initial +1 frame offset and slowly gains one extra frame
-        # per 1000 LHS frames: rhs_frame = 1.001 * lhs_frame + 1.
-        lhs_keys = list(range(0, 10001 * 40, 40))
-        rhs_keys = list(range(0, 10021 * 40, 40))
-        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
-        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        # RHS has 23 frames for each 24 LHS frames while preserving playback
+        # time: rhs_frame = 23/24 * lhs_frame + 1.
+        lhs_frames = self._make_frames(list(range(0, 10001 * 40, 40)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 9590 * 40, 40)), prefix="rhs")
 
         matching_frame_ids = [1000, 4000, 7000, 9000]
         matching_pairs = [
-            (lhs_id * 40, int(round(1.001 * lhs_id + 1)) * 40)
+            (lhs_id * 40, int(round((23 / 24) * lhs_id + 1)) * 40)
             for lhs_id in matching_frame_ids
         ]
 
-        result = pm.try_linear_frame_drift_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result[0], (0, 40))
-        self.assertEqual(result[-1], (400000, 400440))
+        self.assertIsNotNone(fit)
+        self.assertFalse(fit.is_constant_offset)
+        self.assertAlmostEqual(fit.slope, 23 / 24, places=3)
+        # 23/24 frames scaled by 24/23 fps → same playback speed, no audio stretch.
+        self.assertAlmostEqual(fit.time_scale, 1.0, places=2)
 
-    def test_linear_frame_drift_rejects_large_slope_delta(self):
-        """A substantial frame-rate conversion should not use slight-drift extrapolation."""
-        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+    def test_global_linear_accepts_time_scaled_drift(self):
+        """A near-identity frame slope with an FPS speed change yields time_scale != 1."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=26.5)
 
-        lhs_keys = list(range(0, 10001 * 40, 40))
-        rhs_keys = list(range(0, 10501 * 40, 40))
-        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
-        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        lhs_frames = self._make_frames(list(range(0, 10001 * 40, 40)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 10291 * 40, 40)), prefix="rhs")
 
         matching_frame_ids = [1000, 4000, 7000, 9000]
         matching_pairs = [
-            (lhs_id * 40, int(round(1.02 * lhs_id + 1)) * 40)
+            (lhs_id * 40, int(round(1.028 * lhs_id)) * 40)
             for lhs_id in matching_frame_ids
         ]
 
-        result = pm.try_linear_frame_drift_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
 
-        self.assertIsNone(result)
+        self.assertIsNotNone(fit)
+        self.assertFalse(fit.is_constant_offset)
+        self.assertAlmostEqual(fit.slope, 1.028, places=3)
+        # slope 1.028 * 25/26.5 ≈ 0.9698 → a real speed change, audio time-scaled.
+        self.assertAlmostEqual(fit.time_scale, 1.028 * 25 / 26.5, places=4)
+        self.assertGreater(abs(fit.time_scale - 1.0), 0.02)
+
+    def test_linear_frame_drift_rejects_extreme_slope_delta(self):
+        """Extreme frame-count conversion is not a near-identity drift → None."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+
+        lhs_frames = self._make_frames(list(range(0, 10001 * 40, 40)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 11001 * 40, 40)), prefix="rhs")
+
+        matching_frame_ids = [1000, 4000, 7000, 9000]
+        matching_pairs = [
+            (lhs_id * 40, int(round(1.08 * lhs_id + 1)) * 40)
+            for lhs_id in matching_frame_ids
+        ]
+
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNone(fit)
 
     def test_constant_offset_two_nearby_pairs_are_insufficient(self):
         """Two nearby pairs do not cover enough content to prove a constant offset."""
@@ -497,38 +509,38 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         matching_pairs = [(2120, 2000), (4120, 4000)]
 
-        lhs_keys = list(range(0, 10040, 40))
-        rhs_keys = list(range(0, 10040, 40))
-        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
-        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        lhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
 
-        self.assertIsNone(result)
+        self.assertIsNone(fit)
 
     def test_constant_offset_two_widely_separated_pairs_are_sufficient(self):
         """Two distant pairs can prove the constant frame offset seen on Ubuntu CI."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
 
-        lhs_keys = list(range(480, 60441, 40))
-        rhs_keys = list(range(0, 60441, 40))
-        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
-        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        lhs_frames = self._make_frames(list(range(480, 60441, 40)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 60441, 40)), prefix="rhs")
         matching_pairs = [
             (10480, 10480),
             (50480, 50480),
         ]
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result[0], (480, 480))
-        self.assertEqual(result[-1], (60440, 60440))
+        self.assertIsNotNone(fit)
+        self.assertTrue(fit.is_constant_offset)
+        self.assertEqual(fit.slope, 1.0)
+        # lhs key list starts at 480ms (frame_id 0) while rhs starts at 0ms
+        # (frame_id 0), so at a shared timestamp the lhs frame_id trails the rhs
+        # frame_id by 12 (480/40): offset lhs-rhs = -12 → intercept +12.
+        self.assertEqual(fit.intercept, 12.0)
 
     def test_constant_offset_slight_jitter_within_tolerance(self):
-        """Small jitter (< 1 frame) in frame-number offsets should still be accepted."""
+        """Small jitter (< 1 frame) in frame-number offsets is still a constant offset."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
-        # frame offsets: 3, 3, 4, 3 → std ≈ 0.43 < 1.0
+        # frame offsets: 3, 3, 4, 3 → std ≈ 0.43 < 1.0, median 3
         matching_pairs = [
             (2120, 2000),
             (4120, 4000),
@@ -536,66 +548,40 @@ class PairMatcherUnitTest(unittest.TestCase):
             (8120, 8000),
         ]
 
-        lhs_keys = list(range(0, 10040, 40))
-        rhs_keys = list(range(0, 10040, 40))
-        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
-        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        lhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 10040, 40)), prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
 
-        self.assertIsNotNone(result)
-        # Median frame offset is 3 → first=(120, 0), last=(10000, 9880)
-        self.assertEqual(result[0], (120, 0))
-        self.assertEqual(result[-1], (10000, 9880))
+        self.assertIsNotNone(fit)
+        self.assertTrue(fit.is_constant_offset)
+        self.assertEqual(fit.slope, 1.0)
+        self.assertEqual(fit.intercept, -3.0)   # median offset 3
 
     def test_constant_offset_different_fps(self):
-        """Same content with different FPS (e.g. PAL speedup) is detected correctly."""
+        """Same frames at different FPS (PAL speedup) → slope=1, time_scale=lhs/rhs fps."""
         pm = self._make_pair_matcher(lhs_fps=20.0, rhs_fps=25.0)
-        # lhs_frame_ms=50ms, rhs_frame_ms=40ms
-        # Frame offset k=3: frame N in LHS = frame (N-3) in RHS
+        # lhs_frame_ms=50ms, rhs_frame_ms=40ms; frame offset k=3
         matching_pairs = [
             (2500, 1880),   # LHS frame 50, RHS frame 47
             (5000, 3880),   # LHS frame 100, RHS frame 97
             (7500, 5880),   # LHS frame 150, RHS frame 147
         ]
 
-        lhs_keys = list(range(0, 10050, 50))
-        rhs_keys = list(range(0, 8040, 40))
-        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
-        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
+        lhs_frames = self._make_frames(list(range(0, 10050, 50)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 8040, 40)), prefix="rhs")
 
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
 
-        self.assertIsNotNone(result)
-        # k=3: first_lhs_frame=3 → ts=150, first_rhs_frame=0 → ts=0
-        self.assertEqual(result[0], (150, 0))
-        # last_lhs_frame=min(200,200+3)=200 → ts=10000, last_rhs_frame=197 → ts=7880
-        self.assertEqual(result[-1], (10000, 7880))
+        self.assertIsNotNone(fit)
+        self.assertTrue(fit.is_constant_offset)
+        self.assertEqual(fit.slope, 1.0)
+        self.assertEqual(fit.intercept, -3.0)
+        # Same frames played at 20 vs 25 fps → a real 0.8x speed change.
+        self.assertAlmostEqual(fit.time_scale, 20.0 / 25.0, places=6)
 
-    def test_constant_offset_does_not_duplicate_existing_boundary(self):
-        """If extrapolated boundary matches an existing pair, no duplicate is added."""
-        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
-
-        matching_pairs = [
-            (120, 0),
-            (4120, 4000),
-            (8120, 8000),
-        ]
-
-        lhs_keys = list(range(0, 10040, 40))
-        rhs_keys = list(range(0, 10040, 40))
-        lhs_frames = self._make_frames(lhs_keys, prefix="lhs")
-        rhs_frames = self._make_frames(rhs_keys, prefix="rhs")
-
-        result = pm.try_constant_offset_extrapolation(matching_pairs, lhs_frames, rhs_frames)
-
-        self.assertIsNotNone(result)
-        # First pair already matches extrapolated boundary → no duplicate
-        self.assertEqual(result[0], (120, 0))
-        self.assertEqual(len([p for p in result if p == (120, 0)]), 1)
-
-    def test_create_segments_mapping_skips_edge_snap_after_constant_offset(self):
-        """Constant-offset extrapolation should bypass timestamp-based edge snapping."""
+    def test_create_segments_mapping_verified_extrapolation_for_global_linear(self):
+        """Global-linear uses the fit's verified extrapolation, not the refine walk."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
         pm.lhs_all_wd = "/tmp/lhs_all"
         pm.rhs_all_wd = "/tmp/rhs_all"
@@ -613,7 +599,8 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         lhs_probed = self._make_frames([0, 40, 80], prefix="lhs_raw")
         rhs_probed = self._make_frames([0, 40, 80], prefix="rhs_raw")
-        extrapolated_pairs = [(120, 0), (10000, 9880)]
+        extrapolated_pairs = [(0, 0), (10000, 9880)]
+        fit = GlobalLinearFit(slope=1.0, intercept=-3.0, is_constant_offset=True, time_scale=0.96)
 
         def fake_extract(_video_path, target_dir, _ranges, probed_metadata, **_kwargs):
             for ts, info in probed_metadata.items():
@@ -631,8 +618,10 @@ class PairMatcherUnitTest(unittest.TestCase):
              patch('twotone.tools.melt.pair_matcher.DebugRoutines') as debug_cls, \
              patch.object(PairMatcher, '_normalize_frames', side_effect=fake_normalize), \
              patch.object(PairMatcher, '_make_pairs', return_value=[(40, 40)]), \
-             patch.object(PairMatcher, 'try_constant_offset_extrapolation', return_value=extrapolated_pairs), \
-             patch.object(PairMatcher, 'snap_to_edges', side_effect=AssertionError("snap_to_edges should not be called")):
+             patch.object(PairMatcher, 'detect_global_linear', return_value=fit), \
+             patch.object(PairMatcher, '_extrapolate_and_verify_global_linear', return_value=extrapolated_pairs) as extrap, \
+             patch.object(PairMatcher, '_extract_and_refine_boundaries', side_effect=AssertionError("refine walk must not run for global-linear")), \
+             patch.object(PairMatcher, 'snap_to_edges', side_effect=AssertionError("edge snap must not run for global-linear")):
 
             debug = debug_cls.return_value
             debug.dump_frames.return_value = None
@@ -640,8 +629,131 @@ class PairMatcherUnitTest(unittest.TestCase):
 
             result = pm.create_segments_mapping()
 
-        self.assertEqual(result.relation, MappingRelation.CONSTANT_FRAME_OFFSET)
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
+        # Boundaries come from the fit's content-verified extrapolation.
+        extrap.assert_called_once()
         self.assertEqual(result.mapping, extrapolated_pairs)
+
+    # ---- _extrapolate_and_verify_global_linear ----
+
+    def _make_pm_with_frames(self, lhs_ts, rhs_ts):
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        pm.lhs_all_frames = self._make_frames(lhs_ts, prefix="lhs")
+        pm.rhs_all_frames = self._make_frames(rhs_ts, prefix="rhs")
+        return pm
+
+    @staticmethod
+    def _patch_boundary_phash(values: dict):
+        """Patch the fresh phash computation used by _boundary_content_matches."""
+        return patch('twotone.tools.melt.pair_matcher.compute_phash',
+                     side_effect=lambda path, hash_size=16: values[path])
+
+    def test_verified_extrapolation_extends_to_edges_when_content_matches(self):
+        """When the extrapolated boundary frames verify, the boundary reaches the edge."""
+        pm = self._make_pm_with_frames(list(range(0, 10040, 40)), list(range(0, 10040, 40)))
+        # Zero offset, matches only in the middle of the video.
+        matching_pairs = [(4000, 4000), (6000, 6000)]
+        fit = GlobalLinearFit(slope=1.0, intercept=0.0, is_constant_offset=True, time_scale=1.0)
+
+        with patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
+            result = pm._extrapolate_and_verify_global_linear(fit, matching_pairs)
+
+        self.assertEqual(result[0], (0, 0))
+        self.assertEqual(result[-1], (10000, 10000))
+
+    def test_verified_extrapolation_stops_at_outermost_match_when_divergent(self):
+        """When the extrapolated boundary frames do NOT verify, the boundary stays put."""
+        pm = self._make_pm_with_frames(list(range(0, 10040, 40)), list(range(0, 10040, 40)))
+        matching_pairs = [(3000, 3000), (6000, 6000)]
+        fit = GlobalLinearFit(slope=1.0, intercept=0.0, is_constant_offset=True, time_scale=1.0)
+
+        with patch.object(PairMatcher, '_boundary_content_matches', return_value=False):
+            result = pm._extrapolate_and_verify_global_linear(fit, matching_pairs)
+
+        # No extension — divergent intro/outro is not crossed.
+        self.assertEqual(result[0], (3000, 3000))
+        self.assertEqual(result[-1], (6000, 6000))
+
+    def test_verified_extrapolation_snaps_equal_length_lead_in_to_edge(self):
+        """A small fit residual at the lhs edge snaps the rhs onto its edge → (0,0)."""
+        pm = self._make_pm_with_frames(list(range(0, 10040, 40)), list(range(0, 10040, 40)))
+        matching_pairs = [(4000, 4120), (6000, 6120)]
+        # rhs_frame = lhs_frame + 3 → at lhs edge (0) the line predicts rhs frame 3;
+        # within snap tolerance of the rhs edge, so it maps edge-to-edge.
+        fit = GlobalLinearFit(slope=1.0, intercept=3.0, is_constant_offset=True, time_scale=1.0)
+
+        with patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
+            result = pm._extrapolate_and_verify_global_linear(fit, matching_pairs)
+
+        self.assertEqual(result[0], (0, 0))
+
+    def test_verified_extrapolation_keeps_offset_lead_in_position(self):
+        """A large offset (2s vs 6s black) is far past the snap tolerance and is kept."""
+        pm = self._make_pm_with_frames(list(range(0, 10040, 40)), list(range(0, 10040, 40)))
+        matching_pairs = [(4000, 6000), (6000, 8000)]
+        # rhs_frame = lhs_frame + 50 (a 2s offset) → at lhs edge (0) the line
+        # predicts rhs frame 50 (2000ms), well past the snap tolerance.
+        fit = GlobalLinearFit(slope=1.0, intercept=50.0, is_constant_offset=True, time_scale=1.0)
+
+        with patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
+            result = pm._extrapolate_and_verify_global_linear(fit, matching_pairs)
+
+        self.assertEqual(result[0], (0, 2000))
+
+    def test_boundary_content_matches_accepts_both_black(self):
+        """Two low-entropy (black) boundary frames verify as a shared lead-in/out."""
+        pm = self._make_pm_with_frames([0, 40], [0, 40])
+        with patch.object(PairMatcher, '_ensure_boundary_image', side_effect=["/l.png", "/r.png"]), \
+             patch.object(PairMatcher, '_is_rich', return_value=False), \
+             patch.object(image_utils, 'are_images_similar') as similar:
+            self.assertTrue(pm._boundary_content_matches(0, 0, 0, 0))
+        # Both black short-circuits — no ORB comparison needed.
+        similar.assert_not_called()
+
+    def test_boundary_content_matches_rejects_divergent_content(self):
+        """Two rich but visually different boundary frames do NOT verify."""
+        pm = self._make_pm_with_frames([0, 40], [0, 40])
+        with patch.object(PairMatcher, '_ensure_boundary_image', side_effect=["/l.png", "/r.png"]), \
+             patch.object(PairMatcher, '_is_rich', return_value=True), \
+             self._patch_boundary_phash({"/l.png": 0, "/r.png": 0}), \
+             patch.object(image_utils, 'are_images_similar', return_value=False):
+            self.assertFalse(pm._boundary_content_matches(0, 0, 0, 0))
+
+    def test_boundary_content_matches_accepts_same_content(self):
+        """Phash-close and ORB-similar boundary frames verify as shared content."""
+        pm = self._make_pm_with_frames([0, 40], [0, 40])
+        # Same frame across a quality/speed change: small phash distance.
+        with patch.object(PairMatcher, '_ensure_boundary_image', side_effect=["/l.png", "/r.png"]), \
+             patch.object(PairMatcher, '_is_rich', return_value=True), \
+             self._patch_boundary_phash({"/l.png": 0, "/r.png": 30}), \
+             patch.object(image_utils, 'are_images_similar', return_value=True):
+            self.assertTrue(pm._boundary_content_matches(0, 0, 0, 0))
+
+    def test_boundary_content_matches_rejects_orb_similar_but_phash_distant(self):
+        """Unrelated textured intros (grass vs atoms) can produce dozens of
+        cross-checked ORB matches; the phash gate must reject them anyway.
+
+        Regression: on ffmpeg builds where the drift fit succeeded, the
+        global-linear extrapolation crossed divergent intros because the ORB
+        count alone verified them."""
+        pm = self._make_pm_with_frames([0, 40], [0, 40])
+        # Divergent content: large phash distance (measured grass vs atoms ~124).
+        with patch.object(PairMatcher, '_ensure_boundary_image', side_effect=["/l.png", "/r.png"]), \
+             patch.object(PairMatcher, '_is_rich', return_value=True), \
+             self._patch_boundary_phash({"/l.png": 0, "/r.png": 124}), \
+             patch.object(image_utils, 'are_images_similar', return_value=True) as similar:
+            self.assertFalse(pm._boundary_content_matches(0, 0, 0, 0))
+        # The phash gate rejects before ORB even runs.
+        similar.assert_not_called()
+
+    def test_boundary_content_matches_rejects_black_vs_content(self):
+        """A black frame vs a rich frame never verifies (one lead-in is black)."""
+        pm = self._make_pm_with_frames([0, 40], [0, 40])
+        with patch.object(PairMatcher, '_ensure_boundary_image', side_effect=["/l.png", "/r.png"]), \
+             patch.object(PairMatcher, '_is_rich', side_effect=[False, True]), \
+             patch.object(image_utils, 'are_images_similar') as similar:
+            self.assertFalse(pm._boundary_content_matches(0, 0, 0, 0))
+        similar.assert_not_called()
 
     # ---- _look_for_boundaries: look_ahead robustness ----
 

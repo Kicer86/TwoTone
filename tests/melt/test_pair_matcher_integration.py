@@ -9,6 +9,48 @@ from melt.helpers import MeltTestBase
 
 class PairMatcherIntegrationTest(MeltTestBase):
 
+    def test_scene_detection_is_stable_and_content_driven(self):
+        """Scene detection must be stable — the whole frame-matching pipeline
+        keys off it, so non-deterministic cuts would make the mapping unstable.
+
+        Validates three properties on the real fixtures:
+        1. Deterministic: identical scene-change timestamps across repeated runs.
+        2. Finds the known synthetic cut: the 3s intro boundary is detected.
+        3. Content-driven: bbb_gi3 (grass intro) and bbb_bi3 (black intro) share
+           the same bbb body starting at 3s, so their cuts from 3s onward match —
+           the detector keys off content, not the differing intro.
+        """
+        grass_intro, _ = self.edge_fixtures["diff_intro_same"]   # bbb_gi3: 3s grass intro + bbb
+        black_intro, _ = self.edge_fixtures["black_intro_same"]  # bbb_bi3: 3s black intro + bbb
+
+        interruption = generic_utils.InterruptibleProcess()
+        scenes_grass = video_utils.detect_scene_changes(
+            grass_intro, threshold=0.3, interruption=interruption, logger=self.logger,
+        )
+        scenes_grass_again = video_utils.detect_scene_changes(
+            grass_intro, threshold=0.3, interruption=interruption, logger=self.logger,
+        )
+
+        # 1. Deterministic across runs.
+        self.assertEqual(scenes_grass, scenes_grass_again)
+
+        # 2. The known 3s intro boundary is detected (within ~3 frames).
+        self.assertTrue(
+            any(abs(t - 3000) <= 120 for t in scenes_grass),
+            f"expected a scene cut near 3000ms, got {scenes_grass}",
+        )
+
+        # 3. Content-driven & stable: the bbb body cuts match across fixtures that
+        #    share it, regardless of the (grass vs black) intro before it.
+        scenes_black = video_utils.detect_scene_changes(
+            black_intro, threshold=0.3, interruption=interruption, logger=self.logger,
+        )
+        body_grass = [t for t in scenes_grass if t >= 3000]
+        body_black = [t for t in scenes_black if t >= 3000]
+        self.assertEqual(body_grass, body_black)
+        # A real movie body has several cuts — this is not a degenerate match.
+        self.assertGreaterEqual(len(body_grass), 5)
+
     def test_pair_matcher_precision(self):
         """Multi-scene sample (82.6s) vs VHS degraded version (78.7s, 1.05x speed, crop, blur)."""
         file1 = add_to_test_dir(self.wd.path, self.sample_video_file)
@@ -111,7 +153,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         # LHS: bbb_bo3 (65.3s, 3s black outro), RHS: bo3_deg103 (63.4s, 3s black outro)
         self.assertGreaterEqual(len(mappings), 3)
-        # Edge: first pair snapped to (0, 0)
+        # Edge: first pair snapped to (0, 0) — shared content from the start
         self.assertEqual(mappings[0], (0, 0))
         # Edge: last pair snapped to video duration (through black outro)
         self.assertAlmostEqual(mappings[-1][0], 65337, delta=500)
@@ -254,9 +296,10 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         # LHS: bbb_wo3 (65.3s, 3s woman outro), RHS: deg103_atoms_o3 (63.5s, 3s atoms outro)
         self.assertGreaterEqual(len(mappings), 3)
-        # Edge: first pair snapped to (0, 0)
+        # Edge: first pair snapped to (0, 0) — shared content from the start
         self.assertEqual(mappings[0], (0, 0))
-        # Last pair NOT at edge — content ends before outros (~62s lhs, ~60s rhs)
+        # Last pair NOT at edge — content ends before the divergent outros
+        # (~62s lhs, ~60s rhs); the walk stops at the last shared frame.
         self.assertAlmostEqual(mappings[-1][0], 62103, delta=1000)
         self.assertAlmostEqual(mappings[-1][1], 60325, delta=1000)
 
@@ -267,8 +310,8 @@ class PairMatcherIntegrationTest(MeltTestBase):
             lhs_fps=pair_matcher.lhs_fps,
             rhs_fps=pair_matcher.rhs_fps,
         )
-        # Start snapped to edge. Both files have 3s outros (woman / atoms).
-        # End gaps must match the known outro duration within 1s tolerance.
+        # Start snapped to edge. Both files have 3s outros (woman / atoms) that
+        # differ, so the shared range ends before them — end gaps ≈ the outro.
         self.assertFalse(coverage["full_coverage"])
         self.assertEqual(coverage["lhs_start_gap_s"], 0.0)
         self.assertEqual(coverage["rhs_start_gap_s"], 0.0)

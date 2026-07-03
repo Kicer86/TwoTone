@@ -13,7 +13,7 @@ from typing import Any, Callable, NamedTuple
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
 from .melt_common import FramesInfo
-from .phash_cache import PhashCache
+from .phash_cache import PhashCache, compute_phash
 from ..utils import files_utils, generic_utils, image_utils, video_utils
 
 
@@ -21,8 +21,28 @@ class MappingRelation(enum.Enum):
     """Detected relation between matching video frames."""
 
     GENERIC = "generic"
-    CONSTANT_FRAME_OFFSET = "constant_frame_offset"
-    LINEAR_FRAME_DRIFT = "linear_frame_drift"
+    # The two files are related by a single global linear frame map
+    # ``rhs_frame ~= slope*lhs_frame + intercept`` (a constant frame offset is
+    # the ``slope == 1`` special case).  The audio is placed with one global
+    # time-scale derived from the fit over all matched pairs — which is a no-op
+    # when the files play at the same speed and a stretch on e.g. a 25 fps PAL
+    # speedup vs 24 fps.  The boundaries themselves come from the content-aware
+    # walk, not from the fit.
+    GLOBAL_LINEAR = "global_linear"
+
+
+class GlobalLinearFit(NamedTuple):
+    """A detected global linear frame relation ``rhs_frame ~= slope*lhs + intercept``.
+
+    ``is_constant_offset`` is True for the ``slope == 1`` special case.
+    ``time_scale = slope*lhs_fps/rhs_fps`` is the precise audio stretch factor
+    (rhs_ms/lhs_ms) derived from the fit over *all* matched pairs — more accurate
+    than a two-endpoint span ratio, so it is what the audio patch should use.
+    """
+    slope: float
+    intercept: float
+    is_constant_offset: bool
+    time_scale: float
 
 
 class SegmentsMappingResult(NamedTuple):
@@ -35,6 +55,16 @@ class SegmentsMappingResult(NamedTuple):
 class PairMatcher:
 
     _MAX_BOUNDARY_ERROR_FRAMES = 2
+    # Minimum phash distance treated as "still the same frame".  The adaptive
+    # cutoff (median + 2*std of the matched pairs) collapses to 0 when the
+    # surviving matches are pixel-perfect; without a floor, any check keyed on it
+    # would then demand pixel-perfect frames — impossible across a speed or
+    # resolution difference — so it is floored to this value.
+    _MIN_PHASH_CUTOFF = 16
+    # Maximum phash distance (bits, of hash_size 16 → 256) between two
+    # boundary-extrapolation frames still considered the same picture; see
+    # _boundary_content_matches for the measured separation behind the value.
+    _MAX_BOUNDARY_PHASH_DISTANCE = 96
 
     def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2", cache: MeltCache | None = None) -> None:
         self.interruption = interruption
@@ -291,7 +321,7 @@ class PairMatcher:
         # Ensure cutoff is not absurdly tight — with few calibration pairs or
         # cropped frames the computed cutoff can be as low as 4, which makes the
         # search unable to extend even a single frame.
-        cutoff = max(cutoff, 16)
+        cutoff = max(cutoff, self._MIN_PHASH_CUTOFF)
 
         # --- Fast edge pre-check ---
         # Before the iterative search, check whether both videos share content
@@ -441,239 +471,178 @@ class PairMatcher:
         )
         return (edge_lhs, new_rhs)
 
-    def try_constant_offset_extrapolation(
-        self,
-        matching_pairs: list[tuple[int, int]],
-        lhs_all_frames: FramesInfo,
-        rhs_all_frames: FramesInfo,
-    ) -> list[tuple[int, int]] | None:
-        """Extrapolate boundaries when matched pairs share a constant frame-number offset.
-
-        Works in frame-number space: reads ``frame_id`` from *FramesInfo*
-        and checks if ``lhs_frame_id − rhs_frame_id`` is consistent
-        (std dev ≤ 1 frame).  This detects identical content with a small
-        constant shift regardless of whether FPS differs between files
-        (e.g. 23.976 vs 25 — same frames, different timing).
-
-        Two matches are accepted only when they span at least 250 frames.
-        The large span makes the ratio check meaningful while still handling
-        platforms where scene detection yields only two reliable key frames.
-
-        Returns an updated pair list with extrapolated first/last entries,
-        or ``None`` if the frame-number offset is not sufficiently constant.
-        """
-        if len(matching_pairs) < 2:
-            return None
-
-        # Use frame_id from FramesInfo instead of computing from FPS
-        lhs_frame_ids = np.array([
-            int(lhs_all_frames[l]["frame_id"]) for l, _ in matching_pairs
-        ])
-        rhs_frame_ids = np.array([
-            int(rhs_all_frames[r]["frame_id"]) for _, r in matching_pairs
-        ])
-
-        if len(matching_pairs) == 2:
-            frame_span = min(
-                int(np.ptp(lhs_frame_ids)),
-                int(np.ptp(rhs_frame_ids)),
-            )
-            if frame_span < 250:
-                self.logger.debug(
-                    f"Constant-offset check: only two pairs spanning "
-                    f"{frame_span} frames — skipping"
-                )
-                return None
-
-        frame_offsets = lhs_frame_ids - rhs_frame_ids
-        median_offset = float(np.median(frame_offsets))
-        std_offset = float(np.std(frame_offsets))
-
-        if std_offset > 1.0:
-            self.logger.debug(
-                f"Constant-offset check: frame-number std={std_offset:.2f} "
-                f"exceeds 1-frame threshold — skipping"
-            )
-            return None
-
-        # Verify observed ratio matches expected fps_rhs/fps_lhs
-        ratio = PairMatcher.calculate_ratio(matching_pairs)
-        expected_ratio = self.rhs_fps / self.lhs_fps
-        if not PairMatcher.is_ratio_acceptable(ratio, expected_ratio):
-            self.logger.debug(
-                f"Constant-offset check: ratio={ratio:.4f} too far from "
-                f"expected {expected_ratio:.4f} — skipping"
-            )
-            return None
-
-        k = round(median_offset)  # frame-number offset
-
-        # Build frame_id -> timestamp lookup for boundary extrapolation
-        lhs_by_frame = {int(info["frame_id"]): ts for ts, info in lhs_all_frames.items()}
-        rhs_by_frame = {int(info["frame_id"]): ts for ts, info in rhs_all_frames.items()}
-
-        lhs_max_frame = max(lhs_by_frame)
-        rhs_max_frame = max(rhs_by_frame)
-
-        # Common frame range: max(0, k) ≤ lhs_frame ≤ min(lhs_max, rhs_max + k)
-        first_lhs_frame = max(0, k)
-        first_rhs_frame = first_lhs_frame - k  # = max(0, -k)
-        last_lhs_frame = min(lhs_max_frame, rhs_max_frame + k)
-        last_rhs_frame = last_lhs_frame - k
-
-        # Convert frame numbers back to timestamps via lookup (or nearest)
-        lhs_keys = sorted(lhs_all_frames.keys())
-        rhs_keys = sorted(rhs_all_frames.keys())
-
-        last_lhs_timestamp = lhs_keys[-1]
-        last_rhs_timestamp = rhs_keys[-1]
-
-        first_lhs = lhs_by_frame.get(first_lhs_frame,
-                        PairMatcher._snap_to_nearest_frame(lhs_keys, 0))
-        first_rhs = rhs_by_frame.get(first_rhs_frame,
-                        PairMatcher._snap_to_nearest_frame(rhs_keys, 0))
-        last_lhs = lhs_by_frame.get(last_lhs_frame,
-                        PairMatcher._snap_to_nearest_frame(lhs_keys, last_lhs_timestamp))
-        last_rhs = rhs_by_frame.get(last_rhs_frame,
-                        PairMatcher._snap_to_nearest_frame(rhs_keys, last_rhs_timestamp))
-
-        # log details of calculations
-        self.logger.debug(
-            "Constant offset detected: %d frame(s) "
-            "(median=%.1f, std=%.2f). "
-            "Extrapolated boundaries: (%d, %d) - (%d, %d)",
-            k, median_offset, std_offset,
-            first_lhs, first_rhs, last_lhs, last_rhs,
-        )
-
-        lhs_duration = self.lhs_duration_ms if self.lhs_duration_ms is not None else (max(lhs_keys) if lhs_keys else None)
-        rhs_duration = self.rhs_duration_ms if self.rhs_duration_ms is not None else (max(rhs_keys) if rhs_keys else None)
-        lhs_duration_text = generic_utils.ms_to_time(lhs_duration) if lhs_duration is not None else "?"
-        rhs_duration_text = generic_utils.ms_to_time(rhs_duration) if rhs_duration is not None else "?"
-        lhs_ref = f"{self.lhs_label} ({os.path.basename(self.lhs_path)})"
-        rhs_ref = f"{self.rhs_label} ({os.path.basename(self.rhs_path)})"
-
-        if k > 0:
-            offset_description = (
-                f"a small constant frame offset of {k} frame(s); "
-                f"{self.lhs_label} starts the shared content later than {self.rhs_label}"
-            )
-        elif k < 0:
-            offset_description = (
-                f"a small constant frame offset of {-k} frame(s); "
-                f"{self.rhs_label} starts the shared content later than {self.lhs_label}"
-            )
-        else:
-            offset_description = "no frame offset"
-
-        self.logger.info("Files %s and %s have the same content with %s.", lhs_ref, rhs_ref, offset_description)
-
-        self.logger.info(
-            "Common section: %s %s-%s of %s; %s %s-%s of %s.",
-            self.lhs_label,
-            generic_utils.ms_to_time(first_lhs),
-            generic_utils.ms_to_time(last_lhs),
-            lhs_duration_text,
-            self.rhs_label,
-            generic_utils.ms_to_time(first_rhs),
-            generic_utils.ms_to_time(last_rhs),
-            rhs_duration_text,
-        )
-
-        # build result
-        result = list(matching_pairs)
-
-        if (first_lhs, first_rhs) != result[0]:
-            if first_lhs < result[0][0] or first_rhs < result[0][1]:
-                result.insert(0, (first_lhs, first_rhs))
-
-        if (last_lhs, last_rhs) != result[-1]:
-            if last_lhs > result[-1][0] or last_rhs > result[-1][1]:
-                result.append((last_lhs, last_rhs))
-
-        # Add synthetic frame entries for new timestamps
-        for ts, frames, keys in [
-            (first_lhs, lhs_all_frames, lhs_keys),
-            (first_rhs, rhs_all_frames, rhs_keys),
-            (last_lhs, lhs_all_frames, lhs_keys),
-            (last_rhs, rhs_all_frames, rhs_keys),
-        ]:
-            if ts not in frames and keys:
-                nearest = PairMatcher._snap_to_nearest_frame(keys, ts)
-                frames[ts] = frames[nearest].copy()
-
-        return result
-
-    def try_linear_frame_drift_extrapolation(
+    def detect_global_linear(
         self,
         matching_pairs: list[tuple[int, int]],
         lhs_all_frames: FramesInfo,
         rhs_all_frames: FramesInfo,
         *,
-        max_slope_delta: float = 0.002,
+        max_slope_delta: float = 0.05,
         max_median_residual_frames: float = 1.5,
         max_p95_residual_frames: float = 4.0,
         max_outlier_ratio: float = 0.25,
+        max_audio_time_scale_delta: float = 0.30,
+        max_constant_offset_std: float = 1.0,
         min_span_frames: int = 250,
-    ) -> list[tuple[int, int]] | None:
-        """Extrapolate boundaries when frame-number offset drifts almost linearly.
+    ) -> GlobalLinearFit | None:
+        """Detect a single global linear frame relationship over the matched pairs.
 
-        This handles sources that are mostly frame-aligned but one side has an
-        occasional extra/dropped frame.  In that case ``lhs_frame_id -
-        rhs_frame_id`` is not constant, but matching scene pairs should still
-        fit a near-identity line:
+        Both files are assumed related by ``rhs_frame ~= slope*lhs_frame +
+        intercept`` (read from ``frame_id`` in *FramesInfo*).  A constant frame
+        offset is just the ``slope == 1`` special case, so it is tried first (it
+        needs only two well-separated matches); when the offset is not constant
+        the slope and intercept are fitted with RANSAC.  Either way the audio is
+        later placed with one global time-scale, so a constant offset and a
+        time-scaled drift share the same handling.
 
-            rhs_frame_id ~= slope * lhs_frame_id + intercept
+        ``time_scale = slope*lhs_fps/rhs_fps`` may differ from 1 (e.g. a 25 fps
+        PAL speedup vs 24 fps); that only means the audio must be stretched.  It
+        is rejected when larger than ``max_audio_time_scale_delta`` (an
+        implausible match).
 
-        The method only estimates boundary pairs.  It does not imply that the
-        audio can be patched with the constant-offset strategy.
+        This method only *detects* the relation and returns the fit; it does
+        **not** decide the first/last common pair.  The boundaries are found by
+        the content/entropy-aware boundary walk (shared with the GENERIC path),
+        which uses this fit only as a precise predictor of where identical frames
+        should be and stops at the first genuine divergence.  Blindly
+        extrapolating the line to the video edges would pair unrelated content
+        across divergent intros/outros and is non-deterministic across ffmpeg
+        builds, so it is deliberately avoided.
         """
-        if len(matching_pairs) < 4:
+        if len(matching_pairs) < 2:
             return None
 
         try:
-            lhs_frame_ids = np.array([
-                int(lhs_all_frames[l]["frame_id"]) for l, _ in matching_pairs
-            ], dtype=float)
-            rhs_frame_ids = np.array([
-                int(rhs_all_frames[r]["frame_id"]) for _, r in matching_pairs
-            ], dtype=float)
+            lhs_frame_ids = np.array(
+                [int(lhs_all_frames[l]["frame_id"]) for l, _ in matching_pairs], dtype=float
+            )
+            rhs_frame_ids = np.array(
+                [int(rhs_all_frames[r]["frame_id"]) for _, r in matching_pairs], dtype=float
+            )
         except KeyError:
+            return None
+
+        fit = self._fit_constant_offset(
+            lhs_frame_ids, rhs_frame_ids, matching_pairs,
+            max_std=max_constant_offset_std, min_two_pair_span=min_span_frames,
+        )
+        is_constant_offset = fit is not None
+        if fit is None:
+            fit = self._fit_linear_drift(
+                lhs_frame_ids, rhs_frame_ids,
+                max_slope_delta=max_slope_delta,
+                max_median_residual_frames=max_median_residual_frames,
+                max_p95_residual_frames=max_p95_residual_frames,
+                max_outlier_ratio=max_outlier_ratio,
+                min_span_frames=min_span_frames,
+            )
+        if fit is None:
+            return None
+        slope, intercept = fit
+
+        time_scale = slope * self.lhs_fps / self.rhs_fps
+        if abs(time_scale - 1.0) > max_audio_time_scale_delta:
+            self.logger.debug(
+                f"Global-linear check: slope={slope:.6f} implies audio time scale "
+                f"{time_scale:.5f}, beyond the realistic {max_audio_time_scale_delta:.3f} — skipping"
+            )
+            return None
+
+        self._log_global_linear(slope, intercept, time_scale, is_constant_offset)
+        return GlobalLinearFit(slope=slope, intercept=intercept,
+                               is_constant_offset=is_constant_offset, time_scale=time_scale)
+
+    def _fit_constant_offset(
+        self,
+        lhs_frame_ids: np.ndarray,
+        rhs_frame_ids: np.ndarray,
+        matching_pairs: list[tuple[int, int]],
+        *,
+        max_std: float,
+        min_two_pair_span: int,
+    ) -> tuple[float, float] | None:
+        """Fit a constant frame offset (slope == 1).
+
+        Returns ``(slope=1.0, intercept)`` where ``rhs_frame ~= lhs_frame +
+        intercept``, or ``None`` when the offset is not sufficiently constant.
+        """
+        if len(matching_pairs) == 2:
+            span = min(int(np.ptp(lhs_frame_ids)), int(np.ptp(rhs_frame_ids)))
+            if span < min_two_pair_span:
+                self.logger.debug(
+                    f"Constant-offset check: only two pairs spanning {span} frames — skipping"
+                )
+                return None
+
+        offsets = lhs_frame_ids - rhs_frame_ids
+        std_offset = float(np.std(offsets))
+        if std_offset > max_std:
+            self.logger.debug(
+                f"Constant-offset check: frame-number std={std_offset:.2f} exceeds {max_std:.1f} — skipping"
+            )
+            return None
+
+        ratio = PairMatcher.calculate_ratio(matching_pairs)
+        expected_ratio = self.rhs_fps / self.lhs_fps
+        if not PairMatcher.is_ratio_acceptable(ratio, expected_ratio):
+            self.logger.debug(
+                f"Constant-offset check: ratio={ratio:.4f} too far from expected {expected_ratio:.4f} — skipping"
+            )
+            return None
+
+        k = round(float(np.median(offsets)))  # lhs_frame - rhs_frame
+        self.logger.debug(
+            "Constant offset detected: %d frame(s) (median=%.1f, std=%.2f).",
+            k, float(np.median(offsets)), std_offset,
+        )
+        return (1.0, float(-k))
+
+    def _fit_linear_drift(
+        self,
+        lhs_frame_ids: np.ndarray,
+        rhs_frame_ids: np.ndarray,
+        *,
+        max_slope_delta: float,
+        max_median_residual_frames: float,
+        max_p95_residual_frames: float,
+        max_outlier_ratio: float,
+        min_span_frames: int,
+    ) -> tuple[float, float] | None:
+        """Fit a near-identity drift line with RANSAC.
+
+        Returns ``(slope, intercept)`` for ``rhs_frame ~= slope*lhs_frame +
+        intercept`` with ``slope`` close to 1, or ``None`` when the matches do
+        not fit a clean line.
+        """
+        if len(lhs_frame_ids) < 4:
             return None
 
         lhs_span = float(np.max(lhs_frame_ids) - np.min(lhs_frame_ids))
         if lhs_span < min_span_frames:
             self.logger.debug(
-                f"Linear-drift check: matched frame span {lhs_span:.0f} "
-                f"is below {min_span_frames} frames — skipping"
+                f"Linear-drift check: matched frame span {lhs_span:.0f} is below {min_span_frames} frames — skipping"
             )
             return None
 
-        lhs_x = lhs_frame_ids.reshape(-1, 1)
         ransac = RANSACRegressor(
-            LinearRegression(),
-            residual_threshold=max_p95_residual_frames,
-            random_state=0,
+            LinearRegression(), residual_threshold=max_p95_residual_frames, random_state=0,
         )
-        ransac.fit(lhs_x, rhs_frame_ids)
-
+        ransac.fit(lhs_frame_ids.reshape(-1, 1), rhs_frame_ids)
         inliers = ransac.inlier_mask_
         if inliers is None:
-            inliers = np.ones(len(matching_pairs), dtype=bool)
+            inliers = np.ones(len(lhs_frame_ids), dtype=bool)
 
         inlier_count = int(np.sum(inliers))
         if inlier_count < 4:
             self.logger.debug(
-                f"Linear-drift check: only {inlier_count}/{len(matching_pairs)} "
-                "pairs fit the model — skipping"
+                f"Linear-drift check: only {inlier_count}/{len(lhs_frame_ids)} pairs fit the model — skipping"
             )
             return None
 
-        outlier_ratio = 1.0 - inlier_count / len(matching_pairs)
+        outlier_ratio = 1.0 - inlier_count / len(lhs_frame_ids)
         if outlier_ratio > max_outlier_ratio:
             self.logger.debug(
-                f"Linear-drift check: outlier ratio {outlier_ratio:.1%} "
-                f"exceeds {max_outlier_ratio:.1%} — skipping"
+                f"Linear-drift check: outlier ratio {outlier_ratio:.1%} exceeds {max_outlier_ratio:.1%} — skipping"
             )
             return None
 
@@ -683,16 +652,14 @@ class PairMatcher:
         intercept = float(model.intercept_)
 
         if slope <= 0:
-            self.logger.debug(
-                f"Linear-drift check: non-positive slope {slope:.6f} — skipping"
-            )
+            self.logger.debug(f"Linear-drift check: non-positive slope {slope:.6f} — skipping")
             return None
 
         slope_delta = abs(slope - 1.0)
         if slope_delta > max_slope_delta:
             self.logger.debug(
-                f"Linear-drift check: slope={slope:.6f} differs from 1.0 "
-                f"by {slope_delta:.6f}, max {max_slope_delta:.6f} — skipping"
+                f"Linear-drift check: slope={slope:.6f} differs from 1.0 by {slope_delta:.6f}, "
+                f"max {max_slope_delta:.6f} — skipping"
             )
             return None
 
@@ -707,68 +674,325 @@ class PairMatcher:
             )
             return None
 
-        lhs_by_frame = {int(info["frame_id"]): ts for ts, info in lhs_all_frames.items()}
-        rhs_by_frame = {int(info["frame_id"]): ts for ts, info in rhs_all_frames.items()}
+        return (slope, intercept)
 
-        lhs_min_frame = min(lhs_by_frame)
-        lhs_max_frame = max(lhs_by_frame)
-        rhs_min_frame = min(rhs_by_frame)
-        rhs_max_frame = max(rhs_by_frame)
+    def _log_global_linear(
+        self,
+        slope: float,
+        intercept: float,
+        time_scale: float,
+        is_constant_offset: bool,
+    ) -> None:
+        """Log the detected global linear relation (the fit, not the boundaries)."""
+        lhs_ref = f"{self.lhs_label} ({os.path.basename(self.lhs_path)})"
+        rhs_ref = f"{self.rhs_label} ({os.path.basename(self.rhs_path)})"
 
-        epsilon = 1e-6
-        first_lhs_frame = max(lhs_min_frame, int(np.ceil(((rhs_min_frame - intercept) / slope) - epsilon)))
-        last_lhs_frame = min(lhs_max_frame, int(np.floor(((rhs_max_frame - intercept) / slope) + epsilon)))
-        if first_lhs_frame > last_lhs_frame:
-            self.logger.debug(
-                "Linear-drift check: fitted frame ranges do not overlap — skipping"
-            )
-            return None
+        if is_constant_offset:
+            k = int(round(-intercept))  # lhs_frame - rhs_frame
+            if k > 0:
+                relation_text = (
+                    f"a small constant frame offset of {k} frame(s); "
+                    f"{self.lhs_label} starts the shared content later than {self.rhs_label}"
+                )
+            elif k < 0:
+                relation_text = (
+                    f"a small constant frame offset of {-k} frame(s); "
+                    f"{self.rhs_label} starts the shared content later than {self.lhs_label}"
+                )
+            else:
+                relation_text = "no frame offset"
+            same_content_phrase = "have the same content"
+        else:
+            relation_text = f"a linear frame drift (slope={slope:.6f}, intercept={intercept:+.1f})"
+            same_content_phrase = "share content"
 
-        first_rhs_frame = int(round(slope * first_lhs_frame + intercept))
-        last_rhs_frame = int(round(slope * last_lhs_frame + intercept))
-        first_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, first_rhs_frame))
-        last_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, last_rhs_frame))
+        if abs(time_scale - 1.0) > 0.005:
+            relation_text += f", audio time-scaled by {time_scale:.5f}"
 
-        lhs_keys = sorted(lhs_all_frames.keys())
-        rhs_keys = sorted(rhs_all_frames.keys())
+        self.logger.info("Files %s and %s %s with %s.", lhs_ref, rhs_ref, same_content_phrase, relation_text)
 
-        first_lhs = lhs_by_frame.get(first_lhs_frame,
-                        PairMatcher._snap_to_nearest_frame(lhs_keys, lhs_keys[0]))
-        first_rhs = rhs_by_frame.get(first_rhs_frame,
-                        PairMatcher._snap_to_nearest_frame(rhs_keys, rhs_keys[0]))
-        last_lhs = lhs_by_frame.get(last_lhs_frame,
-                        PairMatcher._snap_to_nearest_frame(lhs_keys, lhs_keys[-1]))
-        last_rhs = rhs_by_frame.get(last_rhs_frame,
-                        PairMatcher._snap_to_nearest_frame(rhs_keys, rhs_keys[-1]))
+    def _extrapolate_and_verify_global_linear(
+        self,
+        fit: GlobalLinearFit,
+        matching_pairs: list[tuple[int, int]],
+    ) -> list[tuple[int, int]]:
+        """Extend the first/last common pair along the fitted line through verified content.
 
-        self.logger.info(
-            f"Linear frame drift detected: rhs_frame~={slope:.8f}*lhs_frame"
-            f"{intercept:+.2f} (inliers={inlier_count}/{len(matching_pairs)}, "
-            f"median_residual={median_residual:.2f}, p95={p95_residual:.2f}). "
-            f"Extrapolated boundaries: ({first_lhs}, {first_rhs}) - ({last_lhs}, {last_rhs})"
-        )
+        The fit predicts, for any lhs frame, exactly which rhs frame should hold
+        the same content.  Each boundary is projected to the overlap of the full
+        frame ranges and then **content-verified across the whole gap** between
+        the outermost match and the projected edge: the extension is kept only
+        when every sampled predicted pair in that gap is visually the same frame
+        or both low-entropy (a shared black lead-in/out).  A single endpoint check
+        is not enough — a divergent outro can still fade to black on its last
+        frame — so the gap is sampled.  When it does not verify, the boundary is
+        left at the outermost real match; the line is never blindly projected
+        across divergent content.
+        """
+        slope, intercept = fit.slope, fit.intercept
+        if slope == 0:
+            return sorted(matching_pairs)
+
+        lhs_by_frame = {int(info["frame_id"]): ts for ts, info in self.lhs_all_frames.items()}
+        rhs_by_frame = {int(info["frame_id"]): ts for ts, info in self.rhs_all_frames.items()}
+        lhs_min_frame, lhs_max_frame = min(lhs_by_frame), max(lhs_by_frame)
+        rhs_min_frame, rhs_max_frame = min(rhs_by_frame), max(rhs_by_frame)
 
         result = sorted(matching_pairs)
+        eps = 1e-6
+        # Snap a boundary whose projection lands within a few frames of BOTH
+        # video edges onto the edges themselves — the fit's slope error
+        # accumulates over a long extrapolation, so an equal-length shared
+        # lead-in/out can project a couple frames short of the edge (and would
+        # otherwise stay there, off by 2-3 frames per ffmpeg build).  A
+        # genuinely offset lead-in/out (e.g. 2s vs 6s black) is far past the
+        # tolerance and keeps its predicted position.  The snapped target is
+        # still content-verified by the walk below, never blindly accepted.
+        snap_tol = 4
 
-        if (first_lhs, first_rhs) != result[0]:
-            if first_lhs < result[0][0] or first_rhs < result[0][1]:
-                result.insert(0, (first_lhs, first_rhs))
+        first_lhs_frame = max(lhs_min_frame, int(np.ceil((rhs_min_frame - intercept) / slope - eps)))
+        first_rhs_frame = int(round(slope * first_lhs_frame + intercept))
+        if (
+            first_lhs_frame - lhs_min_frame <= snap_tol
+            and abs(int(round(slope * lhs_min_frame + intercept)) - rhs_min_frame) <= snap_tol
+        ):
+            first_lhs_frame = lhs_min_frame
+            first_rhs_frame = rhs_min_frame
+        first_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, first_rhs_frame))
+        self._maybe_insert_verified_boundary(
+            result, "start", slope, intercept, first_lhs_frame, first_rhs_frame, lhs_by_frame, rhs_by_frame,
+        )
 
-        if (last_lhs, last_rhs) != result[-1]:
-            if last_lhs > result[-1][0] or last_rhs > result[-1][1]:
-                result.append((last_lhs, last_rhs))
-
-        for ts, frames, keys in [
-            (first_lhs, lhs_all_frames, lhs_keys),
-            (first_rhs, rhs_all_frames, rhs_keys),
-            (last_lhs, lhs_all_frames, lhs_keys),
-            (last_rhs, rhs_all_frames, rhs_keys),
-        ]:
-            if ts not in frames and keys:
-                nearest = PairMatcher._snap_to_nearest_frame(keys, ts)
-                frames[ts] = frames[nearest].copy()
+        last_lhs_frame = min(lhs_max_frame, int(np.floor((rhs_max_frame - intercept) / slope + eps)))
+        last_rhs_frame = int(round(slope * last_lhs_frame + intercept))
+        if (
+            lhs_max_frame - last_lhs_frame <= snap_tol
+            and abs(int(round(slope * lhs_max_frame + intercept)) - rhs_max_frame) <= snap_tol
+        ):
+            last_lhs_frame = lhs_max_frame
+            last_rhs_frame = rhs_max_frame
+        last_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, last_rhs_frame))
+        self._maybe_insert_verified_boundary(
+            result, "end", slope, intercept, last_lhs_frame, last_rhs_frame, lhs_by_frame, rhs_by_frame,
+        )
 
         return result
+
+    def _maybe_insert_verified_boundary(
+        self,
+        result: list[tuple[int, int]],
+        side: str,
+        slope: float,
+        intercept: float,
+        lhs_frame: int,
+        rhs_frame: int,
+        lhs_by_frame: dict[int, int],
+        rhs_by_frame: dict[int, int],
+    ) -> None:
+        """Extend the boundary toward the projected edge as far as content verifies.
+
+        Walks from the outermost match toward the projected boundary and keeps the
+        furthest predicted pair that is still content-verified.  A gap that is
+        shared all the way (black lead-out, or frame-identical tail) reaches the
+        edge; a gap that starts shared but then diverges (shared body then a
+        different outro) stops at the divergence; a gap that diverges immediately
+        (different intro) does not move the boundary at all.
+        """
+        lhs_ts = lhs_by_frame.get(lhs_frame)
+        rhs_ts = rhs_by_frame.get(rhs_frame)
+        if lhs_ts is None or rhs_ts is None:
+            return
+
+        anchor = result[0] if side == "start" else result[-1]
+        if side == "start":
+            beyond = lhs_ts < anchor[0] or rhs_ts < anchor[1]
+        else:
+            beyond = lhs_ts > anchor[0] or rhs_ts > anchor[1]
+        if not beyond or (lhs_ts, rhs_ts) == anchor:
+            return
+
+        anchor_info = self.lhs_all_frames.get(anchor[0])
+        if anchor_info is None:
+            return
+        anchor_lhs_frame = int(anchor_info["frame_id"])
+
+        verified = self._walk_shared_boundary(
+            slope, intercept, anchor_lhs_frame, lhs_frame, rhs_frame, lhs_by_frame, rhs_by_frame,
+        )
+        if verified is None or verified == anchor:
+            self.logger.debug(
+                "Global-linear %s gap diverges before any shared frame — keeping the "
+                "boundary at the outermost match", side,
+            )
+            return
+
+        if side == "start":
+            result.insert(0, verified)
+        else:
+            result.append(verified)
+
+    def _walk_shared_boundary(
+        self,
+        slope: float,
+        intercept: float,
+        anchor_lhs_frame: int,
+        boundary_lhs_frame: int,
+        boundary_rhs_frame: int,
+        lhs_by_frame: dict[int, int],
+        rhs_by_frame: dict[int, int],
+    ) -> tuple[int, int] | None:
+        """Walk ~0.5s-spaced predicted pairs from the match toward the projected
+        boundary; return the furthest ``(lhs_ts, rhs_ts)`` that is still shared.
+
+        Sampling the whole gap (not just its endpoint) distinguishes a shared black
+        lead-out from a divergent outro that merely fades to black on its last
+        frame, and stopping at the first divergence keeps the shared body that
+        precedes a different tail.  Returns ``None`` when the very first step
+        diverges.
+        """
+        direction = 1 if boundary_lhs_frame >= anchor_lhs_frame else -1
+        step = max(1, int(self.lhs_fps * 0.5))
+
+        # Ordered (lhs_frame, rhs_frame) samples from just past the match to the
+        # projected boundary (inclusive); the boundary uses its snapped rhs.
+        samples: list[tuple[int, int]] = []
+        f = anchor_lhs_frame + direction * step
+        while (direction == 1 and f < boundary_lhs_frame) or (direction == -1 and f > boundary_lhs_frame):
+            rhs_f = int(round(slope * f + intercept))
+            if rhs_f not in rhs_by_frame and rhs_by_frame:
+                rhs_f = min(rhs_by_frame, key=lambda k: abs(k - rhs_f))
+            samples.append((f, rhs_f))
+            f += direction * step
+        samples.append((boundary_lhs_frame, boundary_rhs_frame))
+
+        # Bulk-extract every sampled frame up front (two ffmpeg calls) so the
+        # per-sample verification below only reads images.  The rhs fetch also
+        # covers the ±2 neighbours used by the prediction-jitter retry — a
+        # later single-frame extraction would wipe the prefetched files
+        # (extract_frames_at_ranges cleans its target directory).
+        self._prefetch_boundary_images(self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames, [lf for lf, _ in samples])
+        rhs_with_neighbours = sorted({rf + d for _, rf in samples for d in (-2, -1, 0, 1, 2)})
+        self._prefetch_boundary_images(self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames, rhs_with_neighbours)
+
+        best: tuple[int, int] | None = None
+        for lhs_f, rhs_f in samples:
+            lhs_ts = lhs_by_frame.get(lhs_f)
+            rhs_ts = rhs_by_frame.get(rhs_f)
+            if lhs_ts is None or rhs_ts is None:
+                break
+            if not self._shared_content_at_prediction(lhs_f, rhs_f, lhs_ts, rhs_by_frame):
+                break
+            best = (lhs_ts, rhs_ts)
+        return best
+
+    def _shared_content_at_prediction(
+        self,
+        lhs_frame: int,
+        rhs_frame: int,
+        lhs_ts: int,
+        rhs_by_frame: dict[int, int],
+    ) -> bool:
+        """Content-check the predicted pair, tolerating ±2 frames of rhs jitter.
+
+        The fit's rhs prediction can be a frame or two off (rounding, and
+        frame-probe differences between ffmpeg builds); in fast motion that is
+        enough to push the exact predicted pair past the phash gate even for
+        genuinely shared content.  Retry against the rhs neighbours before
+        declaring divergence — a divergent intro/outro fails for every
+        neighbour, so the tolerance does not weaken divergence rejection, and
+        the returned boundary pair stays the predicted one (on the fitted
+        line), keeping the boundary error within the allowed 1-2 frames.
+        """
+        for delta in (0, -1, 1, -2, 2):
+            candidate_frame = rhs_frame + delta
+            candidate_ts = rhs_by_frame.get(candidate_frame)
+            if candidate_ts is None:
+                continue
+            if self._boundary_content_matches(lhs_frame, candidate_frame, lhs_ts, candidate_ts):
+                return True
+        return False
+
+    def _prefetch_boundary_images(
+        self, video_path: str, out_dir: str, frames: FramesInfo, frame_ids: list[int],
+    ) -> None:
+        """Extract any not-yet-extracted *frame_ids* in a single ffmpeg pass."""
+        frame_id_to_ts = {int(info["frame_id"]): ts for ts, info in frames.items()}
+        missing = sorted({
+            fid for fid in frame_ids
+            if frame_id_to_ts.get(fid) is not None and not frames[frame_id_to_ts[fid]].get("path")
+        })
+        if not missing:
+            return
+        try:
+            video_utils.extract_frames_at_ranges(
+                video_path, out_dir, [(fid, fid) for fid in missing], frames,
+                scale=(960, -2), format="png", interruption=self.interruption,
+                desc="Verifying boundary gap", logger=self.logger,
+            )
+        except Exception as e:  # pragma: no cover - extraction failure is non-fatal
+            self.logger.debug("Boundary gap extraction failed: %s", e)
+
+    def _boundary_content_matches(self, lhs_frame: int, rhs_frame: int, lhs_ts: int, rhs_ts: int) -> bool:
+        """Verify that the extrapolated boundary frames actually share content.
+
+        True when both frames are low-entropy (a shared black lead-in/out) or the
+        two frames are visually the same picture.  A divergent intro/outro (e.g.
+        grass vs atoms) is neither, so the extrapolation is rejected there.
+
+        ORB match count alone cannot make that call: two unrelated textured
+        frames (grass vs atoms) can yield dozens of cross-checked ORB matches,
+        just with large descriptor distances.  The fit predicts the *same*
+        frame, so the perceptual hashes must also be close.  Measured on the
+        960px boundary frames (256-bit hash): the same frame across a
+        quality/speed change is ≲ 22 bits apart, a shared-content sample whose
+        prediction is a frame or two off in fast motion reaches ~66, and
+        divergent intros are ≳ 124 — the 96-bit gate keeps ~30 bits of margin
+        to both sides.
+
+        The hashes are computed fresh (not via ``self.phash``): boundary
+        extraction re-uses ``frame_%08d`` file names across invocations, so a
+        path-keyed cache could return the hash of a previously extracted frame.
+        """
+        lhs_path = self._ensure_boundary_image(self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames, lhs_frame, lhs_ts)
+        rhs_path = self._ensure_boundary_image(self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames, rhs_frame, rhs_ts)
+        if lhs_path is None or rhs_path is None:
+            return False
+
+        lhs_black = not PairMatcher._is_rich(lhs_path)
+        rhs_black = not PairMatcher._is_rich(rhs_path)
+        if lhs_black and rhs_black:
+            return True
+        if lhs_black != rhs_black:
+            return False
+        phash_distance = abs(compute_phash(lhs_path) - compute_phash(rhs_path))
+        if phash_distance > self._MAX_BOUNDARY_PHASH_DISTANCE:
+            return False
+        return image_utils.are_images_similar(lhs_path, rhs_path)
+
+    def _ensure_boundary_image(
+        self, video_path: str, out_dir: str, frames: FramesInfo, frame_id: int, ts: int,
+    ) -> str | None:
+        """Return an on-disk image path for *frame_id*, extracting it on demand.
+
+        The frame is already probed (so its timestamp entry exists) but may lack
+        an extracted image; this extracts just that single frame for boundary
+        verification, far cheaper than the full boundary refinement.
+        """
+        info = frames.get(ts)
+        if info is None:
+            return None
+        if info.get("path"):
+            return info["path"]
+        try:
+            video_utils.extract_frames_at_ranges(
+                video_path, out_dir, [(frame_id, frame_id)], frames,
+                scale=(960, -2), format="png", interruption=self.interruption,
+                desc="Verifying boundary frame", logger=self.logger,
+            )
+        except Exception as e:  # pragma: no cover - extraction failure is non-fatal
+            self.logger.debug("Boundary frame extraction failed for frame %d: %s", frame_id, e)
+            return None
+        return frames.get(ts, {}).get("path")
 
     def snap_to_edges(
         self,
@@ -850,36 +1074,102 @@ class PairMatcher:
             lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames, debug,
         )
 
-        # Try constant-offset shortcut — when all pairs share a nearly
-        # constant lhs−rhs offset we can extrapolate boundaries directly,
-        # skipping the expensive iterative search.
-        constant_offset_pairs = self.try_constant_offset_extrapolation(
+        # Diagnostic summary of the frame-space relationship.  Logged at INFO so
+        # the chosen relation (and the audio strategy that follows) can be
+        # understood without enabling --verbose.
+        self._log_relation_diagnostics(matching_pairs)
+
+        # Detect a single global linear frame relation (constant offset = slope
+        # 1, or a fitted near-identity drift).  This decides the *relation* (and
+        # thus the audio strategy) and yields the precise time-scale for the
+        # audio.
+        global_linear_fit = self.detect_global_linear(
             matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
         )
-        relation = MappingRelation.GENERIC
 
-        if constant_offset_pairs is None:
+        if global_linear_fit is not None:
+            relation = MappingRelation.GLOBAL_LINEAR
+            # Use the fit as a precise predictor of where identical frames should
+            # be, extend each boundary toward the video edge, and keep the
+            # extension only where the predicted pair is content-verified (same
+            # frame, or both low-entropy black).  A genuinely different intro/outro
+            # fails verification and the boundary stays at the outermost real
+            # match — the line is never blindly projected across divergent
+            # content.  No timestamp edge-snap here: the extension is already
+            # frame-exact on the fitted line.
+            matching_pairs = self._extrapolate_and_verify_global_linear(global_linear_fit, matching_pairs)
+            debug.dump_matches(matching_pairs, "after verified global-linear extrapolation")
+        else:
+            relation = MappingRelation.GENERIC
+            # No global relation — fall back to the content/entropy-aware
+            # iterative boundary search.
             matching_pairs = self._extract_and_refine_boundaries(
                 matching_pairs, lhs_scene_ranges, rhs_scene_ranges,
                 lhs_normalized_frames, rhs_normalized_frames, debug,
             )
-        else:
-            matching_pairs = constant_offset_pairs
-            relation = MappingRelation.CONSTANT_FRAME_OFFSET
-            debug.dump_matches(matching_pairs, "after constant-offset extrapolation")
-
-        # Snap near-edge pairs only for heuristic boundary search results.
-        # Constant-offset extrapolation already yields exact frame-aligned
-        # boundaries, so applying timestamp-based edge snapping here could
-        # distort the precise offset.
-        if relation != MappingRelation.CONSTANT_FRAME_OFFSET:
             matching_pairs = self.snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
+
+        self.logger.info("Mapping relation chosen: %s", relation.value)
 
         return SegmentsMappingResult(
             mapping=matching_pairs,
             lhs_all_frames=self.lhs_all_frames,
             rhs_all_frames=self.rhs_all_frames,
             relation=relation,
+        )
+
+    def _log_relation_diagnostics(self, matching_pairs: list[tuple[int, int]]) -> None:
+        """Log the frame-space metrics that drive the mapping-relation choice.
+
+        Emitted at INFO so the constant-offset / linear-drift / generic decision
+        (and the audio strategy that follows from it) is visible without
+        --verbose.  The individual ``try_*`` methods still log their precise
+        rejection reasons at DEBUG.
+        """
+        expected_ratio = self.rhs_fps / self.lhs_fps if self.lhs_fps else float("nan")
+        self.logger.info(
+            "Relation diagnostics: %s fps=%.4f, %s fps=%.4f, "
+            "expected lhs/rhs time ratio=%.4f, matched pairs=%d",
+            self.lhs_label, self.lhs_fps, self.rhs_label, self.rhs_fps,
+            expected_ratio, len(matching_pairs),
+        )
+
+        if len(matching_pairs) < 2:
+            self.logger.info("  too few matched pairs for offset/drift analysis")
+            return
+
+        try:
+            lhs_frame_ids = np.array(
+                [int(self.lhs_all_frames[l]["frame_id"]) for l, _ in matching_pairs],
+                dtype=float,
+            )
+            rhs_frame_ids = np.array(
+                [int(self.rhs_all_frames[r]["frame_id"]) for _, r in matching_pairs],
+                dtype=float,
+            )
+        except KeyError:
+            self.logger.info("  matched frames lack frame_id; skipping offset/drift analysis")
+            return
+
+        frame_offsets = lhs_frame_ids - rhs_frame_ids
+        median_offset = float(np.median(frame_offsets))
+        std_offset = float(np.std(frame_offsets))
+        lhs_span = float(np.ptp(lhs_frame_ids))
+        ratio = PairMatcher.calculate_ratio(matching_pairs)
+
+        if lhs_span > 0:
+            slope = float(np.polyfit(lhs_frame_ids, rhs_frame_ids, 1)[0])
+        else:
+            slope = float("nan")
+        time_scale = slope * self.lhs_fps / self.rhs_fps if self.rhs_fps else float("nan")
+
+        self.logger.info(
+            "  frame-offset median=%.2f std=%.2f (constant offset needs std<=1.0, "
+            "else RANSAC drift with slope within 0.05 of 1.0); "
+            "matched frame span=%.0f; observed time ratio=%.4f; "
+            "frame slope=%.5f -> audio time scale=%.5f (audio is globally "
+            "time-scaled by this factor)",
+            median_offset, std_offset, lhs_span, ratio, slope, time_scale,
         )
 
     def _normalize_frames(self, frames_info: FramesInfo, wd: str, desc: str = "Normalizing frames", prefix: str = "") -> FramesInfo:
@@ -1277,7 +1567,16 @@ class PairMatcher:
         ]
         self.logger.debug(f"After ORB elimination:     {PairMatcher.summarize_pairs(self.phash, orb_filtered, lhs_all, rhs_all)}")
 
-        cutoff = self._calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
+        # The adaptive cutoff (median + 2*std) collapses to ~0 only when the
+        # surviving matches are pixel-perfect (identical content — e.g. re-muxed
+        # or container-offset variants of the same source).  In that degenerate
+        # case the temporal-consistency check below would demand pixel-perfect
+        # *neighbours* too — impossible across a speed/resolution difference — and
+        # would collapse a dozen good matches to one, dropping the pair into the
+        # GENERIC path.  Floor it there only; a normal (degraded) cutoff is left
+        # untouched so genuine mismatches stay rejected.
+        raw_cutoff = self._calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
+        cutoff = self._MIN_PHASH_CUTOFF if raw_cutoff < 1.0 else raw_cutoff
         final = [pair for pair in orb_filtered if self._check_history(pair, lhs_all, rhs_all, cutoff)]
         self.logger.debug(f"After history analysis:    {PairMatcher.summarize_pairs(self.phash, final, lhs_all, rhs_all)}")
 

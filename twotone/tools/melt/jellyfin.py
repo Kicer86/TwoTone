@@ -29,6 +29,16 @@ class JellyfinSource(DuplicatesSource):
         self.last_tmdb_request: float = 0.0
         self.tmdb_api_key = os.getenv("TMDB_API_KEY")
 
+    def _auth_headers(self) -> dict[str, str]:
+        authorization = (
+            f"MediaBrowser Client=\"TwoTone\", Device=\"TwoTone\", "
+            f"DeviceId=\"twotone\", Version=\"1.0.0\", Token=\"{self.token}\""
+        )
+        return {
+            "X-Emby-Token": self.token,
+            "Authorization": authorization,
+        }
+
     def _fix_path(self, path: str) -> str:
         fixed_path = path
         if self.path_fix:
@@ -46,9 +56,7 @@ class JellyfinSource(DuplicatesSource):
     @override
     def collect_duplicates(self) -> dict[str, tuple]:
         endpoint = f"{self.url}"
-        headers = {
-            "X-Emby-Token": self.token
-        }
+        headers = self._auth_headers()
 
         paths_by_id: dict = defaultdict(lambda: defaultdict(list))
 
