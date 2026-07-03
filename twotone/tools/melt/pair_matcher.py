@@ -119,6 +119,13 @@ class PairMatcher:
         self.lhs_duration_ms: int | None = lhs_video_data.get("length")
         self.rhs_duration_ms: int | None = rhs_video_data.get("length")
 
+        # Every probed frame timestamp -> {"frame_id": ..., "path": ...}.
+        # Filled by the create_segments_mapping pipeline (_probe_frames) and
+        # mutated in place as frames get extracted (path set), normalized and
+        # edge-snapped (synthetic entries added).
+        self.lhs_all_frames: FramesInfo = {}
+        self.rhs_all_frames: FramesInfo = {}
+
         lhs_wd = os.path.join(self.wd, "lhs")
         rhs_wd = os.path.join(self.wd, "rhs")
 
