@@ -13,7 +13,7 @@ from typing import Any, Callable, NamedTuple
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
 from .melt_common import FramesInfo
-from .phash_cache import PhashCache
+from .phash_cache import PhashCache, compute_phash
 from ..utils import files_utils, generic_utils, image_utils, video_utils
 
 
@@ -61,6 +61,10 @@ class PairMatcher:
     # would then demand pixel-perfect frames — impossible across a speed or
     # resolution difference — so it is floored to this value.
     _MIN_PHASH_CUTOFF = 16
+    # Maximum phash distance (bits, of hash_size 16 → 256) between two
+    # boundary-extrapolation frames still considered the same picture; see
+    # _boundary_content_matches for the measured separation behind the value.
+    _MAX_BOUNDARY_PHASH_DISTANCE = 96
 
     def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2", cache: MeltCache | None = None) -> None:
         self.interruption = interruption
@@ -892,6 +896,20 @@ class PairMatcher:
         True when both frames are low-entropy (a shared black lead-in/out) or the
         two frames are visually the same picture.  A divergent intro/outro (e.g.
         grass vs atoms) is neither, so the extrapolation is rejected there.
+
+        ORB match count alone cannot make that call: two unrelated textured
+        frames (grass vs atoms) can yield dozens of cross-checked ORB matches,
+        just with large descriptor distances.  The fit predicts the *same*
+        frame, so the perceptual hashes must also be close.  Measured on the
+        960px boundary frames (256-bit hash): the same frame across a
+        quality/speed change is ≲ 22 bits apart, a shared-content sample whose
+        prediction is a frame or two off in fast motion reaches ~66, and
+        divergent intros are ≳ 124 — the 96-bit gate keeps ~30 bits of margin
+        to both sides.
+
+        The hashes are computed fresh (not via ``self.phash``): boundary
+        extraction re-uses ``frame_%08d`` file names across invocations, so a
+        path-keyed cache could return the hash of a previously extracted frame.
         """
         lhs_path = self._ensure_boundary_image(self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames, lhs_frame, lhs_ts)
         rhs_path = self._ensure_boundary_image(self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames, rhs_frame, rhs_ts)
@@ -903,6 +921,9 @@ class PairMatcher:
         if lhs_black and rhs_black:
             return True
         if lhs_black != rhs_black:
+            return False
+        phash_distance = abs(compute_phash(lhs_path) - compute_phash(rhs_path))
+        if phash_distance > self._MAX_BOUNDARY_PHASH_DISTANCE:
             return False
         return image_utils.are_images_similar(lhs_path, rhs_path)
 

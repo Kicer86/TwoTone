@@ -642,6 +642,12 @@ class PairMatcherUnitTest(unittest.TestCase):
         pm.rhs_all_frames = self._make_frames(rhs_ts, prefix="rhs")
         return pm
 
+    @staticmethod
+    def _patch_boundary_phash(values: dict):
+        """Patch the fresh phash computation used by _boundary_content_matches."""
+        return patch('twotone.tools.melt.pair_matcher.compute_phash',
+                     side_effect=lambda path, hash_size=16: values[path])
+
     def test_verified_extrapolation_extends_to_edges_when_content_matches(self):
         """When the extrapolated boundary frames verify, the boundary reaches the edge."""
         pm = self._make_pm_with_frames(list(range(0, 10040, 40)), list(range(0, 10040, 40)))
@@ -709,8 +715,36 @@ class PairMatcherUnitTest(unittest.TestCase):
         pm = self._make_pm_with_frames([0, 40], [0, 40])
         with patch.object(PairMatcher, '_ensure_boundary_image', side_effect=["/l.png", "/r.png"]), \
              patch.object(PairMatcher, '_is_rich', return_value=True), \
+             self._patch_boundary_phash({"/l.png": 0, "/r.png": 0}), \
              patch.object(image_utils, 'are_images_similar', return_value=False):
             self.assertFalse(pm._boundary_content_matches(0, 0, 0, 0))
+
+    def test_boundary_content_matches_accepts_same_content(self):
+        """Phash-close and ORB-similar boundary frames verify as shared content."""
+        pm = self._make_pm_with_frames([0, 40], [0, 40])
+        # Same frame across a quality/speed change: small phash distance.
+        with patch.object(PairMatcher, '_ensure_boundary_image', side_effect=["/l.png", "/r.png"]), \
+             patch.object(PairMatcher, '_is_rich', return_value=True), \
+             self._patch_boundary_phash({"/l.png": 0, "/r.png": 30}), \
+             patch.object(image_utils, 'are_images_similar', return_value=True):
+            self.assertTrue(pm._boundary_content_matches(0, 0, 0, 0))
+
+    def test_boundary_content_matches_rejects_orb_similar_but_phash_distant(self):
+        """Unrelated textured intros (grass vs atoms) can produce dozens of
+        cross-checked ORB matches; the phash gate must reject them anyway.
+
+        Regression: on ffmpeg builds where the drift fit succeeded, the
+        global-linear extrapolation crossed divergent intros because the ORB
+        count alone verified them."""
+        pm = self._make_pm_with_frames([0, 40], [0, 40])
+        # Divergent content: large phash distance (measured grass vs atoms ~124).
+        with patch.object(PairMatcher, '_ensure_boundary_image', side_effect=["/l.png", "/r.png"]), \
+             patch.object(PairMatcher, '_is_rich', return_value=True), \
+             self._patch_boundary_phash({"/l.png": 0, "/r.png": 124}), \
+             patch.object(image_utils, 'are_images_similar', return_value=True) as similar:
+            self.assertFalse(pm._boundary_content_matches(0, 0, 0, 0))
+        # The phash gate rejects before ORB even runs.
+        similar.assert_not_called()
 
     def test_boundary_content_matches_rejects_black_vs_content(self):
         """A black frame vs a rich frame never verifies (one lead-in is black)."""
