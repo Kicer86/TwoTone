@@ -63,6 +63,8 @@ class SegmentsMappingResult(NamedTuple):
     lhs_all_frames: FramesInfo
     rhs_all_frames: FramesInfo
     relation: MappingRelation
+    lhs_fps: float
+    rhs_fps: float
 
 
 class _BoundarySearchContext(NamedTuple):
@@ -1143,6 +1145,8 @@ class PairMatcher:
             lhs_all_frames=self.lhs_all_frames,
             rhs_all_frames=self.rhs_all_frames,
             relation=relation,
+            lhs_fps=self.lhs_fps,
+            rhs_fps=self.rhs_fps,
         )
 
     def _log_relation_diagnostics(self, matching_pairs: list[tuple[int, int]]) -> None:

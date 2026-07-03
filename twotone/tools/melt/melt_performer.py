@@ -9,7 +9,7 @@ from tqdm import tqdm
 from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
-from .pair_matcher import CoverageSummary, MappingRelation, PairMatcher
+from .pair_matcher import CoverageSummary, MappingRelation, PairMatcher, SegmentsMappingResult
 from .melt_common import FramesInfo, StreamType, _ensure_working_dir, _is_length_mismatch
 from .track_timeline import TrackTimelineMixin
 
@@ -22,14 +22,9 @@ class _SegmentRange(NamedTuple):
 
 
 class _PairMatchResult(NamedTuple):
-    mapping: list[tuple[int, int]]
-    lhs_all_frames: FramesInfo
-    rhs_all_frames: FramesInfo
-    mapping_relation: MappingRelation
-    base_duration: int
+    """A cached PairMatcher outcome for one (base, source) video pair."""
+    matching: SegmentsMappingResult
     source_duration: int
-    lhs_fps: float
-    rhs_fps: float
 
 
 class _StreamEntry(NamedTuple):
@@ -993,16 +988,9 @@ class MeltPerformer(TrackTimelineMixin):
                     lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
                     cache=self.cache,
                 )
-                mapping_result = matcher.create_segments_mapping()
                 match_result = _PairMatchResult(
-                    mapping=mapping_result.mapping,
-                    lhs_all_frames=mapping_result.lhs_all_frames,
-                    rhs_all_frames=mapping_result.rhs_all_frames,
-                    mapping_relation=mapping_result.relation,
-                    base_duration=base_duration,
+                    matching=matcher.create_segments_mapping(),
                     source_duration=duration,
-                    lhs_fps=matcher.lhs_fps,
-                    rhs_fps=matcher.rhs_fps,
                 )
                 self._pair_match_cache[cache_key] = match_result
             else:
@@ -1011,13 +999,13 @@ class MeltPerformer(TrackTimelineMixin):
                     lhs_id, rhs_id,
                 )
 
-            lhs_all_frames = match_result.lhs_all_frames
-            rhs_all_frames = match_result.rhs_all_frames
-            mapping_relation = match_result.mapping_relation
+            matching = match_result.matching
+            lhs_all_frames = matching.lhs_all_frames
+            rhs_all_frames = matching.rhs_all_frames
             duration = match_result.source_duration
 
             strategy, mapping = self._choose_audio_strategy(
-                video_path_base, audio_path, match_result,
+                video_path_base, audio_path, matching,
             )
             self.logger.info("  Audio strategy: %s", strategy.value)
 
@@ -1040,8 +1028,8 @@ class MeltPerformer(TrackTimelineMixin):
                 mapping,
                 base_duration,
                 duration,
-                match_result.lhs_fps,
-                match_result.rhs_fps,
+                matching.lhs_fps,
+                matching.rhs_fps,
                 lhs_id,
                 rhs_id,
             )
@@ -1049,8 +1037,8 @@ class MeltPerformer(TrackTimelineMixin):
             self.logger.debug(
                 "Audio patching: base_duration=%d ms, source_duration=%d ms, "
                 "mapping_relation=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
-                base_duration, duration, mapping_relation.value,
-                match_result.lhs_fps, match_result.rhs_fps, len(mapping),
+                base_duration, duration, matching.relation.value,
+                matching.lhs_fps, matching.rhs_fps, len(mapping),
             )
             if mapping:
                 self.logger.debug(
@@ -1078,7 +1066,7 @@ class MeltPerformer(TrackTimelineMixin):
         self,
         video_path_base: str,
         audio_path: str,
-        match_result: "_PairMatchResult",
+        matching: SegmentsMappingResult,
     ) -> tuple[_AudioStrategy, list[tuple[int, int]]]:
         """Pick the strategy for fitting the source audio to the base video.
 
@@ -1105,8 +1093,8 @@ class MeltPerformer(TrackTimelineMixin):
         frame-space shortcut), which makes the subsegment patcher scale
         correctly.
         """
-        mapping = match_result.mapping
-        relation = match_result.mapping_relation
+        mapping = matching.mapping
+        relation = matching.relation
 
         seg_raw = self._segment_range(mapping)
         raw_source_span = seg_raw.rhs_end - seg_raw.rhs_start
@@ -1116,10 +1104,10 @@ class MeltPerformer(TrackTimelineMixin):
             video_path_base,
             audio_path,
             mapping,
-            match_result.lhs_all_frames,
-            match_result.rhs_all_frames,
-            match_result.lhs_fps,
-            match_result.rhs_fps,
+            matching.lhs_all_frames,
+            matching.rhs_all_frames,
+            matching.lhs_fps,
+            matching.rhs_fps,
         )
 
         if relation == MappingRelation.GLOBAL_LINEAR:
@@ -1138,18 +1126,18 @@ class MeltPerformer(TrackTimelineMixin):
             video_path_base,
             audio_path,
             mapping,
-            match_result.lhs_all_frames,
-            match_result.rhs_all_frames,
-            match_result.lhs_fps,
-            match_result.rhs_fps,
+            matching.lhs_all_frames,
+            matching.rhs_all_frames,
+            matching.lhs_fps,
+            matching.rhs_fps,
         )
         if recovered_mapping is None:
             recovered_mapping = self._try_sparse_linear_audio_extrapolation(
                 mapping,
-                match_result.lhs_all_frames,
-                match_result.rhs_all_frames,
-                match_result.lhs_fps,
-                match_result.rhs_fps,
+                matching.lhs_all_frames,
+                matching.rhs_all_frames,
+                matching.lhs_fps,
+                matching.rhs_fps,
             )
         if recovered_mapping is not None:
             mapping = recovered_mapping
