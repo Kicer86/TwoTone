@@ -901,11 +901,10 @@ class PairMatcher:
             f += direction * step
         samples.append((boundary_lhs_frame, boundary_rhs_frame))
 
-        # Bulk-extract every sampled frame up front (two ffmpeg calls) so the
-        # per-sample verification below only reads images.  The rhs fetch also
-        # covers the ±2 neighbours used by the prediction-jitter retry — a
-        # later single-frame extraction would wipe the prefetched files
-        # (extract_frames_at_ranges cleans its target directory).
+        # Bulk-extract every sampled frame up front (two ffmpeg calls),
+        # including the ±2 rhs neighbours used by the prediction-jitter retry,
+        # so the per-sample verification below only reads images instead of
+        # spawning one-frame ffmpeg extractions.
         self._prefetch_boundary_images(self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames, [lf for lf, _ in samples])
         rhs_with_neighbours = sorted({rf + d for _, rf in samples for d in (-2, -1, 0, 1, 2)})
         self._prefetch_boundary_images(self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames, rhs_with_neighbours)
@@ -985,9 +984,8 @@ class PairMatcher:
         divergent intros are ≳ 124 — the 96-bit gate keeps ~30 bits of margin
         to both sides.
 
-        The hashes are computed fresh (not via ``self.phash``): boundary
-        extraction re-uses ``frame_%08d`` file names across invocations, so a
-        path-keyed cache could return the hash of a previously extracted frame.
+        The hashes are computed fresh (not via ``self.phash``): each sampled
+        pair is checked once, so a cache would add nothing.
         """
         lhs_path = self._ensure_boundary_image(self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames, lhs_frame, lhs_ts)
         rhs_path = self._ensure_boundary_image(self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames, rhs_frame, rhs_ts)

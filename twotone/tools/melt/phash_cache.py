@@ -7,9 +7,8 @@ from PIL import Image
 def compute_phash(image_path: str, hash_size: int = 16) -> imagehash.ImageHash:
     """Hash the image as it is on disk right now, without caching.
 
-    Use this for files whose path may be re-used with different content —
-    e.g. frames re-extracted into the same ``frame_%08d`` name — where a
-    path-keyed cache would return the hash of the previous content.
+    Use this when a path-keyed cache would add nothing (the file is hashed
+    once) or cannot be trusted (the content at the path may change).
     """
     with Image.open(image_path) as img:
         return imagehash.phash(img, hash_size=hash_size)

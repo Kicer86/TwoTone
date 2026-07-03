@@ -3,7 +3,9 @@ import logging
 import os
 import platform
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -488,6 +490,13 @@ def extract_frames_at_ranges(
     For each extracted frame, the ``"path"`` value at the matching timestamp
     key is set to the written file on disk.
 
+    Extracted files are named ``frame_<timestamp_ms>.<format>`` — unique and
+    stable across invocations, so paths recorded in *probed_metadata* by
+    earlier extractions into the same directory stay valid, and path-keyed
+    caches never see a path re-used with different content.  ffmpeg itself
+    writes sequentially-numbered files into a private temporary subdirectory,
+    which are renamed once the showinfo timestamps are known.
+
     Uses ffmpeg's ``select='between(n,a,b)+…'`` filter so only the
     requested frames are encoded and written.  The select expression is
     structured as a balanced binary tree of ``+`` operations so that the
@@ -507,8 +516,6 @@ def extract_frames_at_ranges(
             scale_filter = f"scale=iw/{rscale}:ih/{rscale}"
     elif isinstance(scale, tuple):
         scale_filter = f"scale={scale[0]}:{scale[1]}"
-
-    output_pattern = os.path.join(target_dir, f"frame_%08d.{format}")
 
     vf_parts = [f"select='{select_expr}'", "showinfo"]
     if scale_filter:
@@ -543,63 +550,68 @@ def extract_frames_at_ranges(
         [],
     ]
 
-    def _clean_target_dir():
-        for filename in os.listdir(target_dir):
-            fp = os.path.join(target_dir, filename)
-            if os.path.isfile(fp):
-                os.unlink(fp)
+    work_dir = tempfile.mkdtemp(prefix=".extract_", dir=target_dir)
+    output_pattern = os.path.join(work_dir, f"frame_%08d.{format}")
 
-    last_stderr: list[str] = []
-    for opts in fallback_options:
-        _clean_target_dir()
-        showinfo_entries.clear()
-        pbar.reset()
+    def _clean_work_dir():
+        for filename in os.listdir(work_dir):
+            os.unlink(os.path.join(work_dir, filename))
 
-        args = [
-            "-i", video_path,
-            "-map", "0:v:0",
-            "-an", "-sn", "-dn",
-            *opts,
-            "-q:v", "2",
-            "-vf", ",".join(vf_parts),
-            output_pattern,
-        ]
+    try:
+        last_stderr: list[str] = []
+        for opts in fallback_options:
+            _clean_work_dir()
+            showinfo_entries.clear()
+            pbar.reset()
 
-        proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line, logger=logger)
-        last_stderr = stderr_lines
+            args = [
+                "-i", video_path,
+                "-map", "0:v:0",
+                "-an", "-sn", "-dn",
+                *opts,
+                "-q:v", "2",
+                "-vf", ",".join(vf_parts),
+                output_pattern,
+            ]
 
-        if proc.returncode == 0:
-            break
-    else:
-        pbar.close()
-        stderr_tail = "".join(last_stderr[-20:]) if last_stderr else "(no output)"
-        raise RuntimeError(
-            f"ffmpeg selective extraction failed for {basename}. "
-            f"Last output:\n{stderr_tail}"
-        )
+            proc, stderr_lines = _start_ffmpeg_streaming(args, interruption, on_line=_on_line, logger=logger)
+            last_stderr = stderr_lines
 
-    pbar.close()
-
-    frame_files = sorted(os.listdir(target_dir))
-
-    usable = min(len(showinfo_entries), len(frame_files))
-    if len(showinfo_entries) != len(frame_files):
-        logger.warning(
-            f"Frame count mismatch for {basename}: showinfo reported "
-            f"{len(showinfo_entries)} frames but {len(frame_files)} files "
-            f"on disk. Using {usable}."
-        )
-
-    for i in range(usable):
-        _, timestamp_ms = showinfo_entries[i]
-        fname = frame_files[i]
-        if timestamp_ms in probed_metadata:
-            probed_metadata[timestamp_ms]["path"] = os.path.join(target_dir, fname)
+            if proc.returncode == 0:
+                break
         else:
-            logger.warning(
-                f"Extracted frame at {timestamp_ms}ms has no matching "
-                f"entry in probed metadata — skipping."
+            pbar.close()
+            stderr_tail = "".join(last_stderr[-20:]) if last_stderr else "(no output)"
+            raise RuntimeError(
+                f"ffmpeg selective extraction failed for {basename}. "
+                f"Last output:\n{stderr_tail}"
             )
+
+        pbar.close()
+
+        frame_files = sorted(os.listdir(work_dir))
+
+        usable = min(len(showinfo_entries), len(frame_files))
+        if len(showinfo_entries) != len(frame_files):
+            logger.warning(
+                f"Frame count mismatch for {basename}: showinfo reported "
+                f"{len(showinfo_entries)} frames but {len(frame_files)} files "
+                f"on disk. Using {usable}."
+            )
+
+        for i in range(usable):
+            _, timestamp_ms = showinfo_entries[i]
+            if timestamp_ms not in probed_metadata:
+                logger.warning(
+                    f"Extracted frame at {timestamp_ms}ms has no matching "
+                    f"entry in probed metadata — skipping."
+                )
+                continue
+            final_path = os.path.join(target_dir, f"frame_{timestamp_ms:010d}.{format}")
+            os.replace(os.path.join(work_dir, frame_files[i]), final_path)
+            probed_metadata[timestamp_ms]["path"] = final_path
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def get_video_duration(video_file, logger: logging.Logger | None = None):
