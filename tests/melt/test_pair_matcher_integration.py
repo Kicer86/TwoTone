@@ -2,7 +2,7 @@
 import logging
 
 from twotone.tools.utils import generic_utils, video_utils
-from twotone.tools.melt.melt import PairMatcher
+from twotone.tools.melt.melt import MappingRelation, PairMatcher
 from common import add_to_test_dir
 from melt.helpers import MeltTestBase
 
@@ -88,7 +88,11 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings = pair_matcher.create_segments_mapping().mapping
+        result = pair_matcher.create_segments_mapping()
+        mappings = result.mapping
+        # The fixtures are related by a 1.03x linear speed change, so the
+        # detected relation must be GLOBAL_LINEAR (stable across ffmpeg builds).
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
 
         # 3s black intro on both files — boundary extends through black to edge
         # LHS: bbb_bi3 (65.3s), RHS: bi3_deg103 (63.4s)
@@ -114,7 +118,11 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings = pair_matcher.create_segments_mapping().mapping
+        result = pair_matcher.create_segments_mapping()
+        mappings = result.mapping
+        # The fixtures are related by a 1.03x linear speed change, so the
+        # detected relation must be GLOBAL_LINEAR (stable across ffmpeg builds).
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
 
         # LHS: bbb_bi2 (64.3s, 2s black intro), RHS: bi6_deg103 (66.5s, 6s black intro)
         # LHS extends to edge through black; RHS starts inside its 6s intro (3-6.5s)
@@ -149,7 +157,11 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings = pair_matcher.create_segments_mapping().mapping
+        result = pair_matcher.create_segments_mapping()
+        mappings = result.mapping
+        # The fixtures are related by a 1.03x linear speed change, so the
+        # detected relation must be GLOBAL_LINEAR (stable across ffmpeg builds).
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
 
         # LHS: bbb_bo3 (65.3s, 3s black outro), RHS: bo3_deg103 (63.4s, 3s black outro)
         self.assertGreaterEqual(len(mappings), 3)
@@ -174,7 +186,11 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings = pair_matcher.create_segments_mapping().mapping
+        result = pair_matcher.create_segments_mapping()
+        mappings = result.mapping
+        # The fixtures are related by a 1.03x linear speed change, so the
+        # detected relation must be GLOBAL_LINEAR (stable across ffmpeg builds).
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
 
         # LHS: bi2_bo2 (66.3s, 2s black intro + 2s black outro)
         # RHS: bi2_bo2_deg103 (64.4s, same + 1.03x speed)
@@ -201,7 +217,14 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings = pair_matcher.create_segments_mapping().mapping
+        result = pair_matcher.create_segments_mapping()
+        mappings = result.mapping
+        # Same speed and zero offset: ideally a constant-offset GLOBAL_LINEAR,
+        # but matched pairs on degraded content jitter by a frame, so the
+        # matcher currently settles on GENERIC on every tested ffmpeg build.
+        # This characterizes the chosen path; if it changes, review the
+        # boundary expectations below.
+        self.assertEqual(result.relation, MappingRelation.GENERIC)
 
         # LHS: bbb (62.3s), RHS: bbb_deg10 (62.3s, same speed, degraded quality)
         self.assertGreaterEqual(len(mappings), 3)
@@ -226,7 +249,14 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings = pair_matcher.create_segments_mapping().mapping
+        result = pair_matcher.create_segments_mapping()
+        mappings = result.mapping
+        # NOTE: the detected relation is build-dependent here (measured:
+        # GENERIC on ffmpeg 8, GLOBAL_LINEAR on ffmpeg 6/CI) because match
+        # survival through the filter pipeline differs per build.  Both paths
+        # must land the boundaries asserted below; assert the relation once
+        # match survival is robust enough for the drift fit to succeed
+        # everywhere.
 
         # LHS: bbb_gi3 (65.3s, 3s grass intro), RHS: atoms_i3_deg (63.5s, 3s atoms intro)
         self.assertGreaterEqual(len(mappings), 3)
@@ -259,7 +289,14 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings = pair_matcher.create_segments_mapping().mapping
+        result = pair_matcher.create_segments_mapping()
+        mappings = result.mapping
+        # NOTE: the detected relation is build-dependent here (measured:
+        # GENERIC on ffmpeg 8, GLOBAL_LINEAR on ffmpeg 6/CI) because match
+        # survival through the filter pipeline differs per build.  Both paths
+        # must land the boundaries asserted below; assert the relation once
+        # match survival is robust enough for the drift fit to succeed
+        # everywhere.
 
         # LHS: bbb_gi2 (64.3s, 2s grass intro), RHS: atoms_i5_deg (65.5s, 5s atoms intro)
         self.assertGreaterEqual(len(mappings), 3)
@@ -292,7 +329,11 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings = pair_matcher.create_segments_mapping().mapping
+        result = pair_matcher.create_segments_mapping()
+        mappings = result.mapping
+        # The fixtures are related by a 1.03x linear speed change, so the
+        # detected relation must be GLOBAL_LINEAR (stable across ffmpeg builds).
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
 
         # LHS: bbb_wo3 (65.3s, 3s woman outro), RHS: deg103_atoms_o3 (63.5s, 3s atoms outro)
         self.assertGreaterEqual(len(mappings), 3)
@@ -324,7 +365,14 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         interruption = generic_utils.InterruptibleProcess()
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
-        mappings = pair_matcher.create_segments_mapping().mapping
+        result = pair_matcher.create_segments_mapping()
+        mappings = result.mapping
+        # NOTE: the detected relation is build-dependent here (measured:
+        # GENERIC on ffmpeg 8, GLOBAL_LINEAR on ffmpeg 6/CI) because match
+        # survival through the filter pipeline differs per build.  Both paths
+        # must land the boundaries asserted below; assert the relation once
+        # match survival is robust enough for the drift fit to succeed
+        # everywhere.
 
         # LHS: gi3_wo3 (57.1s, 3s grass intro + 3s woman outro)
         # RHS: ai3d_swo3 (66.5s, 3s atoms intro + 3s seawaves outro)
