@@ -163,9 +163,13 @@ class PairMatcher:
         median_ratio = np.median(ratios)
         return float(median_ratio)
 
+    # Maximum relative deviation between an observed pair ratio and the
+    # expected one before a match is considered inconsistent.
+    _MAX_RELATIVE_RATIO_ERROR = 0.05
+
     @staticmethod
     def is_ratio_acceptable(ratio: float, perfect_ratio: float) -> bool:
-        return abs(ratio - perfect_ratio) < 0.05 * perfect_ratio
+        return abs(ratio - perfect_ratio) < PairMatcher._MAX_RELATIVE_RATIO_ERROR * perfect_ratio
 
     @staticmethod
     def coverage_summary(

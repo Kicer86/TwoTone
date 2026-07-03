@@ -354,7 +354,7 @@ class MeltPerformer(TrackTimelineMixin):
             base_per_source,
         )
         start_correction = sync_offset - seg1_start
-        if fill_gaps_from_base and start_correction > 50:
+        if fill_gaps_from_base and start_correction > self._SIGNIFICANT_START_CORRECTION_MS:
             raise RuntimeError(
                 f"Audio start correction of {start_correction} ms detected "
                 f"in fill-audio-gaps mode. "
@@ -650,7 +650,7 @@ class MeltPerformer(TrackTimelineMixin):
             positive_timeline_correction = max(0, round(timeline_start_ms * base_per_source) - seg1_start)
 
         correction = max(audio_start_correction, positive_timeline_correction)
-        if correction > 50:
+        if correction > self._SIGNIFICANT_START_CORRECTION_MS:
             self.logger.info(
                 "Audio trim start correction: %d ms → sync offset: %d ms",
                 correction,
@@ -659,6 +659,19 @@ class MeltPerformer(TrackTimelineMixin):
         return seg1_start + correction
 
     _FPS_RATIO_TOLERANCE = 0.001
+    # A start correction below this is normal probe noise; above it the audio
+    # placement genuinely moves — logged, and rejected in fill-gaps mode where
+    # it cannot be compensated.
+    _SIGNIFICANT_START_CORRECTION_MS = 50
+    # Effective-fps ratios closer to 1.0 than this are treated as the same
+    # playback speed (probe noise), not a real tempo difference.
+    _MIN_TEMPO_RATIO_DELTA = 0.005
+    # A mapping counts as pure frame-rate drift only when the matched spans
+    # agree in wall-clock duration within this fraction.
+    _MAX_SAME_SPEED_SPAN_DELTA = 0.01
+    # Number of subsegments the per-scene audio patcher splits the mapped
+    # range into.
+    _SUBSEGMENT_COUNT = 20
 
     @staticmethod
     def _needs_fps_scaling(ratio: float) -> bool:
@@ -1052,7 +1065,7 @@ class MeltPerformer(TrackTimelineMixin):
             if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
                 timeline_start_ms = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, fill_gaps_from_base=fill_gaps)
             else:
-                timeline_start_ms = self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames, fill_gaps_from_base=fill_gaps)
+                timeline_start_ms = self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, self._SUBSEGMENT_COUNT, lhs_all_frames, rhs_all_frames, fill_gaps_from_base=fill_gaps)
 
             if not fill_gaps:
                 self.logger.info("  Desired audio start: %d ms", timeline_start_ms)
@@ -1227,7 +1240,7 @@ class MeltPerformer(TrackTimelineMixin):
             return None
 
         tempo_ratio = lhs_effective_fps / rhs_effective_fps
-        if abs(tempo_ratio - 1.0) < 0.005:
+        if abs(tempo_ratio - 1.0) < MeltPerformer._MIN_TEMPO_RATIO_DELTA:
             return None
 
         seg = MeltPerformer._segment_range(mapping)
@@ -1279,9 +1292,9 @@ class MeltPerformer(TrackTimelineMixin):
 
         tempo_ratio = lhs_effective_fps / rhs_effective_fps
         nominal_ratio = lhs_nominal_fps / rhs_nominal_fps
-        if abs(tempo_ratio - 1.0) < 0.005:
+        if abs(tempo_ratio - 1.0) < MeltPerformer._MIN_TEMPO_RATIO_DELTA:
             return False
-        if abs(tempo_ratio / nominal_ratio - 1.0) >= 0.005:
+        if abs(tempo_ratio / nominal_ratio - 1.0) >= MeltPerformer._MIN_TEMPO_RATIO_DELTA:
             return False
 
         observed_pairs = sorted(mapping)
@@ -1295,7 +1308,7 @@ class MeltPerformer(TrackTimelineMixin):
             return False
 
         observed_ratio = source_duration / target_duration
-        return abs(observed_ratio - 1.0) < 0.01
+        return abs(observed_ratio - 1.0) < MeltPerformer._MAX_SAME_SPEED_SPAN_DELTA
 
     @staticmethod
     def _try_sparse_linear_audio_extrapolation(
