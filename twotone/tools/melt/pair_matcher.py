@@ -12,7 +12,7 @@ from typing import Callable, NamedTuple, TypedDict
 
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
-from .melt_common import FramesInfo
+from .melt_common import FrameInfo, FramesInfo
 from .phash_cache import PhashCache, compute_phash
 from ..utils import files_utils, generic_utils, image_utils, video_utils
 
@@ -234,7 +234,10 @@ class PairMatcher:
             # Let downstream filters (ORB, history check) handle quality control.
             return pairs
 
-        dists_array = np.array([abs(phash.get(lhs_set[l]["path"]) - phash.get(rhs_set[r]["path"])) for l, r in pairs], dtype=float)
+        dists_array = np.array([
+            abs(phash.get(PairMatcher._extracted_path(lhs_set[l])) - phash.get(PairMatcher._extracted_path(rhs_set[r])))
+            for l, r in pairs
+        ], dtype=float)
         med = float(np.median(dists_array))
         mad = float(np.median(np.abs(dists_array - med)))
         threshold = med + 1.5 * mad
@@ -247,8 +250,8 @@ class PairMatcher:
 
         distances = []
         for lhs_ts, rhs_ts in pairs:
-            lhs_path = lhs.get(lhs_ts, {}).get("path") if lhs_ts in lhs else None
-            rhs_path = rhs.get(rhs_ts, {}).get("path") if rhs_ts in rhs else None
+            lhs_path = PairMatcher._path_or_none(lhs, lhs_ts)
+            rhs_path = PairMatcher._path_or_none(rhs, rhs_ts)
             if lhs_path is None or rhs_path is None:
                 continue
             d = abs(phash.get(lhs_path) - phash.get(rhs_path))
@@ -266,8 +269,8 @@ class PairMatcher:
 
         # Identify the max pair
         max_entry = max(distances, key=lambda x: x[0])
-        max_lhs_path = lhs.get(max_entry[1], {}).get("path", "?")
-        max_rhs_path = rhs.get(max_entry[2], {}).get("path", "?")
+        max_lhs_path = PairMatcher._path_or_none(lhs, max_entry[1]) or "?"
+        max_rhs_path = PairMatcher._path_or_none(rhs, max_entry[2]) or "?"
 
         summary = (
             f"Pairs: {len(pairs)} | "
@@ -282,8 +285,8 @@ class PairMatcher:
         if verbose:
             details = []
             for dist, lhs_ts, rhs_ts in distances:
-                lp = lhs.get(lhs_ts, {}).get("path", "?")
-                rp = rhs.get(rhs_ts, {}).get("path", "?")
+                lp = PairMatcher._path_or_none(lhs, lhs_ts) or "?"
+                rp = PairMatcher._path_or_none(rhs, rhs_ts) or "?"
                 details.append(f"  {lp} <-> {rp} | Diff: {dist}")
             summary += "\nDetailed pairs:" + "\n" + "\n".join(details)
 
@@ -1025,7 +1028,7 @@ class PairMatcher:
         except Exception as e:  # pragma: no cover - extraction failure is non-fatal
             self.logger.debug("Boundary frame extraction failed for frame %d: %s", frame_id, e)
             return None
-        return frames.get(ts, {}).get("path")
+        return PairMatcher._path_or_none(frames, ts)
 
     def snap_to_edges(
         self,
@@ -1251,7 +1254,24 @@ class PairMatcher:
         return image_utils.image_entropy(frame_path) > 3.5
 
     @staticmethod
-    def _get_new_info(info: dict[str, str], path: str) -> dict[str, str]:
+    def _extracted_path(info: FrameInfo) -> str:
+        """Image path of a frame that must already be extracted.
+
+        The pipeline extracts frames before any visual comparison; a ``None``
+        here is the bug ``_assert_frames_extracted`` exists to catch.
+        """
+        path = info["path"]
+        if path is None:
+            raise AssertionError("frame used before extraction")
+        return path
+
+    @staticmethod
+    def _path_or_none(frames: FramesInfo, ts: int) -> str | None:
+        info = frames.get(ts)
+        return info["path"] if info else None
+
+    @staticmethod
+    def _get_new_info(info: FrameInfo, path: str) -> FrameInfo:
         new_info = info.copy()
         new_info["path"] = path
         return new_info
@@ -1276,7 +1296,8 @@ class PairMatcher:
 
     @staticmethod
     def _filter_low_detailed(scenes: FramesInfo) -> FramesInfo:
-        valuable_scenes = {timestamp: info for timestamp, info in scenes.items() if PairMatcher._is_rich(info["path"])}
+        valuable_scenes = {timestamp: info for timestamp, info in scenes.items()
+                           if PairMatcher._is_rich(PairMatcher._extracted_path(info))}
         return valuable_scenes
 
     @staticmethod
@@ -1340,8 +1361,8 @@ class PairMatcher:
         for lhs_t, rhs_t in pairs_with_timestamps:
             lhs_info = lhs_frames[lhs_t]
             rhs_info = rhs_frames[rhs_t]
-            lhs_img = cv.imread(lhs_info["path"], cv.IMREAD_GRAYSCALE)
-            rhs_img = cv.imread(rhs_info["path"], cv.IMREAD_GRAYSCALE)
+            lhs_img = cv.imread(PairMatcher._extracted_path(lhs_info), cv.IMREAD_GRAYSCALE)
+            rhs_img = cv.imread(PairMatcher._extracted_path(rhs_info), cv.IMREAD_GRAYSCALE)
             if lhs_img is None or rhs_img is None:
                 continue
 
@@ -1422,7 +1443,7 @@ class PairMatcher:
         for l in lhs_near:
             for r in rhs_near:
                 if l in lhs_all_set and r in rhs_all_set:
-                    d = abs(self.phash.get(lhs_all_set[l]["path"]) - self.phash.get(rhs_all_set[r]["path"]))
+                    d = abs(self.phash.get(self._extracted_path(lhs_all_set[l])) - self.phash.get(self._extracted_path(rhs_all_set[r])))
                     if d < best_dist:
                         best = (l, r)
                         best_dist = d
@@ -1434,9 +1455,9 @@ class PairMatcher:
 
         all_matches = []
         for lhs_ts, lhs_info in lhs_items:
-            lhs_hash = self.phash.get(lhs_info["path"])
+            lhs_hash = self.phash.get(self._extracted_path(lhs_info))
             for rhs_ts, rhs_info in rhs_items:
-                rhs_hash = self.phash.get(rhs_info["path"])
+                rhs_hash = self.phash.get(self._extracted_path(rhs_info))
                 distance = abs(lhs_hash - rhs_hash)
                 all_matches.append((distance, lhs_ts, rhs_ts))
 
@@ -1516,8 +1537,8 @@ class PairMatcher:
                 if ratio and PairMatcher.is_ratio_acceptable(ratio, median_ratio):
                     if rhs_candidate not in rhs_used:
                         # make sure lhs and rhs_candidate are matching
-                        lhs_path = lhs_pool[l]["path"]
-                        rhs_path = rhs_pool[rhs_candidate]["path"]
+                        lhs_path = self._extracted_path(lhs_pool[l])
+                        rhs_path = self._extracted_path(rhs_pool[rhs_candidate])
 
                         pdiff = abs(phash.get(lhs_path) - phash.get(rhs_path))
                         phash_matching = pdiff < cutoff
@@ -1559,7 +1580,10 @@ class PairMatcher:
         if not pairs:
             return 16  # sensible default when no pairs available
 
-        distances = [abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"])) for lhs_ts, rhs_ts in pairs]
+        distances = [
+            abs(phash.get(self._extracted_path(lhs[lhs_ts])) - phash.get(self._extracted_path(rhs[rhs_ts])))
+            for lhs_ts, rhs_ts in pairs
+        ]
 
         arr = np.array(distances)
         median = np.median(arr)
@@ -1628,7 +1652,8 @@ class PairMatcher:
 
         orb_filtered = [
             (lhs_ts, rhs_ts) for lhs_ts, rhs_ts in outliers_eliminated
-            if image_utils.are_images_similar(lhs_all[lhs_ts]["path"], rhs_all[rhs_ts]["path"])
+            if image_utils.are_images_similar(
+                self._extracted_path(lhs_all[lhs_ts]), self._extracted_path(rhs_all[rhs_ts]))
         ]
         self.logger.debug(f"After ORB elimination:     {PairMatcher.summarize_pairs(self.phash, orb_filtered, lhs_all, rhs_all)}")
 
@@ -1668,7 +1693,7 @@ class PairMatcher:
         for rhs_ts in rhs_near:
             if rhs_ts not in ctx.rhs or lhs_ts not in ctx.lhs:
                 continue
-            d = abs(ctx.phash.get(ctx.lhs[lhs_ts]["path"]) - ctx.phash.get(ctx.rhs[rhs_ts]["path"]))
+            d = abs(ctx.phash.get(self._extracted_path(ctx.lhs[lhs_ts])) - ctx.phash.get(self._extracted_path(ctx.rhs[rhs_ts])))
             if d < best_dist:
                 best_dist = d
                 best_pair = (lhs_ts, rhs_ts)
@@ -1697,7 +1722,7 @@ class PairMatcher:
         if edge_lhs_ts not in ctx.lhs or edge_rhs_ts not in ctx.rhs:
             return False
 
-        d = abs(ctx.phash.get(ctx.lhs[edge_lhs_ts]["path"]) - ctx.phash.get(ctx.rhs[edge_rhs_ts]["path"]))
+        d = abs(ctx.phash.get(self._extracted_path(ctx.lhs[edge_lhs_ts])) - ctx.phash.get(self._extracted_path(ctx.rhs[edge_rhs_ts])))
         if d > ctx.cutoff:
             return False
 
@@ -1708,9 +1733,10 @@ class PairMatcher:
             if not PairMatcher.is_ratio_acceptable(cand_ratio, ctx.ratio):
                 return False
 
-        # ORB verification on the half-resolution extracted frames
-        lhs_path = self.lhs_all_frames[edge_lhs_ts]["path"] if edge_lhs_ts in self.lhs_all_frames else ctx.lhs[edge_lhs_ts]["path"]
-        rhs_path = self.rhs_all_frames[edge_rhs_ts]["path"] if edge_rhs_ts in self.rhs_all_frames else ctx.rhs[edge_rhs_ts]["path"]
+        # ORB verification, preferring the half-resolution extracted frames
+        # over the context's (possibly cropped/normalized) variants.
+        lhs_path = self._path_or_none(self.lhs_all_frames, edge_lhs_ts) or self._extracted_path(ctx.lhs[edge_lhs_ts])
+        rhs_path = self._path_or_none(self.rhs_all_frames, edge_rhs_ts) or self._extracted_path(ctx.rhs[edge_rhs_ts])
         return image_utils.are_images_similar(lhs_path, rhs_path)
 
     def _is_sustained_dark_zone(self, ctx: _BoundarySearchContext, idx: int) -> bool:
@@ -1719,7 +1745,7 @@ class PairMatcher:
         for la in range(1, look_ahead + 1):
             la_idx = idx + ctx.direction * la
             if 0 <= la_idx < len(ctx.lhs_keys):
-                if PairMatcher._is_rich(ctx.lhs[ctx.lhs_keys[la_idx]]["path"]):
+                if PairMatcher._is_rich(self._extracted_path(ctx.lhs[ctx.lhs_keys[la_idx]])):
                     return False
             # past the edge — treat as sustained
         return True
@@ -1737,7 +1763,7 @@ class PairMatcher:
         """
         jump_idx = idx + ctx.direction
         while 0 <= jump_idx < len(ctx.lhs_keys):
-            if PairMatcher._is_rich(ctx.lhs[ctx.lhs_keys[jump_idx]]["path"]):
+            if PairMatcher._is_rich(self._extracted_path(ctx.lhs[ctx.lhs_keys[jump_idx]])):
                 jumped_pair = self._matched_predicted_pair(ctx, ctx.lhs_keys[jump_idx])
                 return jumped_pair, jump_idx
             jump_idx += ctx.direction
@@ -1797,7 +1823,7 @@ class PairMatcher:
             lhs_ts = lhs_keys[idx]
 
             # Dark frame — check if it's a sustained dark zone
-            if not PairMatcher._is_rich(ctx.lhs[lhs_ts]["path"]):
+            if not PairMatcher._is_rich(self._extracted_path(ctx.lhs[lhs_ts])):
                 if self._is_sustained_dark_zone(ctx, idx):
                     jumped_pair, jump_idx = self._try_jump_past_dark_zone(ctx, idx)
                     if jumped_pair is not None:
@@ -1856,7 +1882,7 @@ class PairMatcher:
         from_boundary = sorted(gap_keys, reverse=(direction == -1))
         le_start: int | None = None
         for i, ts in enumerate(from_boundary):
-            if not PairMatcher._is_rich(frames[ts]["path"]):
+            if not PairMatcher._is_rich(PairMatcher._extracted_path(frames[ts])):
                 le_start = i
                 break
 
@@ -1876,7 +1902,7 @@ class PairMatcher:
             return False
 
         remaining = from_boundary[le_start:]
-        non_le = [k for k in remaining if PairMatcher._is_rich(frames[k]["path"])]
+        non_le = [k for k in remaining if PairMatcher._is_rich(PairMatcher._extracted_path(frames[k]))]
         noise_ratio = len(non_le) / len(remaining) if remaining else 1.0
         if noise_ratio > 0.05:
             self.logger.warning(
@@ -1984,7 +2010,7 @@ class PairMatcher:
         self.lhs_all_frames = self._probe_frames_for(self.lhs_path, self.lhs_label)
         self.rhs_all_frames = self._probe_frames_for(self.rhs_path, self.rhs_label)
 
-    def _probe_frames_for(self, video_path: str, label: str) -> dict[int, dict]:
+    def _probe_frames_for(self, video_path: str, label: str) -> FramesInfo:
         if self.cache:
             cached = self.cache.load_frame_probes(video_path)
             if cached is not None:
@@ -2039,7 +2065,7 @@ class PairMatcher:
         video_path: str,
         target_dir: str,
         scene_ranges: list[tuple[int, int]],
-        probed_metadata: dict[int, dict],
+        probed_metadata: FramesInfo,
         label: str,
     ) -> None:
         if self.cache and self.cache.load_scene_frames(video_path, target_dir, probed_metadata):
