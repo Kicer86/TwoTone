@@ -740,16 +740,23 @@ class PairMatcher:
 
         result = sorted(matching_pairs)
         eps = 1e-6
-        # Snap a verified boundary that lands on the lhs video edge onto the rhs
-        # edge when the prediction is within a few frames of it — this absorbs the
-        # small fit residual so an equal-length shared lead-in/out maps
-        # edge-to-edge, while a genuinely offset one (e.g. 2s vs 6s black) is far
-        # past the tolerance and keeps its predicted position.
+        # Snap a boundary whose projection lands within a few frames of BOTH
+        # video edges onto the edges themselves — the fit's slope error
+        # accumulates over a long extrapolation, so an equal-length shared
+        # lead-in/out can project a couple frames short of the edge (and would
+        # otherwise stay there, off by 2-3 frames per ffmpeg build).  A
+        # genuinely offset lead-in/out (e.g. 2s vs 6s black) is far past the
+        # tolerance and keeps its predicted position.  The snapped target is
+        # still content-verified by the walk below, never blindly accepted.
         snap_tol = 4
 
         first_lhs_frame = max(lhs_min_frame, int(np.ceil((rhs_min_frame - intercept) / slope - eps)))
         first_rhs_frame = int(round(slope * first_lhs_frame + intercept))
-        if first_lhs_frame == lhs_min_frame and abs(first_rhs_frame - rhs_min_frame) <= snap_tol:
+        if (
+            first_lhs_frame - lhs_min_frame <= snap_tol
+            and abs(int(round(slope * lhs_min_frame + intercept)) - rhs_min_frame) <= snap_tol
+        ):
+            first_lhs_frame = lhs_min_frame
             first_rhs_frame = rhs_min_frame
         first_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, first_rhs_frame))
         self._maybe_insert_verified_boundary(
@@ -758,7 +765,11 @@ class PairMatcher:
 
         last_lhs_frame = min(lhs_max_frame, int(np.floor((rhs_max_frame - intercept) / slope + eps)))
         last_rhs_frame = int(round(slope * last_lhs_frame + intercept))
-        if last_lhs_frame == lhs_max_frame and abs(last_rhs_frame - rhs_max_frame) <= snap_tol:
+        if (
+            lhs_max_frame - last_lhs_frame <= snap_tol
+            and abs(int(round(slope * lhs_max_frame + intercept)) - rhs_max_frame) <= snap_tol
+        ):
+            last_lhs_frame = lhs_max_frame
             last_rhs_frame = rhs_max_frame
         last_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, last_rhs_frame))
         self._maybe_insert_verified_boundary(
@@ -855,9 +866,13 @@ class PairMatcher:
         samples.append((boundary_lhs_frame, boundary_rhs_frame))
 
         # Bulk-extract every sampled frame up front (two ffmpeg calls) so the
-        # per-sample verification below only reads images.
+        # per-sample verification below only reads images.  The rhs fetch also
+        # covers the ±2 neighbours used by the prediction-jitter retry — a
+        # later single-frame extraction would wipe the prefetched files
+        # (extract_frames_at_ranges cleans its target directory).
         self._prefetch_boundary_images(self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames, [lf for lf, _ in samples])
-        self._prefetch_boundary_images(self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames, [rf for _, rf in samples])
+        rhs_with_neighbours = sorted({rf + d for _, rf in samples for d in (-2, -1, 0, 1, 2)})
+        self._prefetch_boundary_images(self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames, rhs_with_neighbours)
 
         best: tuple[int, int] | None = None
         for lhs_f, rhs_f in samples:
@@ -865,10 +880,37 @@ class PairMatcher:
             rhs_ts = rhs_by_frame.get(rhs_f)
             if lhs_ts is None or rhs_ts is None:
                 break
-            if not self._boundary_content_matches(lhs_f, rhs_f, lhs_ts, rhs_ts):
+            if not self._shared_content_at_prediction(lhs_f, rhs_f, lhs_ts, rhs_by_frame):
                 break
             best = (lhs_ts, rhs_ts)
         return best
+
+    def _shared_content_at_prediction(
+        self,
+        lhs_frame: int,
+        rhs_frame: int,
+        lhs_ts: int,
+        rhs_by_frame: dict[int, int],
+    ) -> bool:
+        """Content-check the predicted pair, tolerating ±2 frames of rhs jitter.
+
+        The fit's rhs prediction can be a frame or two off (rounding, and
+        frame-probe differences between ffmpeg builds); in fast motion that is
+        enough to push the exact predicted pair past the phash gate even for
+        genuinely shared content.  Retry against the rhs neighbours before
+        declaring divergence — a divergent intro/outro fails for every
+        neighbour, so the tolerance does not weaken divergence rejection, and
+        the returned boundary pair stays the predicted one (on the fitted
+        line), keeping the boundary error within the allowed 1-2 frames.
+        """
+        for delta in (0, -1, 1, -2, 2):
+            candidate_frame = rhs_frame + delta
+            candidate_ts = rhs_by_frame.get(candidate_frame)
+            if candidate_ts is None:
+                continue
+            if self._boundary_content_matches(lhs_frame, candidate_frame, lhs_ts, candidate_ts):
+                return True
+        return False
 
     def _prefetch_boundary_images(
         self, video_path: str, out_dir: str, frames: FramesInfo, frame_ids: list[int],
