@@ -9,7 +9,7 @@ from tqdm import tqdm
 from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
-from .pair_matcher import MappingRelation, PairMatcher
+from .pair_matcher import CoverageSummary, MappingRelation, PairMatcher
 from .melt_common import FramesInfo, StreamType, _ensure_working_dir, _is_length_mismatch
 from .track_timeline import TrackTimelineMixin
 
@@ -433,7 +433,7 @@ class MeltPerformer(TrackTimelineMixin):
         rhs_id: int,
         lhs_duration_ms: int,
         rhs_duration_ms: int,
-        summary: dict[str, Any],
+        summary: CoverageSummary,
     ) -> list[str]:
         """Build ASCII overlap diagram lines for two partially-overlapping files.
 

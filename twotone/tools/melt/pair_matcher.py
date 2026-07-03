@@ -8,7 +8,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from tqdm import tqdm
-from typing import Any, Callable, NamedTuple
+from typing import Callable, NamedTuple, TypedDict
 
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
@@ -45,6 +45,17 @@ class GlobalLinearFit(NamedTuple):
     intercept: float
     is_constant_offset: bool
     time_scale: float
+
+
+class CoverageSummary(TypedDict):
+    """Human-readable coverage report for two matched files."""
+
+    full_coverage: bool
+    lhs_start_gap_s: float
+    rhs_start_gap_s: float
+    lhs_end_gap_s: float
+    rhs_end_gap_s: float
+    ratio: float
 
 
 class SegmentsMappingResult(NamedTuple):
@@ -136,15 +147,13 @@ class PairMatcher:
         *,
         lhs_fps: float,
         rhs_fps: float,
-    ) -> dict[str, Any]:
+    ) -> CoverageSummary:
         """Compute a human-readable coverage summary for matched files.
 
-        Returns a dict with:
-        - ``full_coverage``: True when matched content reaches both video edges
-          within at most two frames per input
-        - ``lhs_start_gap_s`` / ``rhs_start_gap_s``: unmatched seconds at start
-        - ``lhs_end_gap_s`` / ``rhs_end_gap_s``: unmatched seconds at end
-        - ``ratio``: speed ratio between the two files
+        ``full_coverage`` is True when matched content reaches both video edges
+        within at most two frames per input; the ``*_gap_s`` fields report the
+        unmatched seconds at each edge and ``ratio`` the speed ratio between
+        the two files.
         """
         first = mappings[0]
         last = mappings[-1]
@@ -324,10 +333,7 @@ class PairMatcher:
         if np.isnan(ratio):
             ratio = self.lhs_fps / self.rhs_fps
 
-        # Ensure cutoff is not absurdly tight — with few calibration pairs or
-        # cropped frames the computed cutoff can be as low as 4, which makes the
-        # search unable to extend even a single frame.
-        cutoff = max(cutoff, self._MIN_PHASH_CUTOFF)
+        cutoff = self._boundary_cutoff(cutoff)
 
         # --- Fast edge pre-check ---
         # Before the iterative search, check whether both videos share content
@@ -1538,6 +1544,35 @@ class PairMatcher:
 
         return median + std * 2
 
+    # The two policies flooring an adaptive cutoff with _MIN_PHASH_CUTOFF.
+    # They differ on purpose: the boundary walk always needs headroom, while
+    # the temporal-consistency check must stay strict unless degenerate.
+
+    @classmethod
+    def _boundary_cutoff(cls, cutoff: float) -> float:
+        """Cutoff for the boundary walk — never tighter than the floor.
+
+        With few calibration pairs or cropped frames the computed cutoff can
+        be as low as 4, which makes the search unable to extend even a single
+        frame.
+        """
+        return max(cutoff, cls._MIN_PHASH_CUTOFF)
+
+    @classmethod
+    def _history_cutoff(cls, raw_cutoff: float) -> float:
+        """Cutoff for the temporal-consistency check — floored only when degenerate.
+
+        The adaptive cutoff (median + 2*std) collapses to ~0 only when the
+        surviving matches are pixel-perfect (identical content — e.g. re-muxed
+        or container-offset variants of the same source).  In that degenerate
+        case the history check would demand pixel-perfect *neighbours* too —
+        impossible across a speed/resolution difference — and would collapse a
+        dozen good matches to one, dropping the pair into the GENERIC path.
+        A normal (degraded) cutoff is left untouched so genuine mismatches
+        stay rejected.
+        """
+        return cls._MIN_PHASH_CUTOFF if raw_cutoff < 1.0 else raw_cutoff
+
     def _make_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> list[tuple[int, int]]:
         # Pipeline
         lhs = PairMatcher._filter_low_detailed(lhs)
@@ -1574,16 +1609,8 @@ class PairMatcher:
         ]
         self.logger.debug(f"After ORB elimination:     {PairMatcher.summarize_pairs(self.phash, orb_filtered, lhs_all, rhs_all)}")
 
-        # The adaptive cutoff (median + 2*std) collapses to ~0 only when the
-        # surviving matches are pixel-perfect (identical content — e.g. re-muxed
-        # or container-offset variants of the same source).  In that degenerate
-        # case the temporal-consistency check below would demand pixel-perfect
-        # *neighbours* too — impossible across a speed/resolution difference — and
-        # would collapse a dozen good matches to one, dropping the pair into the
-        # GENERIC path.  Floor it there only; a normal (degraded) cutoff is left
-        # untouched so genuine mismatches stay rejected.
         raw_cutoff = self._calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
-        cutoff = self._MIN_PHASH_CUTOFF if raw_cutoff < 1.0 else raw_cutoff
+        cutoff = self._history_cutoff(raw_cutoff)
         final = [pair for pair in orb_filtered if self._check_history(pair, lhs_all, rhs_all, cutoff)]
         self.logger.debug(f"After history analysis:    {PairMatcher.summarize_pairs(self.phash, final, lhs_all, rhs_all)}")
 
@@ -1989,9 +2016,8 @@ class PairMatcher:
         return lhs_scene_changes, rhs_scene_changes
 
     def _detect_scenes_for(self, video_path: str, label: str) -> list[int]:
-        cache = getattr(self, 'cache', None)
-        if cache:
-            cached = cache.load_scene_changes(video_path)
+        if self.cache:
+            cached = self.cache.load_scene_changes(video_path)
             if cached is not None:
                 self.logger.info("[1/6] Scene changes for %s restored from cache (%d scenes)", label, len(cached))
                 return cached
@@ -2001,8 +2027,8 @@ class PairMatcher:
             interruption=self.interruption, desc=f"[1/6] Detecting scenes: {label}",
         )
 
-        if cache:
-            cache.save_scene_changes(video_path, result)
+        if self.cache:
+            self.cache.save_scene_changes(video_path, result)
 
         return result
 
@@ -2012,9 +2038,8 @@ class PairMatcher:
         self.rhs_all_frames = self._probe_frames_for(self.rhs_path, self.rhs_label)
 
     def _probe_frames_for(self, video_path: str, label: str) -> dict[int, dict]:
-        cache = getattr(self, 'cache', None)
-        if cache:
-            cached = cache.load_frame_probes(video_path)
+        if self.cache:
+            cached = self.cache.load_frame_probes(video_path)
             if cached is not None:
                 self.logger.info("[2/6] Frame probes for %s restored from cache (%d frames)", label, len(cached))
                 return cached
@@ -2025,8 +2050,8 @@ class PairMatcher:
             logger=self.logger,
         )
 
-        if cache:
-            cache.save_frame_probes(video_path, result)
+        if self.cache:
+            self.cache.save_frame_probes(video_path, result)
 
         return result
 
@@ -2070,8 +2095,7 @@ class PairMatcher:
         probed_metadata: dict[int, dict],
         label: str,
     ) -> None:
-        cache = getattr(self, 'cache', None)
-        if cache and cache.load_scene_frames(video_path, target_dir, probed_metadata):
+        if self.cache and self.cache.load_scene_frames(video_path, target_dir, probed_metadata):
             self.logger.info("[3/6] Scene frames for %s restored from cache", label)
             return
 
@@ -2082,8 +2106,8 @@ class PairMatcher:
             logger=self.logger,
         )
 
-        if cache:
-            cache.save_scene_frames(video_path, target_dir, probed_metadata)
+        if self.cache:
+            self.cache.save_scene_frames(video_path, target_dir, probed_metadata)
 
     def _normalize_extracted(
         self,
