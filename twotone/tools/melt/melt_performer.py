@@ -987,7 +987,7 @@ class MeltPerformer(TrackTimelineMixin):
     ) -> _PatchedAudio:
         """Run PairMatcher and apply the appropriate audio patching strategy."""
         audio_path, stream_index = audio_stream
-        with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
+        with self.workspace.scoped_dir("matching") as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
             lhs_id = file_ids[video_path_base]
             rhs_id = file_ids[audio_path]
