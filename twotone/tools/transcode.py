@@ -3,8 +3,6 @@ import argparse
 import logging
 import os
 import re
-import shutil
-import tempfile
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from overrides import override
@@ -16,12 +14,12 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, video
 
 
 class Transcoder(generic_utils.InterruptibleProcess):
-    def __init__(self, working_dir: str, logger: logging.Logger, target_ssim: float = 0.98, codec: str = "libx265") -> None:
+    def __init__(self, working_dir: files_utils.Workspace, logger: logging.Logger, target_ssim: float = 0.98, codec: str = "libx265") -> None:
         super().__init__(logger)
         self.logger = logger
         self.target_ssim = target_ssim
         self.codec = codec
-        self.working_dir = working_dir
+        self.workspace = working_dir
 
 
     def _find_video_files(self, directory: str) -> list[str]:
@@ -224,7 +222,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
     def _for_segments(self, segments: list[str], op: Callable[[str, str], None], title: str, unit: str) -> None:
         with tqdm(desc=title, unit=unit, total=len(segments), **generic_utils.get_tqdm_defaults()) as pbar, \
-             files_utils.ScopedDirectory(os.path.join(self.working_dir, "segments")) as wd_dir, \
+             self.workspace.scoped_dir("segments") as wd_dir, \
              ThreadPoolExecutor() as executor:
             def worker(file_path):
                 op(wd_dir, file_path)
@@ -247,34 +245,40 @@ class Transcoder(generic_utils.InterruptibleProcess):
             overwrite_input = False
 
         self.logger.info(f"Starting final transcoding with CRF: {crf}")
-        temp_file = os.path.join(self.working_dir, f"{basename}.temp.{ext}")
-        self._transcode_video(input_file, temp_file, crf, "veryslow", audio_codec = audio_codec, output_params = ["-vsync", "passthrough"], show_progress=True)
+        if overwrite_input:
+            target_file = input_file
+        else:
+            target_file = os.path.join(os.path.dirname(input_file), f"{basename}.{ext}")
 
-        original_size = os.path.getsize(input_file)
-        final_size = os.path.getsize(temp_file)
-        size_reduction = (final_size / original_size) * 100
+        # The staged encode lives next to the target so that the final commit
+        # is an atomic same-filesystem rename.
+        with self.workspace.staging_for(target_file) as staging:
+            temp_file = staging.path
+            self._transcode_video(input_file, temp_file, crf, "veryslow", audio_codec = audio_codec, output_params = ["-vsync", "passthrough"], show_progress=True)
 
-        # Measure SSIM again after final transcoding
-        final_quality = self._calculate_quality(input_file, temp_file)
+            original_size = os.path.getsize(input_file)
+            final_size = os.path.getsize(temp_file)
+            size_reduction = (final_size / original_size) * 100
 
-        if final_quality is None:
-            raise ValueError("Could not determine SSIM value.")
+            # Measure SSIM again after final transcoding
+            final_quality = self._calculate_quality(input_file, temp_file)
 
-        try:
+            if final_quality is None:
+                raise ValueError("Could not determine SSIM value.")
+
             if final_quality < self.target_ssim:
                 self.logger.warning(
                     f"Final CRF: {crf}, SSIM: {final_quality}. "
                     f"Final transcode resulted in lower SSIM than requested: {final_quality} < {self.target_ssim}"
                 )
-                raise ValueError()
+                return
 
             if final_size > original_size:
                 self.logger.warning(
                     f"Final CRF: {crf}, SSIM: {final_quality}. "
                     f"Encoded file is larger than the original. Keeping the original file."
                 )
-                raise ValueError()
-
+                return
 
             process_utils.start_process(
                 "exiftool",
@@ -282,18 +286,9 @@ class Transcoder(generic_utils.InterruptibleProcess):
                 logger=self.logger,
             )
 
-            if overwrite_input:
-                try:
-                    self.logger.debug(f"Replacing {input_file} with {temp_file}")
-                    os.replace(temp_file, input_file)
-
-                except OSError:
-                    self.logger.debug(f"Replacing {input_file} with {temp_file} (second attempt)")
-                    shutil.move(temp_file, input_file)
-            else:
-                final_output_file = os.path.join(self.working_dir, f"{basename}.{ext}")
-                self.logger.debug(f"Renaming {temp_file} to {final_output_file}")
-                shutil.move(temp_file, final_output_file)
+            self.logger.debug(f"Replacing {target_file} with {temp_file}")
+            staging.commit()
+            if not overwrite_input:
                 self.logger.debug(f"Removing {input_file}")
                 os.remove(input_file)
 
@@ -303,10 +298,6 @@ class Transcoder(generic_utils.InterruptibleProcess):
                 f"size reduced by: {original_size - final_size} bytes "
                 f"({size_reduction:.2f}% of original size)"
             )
-
-        except ValueError:
-            self.logger.error(f"Error occurred, removing temporary file {temp_file}")
-            os.remove(temp_file)
 
 
 
@@ -321,7 +312,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         # convert to seconds
         duration /= 1000
 
-        with files_utils.ScopedDirectory(os.path.join(self.working_dir, "opt_crf")) as wd_dir:
+        with self.workspace.scoped_dir("opt_crf") as wd_dir:
             segment_files = []
             if allow_segments and duration > 30:
                 self.logger.info(f"Picking segments from {input_file}")
@@ -444,7 +435,7 @@ class TranscodeTool(Tool):
 
     @override
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
-        transcoder = Transcoder(working_dir = str(working_dir), logger = logger, target_ssim = args.ssim)
+        transcoder = Transcoder(working_dir = working_dir, logger = logger, target_ssim = args.ssim)
         analysis = transcoder.analyze_directory(args.videos_path[0])
         return TranscodePlan(items=analysis, target_ssim=args.ssim)
 
@@ -454,5 +445,5 @@ class TranscodeTool(Tool):
         if not isinstance(plan, TranscodePlan):
             raise TypeError(f"Expected TranscodePlan, got {type(plan).__name__}")
 
-        transcoder = Transcoder(working_dir = str(working_dir), logger = logger, target_ssim = plan.target_ssim)
+        transcoder = Transcoder(working_dir = working_dir, logger = logger, target_ssim = plan.target_ssim)
         transcoder.perform_transcodes(plan.items)

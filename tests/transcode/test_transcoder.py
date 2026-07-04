@@ -2,13 +2,14 @@
 import unittest
 
 from twotone.tools.transcode import Transcoder
+from twotone.tools.utils import files_utils
 from common import TwoToneTestCase, get_video, add_test_media, hashes, run_twotone
 
 
 class TranscoderTests(TwoToneTestCase):
     def test_video_1_for_best_crf(self):
         test_video = get_video("big_buck_bunny_720p_2mb.mp4")
-        best_enc = Transcoder(self.wd.path, self.logger).find_optimal_crf(test_video, allow_segments=False)
+        best_enc = Transcoder(files_utils.Workspace(self.wd.path), self.logger).find_optimal_crf(test_video, allow_segments=False)
 
         self.assertTrue(best_enc in [28, 29])                                   # with some versions of ffmpeg best_enc is 28 on some other it is 29
 
