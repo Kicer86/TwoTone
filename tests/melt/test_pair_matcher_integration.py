@@ -219,12 +219,8 @@ class PairMatcherIntegrationTest(MeltTestBase):
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
         result = pair_matcher.create_segments_mapping()
         mappings = result.mapping
-        # Same speed and zero offset: ideally a constant-offset GLOBAL_LINEAR,
-        # but matched pairs on degraded content jitter by a frame, so the
-        # matcher currently settles on GENERIC on every tested ffmpeg build.
-        # This characterizes the chosen path; if it changes, review the
-        # boundary expectations below.
-        self.assertEqual(result.relation, MappingRelation.GENERIC)
+        # Same speed, zero offset: a constant-offset global-linear relation.
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
 
         # LHS: bbb (62.3s), RHS: bbb_deg10 (62.3s, same speed, degraded quality)
         self.assertGreaterEqual(len(mappings), 3)
@@ -251,12 +247,10 @@ class PairMatcherIntegrationTest(MeltTestBase):
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
         result = pair_matcher.create_segments_mapping()
         mappings = result.mapping
-        # NOTE: the detected relation is build-dependent here (measured:
-        # GENERIC on ffmpeg 8, GLOBAL_LINEAR on ffmpeg 6/CI) because match
-        # survival through the filter pipeline differs per build.  Both paths
-        # must land the boundaries asserted below; assert the relation once
-        # match survival is robust enough for the drift fit to succeed
-        # everywhere.
+        # The shared bodies are related by a 1.03x linear speed change, so
+        # the detected relation must be GLOBAL_LINEAR regardless of the
+        # divergent intros/outros around them.
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
 
         # LHS: bbb_gi3 (65.3s, 3s grass intro), RHS: atoms_i3_deg (63.5s, 3s atoms intro)
         self.assertGreaterEqual(len(mappings), 3)
@@ -291,12 +285,10 @@ class PairMatcherIntegrationTest(MeltTestBase):
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
         result = pair_matcher.create_segments_mapping()
         mappings = result.mapping
-        # NOTE: the detected relation is build-dependent here (measured:
-        # GENERIC on ffmpeg 8, GLOBAL_LINEAR on ffmpeg 6/CI) because match
-        # survival through the filter pipeline differs per build.  Both paths
-        # must land the boundaries asserted below; assert the relation once
-        # match survival is robust enough for the drift fit to succeed
-        # everywhere.
+        # The shared bodies are related by a 1.03x linear speed change, so
+        # the detected relation must be GLOBAL_LINEAR regardless of the
+        # divergent intros/outros around them.
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
 
         # LHS: bbb_gi2 (64.3s, 2s grass intro), RHS: atoms_i5_deg (65.5s, 5s atoms intro)
         self.assertGreaterEqual(len(mappings), 3)
@@ -367,12 +359,10 @@ class PairMatcherIntegrationTest(MeltTestBase):
         pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
         result = pair_matcher.create_segments_mapping()
         mappings = result.mapping
-        # NOTE: the detected relation is build-dependent here (measured:
-        # GENERIC on ffmpeg 8, GLOBAL_LINEAR on ffmpeg 6/CI) because match
-        # survival through the filter pipeline differs per build.  Both paths
-        # must land the boundaries asserted below; assert the relation once
-        # match survival is robust enough for the drift fit to succeed
-        # everywhere.
+        # The shared bodies are related by a 1.03x linear speed change, so
+        # the detected relation must be GLOBAL_LINEAR regardless of the
+        # divergent intros/outros around them.
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
 
         # LHS: gi3_wo3 (57.1s, 3s grass intro + 3s woman outro)
         # RHS: ai3d_swo3 (66.5s, 3s atoms intro + 3s seawaves outro)
