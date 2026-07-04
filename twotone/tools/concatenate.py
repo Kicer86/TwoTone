@@ -158,19 +158,19 @@ class ConcatenateTool(Tool):
                             help='Skip videos with warnings and continue with valid groups.')
 
     @override
-    def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
-        concatenator = Concatenate(logger, working_dir=working_dir)
+    def analyze(self, args, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
+        concatenator = Concatenate(logger, working_dir=str(working_dir))
         analysis = concatenator.analyze(args.videos_path[0], ignore_warnings=args.ignore_warnings)
         if analysis is None:
             return EmptyPlan()
         return ConcatenatePlan(items=analysis)
 
     @override
-    def perform(self, args, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
+    def perform(self, args, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
         if not isinstance(plan, ConcatenatePlan):
             raise TypeError(f"Expected ConcatenatePlan, got {type(plan).__name__}")
 
-        concatenator = Concatenate(logger, working_dir)
+        concatenator = Concatenate(logger, str(working_dir))
         concatenator.perform(plan.items)
 
 

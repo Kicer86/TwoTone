@@ -384,24 +384,24 @@ class MergeTool(Tool):
                                 'the end in undefined order')
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
         logger.info("Searching for movie and subtitle files to be merged")
 
         merger = Merge(logger,
                        language=args.language,
                        lang_priority=args.languages_priority,
-                       working_dir=working_dir)
+                       working_dir=str(working_dir))
         analysis = merger.analyze_directory(args.videos_path[0])
         return MergePlan(items=analysis, base_path=os.path.abspath(args.videos_path[0]))
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
         if not isinstance(plan, MergePlan):
             raise TypeError(f"Expected MergePlan, got {type(plan).__name__}")
 
         merger = Merge(logger,
                        language=args.language,
                        lang_priority=args.languages_priority,
-                       working_dir=working_dir)
+                       working_dir=str(working_dir))
         merger.base_path = plan.base_path or os.path.abspath(args.videos_path[0])
         merger.perform_merges(plan.items)

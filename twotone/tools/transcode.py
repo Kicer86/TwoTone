@@ -443,16 +443,16 @@ class TranscodeTool(Tool):
 
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
-        transcoder = Transcoder(working_dir = working_dir, logger = logger, target_ssim = args.ssim)
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
+        transcoder = Transcoder(working_dir = str(working_dir), logger = logger, target_ssim = args.ssim)
         analysis = transcoder.analyze_directory(args.videos_path[0])
         return TranscodePlan(items=analysis, target_ssim=args.ssim)
 
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
         if not isinstance(plan, TranscodePlan):
             raise TypeError(f"Expected TranscodePlan, got {type(plan).__name__}")
 
-        transcoder = Transcoder(working_dir = working_dir, logger = logger, target_ssim = plan.target_ssim)
+        transcoder = Transcoder(working_dir = str(working_dir), logger = logger, target_ssim = plan.target_ssim)
         transcoder.perform_transcodes(plan.items)

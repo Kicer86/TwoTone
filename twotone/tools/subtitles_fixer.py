@@ -11,7 +11,7 @@ from tqdm import tqdm
 from typing import Callable
 
 from .tool import EmptyPlan, Plan, Tool
-from twotone.tools.utils import generic_utils, process_utils, subtitles_utils, video_utils
+from twotone.tools.utils import files_utils, generic_utils, process_utils, subtitles_utils, video_utils
 
 
 class Fixer(generic_utils.InterruptibleProcess):
@@ -254,18 +254,18 @@ class FixerTool(Tool):
                             help='Path with videos to analyze.')
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
         logger.info("Searching for broken files")
 
-        fixer = Fixer(logger, working_dir=working_dir)
+        fixer = Fixer(logger, working_dir=str(working_dir))
         broken_videos = fixer.scan_directory(args.videos_path[0])
         return SubtitlesFixPlan(items=broken_videos)
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
         if not isinstance(plan, SubtitlesFixPlan):
             raise TypeError(f"Expected SubtitlesFixPlan, got {type(plan).__name__}")
 
-        fixer = Fixer(logger, working_dir)
+        fixer = Fixer(logger, str(working_dir))
         fixer.repair_videos(plan.items, drop_broken = args.drop_unfixable)
         logger.info("Done")

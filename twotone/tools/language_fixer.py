@@ -153,10 +153,10 @@ class LanguageFixerTool(Tool):
         )
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
         self._include_audio = args.audio
         self._base_path = os.path.abspath(args.videos_path[0])
-        self._set_context(logger, working_dir)
+        self._set_context(logger, str(working_dir))
         tools = ["mkvmerge", "mkvextract", "ffprobe"]
         if args.audio:
             tools.append("ffmpeg")
@@ -231,8 +231,8 @@ class LanguageFixerTool(Tool):
         return LanguageFixPlan(items=plan_items, include_audio=self._include_audio, base_path=self._base_path)
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
-        self._set_context(logger, working_dir)
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
+        self._set_context(logger, str(working_dir))
 
         if not isinstance(plan, LanguageFixPlan):
             raise TypeError(f"Expected LanguageFixPlan, got {type(plan).__name__}")

@@ -214,7 +214,6 @@ def execute(argv: list[str]) -> None:
                  logger=logger,
              ) as workspace:
             tool_workspace = workspace if args.working_dir is not None else workspace.subdir(args.tool)
-            tool_wd = tool_workspace.root
             tool_logger = logger.getChild(args.tool)
             required_tools = sorted(tool.required_tools())
             if required_tools:
@@ -222,7 +221,7 @@ def execute(argv: list[str]) -> None:
             plan = tool.analyze(
                 args,
                 logger=tool_logger,
-                working_dir=tool_wd,
+                working_dir=tool_workspace,
             )
 
             if args.no_dry_run:
@@ -233,7 +232,7 @@ def execute(argv: list[str]) -> None:
                     tool.perform(
                         args,
                         logger=tool_logger,
-                        working_dir=tool_wd,
+                        working_dir=tool_workspace,
                         plan=plan,
                     )
             elif args.interactive:
@@ -256,7 +255,7 @@ def execute(argv: list[str]) -> None:
                         tool.perform(
                             args,
                             logger=tool_logger,
-                            working_dir=tool_wd,
+                            working_dir=tool_workspace,
                             plan=plan,
                         )
                     else:
@@ -281,7 +280,7 @@ def execute(argv: list[str]) -> None:
                     tool.perform(
                         args,
                         logger=tool_logger,
-                        working_dir=tool_wd,
+                        working_dir=tool_workspace,
                         plan=plan,
                     )
                 else:

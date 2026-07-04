@@ -136,7 +136,7 @@ class UtilitiesTool(Tool):
                                       help = "Frames scale in %%. Default is 100")
 
     @override
-    def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
+    def analyze(self, args, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
         if args.subtool == "scenes":
             try:
                 scale = float(args.scale)
@@ -154,7 +154,7 @@ class UtilitiesTool(Tool):
             return EmptyPlan()
 
     @override
-    def perform(self, args, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
+    def perform(self, args, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
         if not isinstance(plan, ScenesPlan):
             raise TypeError(f"Expected ScenesPlan, got {type(plan).__name__}")
 
