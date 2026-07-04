@@ -69,7 +69,32 @@ class _WorkspaceState:
 
     def __init__(self) -> None:
         self.counter = itertools.count()
+        self.token = uuid.uuid4().hex[:8]
         self.created: list[str] = []
+
+
+class StagingFile:
+    """A temporary file placed next to its target, committed by atomic rename.
+
+    The name is deliberately visible (no leading dot) so that leftovers of
+    crashed runs do not go unnoticed.
+    """
+
+    def __init__(self, path: str, target: str) -> None:
+        self.path = path
+        self.target = target
+        self.committed = False
+
+    def commit(self) -> None:
+        """Atomically replace the target with the staged content."""
+        os.replace(self.path, self.target)
+        self.committed = True
+
+    def __fspath__(self) -> str:
+        return self.path
+
+    def __str__(self) -> str:
+        return self.path
 
 
 class Workspace(os.PathLike):
@@ -141,6 +166,38 @@ class Workspace(os.PathLike):
             if not self.keep and os.path.exists(path):
                 os.remove(path)
 
+    @contextmanager
+    def staging_for(self, target_path: str) -> Iterator[StagingFile]:
+        """Yield a StagingFile in the target's directory.
+
+        Living next to the target makes ``commit()`` an atomic same-filesystem
+        rename.  When the context exits without a commit (intermediate file,
+        rejected result, error), the staged file is removed.  The keep mode
+        does not apply here: staging files live among user data, not in the
+        working directory.
+        """
+        directory, stem, extension = split_path(target_path)
+        staging = StagingFile(self._staging_path(directory, stem, extension or None), target_path)
+        try:
+            yield staging
+        finally:
+            if not staging.committed and os.path.exists(staging.path):
+                os.remove(staging.path)
+
+    @contextmanager
+    def staging_dir_for(self, target_dir: str) -> Iterator[str]:
+        """Create a scratch directory inside the target directory, removed on exit.
+
+        For intermediates that must share a filesystem with their final
+        location (so entries can be renamed out instead of copied).
+        """
+        path = self._staging_path(target_dir, "twotone", None)
+        os.makedirs(path)
+        try:
+            yield path
+        finally:
+            shutil.rmtree(path, ignore_errors=True)
+
     def remove_created(self) -> None:
         """Remove everything this run created under the workspace (best effort).
 
@@ -164,6 +221,16 @@ class Workspace(os.PathLike):
         while True:
             name = f"{label}-{next(self._state.counter)}{suffix}"
             path = os.path.join(self.root, name)
+            if not os.path.exists(path):
+                return path
+
+    def _staging_path(self, directory: str, stem: str, extension: str | None) -> str:
+        # The token keeps names unique across twotone instances staging in
+        # the same user directory, the counter within this instance.
+        suffix = f".{extension}" if extension else ""
+        while True:
+            name = f"{stem}.twotone-tmp-{self._state.token}-{next(self._state.counter)}{suffix}"
+            path = os.path.join(directory, name)
             if not os.path.exists(path):
                 return path
 

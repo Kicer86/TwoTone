@@ -114,5 +114,73 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(os.path.isdir(own_dir))
 
 
+class StagingTests(unittest.TestCase):
+    def setUp(self):
+        self.user_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.user_dir, ignore_errors=True)
+        self.workspace = files_utils.Workspace(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.workspace.root, ignore_errors=True)
+        self.target = os.path.join(self.user_dir, "movie.mkv")
+
+    def test_staging_file_lives_visible_next_to_target(self):
+        with self.workspace.staging_for(self.target) as staging:
+            directory, name = os.path.split(staging.path)
+
+            self.assertEqual(directory, self.user_dir)
+            self.assertFalse(name.startswith("."))
+            self.assertIn("twotone-tmp", name)
+            self.assertTrue(name.endswith(".mkv"))
+
+    def test_commit_replaces_target_atomically(self):
+        with open(self.target, "w") as target:
+            target.write("old")
+
+        with self.workspace.staging_for(self.target) as staging:
+            with open(staging.path, "w") as staged:
+                staged.write("new")
+            staging.commit()
+
+        with open(self.target) as target:
+            self.assertEqual(target.read(), "new")
+        self.assertFalse(os.path.exists(staging.path))
+
+    def test_uncommitted_staging_is_removed_on_exit(self):
+        with self.workspace.staging_for(self.target) as staging:
+            with open(staging.path, "w"):
+                pass
+
+        self.assertFalse(os.path.exists(staging.path))
+
+    def test_uncommitted_staging_is_removed_on_error(self):
+        with self.assertRaises(RuntimeError):
+            with self.workspace.staging_for(self.target) as staging:
+                with open(staging.path, "w"):
+                    pass
+                raise RuntimeError("processing failed")
+
+        self.assertFalse(os.path.exists(staging.path))
+
+    def test_staging_survives_when_process_dies_before_context_exit(self):
+        # Simulates a hard kill: nothing cleans the file up, and by design
+        # it must remain visible in the target directory.
+        cm = self.workspace.staging_for(self.target)
+        staging = cm.__enter__()
+        with open(staging.path, "w"):
+            pass
+
+        self.assertTrue(os.path.exists(staging.path))
+
+    def test_staging_dir_shares_filesystem_with_target_and_is_removed(self):
+        with self.workspace.staging_dir_for(self.user_dir) as scratch:
+            self.assertEqual(os.path.dirname(scratch), self.user_dir)
+            inner = os.path.join(scratch, "frame.jpg")
+            with open(inner, "w"):
+                pass
+            os.rename(inner, os.path.join(self.user_dir, "frame.jpg"))
+
+        self.assertFalse(os.path.exists(scratch))
+        self.assertTrue(os.path.exists(os.path.join(self.user_dir, "frame.jpg")))
+
+
 if __name__ == "__main__":
     unittest.main()
