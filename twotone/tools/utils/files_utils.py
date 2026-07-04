@@ -1,13 +1,22 @@
 
 import itertools
+import logging
 import shutil
+import sys
+import time
 
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import IO
 import os
 import tempfile
 import uuid
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 
 def split_path(path: str) -> tuple[str, str, str]:
@@ -233,6 +242,157 @@ class Workspace(os.PathLike):
             path = os.path.join(directory, name)
             if not os.path.exists(path):
                 return path
+
+
+LOCK_FILE_NAME = ".twotone-lock"
+KEEP_MARKER_NAME = "twotone-keep"
+
+# Working directories created before locking was introduced carry no lock
+# file.  They are considered abandoned only after this much inactivity, so
+# that a directory of an instance which is just starting up (created, lock
+# not written yet) is never swept.
+_LOCKLESS_STALE_AGE_SECONDS = 60 * 60
+
+
+class DirectoryLock:
+    """Advisory lock marking a directory as owned by a live process.
+
+    Held for the whole lifetime of a run.  The lock dies with the process,
+    including hard kills, which makes it a reliable liveness signal for
+    stale-directory collection.
+    """
+
+    def __init__(self, directory: str) -> None:
+        self.path = os.path.join(directory, LOCK_FILE_NAME)
+        self._handle: IO[str] | None = None
+
+    def try_acquire(self) -> bool:
+        handle = open(self.path, "a")
+        try:
+            if sys.platform == "win32":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return False
+        self._handle = handle
+        return True
+
+    def release(self) -> None:
+        if self._handle is None:
+            return
+        try:
+            if sys.platform == "win32":
+                self._handle.seek(0)
+                msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._handle.close()
+            self._handle = None
+
+
+def _remove_stale_instance_dirs(base_dir: str, own_dir: str, logger: logging.Logger) -> None:
+    """Remove working directories abandoned by dead twotone instances.
+
+    A directory is abandoned when its lock can be acquired (its owner is
+    gone) or, for lockless legacy directories, when it has not been touched
+    for a long time.  Directories with a keep marker are never removed.
+    """
+    try:
+        entries = os.listdir(base_dir)
+    except OSError:
+        return
+
+    for entry in entries:
+        path = os.path.join(base_dir, entry)
+        if not os.path.isdir(path) or os.path.abspath(path) == os.path.abspath(own_dir):
+            continue
+        if os.path.exists(os.path.join(path, KEEP_MARKER_NAME)):
+            continue
+
+        if os.path.exists(os.path.join(path, LOCK_FILE_NAME)):
+            lock = DirectoryLock(path)
+            if not lock.try_acquire():
+                continue
+            lock.release()
+        else:
+            try:
+                age = time.time() - os.path.getmtime(path)
+            except OSError:
+                continue
+            if age < _LOCKLESS_STALE_AGE_SECONDS:
+                continue
+
+        logger.info(f"Removing stale working directory: {path}")
+        shutil.rmtree(path, ignore_errors=True)
+
+
+@contextmanager
+def open_workspace(
+    requested_dir: str | None,
+    default_base: str,
+    *,
+    keep: bool = False,
+    logger: logging.Logger,
+) -> Iterator[Workspace]:
+    """Set up the working directory for a run and yield its Workspace.
+
+    Two modes:
+
+    * default (``requested_dir`` is None): a per-instance subdirectory of
+      ``default_base`` is created and removed at exit; other, abandoned
+      instance directories are collected at startup.
+    * external (``requested_dir`` given): the directory is used exactly as
+      provided - no per-instance subdirectory, no scanning, no collection.
+      Only entries created by this run are removed at exit, and a second
+      instance pointed at the same directory is rejected.
+
+    With ``keep`` nothing is ever deleted from the working directory.
+    """
+    if requested_dir is None:
+        # Never adopt an existing directory: the PID may have been recycled
+        # and the directory may hold results of a previous --keep-wd run.
+        instance_dir = os.path.join(default_base, str(os.getpid()))
+        suffixes = itertools.count(1)
+        while os.path.exists(instance_dir):
+            instance_dir = os.path.join(default_base, f"{os.getpid()}-{next(suffixes)}")
+        os.makedirs(instance_dir)
+        lock = DirectoryLock(instance_dir)
+        if not lock.try_acquire():
+            raise RuntimeError(f"Cannot lock own working directory: {instance_dir}")
+        try:
+            if keep:
+                with open(os.path.join(instance_dir, KEEP_MARKER_NAME), "w"):
+                    pass
+            else:
+                _remove_stale_instance_dirs(default_base, instance_dir, logger)
+            yield Workspace(instance_dir, keep=keep)
+        finally:
+            lock.release()
+            if not keep:
+                shutil.rmtree(instance_dir, ignore_errors=True)
+    else:
+        root = os.fspath(requested_dir)
+        os.makedirs(root, exist_ok=True)
+        lock = DirectoryLock(root)
+        if not lock.try_acquire():
+            raise RuntimeError(f"Working directory {root} is already used by another twotone instance")
+        workspace = Workspace(root, keep=keep)
+        try:
+            yield workspace
+        finally:
+            try:
+                workspace.remove_created()
+            finally:
+                lock.release()
+                if not keep:
+                    try:
+                        os.remove(lock.path)
+                    except OSError:
+                        pass
 
 
 def format_path(path: str, base_path: str | None) -> str:

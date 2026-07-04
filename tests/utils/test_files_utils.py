@@ -1,7 +1,9 @@
 
+import logging
 import os
 import shutil
 import tempfile
+import time
 import unittest
 
 from twotone.tools.utils import files_utils
@@ -180,6 +182,116 @@ class StagingTests(unittest.TestCase):
 
         self.assertFalse(os.path.exists(scratch))
         self.assertTrue(os.path.exists(os.path.join(self.user_dir, "frame.jpg")))
+
+
+class OpenWorkspaceTests(unittest.TestCase):
+    def setUp(self):
+        self.base = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
+        self.logger = logging.getLogger("WorkspaceTest")
+
+    def _make_instance_dir(self, name: str, *, locked: bool = False, keep_marker: bool = False,
+                           lock_file: bool = True, age_seconds: int = 0) -> tuple[str, files_utils.DirectoryLock | None]:
+        path = os.path.join(self.base, name)
+        os.makedirs(path)
+        lock = None
+        if lock_file:
+            lock = files_utils.DirectoryLock(path)
+            self.assertTrue(lock.try_acquire())
+            if not locked:
+                lock.release()
+                lock = None
+        if keep_marker:
+            with open(os.path.join(path, files_utils.KEEP_MARKER_NAME), "w"):
+                pass
+        if age_seconds:
+            old = time.time() - age_seconds
+            os.utime(path, (old, old))
+        return path, lock
+
+    def test_default_mode_creates_and_removes_instance_dir(self):
+        with files_utils.open_workspace(None, self.base, logger=self.logger) as workspace:
+            self.assertEqual(os.path.dirname(workspace.root), self.base)
+            self.assertTrue(os.path.isdir(workspace.root))
+            instance_dir = workspace.root
+
+        self.assertFalse(os.path.exists(instance_dir))
+
+    def test_default_mode_collects_abandoned_instances(self):
+        stale, _ = self._make_instance_dir("1000")
+        alive, alive_lock = self._make_instance_dir("1001", locked=True)
+        kept, _ = self._make_instance_dir("1002", keep_marker=True)
+        legacy_old, _ = self._make_instance_dir("1003", lock_file=False, age_seconds=2 * 60 * 60)
+        legacy_fresh, _ = self._make_instance_dir("1004", lock_file=False)
+
+        try:
+            with files_utils.open_workspace(None, self.base, logger=self.logger):
+                self.assertFalse(os.path.exists(stale))
+                self.assertFalse(os.path.exists(legacy_old))
+                self.assertTrue(os.path.isdir(alive))
+                self.assertTrue(os.path.isdir(kept))
+                self.assertTrue(os.path.isdir(legacy_fresh))
+        finally:
+            assert alive_lock
+            alive_lock.release()
+
+    def test_keep_mode_leaves_instance_dir_with_marker_and_skips_collection(self):
+        stale, _ = self._make_instance_dir("1000")
+
+        with files_utils.open_workspace(None, self.base, keep=True, logger=self.logger) as workspace:
+            instance_dir = workspace.root
+
+        self.assertTrue(os.path.isdir(instance_dir))
+        self.assertTrue(os.path.exists(os.path.join(instance_dir, files_utils.KEEP_MARKER_NAME)))
+        self.assertTrue(os.path.isdir(stale))
+
+    def test_kept_instance_dir_survives_the_next_default_run(self):
+        with files_utils.open_workspace(None, self.base, keep=True, logger=self.logger) as workspace:
+            kept_dir = workspace.root
+            marker = os.path.join(kept_dir, "artifact")
+            with open(marker, "w"):
+                pass
+
+        with files_utils.open_workspace(None, self.base, logger=self.logger):
+            pass
+
+        self.assertTrue(os.path.exists(marker))
+
+    def test_external_mode_uses_directory_as_given(self):
+        external = os.path.join(self.base, "external")
+
+        with files_utils.open_workspace(external, "unused-default", logger=self.logger) as workspace:
+            self.assertEqual(workspace.root, external)
+
+    def test_external_mode_removes_only_own_entries(self):
+        external = os.path.join(self.base, "external")
+        os.makedirs(external)
+        foreign = os.path.join(external, "leftover")
+        os.makedirs(foreign)
+
+        with files_utils.open_workspace(external, "unused-default", logger=self.logger) as workspace:
+            own = workspace.unique_dir("frames")
+
+        self.assertTrue(os.path.isdir(external))
+        self.assertTrue(os.path.isdir(foreign))
+        self.assertFalse(os.path.exists(own))
+        self.assertFalse(os.path.exists(os.path.join(external, files_utils.LOCK_FILE_NAME)))
+
+    def test_external_mode_keep_leaves_everything(self):
+        external = os.path.join(self.base, "external")
+
+        with files_utils.open_workspace(external, "unused-default", keep=True, logger=self.logger) as workspace:
+            own = workspace.unique_dir("frames")
+
+        self.assertTrue(os.path.isdir(own))
+
+    def test_external_mode_rejects_second_instance(self):
+        external = os.path.join(self.base, "external")
+
+        with files_utils.open_workspace(external, "unused-default", logger=self.logger):
+            with self.assertRaises(RuntimeError):
+                with files_utils.open_workspace(external, "unused-default", logger=self.logger):
+                    pass
 
 
 if __name__ == "__main__":
