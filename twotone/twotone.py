@@ -132,7 +132,7 @@ def execute(argv: list[str]) -> None:
                         action='store_true',
                         default=False,
                         help='Perform actual operation.')
-    parser.add_argument("--interactive",
+    parser.add_argument("--interactive", "-i",
                         action="store_true",
                         help="Show analysis report and ask whether to perform.")
     parser.add_argument(
