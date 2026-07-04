@@ -84,7 +84,6 @@ class MeltPerformer(TrackTimelineMixin):
         self.cache = cache
         self.fill_audio_gaps = fill_audio_gaps
         self._normalized_audio_cache: dict[tuple[str, int, int | None, int | None], str] = {}
-        self._temporary_audio_counter = 0
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
         self.workspace = working_dir
         self.wd = working_dir.root
@@ -134,7 +133,6 @@ class MeltPerformer(TrackTimelineMixin):
                 else:
                     # Convert streams to unified list (and patch audios if needed)
                     self._normalized_audio_cache.clear()
-                    self._temporary_audio_counter = 0
                     self._pair_match_cache.clear()
                     files_details = group.get("files_details", {})
                     prepared_streams = self._prepare_stream_entries(
@@ -1411,12 +1409,7 @@ class MeltPerformer(TrackTimelineMixin):
         return video_utils.get_video_duration(path, logger=logger)
 
     def _temporary_audio_path(self, label: str, stream_index: int) -> str:
-        path = os.path.join(
-            self.wd,
-            f"tmp_{os.getpid()}_{label}_{self._temporary_audio_counter}_{stream_index}.mka",
-        )
-        self._temporary_audio_counter += 1
-        return path
+        return self.workspace.unique_file(f"{label}_{stream_index}", "mka")
 
     def _prepare_passthrough_audio(
         self,
@@ -1470,7 +1463,7 @@ class MeltPerformer(TrackTimelineMixin):
         channel_layout = self._get_audio_channel_layout(source_path, logger=self.logger)
         self._concat_and_encode(
             [prepared_flac], False, "", False, "",
-            os.path.join(self.wd, f"passthrough_concat_{os.getpid()}_{stream_index}.txt"),
+            self.workspace.unique_file(f"passthrough_concat_{stream_index}", "txt"),
             output_path,
             channel_layout=channel_layout,
             logger=self.logger,

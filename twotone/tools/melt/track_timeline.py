@@ -33,15 +33,16 @@ import os
 
 from typing import Any
 
-from ..utils import generic_utils, process_utils, video_utils
+from ..utils import files_utils, generic_utils, process_utils, video_utils
 
 
 class TrackTimelineMixin:
     """Stream-timeline and AAC-priming helpers for :class:`MeltPerformer`.
 
-    Requires the host class to provide ``wd`` and ``logger``.
+    Requires the host class to provide ``workspace``, ``wd`` and ``logger``.
     """
 
+    workspace: files_utils.Workspace
     wd: str
     logger: logging.Logger
 
@@ -176,7 +177,7 @@ class TrackTimelineMixin:
         """
         if self._aac_priming_exposed_cache is None:
             exposed = False
-            probe = os.path.join(self.wd, f"_priming_probe_{os.getpid()}.mka")
+            probe = self.workspace.unique_file("priming_probe", "mka")
             try:
                 process_utils.raise_on_error(
                     process_utils.start_process("ffmpeg", [
@@ -193,7 +194,7 @@ class TrackTimelineMixin:
             except Exception:  # noqa: BLE001 - detection failure falls back to "absorbed"
                 exposed = False
             finally:
-                if os.path.exists(probe):
+                if not self.workspace.keep and os.path.exists(probe):
                     os.remove(probe)
             self._aac_priming_exposed_cache = exposed
         return self._aac_priming_exposed_cache
@@ -288,7 +289,7 @@ class TrackTimelineMixin:
         try:
             process_utils.raise_on_error(process_utils.start_process("ffmpeg", args, logger=logger))
         finally:
-            if adts_path and os.path.exists(adts_path):
+            if adts_path and not self.workspace.keep and os.path.exists(adts_path):
                 os.remove(adts_path)
 
     def _extract_audio_to_flac(self, video_path: str, output_path: str, logger: logging.Logger | None = None) -> None:
