@@ -11,7 +11,7 @@ from .jellyfin import JellyfinSource
 from .static_source import StaticSource
 from .melt_analyzer import MeltAnalyzer
 from .melt_cache import MeltCache
-from .melt_common import DEFAULT_TOLERANCE_MS, _ensure_working_dir, _split_path_fix
+from .melt_common import DEFAULT_TOLERANCE_MS, _split_path_fix
 from .melt_performer import MeltPerformer
 from .melt_plan import MeltPlan
 
@@ -193,11 +193,10 @@ class MeltTool(Tool):
         duplicates_raw = data_source.collect_duplicates()
         duplicates = {title: list(files) for title, files in duplicates_raw.items()}
 
-        analysis_wd = _ensure_working_dir(str(working_dir))
         analyzer = MeltAnalyzer(
             logger,
             data_source,
-            analysis_wd,
+            working_dir,
             args.allow_length_mismatch,
             args.tolerance,
         )
@@ -225,7 +224,7 @@ class MeltTool(Tool):
         performer = MeltPerformer(
             logger,
             interruption,
-            str(working_dir),
+            working_dir,
             plan.output_dir,
             args.tolerance,
             cache=cache,

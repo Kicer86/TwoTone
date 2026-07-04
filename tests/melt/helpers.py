@@ -11,7 +11,7 @@ from pathlib import Path
 
 from twotone.tools.utils import generic_utils, video_utils
 from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, StaticSource
-from twotone.tools.utils.files_utils import ScopedDirectory
+from twotone.tools.utils.files_utils import ScopedDirectory, Workspace
 from common import (
     TwoToneTestCase,
     FileCache,
@@ -54,7 +54,7 @@ def analyze_duplicates_helper(
     analyzer = MeltAnalyzer(
         logger,
         duplicates_source,
-        working_dir,
+        Workspace(working_dir),
         allow_length_mismatch,
         tolerance_ms,
     )
@@ -69,10 +69,11 @@ def process_duplicates_helper(
     plan,
     tolerance_ms: int = DEFAULT_TOLERANCE_MS,
 ):
+    os.makedirs(working_dir, exist_ok=True)
     performer = MeltPerformer(
         logger,
         interruption,
-        working_dir,
+        Workspace(working_dir),
         output_dir,
         tolerance_ms,
     )

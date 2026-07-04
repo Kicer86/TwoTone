@@ -10,7 +10,7 @@ from ..utils import files_utils, generic_utils, language_utils, process_utils, v
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
 from .pair_matcher import CoverageSummary, MappingRelation, PairMatcher, SegmentsMappingResult
-from .melt_common import FramesInfo, StreamType, _ensure_working_dir, _is_length_mismatch
+from .melt_common import FramesInfo, StreamType, _is_length_mismatch
 from .track_timeline import TrackTimelineMixin
 
 
@@ -71,7 +71,7 @@ class MeltPerformer(TrackTimelineMixin):
         self,
         logger: logging.Logger,
         interruption: generic_utils.InterruptibleProcess,
-        working_dir: str,
+        working_dir: files_utils.Workspace,
         output_dir: str,
         tolerance_ms: int,
         cache: MeltCache | None = None,
@@ -86,7 +86,8 @@ class MeltPerformer(TrackTimelineMixin):
         self._normalized_audio_cache: dict[tuple[str, int, int | None, int | None], str] = {}
         self._temporary_audio_counter = 0
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
-        self.wd = _ensure_working_dir(working_dir)
+        self.workspace = working_dir
+        self.wd = working_dir.root
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
         planned_items = [item for item in plan if item.get("groups")]

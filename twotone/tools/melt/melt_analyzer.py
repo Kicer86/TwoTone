@@ -17,7 +17,7 @@ class MeltAnalyzer:
         self,
         logger: logging.Logger,
         duplicates_source: DuplicatesSource,
-        wd: str,
+        wd: files_utils.Workspace,
         allow_length_mismatch: bool,
         tolerance_ms: int,
     ) -> None:
@@ -242,7 +242,7 @@ class MeltAnalyzer:
         tracks: dict[str, Any],
         ids: dict[str, int],
     ) -> tuple[list[tuple[str, int, str | None]], list[tuple[str, int, str | None]], list[tuple[str, int, str | None]]]:
-        picker_wd = os.path.join(self.wd, "stream_picker")
+        picker_wd = self.wd.unique_dir("stream_picker")
         streams_picker = StreamsPicker(
             self.logger,
             self.duplicates_source,

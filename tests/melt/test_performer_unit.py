@@ -7,7 +7,7 @@ import unittest
 from parameterized import parameterized
 from unittest.mock import patch
 
-from twotone.tools.utils import generic_utils, process_utils, video_utils
+from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
 from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltPerformer
 from twotone.tools.melt.melt_performer import _PairMatchResult, _StreamEntry
 from twotone.tools.melt.pair_matcher import MappingRelation, SegmentsMappingResult
@@ -22,7 +22,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         return MeltPerformer(
             logger=logging.getLogger("test.MeltPerformer"),
             interruption=generic_utils.InterruptibleProcess(),
-            working_dir=tempfile.mkdtemp(),
+            working_dir=files_utils.Workspace(tempfile.mkdtemp()),
             output_dir=tempfile.mkdtemp(),
             tolerance_ms=DEFAULT_TOLERANCE_MS,
         )
