@@ -368,7 +368,7 @@ class PairMatcher:
         if np.isnan(ratio):
             ratio = self.lhs_fps / self.rhs_fps
 
-        cutoff = self._boundary_cutoff(cutoff)
+        cutoff = self._floored_phash_cutoff(cutoff)
 
         lhs_keys = sorted(lhs.keys())
         rhs_keys = sorted(rhs.keys())
@@ -644,11 +644,12 @@ class PairMatcher:
         max_outlier_ratio: float,
         min_span_frames: int,
     ) -> tuple[float, float] | None:
-        """Fit a near-identity drift line with RANSAC.
+        """Fit a drift line with RANSAC.
 
         Returns ``(slope, intercept)`` for ``rhs_frame ~= slope*lhs_frame +
-        intercept`` with ``slope`` close to 1, or ``None`` when the matches do
-        not fit a clean line.
+        intercept`` with ``slope`` close to 1.0 or to the nominal fps ratio
+        (a playback-time-preserving frame-rate conversion), or ``None`` when
+        the matches do not fit a clean line.
         """
         if len(lhs_frame_ids) < 4:
             return None
@@ -691,11 +692,19 @@ class PairMatcher:
             self.logger.debug(f"Linear-drift check: non-positive slope {slope:.6f} — skipping")
             return None
 
-        slope_delta = abs(slope - 1.0)
+        # A physically meaningful frame slope is anchored either at 1.0 (the
+        # same frame indices — a PAL-type speedup carries the difference in
+        # the declared fps) or at the nominal fps ratio (a frame-rate
+        # conversion that preserves playback time re-times every frame).
+        # Anything far from both anchors is not a plausible global relation.
+        nominal_fps_ratio = self.rhs_fps / self.lhs_fps if self.lhs_fps else 1.0
+        slope_delta = min(
+            abs(slope / anchor - 1.0) for anchor in (1.0, nominal_fps_ratio)
+        )
         if slope_delta > max_slope_delta:
             self.logger.debug(
-                f"Linear-drift check: slope={slope:.6f} differs from 1.0 by {slope_delta:.6f}, "
-                f"max {max_slope_delta:.6f} — skipping"
+                f"Linear-drift check: slope={slope:.6f} differs from both 1.0 and "
+                f"the fps ratio {nominal_fps_ratio:.6f} by more than {max_slope_delta:.6f} — skipping"
             )
             return None
 
@@ -901,11 +910,10 @@ class PairMatcher:
             f += direction * step
         samples.append((boundary_lhs_frame, boundary_rhs_frame))
 
-        # Bulk-extract every sampled frame up front (two ffmpeg calls) so the
-        # per-sample verification below only reads images.  The rhs fetch also
-        # covers the ±2 neighbours used by the prediction-jitter retry — a
-        # later single-frame extraction would wipe the prefetched files
-        # (extract_frames_at_ranges cleans its target directory).
+        # Bulk-extract every sampled frame up front (two ffmpeg calls),
+        # including the ±2 rhs neighbours used by the prediction-jitter retry,
+        # so the per-sample verification below only reads images instead of
+        # spawning one-frame ffmpeg extractions.
         self._prefetch_boundary_images(self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames, [lf for lf, _ in samples])
         rhs_with_neighbours = sorted({rf + d for _, rf in samples for d in (-2, -1, 0, 1, 2)})
         self._prefetch_boundary_images(self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames, rhs_with_neighbours)
@@ -985,9 +993,8 @@ class PairMatcher:
         divergent intros are ≳ 124 — the 96-bit gate keeps ~30 bits of margin
         to both sides.
 
-        The hashes are computed fresh (not via ``self.phash``): boundary
-        extraction re-uses ``frame_%08d`` file names across invocations, so a
-        path-keyed cache could return the hash of a previously extracted frame.
+        The hashes are computed fresh (not via ``self.phash``): each sampled
+        pair is checked once, so a cache would add nothing.
         """
         lhs_path = self._ensure_boundary_image(self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames, lhs_frame, lhs_ts)
         rhs_path = self._ensure_boundary_image(self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames, rhs_frame, rhs_ts)
@@ -1203,7 +1210,7 @@ class PairMatcher:
 
         self.logger.info(
             "  frame-offset median=%.2f std=%.2f (constant offset needs std<=%.1f, "
-            "else RANSAC drift with slope within %.2f of 1.0); "
+            "else RANSAC drift with slope within %.2f of 1.0 or of the fps ratio); "
             "matched frame span=%.0f; observed time ratio=%.4f; "
             "frame slope=%.5f -> audio time scale=%.5f (audio is globally "
             "time-scaled by this factor)",
@@ -1591,34 +1598,22 @@ class PairMatcher:
 
         return median + std * 2
 
-    # The two policies flooring an adaptive cutoff with _MIN_PHASH_CUTOFF.
-    # They differ on purpose: the boundary walk always needs headroom, while
-    # the temporal-consistency check must stay strict unless degenerate.
-
     @classmethod
-    def _boundary_cutoff(cls, cutoff: float) -> float:
-        """Cutoff for the boundary walk — never tighter than the floor.
+    def _floored_phash_cutoff(cls, cutoff: float) -> float:
+        """Adaptive phash cutoff, never tighter than ``_MIN_PHASH_CUTOFF``.
 
-        With few calibration pairs or cropped frames the computed cutoff can
-        be as low as 4, which makes the search unable to extend even a single
-        frame.
+        The adaptive cutoff (median + 2*std of the matched pairs' distances)
+        describes how far apart *the pairs themselves* are; checks that match
+        the pairs' surroundings — the boundary walk and the history check —
+        compare frames that are naturally a bit farther apart, so a cutoff of
+        2-4 (typical for well-matched degraded content) starves them and
+        collapses a dozen good matches to a couple, dropping the pair into
+        the GENERIC path.  Measured on the degraded/speed-changed fixtures:
+        neighbouring frames of genuinely shared content match within ≤ 8,
+        while divergent context (e.g. a pair sitting right at an intro
+        boundary) is ≥ 110 — the floor of 16 keeps a 2x/7x margin to both.
         """
         return max(cutoff, cls._MIN_PHASH_CUTOFF)
-
-    @classmethod
-    def _history_cutoff(cls, raw_cutoff: float) -> float:
-        """Cutoff for the temporal-consistency check — floored only when degenerate.
-
-        The adaptive cutoff (median + 2*std) collapses to ~0 only when the
-        surviving matches are pixel-perfect (identical content — e.g. re-muxed
-        or container-offset variants of the same source).  In that degenerate
-        case the history check would demand pixel-perfect *neighbours* too —
-        impossible across a speed/resolution difference — and would collapse a
-        dozen good matches to one, dropping the pair into the GENERIC path.
-        A normal (degraded) cutoff is left untouched so genuine mismatches
-        stay rejected.
-        """
-        return cls._MIN_PHASH_CUTOFF if raw_cutoff < 1.0 else raw_cutoff
 
     def _make_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> list[tuple[int, int]]:
         # Pipeline
@@ -1658,7 +1653,7 @@ class PairMatcher:
         self.logger.debug(f"After ORB elimination:     {PairMatcher.summarize_pairs(self.phash, orb_filtered, lhs_all, rhs_all)}")
 
         raw_cutoff = self._calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
-        cutoff = self._history_cutoff(raw_cutoff)
+        cutoff = self._floored_phash_cutoff(raw_cutoff)
         final = [pair for pair in orb_filtered if self._check_history(pair, lhs_all, rhs_all, cutoff)]
         self.logger.debug(f"After history analysis:    {PairMatcher.summarize_pairs(self.phash, final, lhs_all, rhs_all)}")
 
