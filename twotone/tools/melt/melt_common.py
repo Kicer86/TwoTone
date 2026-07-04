@@ -1,10 +1,21 @@
 import re
 
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 from ..utils import files_utils, generic_utils
 
-FramesInfo = dict[int, dict[str, str]]
+
+class FrameInfo(TypedDict):
+    """A single probed video frame.
+
+    ``frame_id`` is the ffmpeg frame ordinal; ``path`` is the extracted image
+    on disk, or ``None`` while the frame is only probed.
+    """
+    frame_id: int
+    path: str | None
+
+
+FramesInfo = dict[int, FrameInfo]
 StreamType = Literal["video", "audio", "subtitle"]
 
 DEFAULT_TOLERANCE_MS = 0

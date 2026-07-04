@@ -258,7 +258,7 @@ def extract_all_frames(
     logger: logging.Logger | None = None,
     interruption: InterruptibleProcess | None = None,
     desc: str | None = None,
-) -> dict[int, dict]:
+) -> dict[int, Any]:
     """
         Extract all frames into *target_dir* (should be empty).
 
@@ -391,7 +391,7 @@ def probe_frame_timestamps(
     interruption: InterruptibleProcess | None = None,
     desc: str | None = None,
     logger: logging.Logger | None = None,
-) -> dict[int, dict]:
+) -> dict[int, Any]:
     """Probe all frame timestamps without writing image files.
 
     Returns ``{timestamp_ms: {"frame_id": N, "path": None}}`` for every
@@ -472,7 +472,7 @@ def extract_frames_at_ranges(
     video_path: str,
     target_dir: str,
     frame_ranges: list[tuple[int, int]],
-    probed_metadata: dict[int, dict],
+    probed_metadata: dict[int, Any],
     format: str = "jpeg",
     scale: float | tuple[int, int] = 0.5,
     interruption: InterruptibleProcess | None = None,

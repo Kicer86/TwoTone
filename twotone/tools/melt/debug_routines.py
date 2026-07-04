@@ -2,7 +2,7 @@
 import platform
 import os
 
-FramesInfo = dict[int, dict[str, str]]
+from .melt_common import FramesInfo
 
 
 class DebugRoutines:

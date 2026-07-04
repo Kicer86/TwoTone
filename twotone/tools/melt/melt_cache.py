@@ -36,7 +36,7 @@ class MeltCache:
     def save_scene_changes(self, video_path: str, scenes: list[int]) -> None:
         self._save_json(video_path, "scene_changes.json", scenes, indent=2)
 
-    def load_frame_probes(self, video_path: str) -> dict[int, dict] | None:
+    def load_frame_probes(self, video_path: str) -> dict[int, Any] | None:
         data = self._load_json(video_path, "frame_probes.json")
         if data is None:
             return None
@@ -50,7 +50,7 @@ class MeltCache:
         self,
         video_path: str,
         target_dir: str,
-        probed_metadata: dict[int, dict],
+        probed_metadata: dict[int, Any],
     ) -> bool:
         """Restore cached scene frames into *target_dir* via symlinks.
 
@@ -89,7 +89,7 @@ class MeltCache:
         self,
         video_path: str,
         source_dir: str,
-        probed_metadata: dict[int, dict],
+        probed_metadata: dict[int, Any],
     ) -> None:
         """Copy extracted frames from *source_dir* into cache.
 

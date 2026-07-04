@@ -8,11 +8,11 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from tqdm import tqdm
-from typing import Any, Callable, NamedTuple
+from typing import Callable, NamedTuple, TypedDict
 
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
-from .melt_common import FramesInfo
+from .melt_common import FrameInfo, FramesInfo
 from .phash_cache import PhashCache, compute_phash
 from ..utils import files_utils, generic_utils, image_utils, video_utils
 
@@ -35,9 +35,11 @@ class GlobalLinearFit(NamedTuple):
     """A detected global linear frame relation ``rhs_frame ~= slope*lhs + intercept``.
 
     ``is_constant_offset`` is True for the ``slope == 1`` special case.
-    ``time_scale = slope*lhs_fps/rhs_fps`` is the precise audio stretch factor
-    (rhs_ms/lhs_ms) derived from the fit over *all* matched pairs — more accurate
-    than a two-endpoint span ratio, so it is what the audio patch should use.
+    ``time_scale = slope*lhs_fps/rhs_fps`` is the *nominal-fps* stretch factor,
+    used only for plausibility checks and logging.  It must NOT be used to
+    scale audio: when the declared fps differs from the real timestamp ratio it
+    drifts audibly (~1.2 s across a film).  Audio scaling uses the matched-span
+    timestamp ratio instead (see ``MeltPerformer.patch_audio_constant_offset``).
     """
     slope: float
     intercept: float
@@ -45,11 +47,43 @@ class GlobalLinearFit(NamedTuple):
     time_scale: float
 
 
+class CoverageSummary(TypedDict):
+    """Human-readable coverage report for two matched files."""
+
+    full_coverage: bool
+    lhs_start_gap_s: float
+    rhs_start_gap_s: float
+    lhs_end_gap_s: float
+    rhs_end_gap_s: float
+    ratio: float
+
+
 class SegmentsMappingResult(NamedTuple):
     mapping: list[tuple[int, int]]
     lhs_all_frames: FramesInfo
     rhs_all_frames: FramesInfo
     relation: MappingRelation
+    lhs_fps: float
+    rhs_fps: float
+
+
+class _BoundarySearchContext(NamedTuple):
+    """Shared inputs of one directional boundary walk.
+
+    ``anchor`` is the known pair the walk starts from and ``reference`` the
+    farther known pair used for ratio-consistency checks; ``direction`` is -1
+    toward the video start, +1 toward the end.
+    """
+    lhs: FramesInfo
+    rhs: FramesInfo
+    lhs_keys: list[int]
+    rhs_keys: list[int]
+    phash: "PhashCache"
+    anchor: tuple[int, int]
+    reference: tuple[int, int]
+    ratio: float
+    cutoff: float
+    direction: int
 
 
 class PairMatcher:
@@ -65,6 +99,10 @@ class PairMatcher:
     # boundary-extrapolation frames still considered the same picture; see
     # _boundary_content_matches for the measured separation behind the value.
     _MAX_BOUNDARY_PHASH_DISTANCE = 96
+    # Global-linear detection thresholds, shared with the relation-diagnostics
+    # log so the quoted limits never drift from the real ones.
+    _MAX_CONSTANT_OFFSET_STD = 1.0
+    _MAX_DRIFT_SLOPE_DELTA = 0.05
 
     def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2", cache: MeltCache | None = None) -> None:
         self.interruption = interruption
@@ -82,6 +120,13 @@ class PairMatcher:
         self.rhs_fps = generic_utils.fps_str_to_float(rhs_video_data["fps"])
         self.lhs_duration_ms: int | None = lhs_video_data.get("length")
         self.rhs_duration_ms: int | None = rhs_video_data.get("length")
+
+        # Every probed frame timestamp -> {"frame_id": ..., "path": ...}.
+        # Filled by the create_segments_mapping pipeline (_probe_frames) and
+        # mutated in place as frames get extracted (path set), normalized and
+        # edge-snapped (synthetic entries added).
+        self.lhs_all_frames: FramesInfo = {}
+        self.rhs_all_frames: FramesInfo = {}
 
         lhs_wd = os.path.join(self.wd, "lhs")
         rhs_wd = os.path.join(self.wd, "rhs")
@@ -118,9 +163,13 @@ class PairMatcher:
         median_ratio = np.median(ratios)
         return float(median_ratio)
 
+    # Maximum relative deviation between an observed pair ratio and the
+    # expected one before a match is considered inconsistent.
+    _MAX_RELATIVE_RATIO_ERROR = 0.05
+
     @staticmethod
     def is_ratio_acceptable(ratio: float, perfect_ratio: float) -> bool:
-        return abs(ratio - perfect_ratio) < 0.05 * perfect_ratio
+        return abs(ratio - perfect_ratio) < PairMatcher._MAX_RELATIVE_RATIO_ERROR * perfect_ratio
 
     @staticmethod
     def coverage_summary(
@@ -130,15 +179,13 @@ class PairMatcher:
         *,
         lhs_fps: float,
         rhs_fps: float,
-    ) -> dict[str, Any]:
+    ) -> CoverageSummary:
         """Compute a human-readable coverage summary for matched files.
 
-        Returns a dict with:
-        - ``full_coverage``: True when matched content reaches both video edges
-          within at most two frames per input
-        - ``lhs_start_gap_s`` / ``rhs_start_gap_s``: unmatched seconds at start
-        - ``lhs_end_gap_s`` / ``rhs_end_gap_s``: unmatched seconds at end
-        - ``ratio``: speed ratio between the two files
+        ``full_coverage`` is True when matched content reaches both video edges
+        within at most two frames per input; the ``*_gap_s`` fields report the
+        unmatched seconds at each edge and ``ratio`` the speed ratio between
+        the two files.
         """
         first = mappings[0]
         last = mappings[-1]
@@ -187,7 +234,10 @@ class PairMatcher:
             # Let downstream filters (ORB, history check) handle quality control.
             return pairs
 
-        dists_array = np.array([abs(phash.get(lhs_set[l]["path"]) - phash.get(rhs_set[r]["path"])) for l, r in pairs], dtype=float)
+        dists_array = np.array([
+            abs(phash.get(PairMatcher._extracted_path(lhs_set[l])) - phash.get(PairMatcher._extracted_path(rhs_set[r])))
+            for l, r in pairs
+        ], dtype=float)
         med = float(np.median(dists_array))
         mad = float(np.median(np.abs(dists_array - med)))
         threshold = med + 1.5 * mad
@@ -200,8 +250,8 @@ class PairMatcher:
 
         distances = []
         for lhs_ts, rhs_ts in pairs:
-            lhs_path = lhs.get(lhs_ts, {}).get("path") if lhs_ts in lhs else None
-            rhs_path = rhs.get(rhs_ts, {}).get("path") if rhs_ts in rhs else None
+            lhs_path = PairMatcher._path_or_none(lhs, lhs_ts)
+            rhs_path = PairMatcher._path_or_none(rhs, rhs_ts)
             if lhs_path is None or rhs_path is None:
                 continue
             d = abs(phash.get(lhs_path) - phash.get(rhs_path))
@@ -219,8 +269,8 @@ class PairMatcher:
 
         # Identify the max pair
         max_entry = max(distances, key=lambda x: x[0])
-        max_lhs_path = lhs.get(max_entry[1], {}).get("path", "?")
-        max_rhs_path = rhs.get(max_entry[2], {}).get("path", "?")
+        max_lhs_path = PairMatcher._path_or_none(lhs, max_entry[1]) or "?"
+        max_rhs_path = PairMatcher._path_or_none(rhs, max_entry[2]) or "?"
 
         summary = (
             f"Pairs: {len(pairs)} | "
@@ -235,8 +285,8 @@ class PairMatcher:
         if verbose:
             details = []
             for dist, lhs_ts, rhs_ts in distances:
-                lp = lhs.get(lhs_ts, {}).get("path", "?")
-                rp = rhs.get(rhs_ts, {}).get("path", "?")
+                lp = PairMatcher._path_or_none(lhs, lhs_ts) or "?"
+                rp = PairMatcher._path_or_none(rhs, rhs_ts) or "?"
                 details.append(f"  {lp} <-> {rp} | Diff: {dist}")
             summary += "\nDetailed pairs:" + "\n" + "\n".join(details)
 
@@ -318,66 +368,52 @@ class PairMatcher:
         if np.isnan(ratio):
             ratio = self.lhs_fps / self.rhs_fps
 
-        # Ensure cutoff is not absurdly tight — with few calibration pairs or
-        # cropped frames the computed cutoff can be as low as 4, which makes the
-        # search unable to extend even a single frame.
-        cutoff = max(cutoff, self._MIN_PHASH_CUTOFF)
+        cutoff = self._boundary_cutoff(cutoff)
 
-        # --- Fast edge pre-check ---
-        # Before the iterative search, check whether both videos share content
-        # at each edge.  When they do, extend the gap budget for find_boundary
-        # so it does not give up before reaching the video edge.  The anchor
-        # and prediction logic are left untouched for maximum precision.
         lhs_keys = sorted(lhs.keys())
         rhs_keys = sorted(rhs.keys())
 
-        first_gap_seconds = max_gap_seconds
-        last_gap_seconds = max_gap_seconds
+        start_ctx = _BoundarySearchContext(
+            lhs=lhs, rhs=rhs, lhs_keys=lhs_keys, rhs_keys=rhs_keys, phash=phash,
+            anchor=first, reference=last, ratio=ratio, cutoff=cutoff, direction=-1,
+        )
+        end_ctx = start_ctx._replace(anchor=last, reference=first, direction=1)
 
-        for direction in [-1, 1]:
-            label = "start" if direction == -1 else "end"
-            matches = self._edge_content_matches(
-                lhs, rhs, lhs_keys, rhs_keys, phash,
-                first, last, ratio, cutoff, direction,
-            )
-            if not matches:
+        # --- Fast edge pre-check ---
+        # Before the iterative search, check whether both videos share content
+        # at each edge.  When they do, extend the gap budget for the boundary
+        # walk so it does not give up before reaching the video edge.  The
+        # anchor and prediction logic are left untouched for maximum precision.
+        gap_budgets = {-1: max_gap_seconds, 1: max_gap_seconds}
+        for ctx in (start_ctx, end_ctx):
+            label = "start" if ctx.direction == -1 else "end"
+            if not self._edge_content_matches(ctx):
                 self.logger.debug(
                     f"Edge pre-check ({label}): edges do NOT visually match "
                     f"— using default gap budget {max_gap_seconds}s"
                 )
                 continue
 
-            anchor = first if direction == -1 else last
-            edge_lhs = lhs_keys[0] if direction == -1 else lhs_keys[-1]
-            distance_s = abs(anchor[0] - edge_lhs) / 1000.0
+            edge_lhs = lhs_keys[0] if ctx.direction == -1 else lhs_keys[-1]
+            distance_s = abs(ctx.anchor[0] - edge_lhs) / 1000.0
+            gap_budgets[ctx.direction] = max(max_gap_seconds, distance_s + 2.0)
+            self.logger.debug(
+                f"Edge pre-check ({label}): edges match, "
+                f"extending gap budget to {gap_budgets[ctx.direction]:.1f}s "
+                f"(anchor={ctx.anchor[0]}ms, edge={edge_lhs}ms, distance={distance_s:.1f}s)"
+            )
 
-            if direction == -1:
-                first_gap_seconds = max(max_gap_seconds, distance_s + 2.0)
-                self.logger.debug(
-                    f"Edge pre-check ({label}): edges match, "
-                    f"extending gap budget to {first_gap_seconds:.1f}s "
-                    f"(anchor={anchor[0]}ms, edge={edge_lhs}ms, distance={distance_s:.1f}s)"
-                )
-            else:
-                last_gap_seconds = max(max_gap_seconds, distance_s + 2.0)
-                self.logger.debug(
-                    f"Edge pre-check ({label}): edges match, "
-                    f"extending gap budget to {last_gap_seconds:.1f}s "
-                    f"(anchor={anchor[0]}ms, edge={edge_lhs}ms, distance={distance_s:.1f}s)"
-                )
+        first_gap_seconds = gap_budgets[-1]
+        last_gap_seconds = gap_budgets[1]
 
-        refined_first, first_low_entropy = self._find_boundary(
-            lhs, rhs, first, last, -1, first_gap_seconds, ratio, cutoff, phash,
-        )
+        refined_first, first_low_entropy = self._find_boundary(start_ctx, first_gap_seconds)
         self.logger.debug(
             f"Boundary start: walked {first[0]}ms → {refined_first[0]}ms "
             f"({'entered low-entropy zone' if first_low_entropy else 'gap budget or edge reached'}, "
             f"budget={first_gap_seconds:.1f}s)"
         )
 
-        refined_last, last_low_entropy = self._find_boundary(
-            lhs, rhs, last, first, 1, last_gap_seconds, ratio, cutoff, phash,
-        )
+        refined_last, last_low_entropy = self._find_boundary(end_ctx, last_gap_seconds)
         self.logger.debug(
             f"Boundary end: walked {last[0]}ms → {refined_last[0]}ms "
             f"({'entered low-entropy zone' if last_low_entropy else 'gap budget or edge reached'}, "
@@ -477,12 +513,12 @@ class PairMatcher:
         lhs_all_frames: FramesInfo,
         rhs_all_frames: FramesInfo,
         *,
-        max_slope_delta: float = 0.05,
+        max_slope_delta: float = _MAX_DRIFT_SLOPE_DELTA,
         max_median_residual_frames: float = 1.5,
         max_p95_residual_frames: float = 4.0,
         max_outlier_ratio: float = 0.25,
         max_audio_time_scale_delta: float = 0.30,
-        max_constant_offset_std: float = 1.0,
+        max_constant_offset_std: float = _MAX_CONSTANT_OFFSET_STD,
         min_span_frames: int = 250,
     ) -> GlobalLinearFit | None:
         """Detect a single global linear frame relationship over the matched pairs.
@@ -992,7 +1028,7 @@ class PairMatcher:
         except Exception as e:  # pragma: no cover - extraction failure is non-fatal
             self.logger.debug("Boundary frame extraction failed for frame %d: %s", frame_id, e)
             return None
-        return frames.get(ts, {}).get("path")
+        return PairMatcher._path_or_none(frames, ts)
 
     def snap_to_edges(
         self,
@@ -1116,6 +1152,8 @@ class PairMatcher:
             lhs_all_frames=self.lhs_all_frames,
             rhs_all_frames=self.rhs_all_frames,
             relation=relation,
+            lhs_fps=self.lhs_fps,
+            rhs_fps=self.rhs_fps,
         )
 
     def _log_relation_diagnostics(self, matching_pairs: list[tuple[int, int]]) -> None:
@@ -1164,12 +1202,13 @@ class PairMatcher:
         time_scale = slope * self.lhs_fps / self.rhs_fps if self.rhs_fps else float("nan")
 
         self.logger.info(
-            "  frame-offset median=%.2f std=%.2f (constant offset needs std<=1.0, "
-            "else RANSAC drift with slope within 0.05 of 1.0); "
+            "  frame-offset median=%.2f std=%.2f (constant offset needs std<=%.1f, "
+            "else RANSAC drift with slope within %.2f of 1.0); "
             "matched frame span=%.0f; observed time ratio=%.4f; "
             "frame slope=%.5f -> audio time scale=%.5f (audio is globally "
             "time-scaled by this factor)",
-            median_offset, std_offset, lhs_span, ratio, slope, time_scale,
+            median_offset, std_offset, self._MAX_CONSTANT_OFFSET_STD,
+            self._MAX_DRIFT_SLOPE_DELTA, lhs_span, ratio, slope, time_scale,
         )
 
     def _normalize_frames(self, frames_info: FramesInfo, wd: str, desc: str = "Normalizing frames", prefix: str = "") -> FramesInfo:
@@ -1215,7 +1254,24 @@ class PairMatcher:
         return image_utils.image_entropy(frame_path) > 3.5
 
     @staticmethod
-    def _get_new_info(info: dict[str, str], path: str) -> dict[str, str]:
+    def _extracted_path(info: FrameInfo) -> str:
+        """Image path of a frame that must already be extracted.
+
+        The pipeline extracts frames before any visual comparison; a ``None``
+        here is the bug ``_assert_frames_extracted`` exists to catch.
+        """
+        path = info["path"]
+        if path is None:
+            raise AssertionError("frame used before extraction")
+        return path
+
+    @staticmethod
+    def _path_or_none(frames: FramesInfo, ts: int) -> str | None:
+        info = frames.get(ts)
+        return info["path"] if info else None
+
+    @staticmethod
+    def _get_new_info(info: FrameInfo, path: str) -> FrameInfo:
         new_info = info.copy()
         new_info["path"] = path
         return new_info
@@ -1240,7 +1296,8 @@ class PairMatcher:
 
     @staticmethod
     def _filter_low_detailed(scenes: FramesInfo) -> FramesInfo:
-        valuable_scenes = {timestamp: info for timestamp, info in scenes.items() if PairMatcher._is_rich(info["path"])}
+        valuable_scenes = {timestamp: info for timestamp, info in scenes.items()
+                           if PairMatcher._is_rich(PairMatcher._extracted_path(info))}
         return valuable_scenes
 
     @staticmethod
@@ -1304,8 +1361,8 @@ class PairMatcher:
         for lhs_t, rhs_t in pairs_with_timestamps:
             lhs_info = lhs_frames[lhs_t]
             rhs_info = rhs_frames[rhs_t]
-            lhs_img = cv.imread(lhs_info["path"], cv.IMREAD_GRAYSCALE)
-            rhs_img = cv.imread(rhs_info["path"], cv.IMREAD_GRAYSCALE)
+            lhs_img = cv.imread(PairMatcher._extracted_path(lhs_info), cv.IMREAD_GRAYSCALE)
+            rhs_img = cv.imread(PairMatcher._extracted_path(rhs_info), cv.IMREAD_GRAYSCALE)
             if lhs_img is None or rhs_img is None:
                 continue
 
@@ -1386,7 +1443,7 @@ class PairMatcher:
         for l in lhs_near:
             for r in rhs_near:
                 if l in lhs_all_set and r in rhs_all_set:
-                    d = abs(self.phash.get(lhs_all_set[l]["path"]) - self.phash.get(rhs_all_set[r]["path"]))
+                    d = abs(self.phash.get(self._extracted_path(lhs_all_set[l])) - self.phash.get(self._extracted_path(rhs_all_set[r])))
                     if d < best_dist:
                         best = (l, r)
                         best_dist = d
@@ -1398,9 +1455,9 @@ class PairMatcher:
 
         all_matches = []
         for lhs_ts, lhs_info in lhs_items:
-            lhs_hash = self.phash.get(lhs_info["path"])
+            lhs_hash = self.phash.get(self._extracted_path(lhs_info))
             for rhs_ts, rhs_info in rhs_items:
-                rhs_hash = self.phash.get(rhs_info["path"])
+                rhs_hash = self.phash.get(self._extracted_path(rhs_info))
                 distance = abs(lhs_hash - rhs_hash)
                 all_matches.append((distance, lhs_ts, rhs_ts))
 
@@ -1480,8 +1537,8 @@ class PairMatcher:
                 if ratio and PairMatcher.is_ratio_acceptable(ratio, median_ratio):
                     if rhs_candidate not in rhs_used:
                         # make sure lhs and rhs_candidate are matching
-                        lhs_path = lhs_pool[l]["path"]
-                        rhs_path = rhs_pool[rhs_candidate]["path"]
+                        lhs_path = self._extracted_path(lhs_pool[l])
+                        rhs_path = self._extracted_path(rhs_pool[rhs_candidate])
 
                         pdiff = abs(phash.get(lhs_path) - phash.get(rhs_path))
                         phash_matching = pdiff < cutoff
@@ -1523,13 +1580,45 @@ class PairMatcher:
         if not pairs:
             return 16  # sensible default when no pairs available
 
-        distances = [abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"])) for lhs_ts, rhs_ts in pairs]
+        distances = [
+            abs(phash.get(self._extracted_path(lhs[lhs_ts])) - phash.get(self._extracted_path(rhs[rhs_ts])))
+            for lhs_ts, rhs_ts in pairs
+        ]
 
         arr = np.array(distances)
         median = np.median(arr)
         std = np.std(arr)
 
         return median + std * 2
+
+    # The two policies flooring an adaptive cutoff with _MIN_PHASH_CUTOFF.
+    # They differ on purpose: the boundary walk always needs headroom, while
+    # the temporal-consistency check must stay strict unless degenerate.
+
+    @classmethod
+    def _boundary_cutoff(cls, cutoff: float) -> float:
+        """Cutoff for the boundary walk — never tighter than the floor.
+
+        With few calibration pairs or cropped frames the computed cutoff can
+        be as low as 4, which makes the search unable to extend even a single
+        frame.
+        """
+        return max(cutoff, cls._MIN_PHASH_CUTOFF)
+
+    @classmethod
+    def _history_cutoff(cls, raw_cutoff: float) -> float:
+        """Cutoff for the temporal-consistency check — floored only when degenerate.
+
+        The adaptive cutoff (median + 2*std) collapses to ~0 only when the
+        surviving matches are pixel-perfect (identical content — e.g. re-muxed
+        or container-offset variants of the same source).  In that degenerate
+        case the history check would demand pixel-perfect *neighbours* too —
+        impossible across a speed/resolution difference — and would collapse a
+        dozen good matches to one, dropping the pair into the GENERIC path.
+        A normal (degraded) cutoff is left untouched so genuine mismatches
+        stay rejected.
+        """
+        return cls._MIN_PHASH_CUTOFF if raw_cutoff < 1.0 else raw_cutoff
 
     def _make_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> list[tuple[int, int]]:
         # Pipeline
@@ -1563,20 +1652,13 @@ class PairMatcher:
 
         orb_filtered = [
             (lhs_ts, rhs_ts) for lhs_ts, rhs_ts in outliers_eliminated
-            if image_utils.are_images_similar(lhs_all[lhs_ts]["path"], rhs_all[rhs_ts]["path"])
+            if image_utils.are_images_similar(
+                self._extracted_path(lhs_all[lhs_ts]), self._extracted_path(rhs_all[rhs_ts]))
         ]
         self.logger.debug(f"After ORB elimination:     {PairMatcher.summarize_pairs(self.phash, orb_filtered, lhs_all, rhs_all)}")
 
-        # The adaptive cutoff (median + 2*std) collapses to ~0 only when the
-        # surviving matches are pixel-perfect (identical content — e.g. re-muxed
-        # or container-offset variants of the same source).  In that degenerate
-        # case the temporal-consistency check below would demand pixel-perfect
-        # *neighbours* too — impossible across a speed/resolution difference — and
-        # would collapse a dozen good matches to one, dropping the pair into the
-        # GENERIC path.  Floor it there only; a normal (degraded) cutoff is left
-        # untouched so genuine mismatches stay rejected.
         raw_cutoff = self._calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
-        cutoff = self._MIN_PHASH_CUTOFF if raw_cutoff < 1.0 else raw_cutoff
+        cutoff = self._history_cutoff(raw_cutoff)
         final = [pair for pair in orb_filtered if self._check_history(pair, lhs_all, rhs_all, cutoff)]
         self.logger.debug(f"After history analysis:    {PairMatcher.summarize_pairs(self.phash, final, lhs_all, rhs_all)}")
 
@@ -1586,200 +1668,154 @@ class PairMatcher:
 
         return unique_pairs
 
-    def _edge_content_matches(
+    def _matched_predicted_pair(
         self,
-        lhs: FramesInfo,
-        rhs: FramesInfo,
-        lhs_keys: list[int],
-        rhs_keys: list[int],
-        phash: "PhashCache",
-        first: tuple[int, int],
-        last: tuple[int, int],
-        ratio: float,
-        cutoff: float,
-        direction: int,
-    ) -> bool:
+        ctx: _BoundarySearchContext,
+        lhs_ts: int,
+        *,
+        clamp: bool = False,
+    ) -> tuple[int, int] | None:
+        """Best verified match for *lhs_ts* around its predicted rhs position.
+
+        Predicts the rhs timestamp from the anchor via the linear ratio, picks
+        the lowest-phash-distance pair among the three nearest rhs frames, and
+        accepts it only when the distance is within the cutoff and the pair's
+        ratio to the reference pair stays consistent.  With *clamp* the
+        prediction is clamped to the rhs key range first (for edge frames).
+        """
+        predicted_rhs = int(ctx.anchor[1] + (lhs_ts - ctx.anchor[0]) / ctx.ratio)
+        if clamp:
+            predicted_rhs = max(ctx.rhs_keys[0], min(ctx.rhs_keys[-1], predicted_rhs))
+        rhs_near = self._nearest_three(ctx.rhs_keys, predicted_rhs)
+
+        best_dist = float('inf')
+        best_pair: tuple[int, int] | None = None
+        for rhs_ts in rhs_near:
+            if rhs_ts not in ctx.rhs or lhs_ts not in ctx.lhs:
+                continue
+            d = abs(ctx.phash.get(self._extracted_path(ctx.lhs[lhs_ts])) - ctx.phash.get(self._extracted_path(ctx.rhs[rhs_ts])))
+            if d < best_dist:
+                best_dist = d
+                best_pair = (lhs_ts, rhs_ts)
+
+        if best_pair is None or best_dist > ctx.cutoff:
+            return None
+        if ctx.reference != best_pair:
+            cand_ratio = PairMatcher.calculate_ratio([best_pair, ctx.reference])
+            if not PairMatcher.is_ratio_acceptable(cand_ratio, ctx.ratio):
+                return None
+        return best_pair
+
+    def _edge_content_matches(self, ctx: _BoundarySearchContext) -> bool:
         """Check if both videos share the same content at one edge.
 
-        *direction* = -1 checks the video start, +1 checks the video end.
+        ``ctx.direction`` = -1 checks the video start, +1 checks the video end.
 
         Compares the edge frame of LHS against the edge frame of RHS (not
         a prediction-based frame).  Validates with pHash, ratio consistency,
         and ORB.  Returns ``True`` when the edge pair looks like a valid match,
-        meaning ``find_boundary`` should be able to reach the edge.
+        meaning the boundary walk should be able to reach the edge.
         """
-        edge_lhs_ts = lhs_keys[0] if direction == -1 else lhs_keys[-1]
-        edge_rhs_ts = rhs_keys[0] if direction == -1 else rhs_keys[-1]
+        edge_lhs_ts = ctx.lhs_keys[0] if ctx.direction == -1 else ctx.lhs_keys[-1]
+        edge_rhs_ts = ctx.rhs_keys[0] if ctx.direction == -1 else ctx.rhs_keys[-1]
 
-        if edge_lhs_ts not in lhs or edge_rhs_ts not in rhs:
+        if edge_lhs_ts not in ctx.lhs or edge_rhs_ts not in ctx.rhs:
             return False
 
-        d = abs(phash.get(lhs[edge_lhs_ts]["path"]) - phash.get(rhs[edge_rhs_ts]["path"]))
-        if d > cutoff:
+        d = abs(ctx.phash.get(self._extracted_path(ctx.lhs[edge_lhs_ts])) - ctx.phash.get(self._extracted_path(ctx.rhs[edge_rhs_ts])))
+        if d > ctx.cutoff:
             return False
 
         # Ratio validation against the farther known pair
-        reference = last if direction == -1 else first
         edge_pair = (edge_lhs_ts, edge_rhs_ts)
-        if reference != edge_pair:
-            cand_ratio = PairMatcher.calculate_ratio([edge_pair, reference])
-            if not PairMatcher.is_ratio_acceptable(cand_ratio, ratio):
+        if ctx.reference != edge_pair:
+            cand_ratio = PairMatcher.calculate_ratio([edge_pair, ctx.reference])
+            if not PairMatcher.is_ratio_acceptable(cand_ratio, ctx.ratio):
                 return False
 
-        # ORB verification on the half-resolution extracted frames
-        lhs_path = self.lhs_all_frames[edge_lhs_ts]["path"] if edge_lhs_ts in self.lhs_all_frames else lhs[edge_lhs_ts]["path"]
-        rhs_path = self.rhs_all_frames[edge_rhs_ts]["path"] if edge_rhs_ts in self.rhs_all_frames else rhs[edge_rhs_ts]["path"]
+        # ORB verification, preferring the half-resolution extracted frames
+        # over the context's (possibly cropped/normalized) variants.
+        lhs_path = self._path_or_none(self.lhs_all_frames, edge_lhs_ts) or self._extracted_path(ctx.lhs[edge_lhs_ts])
+        rhs_path = self._path_or_none(self.rhs_all_frames, edge_rhs_ts) or self._extracted_path(ctx.rhs[edge_rhs_ts])
         return image_utils.are_images_similar(lhs_path, rhs_path)
 
-    def _is_sustained_dark_zone(
-        self,
-        lhs: FramesInfo,
-        lhs_keys: list[int],
-        idx: int,
-        direction: int,
-    ) -> bool:
+    def _is_sustained_dark_zone(self, ctx: _BoundarySearchContext, idx: int) -> bool:
         """Check whether *idx* starts a sustained low-entropy zone (>= 1.5 s)."""
         look_ahead = max(3, int(1.5 * self.lhs_fps))
         for la in range(1, look_ahead + 1):
-            la_idx = idx + direction * la
-            if 0 <= la_idx < len(lhs_keys):
-                if PairMatcher._is_rich(lhs[lhs_keys[la_idx]]["path"]):
+            la_idx = idx + ctx.direction * la
+            if 0 <= la_idx < len(ctx.lhs_keys):
+                if PairMatcher._is_rich(self._extracted_path(ctx.lhs[ctx.lhs_keys[la_idx]])):
                     return False
             # past the edge — treat as sustained
         return True
 
     def _try_jump_past_dark_zone(
         self,
-        lhs: FramesInfo,
-        rhs: FramesInfo,
-        lhs_keys: list[int],
-        rhs_keys: list[int],
+        ctx: _BoundarySearchContext,
         idx: int,
-        direction: int,
-        anchor: tuple[int, int],
-        reference: tuple[int, int],
-        ratio: float,
-        cutoff: float,
-        phash: "PhashCache",
     ) -> tuple[tuple[int, int] | None, int]:
         """Attempt to jump past a sustained dark zone.
 
-        Scans from *idx* in *direction* until the first rich frame is found,
-        then tries a phash + ratio match.  Returns ``(jumped_pair, jump_idx)``
+        Scans from *idx* in the walk direction until the first rich frame is
+        found, then tries a predicted match.  Returns ``(jumped_pair, jump_idx)``
         where *jumped_pair* is ``None`` when the jump failed.
         """
-        jump_idx = idx + direction
-        while 0 <= jump_idx < len(lhs_keys):
-            if PairMatcher._is_rich(lhs[lhs_keys[jump_idx]]["path"]):
-                jump_ts = lhs_keys[jump_idx]
-                predicted_rhs = int(anchor[1] + (jump_ts - anchor[0]) / ratio)
-                rhs_near = self._nearest_three(rhs_keys, predicted_rhs)
-                best_dist = float('inf')
-                best_pair: tuple[int, int] | None = None
-                for rts in rhs_near:
-                    if rts not in rhs or jump_ts not in lhs:
-                        continue
-                    d = abs(phash.get(lhs[jump_ts]["path"]) - phash.get(rhs[rts]["path"]))
-                    if d < best_dist:
-                        best_dist = d
-                        best_pair = (jump_ts, rts)
-                if best_pair is not None and best_dist <= cutoff:
-                    accept = True
-                    if reference != best_pair:
-                        cand_ratio = PairMatcher.calculate_ratio([best_pair, reference])
-                        accept = PairMatcher.is_ratio_acceptable(cand_ratio, ratio)
-                    if accept:
-                        return best_pair, jump_idx
-                break
-            jump_idx += direction
+        jump_idx = idx + ctx.direction
+        while 0 <= jump_idx < len(ctx.lhs_keys):
+            if PairMatcher._is_rich(self._extracted_path(ctx.lhs[ctx.lhs_keys[jump_idx]])):
+                jumped_pair = self._matched_predicted_pair(ctx, ctx.lhs_keys[jump_idx])
+                return jumped_pair, jump_idx
+            jump_idx += ctx.direction
         return None, jump_idx
 
     def _try_match_edge_frame(
         self,
-        lhs: FramesInfo,
-        rhs: FramesInfo,
-        lhs_keys: list[int],
-        rhs_keys: list[int],
-        anchor: tuple[int, int],
+        ctx: _BoundarySearchContext,
         current_best: tuple[int, int],
-        reference: tuple[int, int],
-        direction: int,
-        ratio: float,
-        cutoff: float,
-        phash: "PhashCache",
     ) -> tuple[int, int] | None:
         """Try matching the actual video edge frame when the walk got close.
 
         The coarse step size may have skipped the edge frame; this method
         checks it explicitly.  Returns the matched pair or ``None``.
         """
-        edge_idx = 0 if direction == -1 else len(lhs_keys) - 1
-        edge_ts = lhs_keys[edge_idx]
-        if edge_ts == current_best[0] or edge_ts not in lhs:
+        edge_idx = 0 if ctx.direction == -1 else len(ctx.lhs_keys) - 1
+        edge_ts = ctx.lhs_keys[edge_idx]
+        if edge_ts == current_best[0] or edge_ts not in ctx.lhs:
             return None
-
-        predicted_rhs = int(anchor[1] + (edge_ts - anchor[0]) / ratio)
-        clamped = max(rhs_keys[0], min(rhs_keys[-1], predicted_rhs))
-        rhs_near = self._nearest_three(rhs_keys, clamped)
-
-        best_dist = float('inf')
-        best_pair: tuple[int, int] | None = None
-        for rts in rhs_near:
-            if rts not in rhs:
-                continue
-            d = abs(phash.get(lhs[edge_ts]["path"]) - phash.get(rhs[rts]["path"]))
-            if d < best_dist:
-                best_dist = d
-                best_pair = (edge_ts, rts)
-
-        if best_pair is not None and best_dist <= cutoff:
-            accept = True
-            if reference != best_pair:
-                cand_ratio = PairMatcher.calculate_ratio([best_pair, reference])
-                accept = PairMatcher.is_ratio_acceptable(cand_ratio, ratio)
-            if accept:
-                return best_pair
-        return None
+        return self._matched_predicted_pair(ctx, edge_ts, clamp=True)
 
     def _find_boundary(
         self,
-        lhs: FramesInfo,
-        rhs: FramesInfo,
-        anchor: tuple[int, int],
-        reference: tuple[int, int],
-        direction: int,
+        ctx: _BoundarySearchContext,
         gap_seconds: float,
-        ratio: float,
-        cutoff: float,
-        phash: "PhashCache",
     ) -> tuple[tuple[int, int], bool]:
-        """Walk from *anchor* in *direction*, using linear prediction to find matches.
+        """Walk from the anchor in the context direction, matching predicted pairs.
 
         Returns ``(best_pair, entered_low_entropy)`` where the flag indicates
         that the search stopped because it reached a low-entropy zone rather
         than exhausting the gap budget on high-entropy mismatches.
         """
-        lhs_keys = sorted(lhs.keys())
-        rhs_keys = sorted(rhs.keys())
+        lhs_keys = ctx.lhs_keys
 
-        current_best = anchor
+        current_best = ctx.anchor
         max_gap = int(gap_seconds * self.lhs_fps)
         consecutive_misses = 0
         entered_low_entropy = False
 
         step = max(1, int(self.lhs_fps * 0.5))
-        start_idx = lhs_keys.index(anchor[0])
+        start_idx = lhs_keys.index(ctx.anchor[0])
         i = 0
 
         while True:
             i += step
-            idx = start_idx + direction * i
+            idx = start_idx + ctx.direction * i
             if idx < 0 or idx >= len(lhs_keys):
                 # The coarse step overshot the edge.  Switch to frame-by-frame
                 # walking from current_best so we don't miss near-edge matches.
                 if step > 1:
                     best_idx = lhs_keys.index(current_best[0])
-                    i = direction * (best_idx - start_idx)
+                    i = ctx.direction * (best_idx - start_idx)
                     step = 1
                     continue
                 break
@@ -1787,22 +1823,17 @@ class PairMatcher:
             lhs_ts = lhs_keys[idx]
 
             # Dark frame — check if it's a sustained dark zone
-            if not PairMatcher._is_rich(lhs[lhs_ts]["path"]):
-                if self._is_sustained_dark_zone(lhs, lhs_keys, idx, direction):
-                    jumped_pair, jump_idx = self._try_jump_past_dark_zone(
-                        lhs, rhs, lhs_keys, rhs_keys, idx, direction,
-                        anchor, reference, ratio, cutoff, phash,
-                    )
+            if not PairMatcher._is_rich(self._extracted_path(ctx.lhs[lhs_ts])):
+                if self._is_sustained_dark_zone(ctx, idx):
+                    jumped_pair, jump_idx = self._try_jump_past_dark_zone(ctx, idx)
                     if jumped_pair is not None:
-                        dark_start = lhs_ts
-                        dark_end = lhs_keys[jump_idx]
                         self.logger.debug(
-                            f"Jumped over dark zone {dark_start}ms → {dark_end}ms "
+                            f"Jumped over dark zone {lhs_ts}ms → {lhs_keys[jump_idx]}ms "
                             f"(pair: {jumped_pair})"
                         )
                         current_best = jumped_pair
                         consecutive_misses = 0
-                        i = direction * (jump_idx - start_idx)
+                        i = ctx.direction * (jump_idx - start_idx)
                         continue
                     else:
                         entered_low_entropy = True
@@ -1813,29 +1844,8 @@ class PairMatcher:
                     break
                 continue
 
-            # Predict the corresponding RHS timestamp using the linear mapping
-            predicted_rhs = int(anchor[1] + (lhs_ts - anchor[0]) / ratio)
-            rhs_near = self._nearest_three(rhs_keys, predicted_rhs)
-
-            best_dist = float('inf')
-            best_pair: tuple[int, int] | None = None
-            for rhs_ts in rhs_near:
-                if rhs_ts not in rhs or lhs_ts not in lhs:
-                    continue
-                d = abs(phash.get(lhs[lhs_ts]["path"]) - phash.get(rhs[rhs_ts]["path"]))
-                if d < best_dist:
-                    best_dist = d
-                    best_pair = (lhs_ts, rhs_ts)
-
-            if best_pair is not None and best_dist <= cutoff:
-                if reference != best_pair:
-                    cand_ratio = PairMatcher.calculate_ratio([best_pair, reference])
-                    if not PairMatcher.is_ratio_acceptable(cand_ratio, ratio):
-                        consecutive_misses += step
-                        if consecutive_misses >= max_gap:
-                            break
-                        continue
-
+            best_pair = self._matched_predicted_pair(ctx, lhs_ts)
+            if best_pair is not None:
                 current_best = best_pair
                 consecutive_misses = 0
             else:
@@ -1845,10 +1855,7 @@ class PairMatcher:
 
         # Try matching the actual edge frame
         if not entered_low_entropy and consecutive_misses < max_gap:
-            edge_match = self._try_match_edge_frame(
-                lhs, rhs, lhs_keys, rhs_keys, anchor, current_best,
-                reference, direction, ratio, cutoff, phash,
-            )
+            edge_match = self._try_match_edge_frame(ctx, current_best)
             if edge_match is not None:
                 current_best = edge_match
 
@@ -1875,7 +1882,7 @@ class PairMatcher:
         from_boundary = sorted(gap_keys, reverse=(direction == -1))
         le_start: int | None = None
         for i, ts in enumerate(from_boundary):
-            if not PairMatcher._is_rich(frames[ts]["path"]):
+            if not PairMatcher._is_rich(PairMatcher._extracted_path(frames[ts])):
                 le_start = i
                 break
 
@@ -1895,7 +1902,7 @@ class PairMatcher:
             return False
 
         remaining = from_boundary[le_start:]
-        non_le = [k for k in remaining if PairMatcher._is_rich(frames[k]["path"])]
+        non_le = [k for k in remaining if PairMatcher._is_rich(PairMatcher._extracted_path(frames[k]))]
         noise_ratio = len(non_le) / len(remaining) if remaining else 1.0
         if noise_ratio > 0.05:
             self.logger.warning(
@@ -1982,9 +1989,8 @@ class PairMatcher:
         return lhs_scene_changes, rhs_scene_changes
 
     def _detect_scenes_for(self, video_path: str, label: str) -> list[int]:
-        cache = getattr(self, 'cache', None)
-        if cache:
-            cached = cache.load_scene_changes(video_path)
+        if self.cache:
+            cached = self.cache.load_scene_changes(video_path)
             if cached is not None:
                 self.logger.info("[1/6] Scene changes for %s restored from cache (%d scenes)", label, len(cached))
                 return cached
@@ -1994,8 +2000,8 @@ class PairMatcher:
             interruption=self.interruption, desc=f"[1/6] Detecting scenes: {label}",
         )
 
-        if cache:
-            cache.save_scene_changes(video_path, result)
+        if self.cache:
+            self.cache.save_scene_changes(video_path, result)
 
         return result
 
@@ -2004,10 +2010,9 @@ class PairMatcher:
         self.lhs_all_frames = self._probe_frames_for(self.lhs_path, self.lhs_label)
         self.rhs_all_frames = self._probe_frames_for(self.rhs_path, self.rhs_label)
 
-    def _probe_frames_for(self, video_path: str, label: str) -> dict[int, dict]:
-        cache = getattr(self, 'cache', None)
-        if cache:
-            cached = cache.load_frame_probes(video_path)
+    def _probe_frames_for(self, video_path: str, label: str) -> FramesInfo:
+        if self.cache:
+            cached = self.cache.load_frame_probes(video_path)
             if cached is not None:
                 self.logger.info("[2/6] Frame probes for %s restored from cache (%d frames)", label, len(cached))
                 return cached
@@ -2018,8 +2023,8 @@ class PairMatcher:
             logger=self.logger,
         )
 
-        if cache:
-            cache.save_frame_probes(video_path, result)
+        if self.cache:
+            self.cache.save_frame_probes(video_path, result)
 
         return result
 
@@ -2060,11 +2065,10 @@ class PairMatcher:
         video_path: str,
         target_dir: str,
         scene_ranges: list[tuple[int, int]],
-        probed_metadata: dict[int, dict],
+        probed_metadata: FramesInfo,
         label: str,
     ) -> None:
-        cache = getattr(self, 'cache', None)
-        if cache and cache.load_scene_frames(video_path, target_dir, probed_metadata):
+        if self.cache and self.cache.load_scene_frames(video_path, target_dir, probed_metadata):
             self.logger.info("[3/6] Scene frames for %s restored from cache", label)
             return
 
@@ -2075,8 +2079,8 @@ class PairMatcher:
             logger=self.logger,
         )
 
-        if cache:
-            cache.save_scene_frames(video_path, target_dir, probed_metadata)
+        if self.cache:
+            self.cache.save_scene_frames(video_path, target_dir, probed_metadata)
 
     def _normalize_extracted(
         self,

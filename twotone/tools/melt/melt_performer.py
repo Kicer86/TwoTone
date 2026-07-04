@@ -1,3 +1,4 @@
+import enum
 import logging
 import os
 import shutil
@@ -8,8 +9,9 @@ from tqdm import tqdm
 from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
-from .pair_matcher import MappingRelation, PairMatcher
+from .pair_matcher import CoverageSummary, MappingRelation, PairMatcher, SegmentsMappingResult
 from .melt_common import FramesInfo, StreamType, _ensure_working_dir, _is_length_mismatch
+from .track_timeline import TrackTimelineMixin
 
 
 class _SegmentRange(NamedTuple):
@@ -20,14 +22,9 @@ class _SegmentRange(NamedTuple):
 
 
 class _PairMatchResult(NamedTuple):
-    mapping: list[tuple[int, int]]
-    lhs_all_frames: FramesInfo
-    rhs_all_frames: FramesInfo
-    mapping_relation: MappingRelation
-    base_duration: int
+    """A cached PairMatcher outcome for one (base, source) video pair."""
+    matching: SegmentsMappingResult
     source_duration: int
-    lhs_fps: float
-    rhs_fps: float
 
 
 class _StreamEntry(NamedTuple):
@@ -38,12 +35,38 @@ class _StreamEntry(NamedTuple):
     sync_offset_ms: int | None = None
 
 
+class _AudioStrategy(enum.Enum):
+    """How a mismatched source audio track is fitted to the base video."""
+
+    # No time-scale needed — keep the source audio exact (a single decode →
+    # encode pass) and position it by its content start via mkvmerge --sync.
+    PASSTHROUGH = "drift_passthrough"
+    # A real playback-speed difference with a global linear relation — trim
+    # and time-scale the whole track once (the constant-offset patcher).
+    GLOBAL_TIME_SCALE = "constant_offset"
+    # No clean global relation — patch per-scene subsegments with atempo.
+    SUBSEGMENT = "subsegment"
+
+
+class _PatchedAudio(NamedTuple):
+    """An audio track prepared for muxing, with its placement decision.
+
+    ``timeline_start_ms`` is the absolute position of the track's first sample
+    on the output (base-video) timeline, to be applied via mkvmerge ``--sync``.
+    ``None`` means the track must be muxed as-is: it already embeds its own
+    alignment (head/tail gaps filled from the base audio).
+    """
+    path: str
+    stream_index: int
+    timeline_start_ms: int | None
+
+
 class _PreparedStreams(NamedTuple):
     entries: list[_StreamEntry]
     input_files: set[str]
 
 
-class MeltPerformer:
+class MeltPerformer(TrackTimelineMixin):
     def __init__(
         self,
         logger: logging.Logger,
@@ -63,7 +86,6 @@ class MeltPerformer:
         self._normalized_audio_cache: dict[tuple[str, int, int | None, int | None], str] = {}
         self._temporary_audio_counter = 0
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
-        self._aac_priming_exposed_cache: bool | None = None
         self.wd = _ensure_working_dir(working_dir)
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
@@ -235,7 +257,7 @@ class MeltPerformer:
         output_path: str,
         segment_pairs: list[tuple[int, int]],
         *,
-        use_silence: bool = False,
+        fill_gaps_from_base: bool = True,
     ) -> int:
         """Replace audio using a single global time-scale for constant-offset cases.
 
@@ -243,8 +265,9 @@ class MeltPerformer:
         this trims and time-scales the source audio directly from the video file,
         avoiding full audio extraction.
 
-        When *use_silence* is True, head/tail gaps are skipped entirely — the
-        caller is expected to position the track via mkvmerge ``--sync``.
+        When *fill_gaps_from_base* is False, head/tail gaps are skipped
+        entirely — the caller is expected to position the track via mkvmerge
+        ``--sync`` and leave the gaps silent.
 
         Returns the effective sync offset (ms) for positioning the produced
         audio track on the base-video timeline.
@@ -261,23 +284,26 @@ class MeltPerformer:
         # 1. Extract head/tail directly from base video, normalized to source params
         source_params = self._get_audio_params(source_video, logger=self.logger)
         base_duration_ms = video_utils.get_video_duration(base_video, logger=self.logger)
-        has_head = seg1_start > 0 and not use_silence
-        has_tail = seg1_end < base_duration_ms and not use_silence
+        has_head = seg1_start > 0 and fill_gaps_from_base
+        has_tail = seg1_end < base_duration_ms and fill_gaps_from_base
 
-        # Video-frame ratio (true fps relationship, independent of audio track).
-        # Both spans come from matched video frames, so the ratio captures only the
-        # real playback-rate relationship.  It must not be skewed by where the audio
-        # stream happens to start relative to its video, otherwise a constant-offset
-        # source whose audio merely leads its video gets a spurious global time-scale.
-        source_dur = seg2_end - seg2_start
-        target_dur = seg1_end - seg1_start
-        video_ratio = target_dur / source_dur if source_dur else 1.0
-        fps_ratio = source_dur / target_dur if target_dur else 1.0
-        needs_scaling = self._needs_fps_scaling(fps_ratio)
+        # Time-scale from matched video-frame spans (true playback-rate
+        # relationship, independent of audio track).  It must not be skewed by
+        # where the audio stream happens to start relative to its video,
+        # otherwise a constant-offset source whose audio merely leads its video
+        # gets a spurious global time-scale.
+        #
+        # Naming convention: ``x_per_y`` = x-timeline duration / y-timeline
+        # duration; multiplying a y-timeline duration by it yields x-timeline.
+        base_span_ms = seg1_end - seg1_start
+        source_span_ms = seg2_end - seg2_start
+        base_per_source = base_span_ms / source_span_ms if source_span_ms else 1.0
+        source_per_base = source_span_ms / base_span_ms if base_span_ms else 1.0
+        needs_scaling = self._needs_fps_scaling(source_per_base)
 
         self.logger.info(
-            "Audio patch (constant-offset): base=[%d…%d] ms, source=[%d…%d] ms, fps_ratio=%.4f",
-            seg1_start, seg1_end, seg2_start, seg2_end, fps_ratio,
+            "Audio patch (constant-offset): base=[%d…%d] ms, source=[%d…%d] ms, source/base span ratio=%.4f",
+            seg1_start, seg1_end, seg2_start, seg2_end, source_per_base,
         )
 
         head_path = os.path.join(wd, "head.flac")
@@ -307,9 +333,6 @@ class MeltPerformer:
         #    relationship), NOT from measured audio duration.
 
         trimmed_audio = os.path.join(wd, "source_trimmed.flac")
-        # Decode the source audio window, with lossy-codec encoder-delay priming
-        # removed deterministically so the patched track is not shifted by one AAC
-        # frame (~21 ms) on ffmpeg builds that decode the priming as real samples.
         self._decode_source_audio_to_flac(
             source_video,
             trimmed_audio,
@@ -320,21 +343,18 @@ class MeltPerformer:
         )
 
         actual_source_dur = video_utils.get_video_duration(trimmed_audio, logger=self.logger)
-        expected_scaled_dur = round(actual_source_dur * video_ratio)
+        expected_scaled_dur = round(actual_source_dur * base_per_source)
 
-        # _patched_audio_start_ms already places the source by its priming-aware
-        # content start: on builds that expose AAC priming _audio_content_start_ms
-        # folds the encoder-delay frame into the offset to match the priming-exposed
-        # decode, and absorbing builds omit it.  That makes the offset correct on both
-        # conventions, so no extra per-container priming correction is applied here.
+        # The priming-aware content start (see track_timeline) already makes
+        # this offset correct on both ffmpeg priming conventions.
         sync_offset = self._patched_audio_start_ms(
             source_video,
             seg1_start,
             seg2_start,
-            video_ratio,
+            base_per_source,
         )
         start_correction = sync_offset - seg1_start
-        if not use_silence and start_correction > 50:
+        if fill_gaps_from_base and start_correction > self._SIGNIFICANT_START_CORRECTION_MS:
             raise RuntimeError(
                 f"Audio start correction of {start_correction} ms detected "
                 f"in fill-audio-gaps mode. "
@@ -343,13 +363,13 @@ class MeltPerformer:
                 f"the base file. Use default (silence) mode instead."
             )
 
-        # Scale with VIDEO-frame ratio (true fps relationship)
+        # Scale with the video-frame span ratio (true playback-rate relationship)
         scaled_audio = os.path.join(wd, "source_scaled.flac")
         if not needs_scaling:
             scaled_audio = trimmed_audio
         else:
             sample_rate = source_params[1]
-            adjusted_rate = sample_rate * fps_ratio
+            adjusted_rate = sample_rate * source_per_base
             process_utils.raise_on_error(
                 process_utils.start_process("ffmpeg", [
                     "-y", "-i", trimmed_audio,
@@ -408,7 +428,7 @@ class MeltPerformer:
         rhs_id: int,
         lhs_duration_ms: int,
         rhs_duration_ms: int,
-        summary: dict[str, Any],
+        summary: CoverageSummary,
     ) -> list[str]:
         """Build ASCII overlap diagram lines for two partially-overlapping files.
 
@@ -566,134 +586,6 @@ class MeltPerformer:
             if diagram:
                 self.logger.info("Overlap diagram:\n%s", "\n".join(diagram))
 
-    @classmethod
-    def _source_audio_priming(
-        cls,
-        video_path: str,
-        logger: logging.Logger | None = None,
-        *,
-        audio_stream_index: int | None = None,
-    ) -> tuple[str | None, int, int, dict[str, Any]]:
-        """Return (codec_name, initial_padding_samples, sample_rate, stream).
-
-        ``initial_padding`` is the lossy-codec encoder-delay (priming) sample count the
-        container signals via Matroska *CodecDelay*; it is 0 for MP4/MOV (where the same
-        delay is carried by an edit list that every ffmpeg build honours on decode).
-        ``audio_stream_index`` selects a specific stream by its absolute container
-        index; when omitted the first audio stream is used.
-        """
-        info = video_utils.get_video_full_info(video_path, logger=logger)
-        streams = info.get("streams", [])
-        stream: dict[str, Any]
-        if audio_stream_index is not None:
-            stream = next(
-                (s for s in streams
-                 if s.get("codec_type") == "audio" and s.get("index") == audio_stream_index),
-                {},
-            )
-        else:
-            stream = next((s for s in streams if s.get("codec_type") == "audio"), {})
-        codec = stream.get("codec_name")
-        try:
-            init_pad = int(stream.get("initial_padding") or 0)
-        except (TypeError, ValueError):
-            init_pad = 0
-        try:
-            sample_rate = int(stream.get("sample_rate") or 0)
-        except (TypeError, ValueError):
-            sample_rate = 0
-        return codec, init_pad, sample_rate, stream
-
-    def _audio_starts_just_before_video_adjustment_ms(self, path: str) -> int:
-        info = video_utils.get_video_full_info(path)
-        video_stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
-        audio_stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "audio"), None)
-        video_start_ms = self._stream_start_offset_ms(video_stream)
-        audio_start_ms = self._audio_content_start_ms(audio_stream)
-        delta_ms = video_start_ms - audio_start_ms
-        if 0 < delta_ms <= 50:
-            return delta_ms
-        return 0
-
-    def _decode_source_audio_to_flac(
-        self,
-        source_video: str,
-        output_path: str,
-        *,
-        sample_fmt: str = "s32",
-        trim_start_ms: int | None = None,
-        trim_end_ms: int | None = None,
-        audio_stream_index: int | None = None,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        """Decode the first audio stream of *source_video* to FLAC with the lossy-codec
-        encoder-delay priming removed deterministically across all ffmpeg builds.
-
-        AAC and similar lapped-transform codecs prepend ``initial_padding`` priming
-        samples that must be skipped on decode.  Some ffmpeg builds skip them
-        automatically (honouring Matroska *CodecDelay*), others decode them as real
-        leading samples — shifting the track by ~21 ms (one AAC frame).  To get
-        identical output everywhere, when the source carries CodecDelay priming we
-        strip that signalling by remuxing the AAC bitstream to ADTS (which has no
-        priming metadata), decode the now-always-present priming, and trim exactly
-        ``initial_padding`` samples ourselves.
-
-        ``trim_start_ms`` / ``trim_end_ms`` select a window of the *priming-free*
-        stream, matching what a priming-honouring decoder would have produced.  These
-        bounds are expressed on the source's content timeline.  When the priming strip
-        drops the container timestamps, re-anchor the window to the priming-independent
-        content start so exposing and absorbing ffmpeg builds select identical samples.
-        """
-        codec, init_pad, sample_rate, stream = self._source_audio_priming(
-            source_video, logger=logger, audio_stream_index=audio_stream_index,
-        )
-        source_map = f"0:{audio_stream_index}" if audio_stream_index is not None else "0:a:0"
-
-        prime_offset_s = 0.0
-        window_anchor_ms = 0
-        input_path = source_video
-        input_map = source_map
-        adts_path: str | None = None
-        if codec == "aac" and init_pad > 0 and sample_rate > 0:
-            adts_path = f"{output_path}.priming.aac"
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y", "-i", source_video, "-map", source_map,
-                    "-c:a", "copy", "-f", "adts", adts_path,
-                ], logger=logger)
-            )
-            input_path = adts_path
-            input_map = "0:a:0"  # the remuxed ADTS file carries only the selected stream
-            prime_offset_s = init_pad / sample_rate
-            # ADTS carries no container timestamps, so the decoded frames start at 0
-            # instead of the source's content start.  The raw start_time on builds
-            # exposing AAC priming is one encoder-delay frame too early, so use the
-            # same priming-independent content start as final track placement.
-            window_anchor_ms = self._audio_content_start_ms(stream)
-
-        filters: list[str] = []
-        if prime_offset_s or trim_start_ms is not None or trim_end_ms is not None:
-            start_s = prime_offset_s + max(0, (trim_start_ms or 0) - window_anchor_ms) / 1000
-            atrim = f"atrim=start={start_s:.6f}"
-            if trim_end_ms is not None:
-                end_s = prime_offset_s + max(0, trim_end_ms - window_anchor_ms) / 1000
-                atrim += f":end={end_s:.6f}"
-            filters.append(atrim)
-            filters.append("asetpts=PTS-STARTPTS")
-
-        args = ["-y", "-i", input_path, "-map", input_map]
-        if filters:
-            args += ["-filter:a", ",".join(filters)]
-        args += ["-sample_fmt", sample_fmt, "-c:a", "flac", output_path]
-        try:
-            process_utils.raise_on_error(process_utils.start_process("ffmpeg", args, logger=logger))
-        finally:
-            if adts_path and os.path.exists(adts_path):
-                os.remove(adts_path)
-
-    def _extract_audio_to_flac(self, video_path: str, output_path: str, logger: logging.Logger | None = None) -> None:
-        self._decode_source_audio_to_flac(video_path, output_path, sample_fmt="s32", logger=logger)
-
     @staticmethod
     def _segment_range(pairs: Sequence[tuple[int, int]]) -> _SegmentRange:
         """Return the bounding lhs/rhs range from a list of (lhs, rhs) pairs."""
@@ -714,70 +606,29 @@ class MeltPerformer:
         stream = next(s for s in info["streams"] if s["codec_type"] == "audio")
         return stream.get("channel_layout") or None
 
-    def _aac_priming_exposed(self) -> bool:
-        """Whether this ffmpeg build exposes AAC encoder-delay priming as a negative
-        container start time instead of absorbing it.
-
-        Builds disagree: some report a freshly encoded AAC stream's ``start_time`` as
-        ``-encoder_delay`` (priming exposed, kept in the decoded samples), others as 0
-        (priming absorbed).  The same convention applies when *reading* a source AAC
-        stream, so on exposing builds a positive-offset (asO) audio stream's reported
-        ``start_time`` is short by one frame (~21 ms) — which otherwise mis-places the
-        patched track by exactly that frame.  Detected once and cached per run.
-        """
-        if self._aac_priming_exposed_cache is None:
-            exposed = False
-            probe = os.path.join(self.wd, f"_priming_probe_{os.getpid()}.mka")
-            try:
-                process_utils.raise_on_error(
-                    process_utils.start_process("ffmpeg", [
-                        "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
-                        "-t", "0.5", "-c:a", "aac", probe,
-                    ], logger=self.logger)
-                )
-                info = video_utils.get_video_full_info(probe, logger=self.logger)
-                stream: dict[str, Any] = next(
-                    (s for s in info.get("streams", []) if s.get("codec_type") == "audio"),
-                    {},
-                )
-                exposed = float(stream.get("start_time") or 0.0) < -0.001
-            except Exception:  # noqa: BLE001 - detection failure falls back to "absorbed"
-                exposed = False
-            finally:
-                if os.path.exists(probe):
-                    os.remove(probe)
-            self._aac_priming_exposed_cache = exposed
-        return self._aac_priming_exposed_cache
-
-    def _audio_content_start_ms(self, stream: dict[str, Any] | None) -> int:
-        """Audio stream's true content start (ms), priming-convention independent.
-
-        On builds that expose AAC priming, the reported ``start_time`` is short by the
-        encoder delay; add it back so positive-offset placement matches absorbing
-        builds.  ``_stream_start_offset_ms`` clamps negatives to 0, so asR streams are
-        unaffected; only positive (asO) offsets carry the leaked frame.
-        """
-        base = self._stream_start_offset_ms(stream)
-        if not stream or stream.get("codec_name") != "aac" or not self._aac_priming_exposed():
-            return base
-        try:
-            pad = int(stream.get("initial_padding") or 0)
-            sample_rate = int(stream.get("sample_rate") or 0)
-            raw_start = float(stream.get("start_time") or 0.0)
-        except (TypeError, ValueError):
-            return base
-        if pad <= 0 or sample_rate <= 0:
-            return base
-        return max(0, round((raw_start + pad / sample_rate) * 1000))
-
     def _patched_audio_start_ms(
         self,
         source_video: str,
         seg1_start: int,
         seg2_start: int,
-        video_ratio: float,
+        base_per_source: float,
     ) -> int:
-        """Return timeline start for a decoded source-audio trim."""
+        """Return timeline start for a decoded source-audio trim.
+
+        The trim window starts at ``seg2_start`` on the source content
+        timeline, but the decoded audio may actually begin later than that:
+
+        - when the source audio stream starts after its video (and after the
+          window start), the first ``audio_start - seg2_start`` of the window
+          simply do not exist in the decode, or
+        - when the whole container starts at a positive offset, the decode is
+          shifted relative to the mapped video frames.
+
+        Each case yields a lower bound on how far past ``seg1_start`` the
+        decoded samples really begin (both estimate the same physical gap from
+        different metadata), so the larger bound wins and is added to the sync
+        offset.
+        """
         info = video_utils.get_video_full_info(source_video)
         video_stream = next((s for s in info["streams"] if s.get("codec_type") == "video"), None)
         audio_stream = next((s for s in info["streams"] if s.get("codec_type") == "audio"), None)
@@ -786,7 +637,7 @@ class MeltPerformer:
 
         audio_start_correction = 0
         if audio_start_ms > video_start_ms and audio_start_ms > seg2_start:
-            audio_start_correction = round((audio_start_ms - seg2_start) * video_ratio)
+            audio_start_correction = round((audio_start_ms - seg2_start) * base_per_source)
 
         try:
             container_start = float(info.get("format", {}).get("start_time") or 0.0)
@@ -796,10 +647,10 @@ class MeltPerformer:
         positive_timeline_correction = 0
         timeline_start_ms = max(video_start_ms, audio_start_ms)
         if container_start > 0 and timeline_start_ms > seg2_start:
-            positive_timeline_correction = max(0, round(timeline_start_ms * video_ratio) - seg1_start)
+            positive_timeline_correction = max(0, round(timeline_start_ms * base_per_source) - seg1_start)
 
         correction = max(audio_start_correction, positive_timeline_correction)
-        if correction > 50:
+        if correction > self._SIGNIFICANT_START_CORRECTION_MS:
             self.logger.info(
                 "Audio trim start correction: %d ms → sync offset: %d ms",
                 correction,
@@ -808,6 +659,19 @@ class MeltPerformer:
         return seg1_start + correction
 
     _FPS_RATIO_TOLERANCE = 0.001
+    # A start correction below this is normal probe noise; above it the audio
+    # placement genuinely moves — logged, and rejected in fill-gaps mode where
+    # it cannot be compensated.
+    _SIGNIFICANT_START_CORRECTION_MS = 50
+    # Effective-fps ratios closer to 1.0 than this are treated as the same
+    # playback speed (probe noise), not a real tempo difference.
+    _MIN_TEMPO_RATIO_DELTA = 0.005
+    # A mapping counts as pure frame-rate drift only when the matched spans
+    # agree in wall-clock duration within this fraction.
+    _MAX_SAME_SPEED_SPAN_DELTA = 0.01
+    # Number of subsegments the per-scene audio patcher splits the mapped
+    # range into.
+    _SUBSEGMENT_COUNT = 20
 
     @staticmethod
     def _needs_fps_scaling(ratio: float) -> bool:
@@ -962,13 +826,17 @@ class MeltPerformer:
         rhs_frames: FramesInfo,
         min_subsegment_duration: float = 30.0,
         *,
-        use_silence: bool = False,
-    ) -> None:
+        fill_gaps_from_base: bool = True,
+    ) -> int:
         """Replace an audio segment in the base video with time-adjusted audio from another video.
 
         The replacement is split into smaller, corresponding subsegments to better handle drift.
-        When *use_silence* is True, head/tail gaps are skipped entirely — the
-        caller is expected to position the track via mkvmerge ``--sync``.
+        When *fill_gaps_from_base* is False, head/tail gaps are skipped
+        entirely — the caller is expected to position the track via mkvmerge
+        ``--sync`` and leave the gaps silent.
+
+        Returns the timeline start (ms) of the produced track on the base-video
+        timeline, mirroring ``patch_audio_constant_offset``.
         """
 
         wd = os.path.join(wd, "audio_extraction")
@@ -987,15 +855,15 @@ class MeltPerformer:
         seg1_start, seg1_end = seg.lhs_start, seg.lhs_end
 
         # 1. Extract audio tracks
-        if not use_silence:
+        if fill_gaps_from_base:
             v1_audio = os.path.join(wd, "v1_audio.flac")
             self._extract_audio_to_flac(base_video, v1_audio, logger=self.logger)
         self._extract_audio_to_flac(source_video, v2_audio, logger=self.logger)
 
         source_params = self._get_audio_params(v2_audio, logger=self.logger)
 
-        # 2. Extract head/tail from base audio (skipped when use_silence — caller uses --sync)
-        if use_silence:
+        # 2. Extract head/tail from base audio (when skipped, caller uses --sync)
+        if not fill_gaps_from_base:
             has_head = False
             has_tail = False
         else:
@@ -1047,9 +915,9 @@ class MeltPerformer:
         for idx, (l_start, l_end, r_start, r_end) in enumerate(cleaned_pairs):
             left_duration = l_end - l_start
             right_duration = r_end - r_start
-            ratio = right_duration / left_duration if left_duration else 1.0
+            source_per_base = right_duration / left_duration if left_duration else 1.0
 
-            if abs(ratio - 1.0) > 0.10:
+            if abs(source_per_base - 1.0) > 0.10:
                 self.logger.error("Segment %d duration mismatch exceeds 10%%", idx)
 
             raw_cut = os.path.join(wd, f"cut_{idx}.flac")
@@ -1074,7 +942,7 @@ class MeltPerformer:
                     "ffmpeg", [
                         "-y",
                         "-i", raw_cut,
-                        "-filter:a", f"atempo={ratio:.3f}",
+                        "-filter:a", f"atempo={source_per_base:.3f}",
                         "-sample_fmt", "s32", "-c:a", "flac",
                         scaled_cut,
                     ],
@@ -1092,6 +960,8 @@ class MeltPerformer:
             channel_layout=channel_layout,
             logger=self.logger,
         )
+
+        return seg1_start
 
     def _build_output_path(self, title: str, output_name: str) -> str:
         return os.path.join(self.output_dir, title, output_name + ".mkv")
@@ -1113,11 +983,8 @@ class MeltPerformer:
         base_duration: int,
         base_audio_end: int | None,
         file_ids: dict[str, int],
-    ) -> tuple[str, int, int | None]:
-        """Run PairMatcher and apply the appropriate audio patching strategy.
-
-        Returns (patched_path, new_stream_index, desired_start_ms).
-        """
+    ) -> _PatchedAudio:
+        """Run PairMatcher and apply the appropriate audio patching strategy."""
         audio_path, stream_index = audio_stream
         with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
@@ -1134,16 +1001,9 @@ class MeltPerformer:
                     lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
                     cache=self.cache,
                 )
-                mapping_result = matcher.create_segments_mapping()
                 match_result = _PairMatchResult(
-                    mapping=mapping_result.mapping,
-                    lhs_all_frames=mapping_result.lhs_all_frames,
-                    rhs_all_frames=mapping_result.rhs_all_frames,
-                    mapping_relation=mapping_result.relation,
-                    base_duration=base_duration,
+                    matching=matcher.create_segments_mapping(),
                     source_duration=duration,
-                    lhs_fps=matcher.lhs_fps,
-                    rhs_fps=matcher.rhs_fps,
                 )
                 self._pair_match_cache[cache_key] = match_result
             else:
@@ -1152,43 +1012,17 @@ class MeltPerformer:
                     lhs_id, rhs_id,
                 )
 
-            mapping = match_result.mapping
-            lhs_all_frames = match_result.lhs_all_frames
-            rhs_all_frames = match_result.rhs_all_frames
-            mapping_relation = match_result.mapping_relation
+            matching = match_result.matching
+            lhs_all_frames = matching.lhs_all_frames
+            rhs_all_frames = matching.rhs_all_frames
             duration = match_result.source_duration
 
-            # The source audio is passed through unchanged when no global
-            # time-scale is needed: a same-speed global-linear relation (a
-            # constant offset, or a frame-rate conversion that preserves playback
-            # time — different fps but same speed), or a generic match that is a
-            # pure frame-rate drift.  Only a genuine playback-speed difference
-            # (e.g. a 25 fps PAL transfer vs 24 fps) is time-scaled.  Passthrough
-            # is exact and avoids a re-encode that could shift it by one frame.
-            seg_raw = self._segment_range(mapping)
-            raw_source_span = seg_raw.rhs_end - seg_raw.rhs_start
-            raw_target_span = seg_raw.lhs_end - seg_raw.lhs_start
-            raw_fps_ratio = raw_source_span / raw_target_span if raw_target_span else 1.0
-            frame_rate_only_drift = self._is_frame_rate_only_drift_mapping(
-                video_path_base,
-                audio_path,
-                mapping,
-                lhs_all_frames,
-                rhs_all_frames,
-                match_result.lhs_fps,
-                match_result.rhs_fps,
+            strategy, mapping = self._choose_audio_strategy(
+                video_path_base, audio_path, matching,
             )
-            # Scale only when the span ratio is a real speed change and not merely
-            # a same-speed frame-rate conversion.
-            global_linear_needs_scaling = (
-                self._needs_fps_scaling(raw_fps_ratio) and not frame_rate_only_drift
-            )
+            self.logger.info("  Audio strategy: %s", strategy.value)
 
-            if (
-                (mapping_relation == MappingRelation.GLOBAL_LINEAR and not global_linear_needs_scaling)
-                or (mapping_relation == MappingRelation.GENERIC and frame_rate_only_drift)
-            ):
-                self.logger.info("  Audio strategy: drift_passthrough")
+            if strategy == _AudioStrategy.PASSTHROUGH:
                 desired_start_ms = self._audio_content_start_ms(
                     self._stream_info(audio_path, "audio", stream_index)
                 )
@@ -1199,41 +1033,7 @@ class MeltPerformer:
                     desired_start_ms=desired_start_ms,
                 )
                 self.logger.info("  Desired audio start: %d ms", desired_start_ms)
-                return patched_audio, patched_index, desired_start_ms
-
-            mapping = self._strict_audio_mapping(mapping)
-
-            # Generic matches may still describe a clean global time-scale (e.g. a
-            # true 25 fps <-> 23 fps frame-rate conversion where the slope is too
-            # far from 1 for the frame-space shortcut).  Recover a 2-point linear
-            # audio mapping so the per-scene subsegment patcher scales correctly.
-            if mapping_relation == MappingRelation.GENERIC:
-                extrapolated_mapping = self._try_effective_fps_audio_mapping(
-                    video_path_base,
-                    audio_path,
-                    mapping,
-                    lhs_all_frames,
-                    rhs_all_frames,
-                    match_result.lhs_fps,
-                    match_result.rhs_fps,
-                )
-                if extrapolated_mapping is None:
-                    extrapolated_mapping = self._try_sparse_linear_audio_extrapolation(
-                        mapping,
-                        lhs_all_frames,
-                        rhs_all_frames,
-                        match_result.lhs_fps,
-                        match_result.rhs_fps,
-                    )
-                if extrapolated_mapping is not None:
-                    mapping = extrapolated_mapping
-                    self.logger.info(
-                        "  Sparse linear audio extrapolation: using %s-%s ↔ %s-%s",
-                        generic_utils.ms_to_time(mapping[0][0]),
-                        generic_utils.ms_to_time(mapping[-1][0]),
-                        generic_utils.ms_to_time(mapping[0][1]),
-                        generic_utils.ms_to_time(mapping[-1][1]),
-                    )
+                return _PatchedAudio(patched_audio, patched_index, desired_start_ms)
 
             self._log_coverage(
                 video_path_base,
@@ -1241,8 +1041,8 @@ class MeltPerformer:
                 mapping,
                 base_duration,
                 duration,
-                match_result.lhs_fps,
-                match_result.rhs_fps,
+                matching.lhs_fps,
+                matching.rhs_fps,
                 lhs_id,
                 rhs_id,
             )
@@ -1250,8 +1050,8 @@ class MeltPerformer:
             self.logger.debug(
                 "Audio patching: base_duration=%d ms, source_duration=%d ms, "
                 "mapping_relation=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
-                base_duration, duration, mapping_relation.value,
-                match_result.lhs_fps, match_result.rhs_fps, len(mapping),
+                base_duration, duration, matching.relation.value,
+                matching.lhs_fps, matching.rhs_fps, len(mapping),
             )
             if mapping:
                 self.logger.debug(
@@ -1259,25 +1059,109 @@ class MeltPerformer:
                     mapping[0][0], mapping[-1][0], mapping[0][1], mapping[-1][1],
                 )
 
-            use_silence = not self.fill_audio_gaps
-            # Global linear with a real speed change → one global time-scale.
-            # Generic matches fall back to per-scene subsegments.
-            use_constant_offset = mapping_relation == MappingRelation.GLOBAL_LINEAR
-            self.logger.info("  Audio strategy: %s", "constant_offset" if use_constant_offset else "subsegment")
+            fill_gaps = self.fill_audio_gaps
 
             patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
-            if use_constant_offset:
-                effective_sync = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, use_silence=use_silence)
+            if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
+                timeline_start_ms = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, fill_gaps_from_base=fill_gaps)
             else:
-                self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, 20, lhs_all_frames, rhs_all_frames, use_silence=use_silence)
-                effective_sync = min(p[0] for p in mapping)
+                timeline_start_ms = self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, self._SUBSEGMENT_COUNT, lhs_all_frames, rhs_all_frames, fill_gaps_from_base=fill_gaps)
 
-            if use_silence:
-                desired_start_ms = effective_sync
-                self.logger.info("  Desired audio start: %d ms", desired_start_ms)
-                return patched_audio, 0, desired_start_ms
+            if not fill_gaps:
+                self.logger.info("  Desired audio start: %d ms", timeline_start_ms)
+                return _PatchedAudio(patched_audio, 0, timeline_start_ms)
 
-        return patched_audio, 0, None
+        # Gaps were filled from the base audio — the track embeds its own
+        # alignment and must be muxed without repositioning.
+        return _PatchedAudio(patched_audio, 0, None)
+
+    def _choose_audio_strategy(
+        self,
+        video_path_base: str,
+        audio_path: str,
+        matching: SegmentsMappingResult,
+    ) -> tuple[_AudioStrategy, list[tuple[int, int]]]:
+        """Pick the strategy for fitting the source audio to the base video.
+
+        Decision table (mapping relation × observed drift):
+
+        - GLOBAL_LINEAR, same speed          → PASSTHROUGH
+        - GLOBAL_LINEAR, real speed change   → GLOBAL_TIME_SCALE
+        - GENERIC, pure frame-rate drift     → PASSTHROUGH
+        - GENERIC otherwise                  → SUBSEGMENT
+
+        Passthrough applies when no global time-scale is needed: a same-speed
+        global-linear relation (a constant offset, or a frame-rate conversion
+        that preserves playback time — different fps but same speed), or a
+        generic match that is a pure frame-rate drift.  Only a genuine
+        playback-speed difference (e.g. a 25 fps PAL transfer vs 24 fps) is
+        time-scaled.  Passthrough is exact and avoids a re-encode that could
+        shift the track by one frame.
+
+        Returns ``(strategy, mapping)`` where *mapping* is the audio mapping
+        the strategy must be applied with.  For SUBSEGMENT the mapping may be
+        upgraded to a recovered 2-point linear one: generic matches can still
+        describe a clean global time-scale (e.g. a true 25 fps <-> 23 fps
+        frame-rate conversion where the slope is too far from 1 for the
+        frame-space shortcut), which makes the subsegment patcher scale
+        correctly.
+        """
+        mapping = matching.mapping
+        relation = matching.relation
+
+        seg_raw = self._segment_range(mapping)
+        raw_source_span = seg_raw.rhs_end - seg_raw.rhs_start
+        raw_base_span = seg_raw.lhs_end - seg_raw.lhs_start
+        raw_source_per_base = raw_source_span / raw_base_span if raw_base_span else 1.0
+        frame_rate_only_drift = self._is_frame_rate_only_drift_mapping(
+            video_path_base,
+            audio_path,
+            mapping,
+            matching.lhs_all_frames,
+            matching.rhs_all_frames,
+            matching.lhs_fps,
+            matching.rhs_fps,
+        )
+
+        if relation == MappingRelation.GLOBAL_LINEAR:
+            # Scale only when the span ratio is a real speed change and not
+            # merely a same-speed frame-rate conversion.
+            needs_scaling = self._needs_fps_scaling(raw_source_per_base) and not frame_rate_only_drift
+            if not needs_scaling:
+                return _AudioStrategy.PASSTHROUGH, mapping
+            return _AudioStrategy.GLOBAL_TIME_SCALE, self._strict_audio_mapping(mapping)
+
+        if frame_rate_only_drift:
+            return _AudioStrategy.PASSTHROUGH, mapping
+
+        mapping = self._strict_audio_mapping(mapping)
+        recovered_mapping = self._try_effective_fps_audio_mapping(
+            video_path_base,
+            audio_path,
+            mapping,
+            matching.lhs_all_frames,
+            matching.rhs_all_frames,
+            matching.lhs_fps,
+            matching.rhs_fps,
+        )
+        if recovered_mapping is None:
+            recovered_mapping = self._try_sparse_linear_audio_extrapolation(
+                mapping,
+                matching.lhs_all_frames,
+                matching.rhs_all_frames,
+                matching.lhs_fps,
+                matching.rhs_fps,
+            )
+        if recovered_mapping is not None:
+            mapping = recovered_mapping
+            self.logger.info(
+                "  Sparse linear audio extrapolation: using %s-%s ↔ %s-%s",
+                generic_utils.ms_to_time(mapping[0][0]),
+                generic_utils.ms_to_time(mapping[-1][0]),
+                generic_utils.ms_to_time(mapping[0][1]),
+                generic_utils.ms_to_time(mapping[-1][1]),
+            )
+        return _AudioStrategy.SUBSEGMENT, mapping
 
     @staticmethod
     def _strict_audio_mapping(mapping: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -1356,7 +1240,7 @@ class MeltPerformer:
             return None
 
         tempo_ratio = lhs_effective_fps / rhs_effective_fps
-        if abs(tempo_ratio - 1.0) < 0.005:
+        if abs(tempo_ratio - 1.0) < MeltPerformer._MIN_TEMPO_RATIO_DELTA:
             return None
 
         seg = MeltPerformer._segment_range(mapping)
@@ -1408,9 +1292,9 @@ class MeltPerformer:
 
         tempo_ratio = lhs_effective_fps / rhs_effective_fps
         nominal_ratio = lhs_nominal_fps / rhs_nominal_fps
-        if abs(tempo_ratio - 1.0) < 0.005:
+        if abs(tempo_ratio - 1.0) < MeltPerformer._MIN_TEMPO_RATIO_DELTA:
             return False
-        if abs(tempo_ratio / nominal_ratio - 1.0) >= 0.005:
+        if abs(tempo_ratio / nominal_ratio - 1.0) >= MeltPerformer._MIN_TEMPO_RATIO_DELTA:
             return False
 
         observed_pairs = sorted(mapping)
@@ -1424,7 +1308,7 @@ class MeltPerformer:
             return False
 
         observed_ratio = source_duration / target_duration
-        return abs(observed_ratio - 1.0) < 0.01
+        return abs(observed_ratio - 1.0) < MeltPerformer._MAX_SAME_SPEED_SPAN_DELTA
 
     @staticmethod
     def _try_sparse_linear_audio_extrapolation(
@@ -1525,103 +1409,6 @@ class MeltPerformer:
                         return length
         return video_utils.get_video_duration(path, logger=logger)
 
-    _MKVMERGE_PRESERVES_START_EXTENSIONS = frozenset({".mkv", ".mk3d", ".mka", ".webm"})
-
-    @staticmethod
-    def _stream_info(path: str, stream_type: str, stream_index: int) -> dict[str, Any] | None:
-        info = video_utils.get_video_full_info(path)
-        for stream in info.get("streams", []):
-            if stream.get("codec_type") != stream_type:
-                continue
-            try:
-                probed_index = int(stream.get("index", -1))
-            except (TypeError, ValueError):
-                continue
-            if probed_index == stream_index:
-                return stream
-        return None
-
-    @staticmethod
-    def _audio_stream_info(path: str, stream_index: int) -> dict[str, Any] | None:
-        return MeltPerformer._stream_info(path, "audio", stream_index)
-
-    @staticmethod
-    def _stream_start_offset_ms(stream: dict[str, Any] | None) -> int:
-        if stream is None:
-            return 0
-        try:
-            start_time = float(stream.get("start_time") or 0.0)
-        except (TypeError, ValueError):
-            return 0
-        return max(0, round(start_time * 1000))
-
-    @staticmethod
-    def _stream_end_offset_ms(stream: dict[str, Any] | None) -> int | None:
-        if stream is None:
-            return None
-
-        duration = stream.get("duration")
-        if duration is not None:
-            try:
-                return MeltPerformer._stream_start_offset_ms(stream) + round(float(duration) * 1000)
-            except (TypeError, ValueError):
-                pass
-
-        tag_duration = stream.get("tags", {}).get("DURATION")
-        if tag_duration is not None:
-            return generic_utils.time_to_ms(tag_duration)
-
-        return None
-
-    def _source_stream_start_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int:
-        return self._stream_start_offset_ms(self._stream_info(path, stream_type, stream_index))
-
-    def _source_stream_end_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int | None:
-        return self._stream_end_offset_ms(self._stream_info(path, stream_type, stream_index))
-
-    def _mkvmerge_input_start_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int:
-        extension = os.path.splitext(path)[1].lower()
-        if extension in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
-            return self._source_stream_start_offset_ms(path, stream_type, stream_index)
-        return 0
-
-    def _track_sync_offset_ms(
-        self,
-        path: str,
-        stream_type: str,
-        stream_index: int,
-        desired_start_ms: int | None,
-    ) -> int | None:
-        if desired_start_ms is None:
-            return None
-        input_start_ms = self._mkvmerge_input_start_offset_ms(path, stream_type, stream_index)
-        sync_offset_ms = desired_start_ms - input_start_ms
-        return sync_offset_ms if sync_offset_ms else None
-
-    def _audio_needs_mkvmerge_normalization(self, path: str, stream_index: int) -> bool:
-        """Return True when direct mkvmerge remux can shift decoded AAC timing.
-
-        Non-Matroska AAC always needs a priming-free remux: mkvmerge would otherwise
-        drop the container start offset.  Matroska normally preserves start, so raw
-        passthrough is fine -- *except* when the AAC stream carries encoder-delay
-        priming (CodecDelay / ``initial_padding``).  Remuxed raw, such a stream is
-        placed build-dependently: builds that expose priming shift its decoded
-        content by one frame (~21 ms) relative to a priming-stripped base track.
-        Route those through the FLAC-domain flow too so the priming is removed
-        deterministically, exactly as for non-Matroska inputs.
-        """
-        stream = self._audio_stream_info(path, stream_index)
-        if stream is None or stream.get("codec_name") != "aac":
-            return False
-        extension = os.path.splitext(path)[1].lower()
-        if extension not in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
-            return True
-        try:
-            init_pad = int(stream.get("initial_padding") or 0)
-        except (TypeError, ValueError):
-            init_pad = 0
-        return init_pad > 0
-
     def _temporary_audio_path(self, label: str, stream_index: int) -> str:
         path = os.path.join(
             self.wd,
@@ -1641,11 +1428,10 @@ class MeltPerformer:
         single FLAC-domain flow: decode to a priming-free FLAC, optionally trim its
         tail to the output-timeline end, then encode to AAC exactly once.
 
-        Feeding AAC straight to mkvmerge, or re-encoding AAC→AAC, re-applies the
-        encoder-delay priming on ffmpeg builds that expose it, accumulating ~21 ms
-        per pass and shifting the track.  Routing every processing step through FLAC
-        and encoding AAC only once keeps decoded timing identical across builds —
-        the same single-encode discipline the constant-offset patch path relies on.
+        Every extra AAC encode re-applies encoder-delay priming on builds that
+        expose it (see ``track_timeline``), shifting the track ~21 ms per pass —
+        hence the single-encode discipline, shared with the constant-offset
+        patch path.
         """
         cache_key = (source_path, stream_index, desired_end_ms, desired_start_ms)
         cached_path = self._normalized_audio_cache.get(cache_key)
@@ -1758,10 +1544,6 @@ class MeltPerformer:
             ))
 
         for (path, stream_index, language) in audio_streams:
-            # Priming-convention independent content start: on builds that expose AAC
-            # encoder-delay priming, a positive-offset (asO) stream's raw start_time is
-            # short by one frame; _audio_content_start_ms adds it back so placement
-            # matches absorbing builds (a no-op for non-AAC / asR streams).
             audio_desired_start_ms: int | None = self._audio_content_start_ms(
                 self._stream_info(path, "audio", stream_index)
             )
@@ -1769,19 +1551,20 @@ class MeltPerformer:
             if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
                 assert base_duration is not None  # guaranteed by _is_length_mismatch
                 original_path = path
-                path, stream_index, audio_desired_start_ms = self._patch_mismatched_audio(
+                patched = self._patch_mismatched_audio(
                     video_path_base, (path, stream_index), base_duration, base_audio_end_ms, file_ids,
                 )
+                path = patched.path
+                stream_index = patched.stream_index
+                audio_desired_start_ms = patched.timeline_start_ms
                 input_files.add(path)
                 if original_path not in protected_paths:
                     input_files.discard(original_path)
             else:
-                # Length-matching audio is passed through unchanged, except for two
-                # mkvmerge concerns handled by a single FLAC-domain flow (decode →
-                # optional tail trim → one AAC encode): AAC needs priming-free remux
-                # for non-Matroska inputs, and audio overrunning the output timeline
-                # must be trimmed.  Both used to be separate AAC re-encodes that
-                # accumulated encoder-delay priming on builds that expose it.
+                # Length-matching audio is passed through unchanged, except for
+                # two mkvmerge concerns handled by the single FLAC-domain flow:
+                # AAC that needs a priming-free remux (see track_timeline), and
+                # audio overrunning the output timeline, which must be trimmed.
                 needs_normalization = self._audio_needs_mkvmerge_normalization(path, stream_index)
                 trim_end_ms: int | None = None
                 if path != video_path_base and audio_desired_start_ms is not None and base_output_end_ms is not None:
