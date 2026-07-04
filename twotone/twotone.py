@@ -20,7 +20,7 @@ from .tools import          \
     transcode,              \
     utilities
 
-from .tools.utils import generic_utils, process_utils
+from .tools.utils import files_utils, generic_utils, process_utils
 
 TOOLS = {
     "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file"),
@@ -138,8 +138,18 @@ def execute(argv: list[str]) -> None:
     parser.add_argument(
         "--working-dir",
         "-w",
-        default=generic_utils.get_twotone_working_dir(),
-        help="Directory for temporary files",
+        default=None,
+        help="Directory for temporary files.\n"
+             f"When omitted, twotone works in a per-run subdirectory of {generic_utils.get_twotone_working_dir()}\n"
+             "and removes leftovers of crashed runs from there.\n"
+             "When provided, the directory is used exactly as given: no per-run subdirectory\n"
+             "is created and no other run's data is scanned or removed.",
+    )
+    parser.add_argument(
+        "--keep-wd",
+        action="store_true",
+        help="Do not delete anything from the working directory.\n"
+             "Keeps all intermediate files (frames, audio segments, debug dumps) for inspection.",
     )
     parser.add_argument(
         "--version",
@@ -195,87 +205,88 @@ def execute(argv: list[str]) -> None:
 
     if args.tool in TOOLS:
         tool, _ = TOOLS[args.tool]
-        base_wd = args.working_dir
-        pid_wd = os.path.join(base_wd, str(os.getpid()))
-        tool_wd = os.path.join(pid_wd, args.tool)
-        os.makedirs(tool_wd, exist_ok=True)
 
-        with logging_redirect_tqdm():
-            try:
-                tool_logger = logger.getChild(args.tool)
-                required_tools = sorted(tool.required_tools())
-                if required_tools:
-                    process_utils.ensure_tools_exist(required_tools, tool_logger)
-                plan = tool.analyze(
-                    args,
-                    logger=tool_logger,
-                    working_dir=tool_wd,
-                )
+        with logging_redirect_tqdm(), \
+             files_utils.open_workspace(
+                 args.working_dir,
+                 generic_utils.get_twotone_working_dir(),
+                 keep=args.keep_wd,
+                 logger=logger,
+             ) as workspace:
+            tool_workspace = workspace if args.working_dir is not None else workspace.subdir(args.tool)
+            tool_wd = tool_workspace.root
+            tool_logger = logger.getChild(args.tool)
+            required_tools = sorted(tool.required_tools())
+            if required_tools:
+                process_utils.ensure_tools_exist(required_tools, tool_logger)
+            plan = tool.analyze(
+                args,
+                logger=tool_logger,
+                working_dir=tool_wd,
+            )
 
-                if args.no_dry_run:
-                    plan.render(tool_logger)
-                    if plan.is_empty():
-                        tool_logger.info("Nothing to do.")
+            if args.no_dry_run:
+                plan.render(tool_logger)
+                if plan.is_empty():
+                    tool_logger.info("Nothing to do.")
+                else:
+                    tool.perform(
+                        args,
+                        logger=tool_logger,
+                        working_dir=tool_wd,
+                        plan=plan,
+                    )
+            elif args.interactive:
+                plan.render(tool_logger)
+                if plan.is_empty():
+                    tool_logger.info("Analysis complete: nothing to do.")
+                    tool_logger.info("Skipping perform.")
+                else:
+                    plan_count = _plan_item_count(plan)
+                    if plan_count is None:
+                        tool_logger.info("Analysis complete: ready to perform.")
                     else:
+                        tool_logger.info("Analysis complete: %d item(s) ready.", plan_count)
+                    try:
+                        answer = input("Proceed with perform? [y/N]: ").strip().lower()
+                    except EOFError:
+                        answer = ""
+                    if answer in {"y", "yes"}:
+                        tool_logger.info("User confirmed. Starting perform.")
                         tool.perform(
                             args,
                             logger=tool_logger,
                             working_dir=tool_wd,
                             plan=plan,
                         )
-                elif args.interactive:
+                    else:
+                        tool_logger.info("User aborted. Skipping perform.")
+            else:
+                if plan.is_empty():
                     plan.render(tool_logger)
-                    if plan.is_empty():
-                        tool_logger.info("Analysis complete: nothing to do.")
+                    tool_logger.info("Analysis complete: nothing to do.")
+                    if args.no_dry_run:
                         tool_logger.info("Skipping perform.")
                     else:
-                        plan_count = _plan_item_count(plan)
-                        if plan_count is None:
-                            tool_logger.info("Analysis complete: ready to perform.")
-                        else:
-                            tool_logger.info("Analysis complete: %d item(s) ready.", plan_count)
-                        try:
-                            answer = input("Proceed with perform? [y/N]: ").strip().lower()
-                        except EOFError:
-                            answer = ""
-                        if answer in {"y", "yes"}:
-                            tool_logger.info("User confirmed. Starting perform.")
-                            tool.perform(
-                                args,
-                                logger=tool_logger,
-                                working_dir=tool_wd,
-                                plan=plan,
-                            )
-                        else:
-                            tool_logger.info("User aborted. Skipping perform.")
-                else:
-                    if plan.is_empty():
-                        plan.render(tool_logger)
-                        tool_logger.info("Analysis complete: nothing to do.")
-                        if args.no_dry_run:
-                            tool_logger.info("Skipping perform.")
-                        else:
-                            tool_logger.info("Dry run mode: analyze completed, skipping perform.")
-                    elif args.no_dry_run:
-                        plan_count = _plan_item_count(plan)
-                        if plan_count is None:
-                            tool_logger.info("Analysis complete: starting perform.")
-                        else:
-                            tool_logger.info(
-                                "Analysis complete: %d item(s) to process. Starting perform.",
-                                plan_count,
-                            )
-                        tool.perform(
-                            args,
-                            logger=tool_logger,
-                            working_dir=tool_wd,
-                            plan=plan,
-                        )
-                    else:
-                        plan.render(tool_logger)
                         tool_logger.info("Dry run mode: analyze completed, skipping perform.")
-            finally:
-                shutil.rmtree(pid_wd, ignore_errors=True)
+                elif args.no_dry_run:
+                    plan_count = _plan_item_count(plan)
+                    if plan_count is None:
+                        tool_logger.info("Analysis complete: starting perform.")
+                    else:
+                        tool_logger.info(
+                            "Analysis complete: %d item(s) to process. Starting perform.",
+                            plan_count,
+                        )
+                    tool.perform(
+                        args,
+                        logger=tool_logger,
+                        working_dir=tool_wd,
+                        plan=plan,
+                    )
+                else:
+                    plan.render(tool_logger)
+                    tool_logger.info("Dry run mode: analyze completed, skipping perform.")
     else:
         logger.error(f"Error: Unknown tool {args.tool}")
         sys.exit(1)
