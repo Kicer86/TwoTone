@@ -1,6 +1,9 @@
 
+import itertools
 import shutil
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 import os
 import tempfile
@@ -59,6 +62,110 @@ class TempFileManager:
     def __exit__(self, exc_type, exc_value, traceback):
         if self.filepath and os.path.exists(self.filepath):
             os.remove(self.filepath)
+
+
+class _WorkspaceState:
+    """State shared between a Workspace and the sub-Workspaces it spawns."""
+
+    def __init__(self) -> None:
+        self.counter = itertools.count()
+        self.created: list[str] = []
+
+
+class Workspace(os.PathLike):
+    """Factory for temporary files and directories of a single twotone run.
+
+    All temporary artifacts should be created through this class: it
+    guarantees names unique within the run (and against leftovers of
+    previous runs sharing the same directory) and honors the keep mode,
+    in which nothing inside the working directory is ever deleted.
+
+    The instance is path-like, so it can be passed wherever a directory
+    path is expected.
+    """
+
+    def __init__(self, root: str, *, keep: bool = False, _state: _WorkspaceState | None = None) -> None:
+        self.root = os.fspath(root)
+        self.keep = keep
+        self._state = _state if _state is not None else _WorkspaceState()
+
+    def __fspath__(self) -> str:
+        return self.root
+
+    def __str__(self) -> str:
+        return self.root
+
+    def __repr__(self) -> str:
+        return f"Workspace({self.root!r}, keep={self.keep})"
+
+    def subdir(self, name: str) -> "Workspace":
+        """Return a Workspace rooted at a fixed-name subdirectory, creating it if needed."""
+        path = os.path.join(self.root, name)
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+            self._state.created.append(path)
+        return Workspace(path, keep=self.keep, _state=self._state)
+
+    def unique_dir(self, label: str) -> str:
+        """Create and return a directory with a run-unique, label-based name."""
+        path = self._unique_path(label, None)
+        os.makedirs(path)
+        self._state.created.append(path)
+        return path
+
+    def unique_file(self, label: str, extension: str | None = None) -> str:
+        """Reserve a run-unique file path (the file itself is not created)."""
+        path = self._unique_path(label, extension)
+        self._state.created.append(path)
+        return path
+
+    @contextmanager
+    def scoped_dir(self, label: str) -> Iterator[str]:
+        """Create a unique directory removed when the context exits (unless keep)."""
+        path = self.unique_dir(label)
+        try:
+            yield path
+        finally:
+            if not self.keep:
+                shutil.rmtree(path, ignore_errors=True)
+
+    @contextmanager
+    def text_file(self, content: str, extension: str | None = None) -> Iterator[str]:
+        """Write content to a unique file removed when the context exits (unless keep)."""
+        path = self.unique_file("text", extension)
+        with open(path, "w") as text_file:
+            text_file.write(content)
+        try:
+            yield path
+        finally:
+            if not self.keep and os.path.exists(path):
+                os.remove(path)
+
+    def remove_created(self) -> None:
+        """Remove everything this run created under the workspace (best effort).
+
+        Entries created by other runs or placed in the directory by the user
+        are left untouched.  No-op in keep mode.
+        """
+        if self.keep:
+            return
+        for path in reversed(self._state.created):
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        self._state.created.clear()
+
+    def _unique_path(self, label: str, extension: str | None) -> str:
+        suffix = f".{extension}" if extension else ""
+        while True:
+            name = f"{label}-{next(self._state.counter)}{suffix}"
+            path = os.path.join(self.root, name)
+            if not os.path.exists(path):
+                return path
 
 
 def format_path(path: str, base_path: str | None) -> str:
