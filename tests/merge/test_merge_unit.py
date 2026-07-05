@@ -61,7 +61,7 @@ class DirectorySubtitleMatcherUnitTest(TwoToneTestCase):
     """Unit tests for Merge._directory_subtitle_matcher()."""
 
     def _merger(self):
-        return Merge(self.logger, language="und", lang_priority="", workspace=files_utils.Workspace(self.wd.path))
+        return Merge(self.logger, language="und", lang_priority="", workspace=self.workspace)
 
     def test_simple_match(self):
         # Create video stub (extension makes it a "video")

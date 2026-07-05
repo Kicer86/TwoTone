@@ -12,7 +12,7 @@ from typing import ClassVar
 
 from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
 from twotone.tools.melt.melt_cache import MeltCache
-from twotone.tools.utils import files_utils, generic_utils, video_utils
+from twotone.tools.utils import generic_utils, video_utils
 
 from common import (
     TwoToneTestCase,
@@ -526,8 +526,7 @@ class AudioAlignmentTest(TwoToneTestCase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        workspace = files_utils.Workspace(self.wd.path)
-        analyzer = MeltAnalyzer(logger, duplicates, workspace, True, 100)
+        analyzer = MeltAnalyzer(logger, duplicates, self.workspace, True, 100)
         duplicates_raw = duplicates.collect_duplicates()
         plan = analyzer.analyze_duplicates({
             title: list(files)
@@ -537,7 +536,7 @@ class AudioAlignmentTest(TwoToneTestCase):
         performer = MeltPerformer(
             logger,
             interruption,
-            workspace,
+            self.workspace,
             output_dir,
             100,
             cache=self.melt_cache,

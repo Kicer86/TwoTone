@@ -93,7 +93,6 @@ class MeltTestBase(TwoToneTestCase):
 
     def setUp(self):
         super().setUp()
-        self.workspace = Workspace(self.wd.path)
 
         def gen_sample(out_path: Path):
             videos = ["Atoms - 8579.mp4",

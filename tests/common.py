@@ -77,6 +77,7 @@ class TwoToneTestCase(unittest.TestCase):
         self.logger = self.__class__.logger
         self.wd = WorkingDirectoryForTest(self.__class__.__name__, self._testMethodName)
         self.wd.__enter__()
+        self.workspace = files_utils.Workspace(self.wd.path)
 
     def tearDown(self):
         self.wd.__exit__(None, None, None)
