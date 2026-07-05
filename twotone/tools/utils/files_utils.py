@@ -140,13 +140,6 @@ class Workspace(os.PathLike):
     def __repr__(self) -> str:
         return f"Workspace({self.root!r}, keep={self.keep})"
 
-    def subdir(self, name: str) -> "Workspace":
-        """Return a Workspace rooted at a fixed-name subdirectory, creating it if needed."""
-        path = os.path.join(self.root, name)
-        if not os.path.exists(path):
-            self._state.created.append(path)
-        return Workspace(path, keep=self.keep, _state=self._state)
-
     def unique_dir(self, label: str) -> str:
         """Create and return a directory with a run-unique, label-based name."""
         path = self._unique_path(label, None)

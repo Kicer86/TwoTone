@@ -90,16 +90,6 @@ class WorkspaceTests(unittest.TestCase):
 
         self.assertTrue(os.path.exists(path))
 
-    def test_subdir_shares_uniqueness_with_parent(self):
-        workspace = files_utils.Workspace(self.root)
-
-        child = workspace.subdir("melt")
-        child_file = child.unique_file("clip")
-        parent_file = workspace.unique_file("clip")
-
-        self.assertTrue(child_file.startswith(os.path.join(self.root, "melt") + os.sep))
-        self.assertNotEqual(os.path.basename(child_file), os.path.basename(parent_file))
-
     def test_remove_created_removes_only_own_entries(self):
         foreign = os.path.join(self.root, "user_data")
         os.makedirs(foreign)
