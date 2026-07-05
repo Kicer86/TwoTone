@@ -90,38 +90,23 @@ class WorkspaceTests(unittest.TestCase):
 
         self.assertTrue(os.path.exists(path))
 
-    def test_remove_created_removes_only_own_entries(self):
-        foreign = os.path.join(self.root, "user_data")
-        os.makedirs(foreign)
+    def test_close_removes_the_whole_root(self):
+        root = os.path.join(self.root, "ws")
+        workspace = files_utils.Workspace(root)
+        workspace.unique_dir("frames")
 
-        workspace = files_utils.Workspace(self.root)
-        own_dir = workspace.unique_dir("frames")
-        own_file = workspace.unique_file("clip", "mkv")
-        with open(own_file, "w"):
-            pass
+        workspace.close()
 
-        workspace.remove_created()
+        self.assertFalse(os.path.exists(root))
 
-        self.assertFalse(os.path.exists(own_dir))
-        self.assertFalse(os.path.exists(own_file))
-        self.assertTrue(os.path.isdir(foreign))
-
-    def test_remove_created_is_a_no_op_in_keep_mode(self):
-        workspace = files_utils.Workspace(self.root, keep=True)
-        own_dir = workspace.unique_dir("frames")
-
-        workspace.remove_created()
-
-        self.assertTrue(os.path.isdir(own_dir))
-
-    def test_borrowed_root_survives_close(self):
-        workspace = files_utils.Workspace(self.root)
+    def test_close_is_a_no_op_in_keep_mode(self):
+        root = os.path.join(self.root, "ws")
+        workspace = files_utils.Workspace(root, keep=True)
         own_dir = workspace.unique_dir("frames")
 
         workspace.close()
 
-        self.assertFalse(os.path.exists(own_dir))
-        self.assertTrue(os.path.isdir(self.root))
+        self.assertTrue(os.path.isdir(own_dir))
 
 
 class TemporaryWorkspaceTests(unittest.TestCase):
@@ -165,8 +150,8 @@ class StagingTests(unittest.TestCase):
     def setUp(self):
         self.user_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.user_dir, ignore_errors=True)
-        self.workspace = files_utils.Workspace(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.workspace.root, ignore_errors=True)
+        self.workspace = files_utils.Workspace.temporary()
+        self.addCleanup(self.workspace.close)
         self.target = os.path.join(self.user_dir, "movie.mkv")
 
     def test_staging_file_lives_visible_next_to_target(self):

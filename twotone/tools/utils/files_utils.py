@@ -26,15 +26,6 @@ def split_path(path: str) -> tuple[str, str, str]:
     return str(info.parent), info.stem, info.suffix[1:]
 
 
-class _WorkspaceState:
-    """State shared between a Workspace and the sub-Workspaces it spawns."""
-
-    def __init__(self) -> None:
-        self.counter = itertools.count()
-        self.token = uuid.uuid4().hex[:8]
-        self.created: list[str] = []
-
-
 class StagingFile:
     """A temporary file placed next to its target, committed by atomic rename.
 
@@ -67,45 +58,36 @@ class Workspace(os.PathLike):
     previous runs sharing the same directory) and honors the keep mode,
     in which nothing inside the working directory is ever deleted.
 
-    The root directory is created on construction when missing.  The
-    instance is path-like, so it can be passed wherever a directory path
-    is expected.
+    A Workspace owns its root: :meth:`close` (and context-manager exit)
+    removes the whole root, and, as a backstop, so does garbage collection
+    of the instance - mirroring :class:`tempfile.TemporaryDirectory` so a
+    dropped reference never leaks.  The root directory is created on
+    construction when missing.  The instance is path-like, so it can be
+    passed wherever a directory path is expected.
 
-    Root ownership: a Workspace built around a directory it was handed does
-    not delete that directory - only the entries it creates inside.  A
-    Workspace that owns its root (see :meth:`temporary`) removes the whole
-    root on :meth:`close`, and, as a backstop, when the object is garbage
-    collected - mirroring :class:`tempfile.TemporaryDirectory` so a dropped
-    reference never leaks.
+    With ``keep`` nothing is ever removed.
     """
 
-    def __init__(
-        self,
-        root: str,
-        *,
-        keep: bool = False,
-        _owns_root: bool = False,
-        _state: _WorkspaceState | None = None,
-    ) -> None:
+    def __init__(self, root: str, *, keep: bool = False) -> None:
         self.root = os.fspath(root)
         self.keep = keep
-        self._owns_root = _owns_root
-        self._state = _state if _state is not None else _WorkspaceState()
+        self._counter = itertools.count()
+        self._token = uuid.uuid4().hex[:8]
         os.makedirs(self.root, exist_ok=True)
         self._finalizer: weakref.finalize | None = None
-        if _owns_root and not keep:
+        if not keep:
             self._finalizer = weakref.finalize(self, shutil.rmtree, self.root, ignore_errors=True)
 
     @classmethod
     def temporary(cls, *, keep: bool = False, prefix: str = "twotone-ws-") -> "Workspace":
-        """Create a self-owned Workspace under the system temp directory.
+        """Create a Workspace under the system temp directory.
 
         The root is removed on :meth:`close`, on context-manager exit, or -
         as a backstop - when the instance is garbage collected.  Use this
         wherever a throwaway working directory is needed without a
         surrounding :func:`open_workspace`.
         """
-        return cls(tempfile.mkdtemp(prefix=prefix), keep=keep, _owns_root=True)
+        return cls(tempfile.mkdtemp(prefix=prefix), keep=keep)
 
     def __enter__(self) -> "Workspace":
         return self
@@ -114,22 +96,14 @@ class Workspace(os.PathLike):
         self.close()
 
     def close(self) -> None:
-        """Release the workspace.
-
-        Owned roots are removed whole; borrowed roots keep only what other
-        parties put there and drop this run's own entries.  No-op in keep
-        mode.
-        """
+        """Remove the workspace root, unless in keep mode."""
         if self.keep:
             return
-        if self._owns_root:
-            if self._finalizer is not None:
-                self._finalizer()
-                self._finalizer = None
-            else:
-                shutil.rmtree(self.root, ignore_errors=True)
+        if self._finalizer is not None:
+            self._finalizer()
+            self._finalizer = None
         else:
-            self.remove_created()
+            shutil.rmtree(self.root, ignore_errors=True)
 
     def __fspath__(self) -> str:
         return self.root
@@ -144,14 +118,11 @@ class Workspace(os.PathLike):
         """Create and return a directory with a run-unique, label-based name."""
         path = self._unique_path(label, None)
         os.makedirs(path)
-        self._state.created.append(path)
         return path
 
     def unique_file(self, label: str, extension: str | None = None) -> str:
         """Reserve a run-unique file path (the file itself is not created)."""
-        path = self._unique_path(label, extension)
-        self._state.created.append(path)
-        return path
+        return self._unique_path(label, extension)
 
     @contextmanager
     def scoped_dir(self, label: str) -> Iterator[str]:
@@ -207,28 +178,10 @@ class Workspace(os.PathLike):
         finally:
             shutil.rmtree(path, ignore_errors=True)
 
-    def remove_created(self) -> None:
-        """Remove everything this run created under the workspace (best effort).
-
-        Entries created by other runs or placed in the directory by the user
-        are left untouched.  No-op in keep mode.
-        """
-        if self.keep:
-            return
-        for path in reversed(self._state.created):
-            if os.path.isdir(path) and not os.path.islink(path):
-                shutil.rmtree(path, ignore_errors=True)
-            elif os.path.exists(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-        self._state.created.clear()
-
     def _unique_path(self, label: str, extension: str | None) -> str:
         suffix = f".{extension}" if extension else ""
         while True:
-            name = f"{label}-{next(self._state.counter)}{suffix}"
+            name = f"{label}-{next(self._counter)}{suffix}"
             path = os.path.join(self.root, name)
             if not os.path.exists(path):
                 return path
@@ -238,7 +191,7 @@ class Workspace(os.PathLike):
         # the same user directory, the counter within this instance.
         suffix = f".{extension}" if extension else ""
         while True:
-            name = f"{stem}.twotone-tmp-{self._state.token}-{next(self._state.counter)}{suffix}"
+            name = f"{stem}.twotone-tmp-{self._token}-{next(self._counter)}{suffix}"
             path = os.path.join(directory, name)
             if not os.path.exists(path):
                 return path
@@ -362,7 +315,7 @@ def open_workspace(
         while os.path.exists(instance_dir):
             instance_dir = os.path.join(default_base, f"{os.getpid()}-{next(suffixes)}")
         os.makedirs(instance_dir)
-        workspace = Workspace(instance_dir, keep=keep, _owns_root=True)
+        workspace = Workspace(instance_dir, keep=keep)
         lock = DirectoryLock(instance_dir)
         if not lock.try_acquire():
             raise RuntimeError(f"Cannot lock own working directory: {instance_dir}")
@@ -387,7 +340,7 @@ def open_workspace(
                 f"delete pre-existing data. Point --working-dir at a new or "
                 f"empty directory, or pass --keep-wd to keep it."
             )
-        workspace = Workspace(root, keep=keep, _owns_root=True)
+        workspace = Workspace(root, keep=keep)
         lock = DirectoryLock(workspace.root)
         if not lock.try_acquire():
             raise RuntimeError(f"Working directory {workspace.root} is already used by another twotone instance")
