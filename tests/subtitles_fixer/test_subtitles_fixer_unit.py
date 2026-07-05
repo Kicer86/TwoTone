@@ -10,7 +10,7 @@ from twotone.tools.utils import files_utils
 
 
 def _make_fixer() -> Fixer:
-    return Fixer(logger=logging.getLogger("test"), working_dir=files_utils.Workspace(tempfile.mkdtemp()))
+    return Fixer(logger=logging.getLogger("test"), workspace=files_utils.Workspace(tempfile.mkdtemp()))
 
 
 def _make_content(events: list[tuple[int, int]]) -> pysubs2.SSAFile:

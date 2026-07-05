@@ -71,7 +71,7 @@ class MeltPerformer(TrackTimelineMixin):
         self,
         logger: logging.Logger,
         interruption: generic_utils.InterruptibleProcess,
-        working_dir: files_utils.Workspace,
+        workspace: files_utils.Workspace,
         output_dir: str,
         tolerance_ms: int,
         cache: MeltCache | None = None,
@@ -85,8 +85,7 @@ class MeltPerformer(TrackTimelineMixin):
         self.fill_audio_gaps = fill_audio_gaps
         self._normalized_audio_cache: dict[tuple[str, int, int | None, int | None], str] = {}
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
-        self.workspace = working_dir
-        self.wd = working_dir.root
+        self.workspace = workspace
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
         planned_items = [item for item in plan if item.get("groups")]

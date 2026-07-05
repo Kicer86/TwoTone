@@ -22,7 +22,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         return MeltPerformer(
             logger=logging.getLogger("test.MeltPerformer"),
             interruption=generic_utils.InterruptibleProcess(),
-            working_dir=files_utils.Workspace(tempfile.mkdtemp()),
+            workspace=files_utils.Workspace(tempfile.mkdtemp()),
             output_dir=tempfile.mkdtemp(),
             tolerance_ms=DEFAULT_TOLERANCE_MS,
         )

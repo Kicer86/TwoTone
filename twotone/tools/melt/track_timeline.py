@@ -39,11 +39,10 @@ from ..utils import files_utils, generic_utils, process_utils, video_utils
 class TrackTimelineMixin:
     """Stream-timeline and AAC-priming helpers for :class:`MeltPerformer`.
 
-    Requires the host class to provide ``workspace``, ``wd`` and ``logger``.
+    Requires the host class to provide ``workspace`` and ``logger``.
     """
 
     workspace: files_utils.Workspace
-    wd: str
     logger: logging.Logger
 
     _aac_priming_exposed_cache: bool | None = None

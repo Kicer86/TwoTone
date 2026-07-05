@@ -221,7 +221,7 @@ def execute(argv: list[str]) -> None:
             plan = tool.analyze(
                 args,
                 logger=tool_logger,
-                working_dir=tool_workspace,
+                workspace=tool_workspace,
             )
 
             if args.no_dry_run:
@@ -232,7 +232,7 @@ def execute(argv: list[str]) -> None:
                     tool.perform(
                         args,
                         logger=tool_logger,
-                        working_dir=tool_workspace,
+                        workspace=tool_workspace,
                         plan=plan,
                     )
             elif args.interactive:
@@ -255,7 +255,7 @@ def execute(argv: list[str]) -> None:
                         tool.perform(
                             args,
                             logger=tool_logger,
-                            working_dir=tool_workspace,
+                            workspace=tool_workspace,
                             plan=plan,
                         )
                     else:
@@ -280,7 +280,7 @@ def execute(argv: list[str]) -> None:
                     tool.perform(
                         args,
                         logger=tool_logger,
-                        working_dir=tool_workspace,
+                        workspace=tool_workspace,
                         plan=plan,
                     )
                 else:

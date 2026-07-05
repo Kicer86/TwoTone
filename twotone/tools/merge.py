@@ -14,12 +14,12 @@ from twotone.tools.utils import files_utils, generic_utils, subtitles_utils, vid
 
 class Merge(generic_utils.InterruptibleProcess):
 
-    def __init__(self, logger: logging.Logger, language: str, lang_priority: str, working_dir: files_utils.Workspace) -> None:
+    def __init__(self, logger: logging.Logger, language: str, lang_priority: str, workspace: files_utils.Workspace) -> None:
         super().__init__(logger)
         self.logger = logger
         self.language = language
         self.lang_priority = lang_priority.split(",") if lang_priority else []
-        self.workspace = working_dir
+        self.workspace = workspace
         self.base_path: str | None = None
 
     def _build_subtitle_from_path(self, path: str) -> subtitles_utils.SubtitleFile:
@@ -383,24 +383,24 @@ class MergeTool(Tool):
                                 'the end in undefined order')
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
         logger.info("Searching for movie and subtitle files to be merged")
 
         merger = Merge(logger,
                        language=args.language,
                        lang_priority=args.languages_priority,
-                       working_dir=working_dir)
+                       workspace=workspace)
         analysis = merger.analyze_directory(args.videos_path[0])
         return MergePlan(items=analysis, base_path=os.path.abspath(args.videos_path[0]))
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
         if not isinstance(plan, MergePlan):
             raise TypeError(f"Expected MergePlan, got {type(plan).__name__}")
 
         merger = Merge(logger,
                        language=args.language,
                        lang_priority=args.languages_priority,
-                       working_dir=working_dir)
+                       workspace=workspace)
         merger.base_path = plan.base_path or os.path.abspath(args.videos_path[0])
         merger.perform_merges(plan.items)

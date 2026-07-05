@@ -34,9 +34,9 @@ class Tool(ABC):
         return requirements_utils.collect_required_tools(self.analyze, self.perform)
 
     @abstractmethod
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
         raise NotImplementedError
 
     @abstractmethod
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
         raise NotImplementedError

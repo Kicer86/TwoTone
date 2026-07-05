@@ -13,10 +13,10 @@ from twotone.tools.utils import generic_utils, process_utils, video_utils, files
 
 
 class Concatenate(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, working_dir: files_utils.Workspace):
+    def __init__(self, logger: logging.Logger, workspace: files_utils.Workspace):
         super().__init__(logger)
         self.logger = logger
-        self.workspace = working_dir
+        self.workspace = workspace
 
     def analyze(self, path: str, ignore_warnings: bool = False) -> dict[str, list[tuple[str, int]]] | None:
         self.logger.info(f"Collecting video files from path {path}")
@@ -158,19 +158,19 @@ class ConcatenateTool(Tool):
                             help='Skip videos with warnings and continue with valid groups.')
 
     @override
-    def analyze(self, args, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
-        concatenator = Concatenate(logger, working_dir=working_dir)
+    def analyze(self, args, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
+        concatenator = Concatenate(logger, workspace=workspace)
         analysis = concatenator.analyze(args.videos_path[0], ignore_warnings=args.ignore_warnings)
         if analysis is None:
             return EmptyPlan()
         return ConcatenatePlan(items=analysis)
 
     @override
-    def perform(self, args, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
+    def perform(self, args, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
         if not isinstance(plan, ConcatenatePlan):
             raise TypeError(f"Expected ConcatenatePlan, got {type(plan).__name__}")
 
-        concatenator = Concatenate(logger, working_dir)
+        concatenator = Concatenate(logger, workspace)
         concatenator.perform(plan.items)
 
 

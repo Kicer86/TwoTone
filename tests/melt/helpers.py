@@ -44,7 +44,7 @@ def all_key_orders(d: dict) -> Iterator[dict]:
 def analyze_duplicates_helper(
     logger: logging.Logger,
     duplicates_source: StaticSource,
-    working_dir: str,
+    workspace: Workspace,
     allow_length_mismatch: bool = False,
     tolerance_ms: int = DEFAULT_TOLERANCE_MS,
 ):
@@ -53,7 +53,7 @@ def analyze_duplicates_helper(
     analyzer = MeltAnalyzer(
         logger,
         duplicates_source,
-        Workspace(working_dir),
+        workspace,
         allow_length_mismatch,
         tolerance_ms,
     )
@@ -63,7 +63,7 @@ def analyze_duplicates_helper(
 def process_duplicates_helper(
     logger: logging.Logger,
     interruption: generic_utils.InterruptibleProcess,
-    working_dir: str,
+    workspace: Workspace,
     output_dir: str,
     plan,
     tolerance_ms: int = DEFAULT_TOLERANCE_MS,
@@ -71,7 +71,7 @@ def process_duplicates_helper(
     performer = MeltPerformer(
         logger,
         interruption,
-        Workspace(working_dir),
+        workspace,
         output_dir,
         tolerance_ms,
     )
@@ -93,6 +93,7 @@ class MeltTestBase(TwoToneTestCase):
 
     def setUp(self):
         super().setUp()
+        self.workspace = Workspace(self.wd.path)
 
         def gen_sample(out_path: Path):
             videos = ["Atoms - 8579.mp4",

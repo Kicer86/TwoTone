@@ -13,7 +13,7 @@ class ConcatenateAnalyzeUnitTest(unittest.TestCase):
     def setUp(self):
         self.logger = logging.getLogger("test")
         self.logger.setLevel(logging.CRITICAL)
-        self.concatenator = Concatenate(self.logger, working_dir=files_utils.Workspace(tempfile.mkdtemp()))
+        self.concatenator = Concatenate(self.logger, workspace=files_utils.Workspace(tempfile.mkdtemp()))
 
     def _analyze(self, file_paths, **kwargs):
         with patch("twotone.tools.concatenate.video_utils.collect_video_files", return_value=file_paths):

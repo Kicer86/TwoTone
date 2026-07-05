@@ -15,10 +15,10 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, subti
 
 
 class Fixer(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, working_dir: files_utils.Workspace) -> None:
+    def __init__(self, logger: logging.Logger, workspace: files_utils.Workspace) -> None:
         super().__init__(logger)
         self.logger = logger
-        self.workspace = working_dir
+        self.workspace = workspace
 
     def _print_broken_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
         self.logger.info(f"Found {len(broken_videos_info)} broken videos:")
@@ -252,18 +252,18 @@ class FixerTool(Tool):
                             help='Path with videos to analyze.')
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
         logger.info("Searching for broken files")
 
-        fixer = Fixer(logger, working_dir=working_dir)
+        fixer = Fixer(logger, workspace=workspace)
         broken_videos = fixer.scan_directory(args.videos_path[0])
         return SubtitlesFixPlan(items=broken_videos)
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
         if not isinstance(plan, SubtitlesFixPlan):
             raise TypeError(f"Expected SubtitlesFixPlan, got {type(plan).__name__}")
 
-        fixer = Fixer(logger, working_dir)
+        fixer = Fixer(logger, workspace)
         fixer.repair_videos(plan.items, drop_broken = args.drop_unfixable)
         logger.info("Done")

@@ -14,12 +14,12 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, video
 
 
 class Transcoder(generic_utils.InterruptibleProcess):
-    def __init__(self, working_dir: files_utils.Workspace, logger: logging.Logger, target_ssim: float = 0.98, codec: str = "libx265") -> None:
+    def __init__(self, workspace: files_utils.Workspace, logger: logging.Logger, target_ssim: float = 0.98, codec: str = "libx265") -> None:
         super().__init__(logger)
         self.logger = logger
         self.target_ssim = target_ssim
         self.codec = codec
-        self.workspace = working_dir
+        self.workspace = workspace
 
 
     def _find_video_files(self, directory: str) -> list[str]:
@@ -434,16 +434,16 @@ class TranscodeTool(Tool):
 
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
-        transcoder = Transcoder(working_dir = working_dir, logger = logger, target_ssim = args.ssim)
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
+        transcoder = Transcoder(workspace, logger = logger, target_ssim = args.ssim)
         analysis = transcoder.analyze_directory(args.videos_path[0])
         return TranscodePlan(items=analysis, target_ssim=args.ssim)
 
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
         if not isinstance(plan, TranscodePlan):
             raise TypeError(f"Expected TranscodePlan, got {type(plan).__name__}")
 
-        transcoder = Transcoder(working_dir = working_dir, logger = logger, target_ssim = plan.target_ssim)
+        transcoder = Transcoder(workspace, logger = logger, target_ssim = plan.target_ssim)
         transcoder.perform_transcodes(plan.items)

@@ -138,7 +138,7 @@ class MeltTool(Tool):
                                  'Cache is invalidated automatically when the input file changes.')
 
     @override
-    def analyze(self, args, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
+    def analyze(self, args, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
         interruption = generic_utils.InterruptibleProcess(logger)
         data_source: DuplicatesSource | None = None
         parser = self.parser
@@ -196,7 +196,7 @@ class MeltTool(Tool):
         analyzer = MeltAnalyzer(
             logger,
             data_source,
-            working_dir,
+            workspace,
             args.allow_length_mismatch,
             args.tolerance,
         )
@@ -215,7 +215,7 @@ class MeltTool(Tool):
         )
 
     @override
-    def perform(self, args, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
+    def perform(self, args, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
         if not isinstance(plan, MeltPlan):
             raise TypeError(f"Expected MeltPlan, got {type(plan).__name__}")
 
@@ -224,7 +224,7 @@ class MeltTool(Tool):
         performer = MeltPerformer(
             logger,
             interruption,
-            working_dir,
+            workspace,
             plan.output_dir,
             args.tolerance,
             cache=cache,

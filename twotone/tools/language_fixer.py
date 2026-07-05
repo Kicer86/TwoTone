@@ -152,10 +152,10 @@ class LanguageFixerTool(Tool):
         )
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
         self._include_audio = args.audio
         self._base_path = os.path.abspath(args.videos_path[0])
-        self._set_context(logger, working_dir)
+        self._set_context(logger, workspace)
         tools = ["mkvmerge", "mkvextract", "ffprobe"]
         if args.audio:
             tools.append("ffmpeg")
@@ -230,8 +230,8 @@ class LanguageFixerTool(Tool):
         return LanguageFixPlan(items=plan_items, include_audio=self._include_audio, base_path=self._base_path)
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
-        self._set_context(logger, working_dir)
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
+        self._set_context(logger, workspace)
 
         if not isinstance(plan, LanguageFixPlan):
             raise TypeError(f"Expected LanguageFixPlan, got {type(plan).__name__}")
@@ -323,9 +323,9 @@ class LanguageFixerTool(Tool):
 
         return results
 
-    def _set_context(self, logger: logging.Logger, working_dir: files_utils.Workspace) -> None:
+    def _set_context(self, logger: logging.Logger, workspace: files_utils.Workspace) -> None:
         self.logger = logger
-        self.workspace = working_dir
+        self.workspace = workspace
         self._interruption = generic_utils.InterruptibleProcess(logger)
 
     def check_for_stop(self) -> None:
