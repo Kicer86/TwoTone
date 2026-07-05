@@ -79,15 +79,15 @@ class Workspace(os.PathLike):
             self._finalizer = weakref.finalize(self, shutil.rmtree, self.root, ignore_errors=True)
 
     @classmethod
-    def temporary(cls, *, keep: bool = False, prefix: str = "twotone-ws-") -> "Workspace":
-        """Create a Workspace under the system temp directory.
+    def temporary(cls, *, prefix: str = "twotone-ws-") -> "Workspace":
+        """Create a throwaway Workspace under the system temp directory.
 
         The root is removed on :meth:`close`, on context-manager exit, or -
         as a backstop - when the instance is garbage collected.  Use this
         wherever a throwaway working directory is needed without a
         surrounding :func:`open_workspace`.
         """
-        return cls(tempfile.mkdtemp(prefix=prefix), keep=keep)
+        return cls(tempfile.mkdtemp(prefix=prefix))
 
     def __enter__(self) -> "Workspace":
         return self

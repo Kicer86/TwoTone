@@ -136,15 +136,6 @@ class TemporaryWorkspaceTests(unittest.TestCase):
 
         self.assertFalse(os.path.exists(root))
 
-    def test_temporary_keep_mode_survives_close(self):
-        workspace = files_utils.Workspace.temporary(keep=True)
-        root = workspace.root
-        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
-
-        workspace.close()
-
-        self.assertTrue(os.path.isdir(root))
-
 
 class StagingTests(unittest.TestCase):
     def setUp(self):
