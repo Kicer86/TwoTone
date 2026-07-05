@@ -1,4 +1,5 @@
 
+import tempfile
 import unittest
 import os
 import re
@@ -6,6 +7,7 @@ import re
 from pathlib import Path
 
 from twotone.tools.utilities import extract_scenes
+from twotone.tools.utils import files_utils
 from common import TwoToneTestCase, WorkingDirectoryForTest, get_video, run_twotone
 
 
@@ -57,7 +59,7 @@ def pick_first_last_sorted(files: list[str]) -> list[str]:
 class UtilitiesScenesTests(TwoToneTestCase):
     def test_video_1_for_scenes_extraction(self):
         test_video = get_video("big_buck_bunny_720p_10mb.mp4")
-        extract_scenes(video_path = test_video, output_dir = self.wd.path, format = "png", scale = 10)
+        extract_scenes(video_path = test_video, output_dir = self.wd.path, format = "png", scale = 10, workspace = files_utils.Workspace(tempfile.mkdtemp()))
 
         files = pick_first_last_sorted(collect_files(self.wd.path))
         files = [Path(file).as_posix() for file in files]

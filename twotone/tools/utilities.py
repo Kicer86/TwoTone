@@ -15,7 +15,7 @@ from .utils import video_utils, process_utils, files_utils
 DEFAULT_LOGGER = logging.getLogger("TwoTone.utilities")
 
 
-def extract_scenes(video_path, output_dir, format: str, scale: float, logger: logging.Logger | None = None):
+def extract_scenes(video_path, output_dir, format: str, scale: float, workspace: files_utils.Workspace, logger: logging.Logger | None = None):
     logger = logger or DEFAULT_LOGGER
     """
     Extracts all video frames, names them based on their timestamp, and groups them into scene subdirectories.
@@ -30,66 +30,63 @@ def extract_scenes(video_path, output_dir, format: str, scale: float, logger: lo
     scene_changes = [float(sc) for sc in video_utils.detect_scene_changes(video_path, logger=logger)]
     scene_changes.append(math.inf)
 
-    # Extract all frames while capturing PTS times
-    temp_folder = os.path.join(output_dir, "temp_frames")
-    os.makedirs(temp_folder, exist_ok=True)
+    # Extract all frames while capturing PTS times; the scratch folder
+    # shares a filesystem with output_dir so frames can be renamed out
+    with workspace.staging_dir_for(output_dir) as temp_folder:
+        ascale = 100/scale
+        output_pattern = os.path.join(temp_folder, f"frame_%06d.{format}")
+        args = [
+            "-i", video_path,
+            "-frame_pts", "true",
+            "-vsync", "0",
+            "-q:v", "2",
+            "-vf", f"showinfo,scale=iw/{ascale}:ih/{ascale}",
+            output_pattern
+        ]
 
-    ascale = 100/scale
-    output_pattern = os.path.join(temp_folder, f"frame_%06d.{format}")
-    args = [
-        "-i", video_path,
-        "-frame_pts", "true",
-        "-vsync", "0",
-        "-q:v", "2",
-        "-vf", f"showinfo,scale=iw/{ascale}:ih/{ascale}",
-        output_pattern
-    ]
+        result = process_utils.start_process("ffmpeg", args = args, logger=logger)
 
-    result = process_utils.start_process("ffmpeg", args = args, logger=logger)
+        # Parse PTS times from stderr
+        frame_pts_map = {}  # Maps sequential frame numbers to PTS timestamps
+        frame_pattern = re.compile(r"n: *(\d+).*pts_time:([\d.]+)")
 
-    # Parse PTS times from stderr
-    frame_pts_map = {}  # Maps sequential frame numbers to PTS timestamps
-    frame_pattern = re.compile(r"n: *(\d+).*pts_time:([\d.]+)")
+        for line in result.stderr.splitlines():
+            match = frame_pattern.search(line)
+            if match:
+                frame_number = int(match.group(1))
+                pts_time = float(match.group(2))
+                frame_pts_map[frame_number] = pts_time
 
-    for line in result.stderr.splitlines():
-        match = frame_pattern.search(line)
-        if match:
-            frame_number = int(match.group(1))
-            pts_time = float(match.group(2))
-            frame_pts_map[frame_number] = pts_time
+        scene_index = 0
+        created_scenes = set()
 
-    scene_index = 0
-    created_scenes = set()
+        # Process frames: rename and move in the same loop
+        frame_files = sorted(os.listdir(temp_folder))
+        for frame_number, frame_file in enumerate(frame_files):
+            if frame_number in frame_pts_map:
+                timestamp = frame_pts_map[frame_number]
 
-    # Process frames: rename and move in the same loop
-    frame_files = sorted(os.listdir(temp_folder))
-    for frame_number, frame_file in enumerate(frame_files):
-        if frame_number in frame_pts_map:
-            timestamp = frame_pts_map[frame_number]
+                if round(timestamp * 1000) >= scene_changes[scene_index]:
+                    scene_index += 1
 
-            if round(timestamp * 1000) >= scene_changes[scene_index]:
-                scene_index += 1
+                scene_dir = os.path.join(output_dir, f"scene_{scene_index}")
 
-            scene_dir = os.path.join(output_dir, f"scene_{scene_index}")
+                if scene_index not in created_scenes:
+                    os.makedirs(scene_dir, exist_ok = False)
+                    created_scenes.add(scene_index)
 
-            if scene_index not in created_scenes:
-                os.makedirs(scene_dir, exist_ok = False)
-                created_scenes.add(scene_index)
+                _, _, ext = files_utils.split_path(frame_file)
 
-            _, _, ext = files_utils.split_path(frame_file)
+                new_name = f"frame_{timestamp:.3f}.{ext}"
 
-            new_name = f"frame_{timestamp:.3f}.{ext}"
+                old_path = os.path.join(temp_folder, frame_file)
+                new_path = os.path.join(scene_dir, new_name)
 
-            old_path = os.path.join(temp_folder, frame_file)
-            new_path = os.path.join(scene_dir, new_name)
+                # Rename and move the file in one step
+                os.rename(old_path, new_path)
+            else:
+                logger.warning(f"Frame {frame_number} ({frame_file}) not found in PTS map, skipping")
 
-            # Rename and move the file in one step
-            os.rename(old_path, new_path)
-        else:
-            logger.warning(f"Frame {frame_number} ({frame_file}) not found in PTS map, skipping")
-
-    # Cleanup temp folder
-    os.rmdir(temp_folder)
 
 
 @dataclass
@@ -163,5 +160,6 @@ class UtilitiesTool(Tool):
             output_dir=plan.output,
             format=plan.format,
             scale=float(plan.scale),
+            workspace=working_dir,
             logger=logger.getChild("extract_scenes"),
         )

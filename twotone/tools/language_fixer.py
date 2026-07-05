@@ -3,7 +3,6 @@ import logging
 import os
 import re
 import time
-import uuid
 
 from dataclasses import dataclass
 
@@ -134,7 +133,7 @@ class LanguageFixerTool(Tool):
     def __init__(self) -> None:
         super().__init__()
         self.logger = logging.getLogger("TwoTone.language_fix")
-        self.working_dir = ""
+        self.workspace: files_utils.Workspace | None = None
         self._include_audio = False
         self._base_path: str | None = None
         self._interruption: generic_utils.InterruptibleProcess | None = None
@@ -156,7 +155,7 @@ class LanguageFixerTool(Tool):
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
         self._include_audio = args.audio
         self._base_path = os.path.abspath(args.videos_path[0])
-        self._set_context(logger, str(working_dir))
+        self._set_context(logger, working_dir)
         tools = ["mkvmerge", "mkvextract", "ffprobe"]
         if args.audio:
             tools.append("ffmpeg")
@@ -232,7 +231,7 @@ class LanguageFixerTool(Tool):
 
     @override
     def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace, plan: Plan) -> None:
-        self._set_context(logger, str(working_dir))
+        self._set_context(logger, working_dir)
 
         if not isinstance(plan, LanguageFixPlan):
             raise TypeError(f"Expected LanguageFixPlan, got {type(plan).__name__}")
@@ -324,9 +323,9 @@ class LanguageFixerTool(Tool):
 
         return results
 
-    def _set_context(self, logger: logging.Logger, working_dir: str) -> None:
+    def _set_context(self, logger: logging.Logger, working_dir: files_utils.Workspace) -> None:
         self.logger = logger
-        self.working_dir = working_dir
+        self.workspace = working_dir
         self._interruption = generic_utils.InterruptibleProcess(logger)
 
     def check_for_stop(self) -> None:
@@ -565,7 +564,8 @@ class LanguageFixerTool(Tool):
             return {}
 
         extract_start = time.perf_counter()
-        base_tmp = os.path.join(self.working_dir, f"subtitle_{uuid.uuid4().hex}")
+        assert self.workspace is not None
+        base_tmp = self.workspace.unique_file("subtitle")
         tid_to_path = video_utils.extract_subtitle_to_temp(video_path, missing_subtitles, base_tmp, logger=self.logger)
         self._log_if_slow("extract_subtitles", video_path, extract_start)
 
@@ -653,40 +653,36 @@ class LanguageFixerTool(Tool):
 
         is_mkv = self._is_mkv(video_path)
         base, _ = os.path.splitext(video_path)
-        output_path = f"{video_path}.langfix.mkv"
         final_path = f"{base}.mkv" if not is_mkv else video_path
 
-        if os.path.exists(output_path):
-            os.remove(output_path)
+        assert self.workspace is not None
+        with self.workspace.staging_for(final_path) as staging:
+            args = ["-o", staging.path]
+            for tid, lang in sorted(updates.items()):
+                args.extend(["--language", f"{tid}:{lang}"])
+            args.append(video_path)
 
-        args = ["-o", output_path]
-        for tid, lang in sorted(updates.items()):
-            args.extend(["--language", f"{tid}:{lang}"])
-        args.append(video_path)
+            status = process_utils.start_process("mkvmerge", args, logger=self.logger)
+            if status.returncode not in (0, 1):
+                output = (status.stdout or "") + (status.stderr or "")
+                self.logger.error(
+                    "mkvmerge failed (exit %d) for %s: %s",
+                    status.returncode,
+                    files_utils.format_path(video_path, self._base_path),
+                    output.strip() or "(no output)",
+                )
+                return False
 
-        status = process_utils.start_process("mkvmerge", args, logger=self.logger)
-        if status.returncode not in (0, 1):
-            output = (status.stdout or "") + (status.stderr or "")
-            self.logger.error(
-                "mkvmerge failed (exit %d) for %s: %s",
-                status.returncode,
-                files_utils.format_path(video_path, self._base_path),
-                output.strip() or "(no output)",
-            )
-            if os.path.exists(output_path):
-                os.remove(output_path)
-            return False
+            if not os.path.exists(staging.path):
+                self.logger.error(f"mkvmerge did not create output file for {files_utils.format_path(video_path, self._base_path)}")
+                return False
 
-        if not os.path.exists(output_path):
-            self.logger.error(f"mkvmerge did not create output file for {files_utils.format_path(video_path, self._base_path)}")
-            return False
-
-        if not is_mkv:
-            os.remove(video_path)
-            os.rename(output_path, final_path)
-            self.logger.info(f"Converted to MKV: {files_utils.format_path(final_path, self._base_path)}")
-        else:
-            os.replace(output_path, video_path)
+            if not is_mkv:
+                os.remove(video_path)
+                staging.commit()
+                self.logger.info(f"Converted to MKV: {files_utils.format_path(final_path, self._base_path)}")
+            else:
+                staging.commit()
 
         return True
 
