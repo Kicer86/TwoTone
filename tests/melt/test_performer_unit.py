@@ -19,11 +19,13 @@ class MeltPerformerUnitTest(unittest.TestCase):
     """Unit tests for MeltPerformer internal methods."""
 
     def _make_performer(self) -> MeltPerformer:
+        output = files_utils.Workspace.temporary()
+        self.addCleanup(output.close)
         return MeltPerformer(
             logger=logging.getLogger("test.MeltPerformer"),
             interruption=generic_utils.InterruptibleProcess(),
-            workspace=files_utils.Workspace(tempfile.mkdtemp()),
-            output_dir=tempfile.mkdtemp(),
+            workspace=files_utils.Workspace.temporary(),
+            output_dir=output.root,
             tolerance_ms=DEFAULT_TOLERANCE_MS,
         )
 

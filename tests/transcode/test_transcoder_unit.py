@@ -13,7 +13,7 @@ class BisectionSearchTest(unittest.TestCase):
     """Unit tests for Transcoder._bisection_search — pure logic, no ffmpeg."""
 
     def setUp(self):
-        self.transcoder = Transcoder(files_utils.Workspace(tempfile.mkdtemp()), logging.getLogger("test"), target_ssim=0.98)
+        self.transcoder = Transcoder(files_utils.Workspace.temporary(), logging.getLogger("test"), target_ssim=0.98)
 
     def test_finds_highest_value_meeting_condition(self):
         """Bisection returns the highest CRF where SSIM >= target."""
@@ -74,7 +74,7 @@ class SelectSegmentsTest(unittest.TestCase):
     """Unit tests for Transcoder._select_segments — mocks get_video_duration."""
 
     def setUp(self):
-        self.transcoder = Transcoder(files_utils.Workspace(tempfile.mkdtemp()), logging.getLogger("test"))
+        self.transcoder = Transcoder(files_utils.Workspace.temporary(), logging.getLogger("test"))
 
     def _select(self, duration_ms, segment_duration=5):
         with patch.object(video_utils, 'get_video_duration', return_value=duration_ms):
@@ -123,7 +123,7 @@ class SelectScenesParsingTest(unittest.TestCase):
     """Unit tests for Transcoder._select_scenes — mocks ffmpeg output parsing."""
 
     def setUp(self):
-        self.transcoder = Transcoder(files_utils.Workspace(tempfile.mkdtemp()), logging.getLogger("test"))
+        self.transcoder = Transcoder(files_utils.Workspace.temporary(), logging.getLogger("test"))
 
     def test_parses_scene_timestamps_and_merges_overlaps(self):
         """Scene timestamps are parsed from ffmpeg stderr and nearby ones merged."""

@@ -1,6 +1,5 @@
 import logging
 import os
-import tempfile
 import unittest
 
 from twotone.tools.merge import Merge
@@ -15,7 +14,7 @@ class SortSubtitlesUnitTest(unittest.TestCase):
     def _merger(self, lang_priority=""):
         logger = logging.getLogger("test")
         logger.setLevel(logging.CRITICAL)
-        return Merge(logger, language="und", lang_priority=lang_priority, workspace=files_utils.Workspace(tempfile.mkdtemp()))
+        return Merge(logger, language="und", lang_priority=lang_priority, workspace=files_utils.Workspace.temporary())
 
     def _sub(self, lang):
         return SubtitleFile(path="/fake.srt", language=lang)
