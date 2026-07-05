@@ -2,7 +2,7 @@ import re
 
 from typing import Any, Literal, TypedDict
 
-from ..utils import files_utils, generic_utils
+from ..utils import generic_utils
 
 
 class FrameInfo(TypedDict):
@@ -78,10 +78,6 @@ def _split_path_fix(value: str) -> list[str]:
 
     matches = re.findall(pattern, value)
     return [match.replace(r'\"', '"') for match in matches]
-
-
-def _ensure_working_dir(working_dir: str) -> str:
-    return files_utils.ensure_dir(working_dir)
 
 
 def _is_length_mismatch(base_ms: int | None, other_ms: int | None, tolerance_ms: int) -> bool:

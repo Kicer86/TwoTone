@@ -11,7 +11,7 @@ from pathlib import Path
 
 from twotone.tools.utils import generic_utils, video_utils
 from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, StaticSource
-from twotone.tools.utils.files_utils import ScopedDirectory, Workspace
+from twotone.tools.utils.files_utils import Workspace
 from common import (
     TwoToneTestCase,
     FileCache,
@@ -108,9 +108,7 @@ class MeltTestBase(TwoToneTestCase):
                       "806912__kevp888__250510_122217_fr_large_crowd_in_palais_garnier.wav"]
 
             #unify fps and add audio path
-            output_dir = os.path.join(self.wd.path, "gen_sample")
-
-            with ScopedDirectory(output_dir) as sd:
+            with tempfile.TemporaryDirectory(dir=self.wd.path) as output_dir:
                 output_files = []
                 for video, audio in zip(videos, audios):
                     video_input_path = get_video(video)
