@@ -353,11 +353,13 @@ def open_workspace(
       ``default_base`` is created and removed at exit; other, abandoned
       instance directories are collected at startup.
     * external (``requested_dir`` given): the directory is used exactly as
-      provided - no per-instance subdirectory, no scanning, no collection.
-      Only entries created by this run are removed at exit, and a second
-      instance pointed at the same directory is rejected.
+      provided - no per-instance subdirectory, no scanning, no collection -
+      and removed whole at exit.  Because the whole directory is deleted,
+      an existing non-empty directory is rejected at startup so that a run
+      never wipes pre-existing data.
 
-    With ``keep`` nothing is ever deleted from the working directory.
+    With ``keep`` nothing is ever deleted from the working directory, and
+    the non-empty rejection is lifted (nothing will be wiped).
     """
     if requested_dir is None:
         # Never adopt an existing directory: the PID may have been recycled
@@ -382,22 +384,25 @@ def open_workspace(
             lock.release()
             workspace.close()
     else:
-        workspace = Workspace(os.fspath(requested_dir), keep=keep)
+        root = os.fspath(requested_dir)
+        # The whole directory is removed on exit, so refuse to adopt one that
+        # already holds data (--keep-wd deletes nothing and lifts this).
+        if not keep and os.path.isdir(root) and os.listdir(root):
+            raise RuntimeError(
+                f"Working directory {root} already exists and is not empty. "
+                f"twotone removes its working directory on exit and will not "
+                f"delete pre-existing data. Point --working-dir at a new or "
+                f"empty directory, or pass --keep-wd to keep it."
+            )
+        workspace = Workspace(root, keep=keep, _owns_root=True)
         lock = DirectoryLock(workspace.root)
         if not lock.try_acquire():
             raise RuntimeError(f"Working directory {workspace.root} is already used by another twotone instance")
         try:
             yield workspace
         finally:
-            try:
-                workspace.close()
-            finally:
-                lock.release()
-                if not keep:
-                    try:
-                        os.remove(lock.path)
-                    except OSError:
-                        pass
+            lock.release()
+            workspace.close()
 
 
 def format_path(path: str, base_path: str | None) -> str:

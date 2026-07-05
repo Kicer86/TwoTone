@@ -318,27 +318,48 @@ class OpenWorkspaceTests(unittest.TestCase):
         with files_utils.open_workspace(external, "unused-default", logger=self.logger) as workspace:
             self.assertEqual(workspace.root, external)
 
-    def test_external_mode_removes_only_own_entries(self):
+    def test_external_mode_removes_the_whole_directory(self):
+        external = os.path.join(self.base, "external")
+
+        with files_utils.open_workspace(external, "unused-default", logger=self.logger) as workspace:
+            workspace.unique_dir("frames")
+            self.assertTrue(os.path.isdir(external))
+
+        self.assertFalse(os.path.exists(external))
+
+    def test_external_mode_accepts_an_existing_empty_directory(self):
+        external = os.path.join(self.base, "external")
+        os.makedirs(external)
+
+        with files_utils.open_workspace(external, "unused-default", logger=self.logger) as workspace:
+            self.assertEqual(workspace.root, external)
+
+        self.assertFalse(os.path.exists(external))
+
+    def test_external_mode_rejects_a_nonempty_directory(self):
         external = os.path.join(self.base, "external")
         os.makedirs(external)
         foreign = os.path.join(external, "leftover")
         os.makedirs(foreign)
 
-        with files_utils.open_workspace(external, "unused-default", logger=self.logger) as workspace:
-            own = workspace.unique_dir("frames")
+        with self.assertRaises(RuntimeError):
+            with files_utils.open_workspace(external, "unused-default", logger=self.logger):
+                pass
 
-        self.assertTrue(os.path.isdir(external))
+        # The pre-existing data must be untouched by the refusal.
         self.assertTrue(os.path.isdir(foreign))
-        self.assertFalse(os.path.exists(own))
-        self.assertFalse(os.path.exists(os.path.join(external, files_utils.LOCK_FILE_NAME)))
 
-    def test_external_mode_keep_leaves_everything(self):
+    def test_external_mode_keep_allows_nonempty_and_leaves_everything(self):
         external = os.path.join(self.base, "external")
+        os.makedirs(external)
+        foreign = os.path.join(external, "leftover")
+        os.makedirs(foreign)
 
         with files_utils.open_workspace(external, "unused-default", keep=True, logger=self.logger) as workspace:
             own = workspace.unique_dir("frames")
 
         self.assertTrue(os.path.isdir(own))
+        self.assertTrue(os.path.isdir(foreign))
 
     def test_external_mode_rejects_second_instance(self):
         external = os.path.join(self.base, "external")
