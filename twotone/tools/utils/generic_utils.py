@@ -89,6 +89,8 @@ class InterruptibleProcess:
     def __init__(self, logger: logging.Logger | None = None):
         self.logger = logger or DEFAULT_LOGGER
         self._work = True
+        self._exit_warned = False
+        self._exit_warned_lock = threading.Lock()
         signal.signal(signal.SIGINT, self.exit_gracefully)
         signal.signal(signal.SIGTERM, self.exit_gracefully)
 
@@ -98,7 +100,10 @@ class InterruptibleProcess:
 
     def check_for_stop(self):
         if not self._work:
-            self.logger.warning("Exiting now due to received signal.")
+            with self._exit_warned_lock:
+                if not self._exit_warned:
+                    self._exit_warned = True
+                    self.logger.warning("Exiting now due to received signal.")
             sys.exit(1)
 
 
