@@ -1,4 +1,5 @@
 
+import gc
 import logging
 import os
 import shutil
@@ -122,6 +123,52 @@ class WorkspaceTests(unittest.TestCase):
         workspace.remove_created()
 
         self.assertTrue(os.path.isdir(own_dir))
+
+    def test_borrowed_root_survives_close(self):
+        workspace = files_utils.Workspace(self.root)
+        own_dir = workspace.unique_dir("frames")
+
+        workspace.close()
+
+        self.assertFalse(os.path.exists(own_dir))
+        self.assertTrue(os.path.isdir(self.root))
+
+
+class TemporaryWorkspaceTests(unittest.TestCase):
+    def test_temporary_root_is_created_and_removed_on_close(self):
+        workspace = files_utils.Workspace.temporary()
+        root = workspace.root
+        self.assertTrue(os.path.isdir(root))
+
+        workspace.close()
+
+        self.assertFalse(os.path.exists(root))
+
+    def test_temporary_root_is_removed_on_context_exit(self):
+        with files_utils.Workspace.temporary() as workspace:
+            root = workspace.root
+            self.assertTrue(os.path.isdir(root))
+
+        self.assertFalse(os.path.exists(root))
+
+    def test_temporary_root_is_removed_when_reference_is_dropped(self):
+        workspace = files_utils.Workspace.temporary()
+        root = workspace.root
+        self.assertTrue(os.path.isdir(root))
+
+        del workspace
+        gc.collect()
+
+        self.assertFalse(os.path.exists(root))
+
+    def test_temporary_keep_mode_survives_close(self):
+        workspace = files_utils.Workspace.temporary(keep=True)
+        root = workspace.root
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+
+        workspace.close()
+
+        self.assertTrue(os.path.isdir(root))
 
 
 class StagingTests(unittest.TestCase):

@@ -10,7 +10,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import IO
 import os
+import tempfile
 import uuid
+import weakref
 
 if sys.platform == "win32":
     import msvcrt
@@ -68,13 +70,66 @@ class Workspace(os.PathLike):
     The root directory is created on construction when missing.  The
     instance is path-like, so it can be passed wherever a directory path
     is expected.
+
+    Root ownership: a Workspace built around a directory it was handed does
+    not delete that directory - only the entries it creates inside.  A
+    Workspace that owns its root (see :meth:`temporary`) removes the whole
+    root on :meth:`close`, and, as a backstop, when the object is garbage
+    collected - mirroring :class:`tempfile.TemporaryDirectory` so a dropped
+    reference never leaks.
     """
 
-    def __init__(self, root: str, *, keep: bool = False, _state: _WorkspaceState | None = None) -> None:
+    def __init__(
+        self,
+        root: str,
+        *,
+        keep: bool = False,
+        _owns_root: bool = False,
+        _state: _WorkspaceState | None = None,
+    ) -> None:
         self.root = os.fspath(root)
         self.keep = keep
+        self._owns_root = _owns_root
         self._state = _state if _state is not None else _WorkspaceState()
         os.makedirs(self.root, exist_ok=True)
+        self._finalizer: weakref.finalize | None = None
+        if _owns_root and not keep:
+            self._finalizer = weakref.finalize(self, shutil.rmtree, self.root, ignore_errors=True)
+
+    @classmethod
+    def temporary(cls, *, keep: bool = False, prefix: str = "twotone-ws-") -> "Workspace":
+        """Create a self-owned Workspace under the system temp directory.
+
+        The root is removed on :meth:`close`, on context-manager exit, or -
+        as a backstop - when the instance is garbage collected.  Use this
+        wherever a throwaway working directory is needed without a
+        surrounding :func:`open_workspace`.
+        """
+        return cls(tempfile.mkdtemp(prefix=prefix), keep=keep, _owns_root=True)
+
+    def __enter__(self) -> "Workspace":
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Release the workspace.
+
+        Owned roots are removed whole; borrowed roots keep only what other
+        parties put there and drop this run's own entries.  No-op in keep
+        mode.
+        """
+        if self.keep:
+            return
+        if self._owns_root:
+            if self._finalizer is not None:
+                self._finalizer()
+                self._finalizer = None
+            else:
+                shutil.rmtree(self.root, ignore_errors=True)
+        else:
+            self.remove_created()
 
     def __fspath__(self) -> str:
         return self.root
@@ -312,6 +367,7 @@ def open_workspace(
         while os.path.exists(instance_dir):
             instance_dir = os.path.join(default_base, f"{os.getpid()}-{next(suffixes)}")
         os.makedirs(instance_dir)
+        workspace = Workspace(instance_dir, keep=keep, _owns_root=True)
         lock = DirectoryLock(instance_dir)
         if not lock.try_acquire():
             raise RuntimeError(f"Cannot lock own working directory: {instance_dir}")
@@ -321,11 +377,10 @@ def open_workspace(
                     pass
             else:
                 _remove_stale_instance_dirs(default_base, instance_dir, logger)
-            yield Workspace(instance_dir, keep=keep)
+            yield workspace
         finally:
             lock.release()
-            if not keep:
-                shutil.rmtree(instance_dir, ignore_errors=True)
+            workspace.close()
     else:
         workspace = Workspace(os.fspath(requested_dir), keep=keep)
         lock = DirectoryLock(workspace.root)
@@ -335,7 +390,7 @@ def open_workspace(
             yield workspace
         finally:
             try:
-                workspace.remove_created()
+                workspace.close()
             finally:
                 lock.release()
                 if not keep:
