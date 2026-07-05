@@ -48,7 +48,6 @@ def analyze_duplicates_helper(
     allow_length_mismatch: bool = False,
     tolerance_ms: int = DEFAULT_TOLERANCE_MS,
 ):
-    os.makedirs(working_dir, exist_ok=True)
     duplicates_raw = duplicates_source.collect_duplicates()
     duplicates = {title: list(files) for title, files in duplicates_raw.items()}
     analyzer = MeltAnalyzer(
@@ -69,7 +68,6 @@ def process_duplicates_helper(
     plan,
     tolerance_ms: int = DEFAULT_TOLERANCE_MS,
 ):
-    os.makedirs(working_dir, exist_ok=True)
     performer = MeltPerformer(
         logger,
         interruption,

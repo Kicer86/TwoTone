@@ -20,6 +20,14 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(os.fspath(workspace), self.root)
         self.assertEqual(os.path.join(workspace, "x"), os.path.join(self.root, "x"))
 
+    def test_missing_root_is_created_on_construction(self):
+        root = os.path.join(self.root, "nested", "workspace")
+
+        workspace = files_utils.Workspace(root)
+
+        self.assertTrue(os.path.isdir(root))
+        self.assertEqual(workspace.root, root)
+
     def test_unique_names_do_not_repeat_within_a_run(self):
         workspace = files_utils.Workspace(self.root)
 

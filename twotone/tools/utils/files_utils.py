@@ -65,14 +65,16 @@ class Workspace(os.PathLike):
     previous runs sharing the same directory) and honors the keep mode,
     in which nothing inside the working directory is ever deleted.
 
-    The instance is path-like, so it can be passed wherever a directory
-    path is expected.
+    The root directory is created on construction when missing.  The
+    instance is path-like, so it can be passed wherever a directory path
+    is expected.
     """
 
     def __init__(self, root: str, *, keep: bool = False, _state: _WorkspaceState | None = None) -> None:
         self.root = os.fspath(root)
         self.keep = keep
         self._state = _state if _state is not None else _WorkspaceState()
+        os.makedirs(self.root, exist_ok=True)
 
     def __fspath__(self) -> str:
         return self.root
@@ -87,7 +89,6 @@ class Workspace(os.PathLike):
         """Return a Workspace rooted at a fixed-name subdirectory, creating it if needed."""
         path = os.path.join(self.root, name)
         if not os.path.exists(path):
-            os.makedirs(path, exist_ok=True)
             self._state.created.append(path)
         return Workspace(path, keep=self.keep, _state=self._state)
 
@@ -326,12 +327,10 @@ def open_workspace(
             if not keep:
                 shutil.rmtree(instance_dir, ignore_errors=True)
     else:
-        root = os.fspath(requested_dir)
-        os.makedirs(root, exist_ok=True)
-        lock = DirectoryLock(root)
+        workspace = Workspace(os.fspath(requested_dir), keep=keep)
+        lock = DirectoryLock(workspace.root)
         if not lock.try_acquire():
-            raise RuntimeError(f"Working directory {root} is already used by another twotone instance")
-        workspace = Workspace(root, keep=keep)
+            raise RuntimeError(f"Working directory {workspace.root} is already used by another twotone instance")
         try:
             yield workspace
         finally:
