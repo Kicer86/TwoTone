@@ -1,8 +1,10 @@
 import logging
 import os
+import tempfile
 import unittest
 
 from twotone.tools.merge import Merge
+from twotone.tools.utils import files_utils
 from twotone.tools.utils.subtitles_utils import SubtitleFile
 from common import TwoToneTestCase, write_srt_subtitle
 
@@ -13,7 +15,7 @@ class SortSubtitlesUnitTest(unittest.TestCase):
     def _merger(self, lang_priority=""):
         logger = logging.getLogger("test")
         logger.setLevel(logging.CRITICAL)
-        return Merge(logger, language="und", lang_priority=lang_priority, working_dir="/tmp")
+        return Merge(logger, language="und", lang_priority=lang_priority, working_dir=files_utils.Workspace(tempfile.mkdtemp()))
 
     def _sub(self, lang):
         return SubtitleFile(path="/fake.srt", language=lang)
@@ -59,7 +61,7 @@ class DirectorySubtitleMatcherUnitTest(TwoToneTestCase):
     """Unit tests for Merge._directory_subtitle_matcher()."""
 
     def _merger(self):
-        return Merge(self.logger, language="und", lang_priority="", working_dir=self.wd.path)
+        return Merge(self.logger, language="und", lang_priority="", working_dir=files_utils.Workspace(self.wd.path))
 
     def test_simple_match(self):
         # Create video stub (extension makes it a "video")

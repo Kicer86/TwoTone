@@ -2,7 +2,6 @@
 import argparse
 import logging
 import os
-import shutil
 from dataclasses import dataclass
 from collections import defaultdict
 from overrides import override
@@ -15,12 +14,12 @@ from twotone.tools.utils import files_utils, generic_utils, subtitles_utils, vid
 
 class Merge(generic_utils.InterruptibleProcess):
 
-    def __init__(self, logger: logging.Logger, language: str, lang_priority: str, working_dir: str) -> None:
+    def __init__(self, logger: logging.Logger, language: str, lang_priority: str, working_dir: files_utils.Workspace) -> None:
         super().__init__(logger)
         self.logger = logger
         self.language = language
         self.lang_priority = lang_priority.split(",") if lang_priority else []
-        self.working_dir = working_dir
+        self.workspace = working_dir
         self.base_path: str | None = None
 
     def _build_subtitle_from_path(self, path: str) -> subtitles_utils.SubtitleFile:
@@ -132,7 +131,7 @@ class Merge(generic_utils.InterruptibleProcess):
 
         return subtitles_sorted
 
-    def _convert_subtitle(self, video_fps: str, subtitle: subtitles_utils.SubtitleFile, temporary_dir: str) -> subtitles_utils.SubtitleFile:
+    def _convert_subtitle(self, video_fps: str, subtitle: subtitles_utils.SubtitleFile) -> subtitles_utils.SubtitleFile:
         input_file = subtitle.path
         assert input_file
 
@@ -163,7 +162,7 @@ class Merge(generic_utils.InterruptibleProcess):
         if subs is None:
             raise RuntimeError(f"Failed to open subtitle: {input_file}")
 
-        output_file = files_utils.get_unique_file_name(temporary_dir, target_format)
+        output_file = self.workspace.unique_file("subtitle", target_format)
         subs.save(output_file, format_=target_format, encoding="utf-8")
 
         converted_subtitle = subtitles_utils.SubtitleFile(
@@ -179,7 +178,6 @@ class Merge(generic_utils.InterruptibleProcess):
 
         video_dir, video_name, _ = files_utils.split_path(input_video)
         output_video = video_dir + "/" + video_name + "." + "mkv"
-        temporary_output_video = video_dir + "/_tt_merge_" + video_name + "." + "mkv"
 
         # collect details about input file
         input_file_details = video_utils.get_video_data(input_video, logger=self.logger)
@@ -206,7 +204,6 @@ class Merge(generic_utils.InterruptibleProcess):
                     if not subtitle_name.lower().startswith(video_name.lower()):
                         s.name = subtitle_name
 
-        temporary_subtitles_dir = self.working_dir
         prepared_subtitles = []
         for subtitle in sorted_subtitles:
             assert subtitle.path
@@ -229,26 +226,28 @@ class Merge(generic_utils.InterruptibleProcess):
             # Convert formats not supported by mkvmerge to a rich text format (ASS).
             # Leave supported formats as-is to preserve styling/metadata.
             fps = input_file_details["video"][0]["fps"]
-            converted_subtitle = self._convert_subtitle(fps, subtitle, temporary_subtitles_dir)
+            converted_subtitle = self._convert_subtitle(fps, subtitle)
 
             prepared_subtitles.append(converted_subtitle)
 
         # perform
         self.logger.debug("\tMerge in progress...")
-        video_utils.generate_mkv(
-            input_video=input_video,
-            output_path=temporary_output_video,
-            subtitles=prepared_subtitles,
-            logger=self.logger,
-        )
+        with self.workspace.staging_for(output_video) as staging:
+            video_utils.generate_mkv(
+                input_video=input_video,
+                output_path=staging.path,
+                subtitles=prepared_subtitles,
+                logger=self.logger,
+            )
 
-        # Remove all inputs
-        for input in input_files:
-            if os.path.exists(input):
-                os.remove(input)
+            # Remove all inputs first: the input video may occupy the very
+            # path the output is about to take.
+            for input in input_files:
+                if os.path.exists(input):
+                    os.remove(input)
 
-        # rename final file to a proper one
-        shutil.move(temporary_output_video, output_video)
+            # rename final file to a proper one
+            staging.commit()
 
         self.logger.debug("\tDone")
 
@@ -390,7 +389,7 @@ class MergeTool(Tool):
         merger = Merge(logger,
                        language=args.language,
                        lang_priority=args.languages_priority,
-                       working_dir=str(working_dir))
+                       working_dir=working_dir)
         analysis = merger.analyze_directory(args.videos_path[0])
         return MergePlan(items=analysis, base_path=os.path.abspath(args.videos_path[0]))
 
@@ -402,6 +401,6 @@ class MergeTool(Tool):
         merger = Merge(logger,
                        language=args.language,
                        lang_priority=args.languages_priority,
-                       working_dir=str(working_dir))
+                       working_dir=working_dir)
         merger.base_path = plan.base_path or os.path.abspath(args.videos_path[0])
         merger.perform_merges(plan.items)

@@ -15,10 +15,10 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, subti
 
 
 class Fixer(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, working_dir: str) -> None:
+    def __init__(self, logger: logging.Logger, working_dir: files_utils.Workspace) -> None:
         super().__init__(logger)
         self.logger = logger
-        self.working_dir = working_dir
+        self.workspace = working_dir
 
     def _print_broken_videos(self, broken_videos_info: list[tuple[dict, list[int]]]) -> None:
         self.logger.info(f"Found {len(broken_videos_info)} broken videos:")
@@ -120,7 +120,7 @@ class Fixer(generic_utils.InterruptibleProcess):
             video_info = broken_video[0]
             broken_subtitiles = broken_video[1]
 
-            wd_dir = self.working_dir
+            wd_dir = self.workspace.unique_dir("subtitles")
             video_file = video_info["path"]
             self.logger.info(f"Fixing subtitles in file {video_file}")
             self.logger.debug("Extracting subtitles from file")
@@ -148,27 +148,25 @@ class Fixer(generic_utils.InterruptibleProcess):
                 self.logger.debug("Skipping video due to errors")
                 return
 
-            # remove all subtitles from video
-            self.logger.debug("Removing existing subtitles from file")
-            video_without_subtitles = video_file + ".nosubtitles.mkv"
-            process_utils.start_process("mkvmerge", ["-o", video_without_subtitles, "-S", video_file], logger=self.logger)
+            # Both intermediates live next to the video, visibly named;
+            # they are removed when the block exits, committed or not.
+            with self.workspace.staging_for(video_file) as no_subtitles, \
+                 self.workspace.staging_for(video_file) as fixed:
+                # remove all subtitles from video
+                self.logger.debug("Removing existing subtitles from file")
+                process_utils.start_process("mkvmerge", ["-o", no_subtitles.path, "-S", video_file], logger=self.logger)
 
-            # add fixed subtitles to video
-            self.logger.debug("Adding fixed subtitles to file")
-            temporaryVideoPath = video_file + ".fixed.mkv"
+                # add fixed subtitles to video
+                self.logger.debug("Adding fixed subtitles to file")
+                video_utils.generate_mkv(
+                    input_video=no_subtitles.path,
+                    output_path=fixed.path,
+                    subtitles=new_subtitles,
+                    logger=self.logger,
+                )
 
-            video_utils.generate_mkv(
-                input_video=video_without_subtitles,
-                output_path=temporaryVideoPath,
-                subtitles=new_subtitles,
-                logger=self.logger,
-            )
-
-            # overwrite broken video with fixed one
-            os.replace(temporaryVideoPath, video_file)
-
-            # remove temporary file
-            os.remove(video_without_subtitles)
+                # overwrite broken video with fixed one
+                fixed.commit()
 
 
     def _check_if_broken(self, video_file: str) -> tuple[dict, list[int]] | None:
@@ -257,7 +255,7 @@ class FixerTool(Tool):
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: files_utils.Workspace) -> Plan:
         logger.info("Searching for broken files")
 
-        fixer = Fixer(logger, working_dir=str(working_dir))
+        fixer = Fixer(logger, working_dir=working_dir)
         broken_videos = fixer.scan_directory(args.videos_path[0])
         return SubtitlesFixPlan(items=broken_videos)
 
@@ -266,6 +264,6 @@ class FixerTool(Tool):
         if not isinstance(plan, SubtitlesFixPlan):
             raise TypeError(f"Expected SubtitlesFixPlan, got {type(plan).__name__}")
 
-        fixer = Fixer(logger, str(working_dir))
+        fixer = Fixer(logger, working_dir)
         fixer.repair_videos(plan.items, drop_broken = args.drop_unfixable)
         logger.info("Done")
