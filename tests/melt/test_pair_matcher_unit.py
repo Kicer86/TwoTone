@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from twotone.tools.utils import files_utils, generic_utils, image_utils, video_utils
 from twotone.tools.melt.melt import MappingRelation, PairMatcher
-from twotone.tools.melt.pair_matcher import GlobalLinearFit
+from twotone.tools.melt.pair_matcher import GlobalLinearFit, _BoundaryVerifyContext, _VerifySide
 
 
 class PairMatcherUnitTest(unittest.TestCase):
@@ -644,10 +644,28 @@ class PairMatcherUnitTest(unittest.TestCase):
         return pm
 
     @staticmethod
-    def _patch_boundary_phash(values: dict):
-        """Patch the fresh phash computation used by _boundary_content_matches."""
-        return patch('twotone.tools.melt.pair_matcher.compute_phash',
-                     side_effect=lambda path, hash_size=16: values[path])
+    def _patch_verify_ctx():
+        """Patch the verify-context builder — the tests patch the consumer
+        (_boundary_content_matches), so the real builder's image work is
+        neither needed nor possible on the fake frame paths."""
+        return patch.object(PairMatcher, '_build_boundary_verify_context', return_value=None)
+
+    def _make_verify_ctx(self, phash_values: dict, cutoff: float,
+                         lhs_images: dict, rhs_images: dict) -> _BoundaryVerifyContext:
+        """Build a context with pre-seeded comparison images and a fake phash."""
+        class FakePhash:
+            def get(self, path):
+                return phash_values[path]
+
+        def side(images):
+            return _VerifySide(
+                video_path="/fake", raw_dir="/fake_raw", all_frames={}, normalized={},
+                crop_fn=None, comparison_dir="/fake_cmp", comparison_cache=dict(images),
+            )
+
+        return _BoundaryVerifyContext(
+            lhs=side(lhs_images), rhs=side(rhs_images), phash=FakePhash(), cutoff=cutoff,
+        )
 
     def test_verified_extrapolation_extends_to_edges_when_content_matches(self):
         """When the extrapolated boundary frames verify, the boundary reaches the edge."""
@@ -656,8 +674,10 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(4000, 4000), (6000, 6000)]
         fit = GlobalLinearFit(slope=1.0, intercept=0.0, is_constant_offset=True, time_scale=1.0)
 
-        with patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
-            result = pm._extrapolate_and_verify_global_linear(fit, matching_pairs)
+        with self._patch_verify_ctx(), \
+             patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
+            result = pm._extrapolate_and_verify_global_linear(
+                fit, matching_pairs, pm.lhs_all_frames, pm.rhs_all_frames)
 
         self.assertEqual(result[0], (0, 0))
         self.assertEqual(result[-1], (10000, 10000))
@@ -668,8 +688,10 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(3000, 3000), (6000, 6000)]
         fit = GlobalLinearFit(slope=1.0, intercept=0.0, is_constant_offset=True, time_scale=1.0)
 
-        with patch.object(PairMatcher, '_boundary_content_matches', return_value=False):
-            result = pm._extrapolate_and_verify_global_linear(fit, matching_pairs)
+        with self._patch_verify_ctx(), \
+             patch.object(PairMatcher, '_boundary_content_matches', return_value=False):
+            result = pm._extrapolate_and_verify_global_linear(
+                fit, matching_pairs, pm.lhs_all_frames, pm.rhs_all_frames)
 
         # No extension — divergent intro/outro is not crossed.
         self.assertEqual(result[0], (3000, 3000))
@@ -683,8 +705,10 @@ class PairMatcherUnitTest(unittest.TestCase):
         # within snap tolerance of the rhs edge, so it maps edge-to-edge.
         fit = GlobalLinearFit(slope=1.0, intercept=3.0, is_constant_offset=True, time_scale=1.0)
 
-        with patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
-            result = pm._extrapolate_and_verify_global_linear(fit, matching_pairs)
+        with self._patch_verify_ctx(), \
+             patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
+            result = pm._extrapolate_and_verify_global_linear(
+                fit, matching_pairs, pm.lhs_all_frames, pm.rhs_all_frames)
 
         self.assertEqual(result[0], (0, 0))
 
@@ -696,65 +720,73 @@ class PairMatcherUnitTest(unittest.TestCase):
         # predicts rhs frame 50 (2000ms), well past the snap tolerance.
         fit = GlobalLinearFit(slope=1.0, intercept=50.0, is_constant_offset=True, time_scale=1.0)
 
-        with patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
-            result = pm._extrapolate_and_verify_global_linear(fit, matching_pairs)
+        with self._patch_verify_ctx(), \
+             patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
+            result = pm._extrapolate_and_verify_global_linear(
+                fit, matching_pairs, pm.lhs_all_frames, pm.rhs_all_frames)
 
         self.assertEqual(result[0], (0, 2000))
+
+    @staticmethod
+    def _patch_entropy(values: dict):
+        """Patch image entropy per comparison-image path."""
+        return patch.object(image_utils, 'image_entropy', side_effect=lambda path: values[path])
 
     def test_boundary_content_matches_accepts_both_black(self):
         """Two low-entropy (black) boundary frames verify as a shared lead-in/out."""
         pm = self._make_pm_with_frames([0, 40], [0, 40])
-        with patch.object(PairMatcher, '_ensure_boundary_image', side_effect=["/l.png", "/r.png"]), \
-             patch.object(PairMatcher, '_is_rich', return_value=False), \
-             patch.object(image_utils, 'are_images_similar') as similar:
-            self.assertTrue(pm._boundary_content_matches(0, 0, 0, 0))
-        # Both black short-circuits — no ORB comparison needed.
-        similar.assert_not_called()
-
-    def test_boundary_content_matches_rejects_divergent_content(self):
-        """Two rich but visually different boundary frames do NOT verify."""
-        pm = self._make_pm_with_frames([0, 40], [0, 40])
-        with patch.object(PairMatcher, '_ensure_boundary_image', side_effect=["/l.png", "/r.png"]), \
-             patch.object(PairMatcher, '_is_rich', return_value=True), \
-             self._patch_boundary_phash({"/l.png": 0, "/r.png": 0}), \
-             patch.object(image_utils, 'are_images_similar', return_value=False):
-            self.assertFalse(pm._boundary_content_matches(0, 0, 0, 0))
-
-    def test_boundary_content_matches_accepts_same_content(self):
-        """Phash-close and ORB-similar boundary frames verify as shared content."""
-        pm = self._make_pm_with_frames([0, 40], [0, 40])
-        # Same frame across a quality/speed change: small phash distance.
-        with patch.object(PairMatcher, '_ensure_boundary_image', side_effect=["/l.png", "/r.png"]), \
-             patch.object(PairMatcher, '_is_rich', return_value=True), \
-             self._patch_boundary_phash({"/l.png": 0, "/r.png": 30}), \
-             patch.object(image_utils, 'are_images_similar', return_value=True):
-            self.assertTrue(pm._boundary_content_matches(0, 0, 0, 0))
-
-    def test_boundary_content_matches_rejects_orb_similar_but_phash_distant(self):
-        """Unrelated textured intros (grass vs atoms) can produce dozens of
-        cross-checked ORB matches; the phash gate must reject them anyway.
-
-        Regression: on ffmpeg builds where the drift fit succeeded, the
-        global-linear extrapolation crossed divergent intros because the ORB
-        count alone verified them."""
-        pm = self._make_pm_with_frames([0, 40], [0, 40])
-        # Divergent content: large phash distance (measured grass vs atoms ~124).
-        with patch.object(PairMatcher, '_ensure_boundary_image', side_effect=["/l.png", "/r.png"]), \
-             patch.object(PairMatcher, '_is_rich', return_value=True), \
-             self._patch_boundary_phash({"/l.png": 0, "/r.png": 124}), \
-             patch.object(image_utils, 'are_images_similar', return_value=True) as similar:
-            self.assertFalse(pm._boundary_content_matches(0, 0, 0, 0))
-        # The phash gate rejects before ORB even runs.
-        similar.assert_not_called()
+        # No phash values — both-black short-circuits before any hash lookup.
+        ctx = self._make_verify_ctx({}, cutoff=16,
+                                    lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
+        with self._patch_entropy({"/l.png": 0.5, "/r.png": 0.5}):
+            self.assertTrue(pm._boundary_content_matches(ctx, 0, 0, 0, 0))
 
     def test_boundary_content_matches_rejects_black_vs_content(self):
-        """A black frame vs a rich frame never verifies (one lead-in is black)."""
+        """A decisively black frame vs a rich frame never verifies (one lead-in is black)."""
         pm = self._make_pm_with_frames([0, 40], [0, 40])
-        with patch.object(PairMatcher, '_ensure_boundary_image', side_effect=["/l.png", "/r.png"]), \
-             patch.object(PairMatcher, '_is_rich', side_effect=[False, True]), \
-             patch.object(image_utils, 'are_images_similar') as similar:
-            self.assertFalse(pm._boundary_content_matches(0, 0, 0, 0))
-        similar.assert_not_called()
+        ctx = self._make_verify_ctx({}, cutoff=16,
+                                    lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
+        with self._patch_entropy({"/l.png": 0.5, "/r.png": 5.0}):
+            self.assertFalse(pm._boundary_content_matches(ctx, 0, 0, 0, 0))
+
+    def test_boundary_content_matches_flat_vs_rich_falls_through_to_phash(self):
+        """A flat-but-lit frame (title card, sky) vs a rich one is not a
+        black-vs-content mismatch; the phash comparison decides.
+
+        A framing difference between two transfers can push one side of a
+        genuinely shared flat scene just under the richness threshold — a
+        hard reject there would collapse the boundary in front of it.
+        """
+        pm = self._make_pm_with_frames([0, 40], [0, 40])
+        ctx = self._make_verify_ctx({"/l.png": 0, "/r.png": 12}, cutoff=16,
+                                    lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
+        with self._patch_entropy({"/l.png": 3.2, "/r.png": 5.0}):
+            self.assertTrue(pm._boundary_content_matches(ctx, 0, 0, 0, 0))
+
+    def test_boundary_content_matches_accepts_within_cutoff(self):
+        """A distance within the pair-calibrated cutoff verifies as the same frame."""
+        pm = self._make_pm_with_frames([0, 40], [0, 40])
+        ctx = self._make_verify_ctx({"/l.png": 0, "/r.png": 12}, cutoff=16,
+                                    lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
+        with self._patch_entropy({"/l.png": 5.0, "/r.png": 5.0}):
+            self.assertTrue(pm._boundary_content_matches(ctx, 0, 0, 0, 0))
+
+    def test_boundary_content_matches_rejects_beyond_cutoff(self):
+        """Divergent content (e.g. grass vs atoms intros) lands far above the
+        calibrated cutoff and is rejected, keeping the extrapolation from
+        crossing a different intro/outro."""
+        pm = self._make_pm_with_frames([0, 40], [0, 40])
+        ctx = self._make_verify_ctx({"/l.png": 0, "/r.png": 124}, cutoff=16,
+                                    lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
+        with self._patch_entropy({"/l.png": 5.0, "/r.png": 5.0}):
+            self.assertFalse(pm._boundary_content_matches(ctx, 0, 0, 0, 0))
+
+    def test_boundary_content_matches_rejects_missing_comparison_image(self):
+        """A frame whose comparison image cannot be produced never verifies."""
+        pm = self._make_pm_with_frames([0, 40], [0, 40])
+        ctx = self._make_verify_ctx({}, cutoff=16,
+                                    lhs_images={0: None}, rhs_images={0: "/r.png"})
+        self.assertFalse(pm._boundary_content_matches(ctx, 0, 0, 0, 0))
 
     # ---- _look_for_boundaries: look_ahead robustness ----
 

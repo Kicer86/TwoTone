@@ -239,6 +239,38 @@ class PairMatcherIntegrationTest(MeltTestBase):
         )
         self.assertTrue(coverage["full_coverage"])
 
+    def test_pair_matcher_open_matte_vs_widescreen_crop(self):
+        """Same content in two transfers of different picture geometry.
+
+        LHS is the full 16:9 (open-matte) master; RHS is a widescreen
+        ~2.35:1 crop of it, degraded and speed-changed by 1.03 — the same
+        relation as a 4K open-matte release vs an SD widescreen rip of one
+        film.  The mapping must still cover both videos edge to edge.
+
+        Regression: the global-linear boundary verification compared raw
+        extracted frames, where the geometry difference pushes even the
+        exact same picture past any fixed phash gate.  Every gap sample
+        failed, the boundaries collapsed to the outermost scene-change
+        matches and several minutes of shared content were cut on a real
+        4K 16:9 release vs an SD 2.35:1 release of the same film.
+        """
+        file1_path, file2_path = self.edge_fixtures["open_matte"]
+
+        interruption = generic_utils.InterruptibleProcess()
+        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        result = pair_matcher.create_segments_mapping()
+
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
+
+        coverage = PairMatcher.coverage_summary(
+            result.mapping,
+            video_utils.get_video_duration(file1_path),
+            video_utils.get_video_duration(file2_path),
+            lhs_fps=pair_matcher.lhs_fps,
+            rhs_fps=pair_matcher.rhs_fps,
+        )
+        self.assertTrue(coverage["full_coverage"])
+
     def test_pair_matcher_different_intro_same_length(self):
         """Files have different high-entropy intros of similar length, then shared content."""
         file1_path, file2_path = self.edge_fixtures["diff_intro_same"]
