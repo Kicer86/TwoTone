@@ -808,15 +808,13 @@ class PairMatcher:
                 )
             else:
                 relation_text = "no frame offset"
-            same_content_phrase = "have the same content"
         else:
             relation_text = f"a linear frame drift (slope={slope:.6f}, intercept={intercept:+.1f})"
-            same_content_phrase = "share content"
 
         if abs(time_scale - 1.0) > 0.005:
             relation_text += f", audio time-scaled by {time_scale:.5f}"
 
-        self.logger.info("Files %s and %s %s with %s.", lhs_ref, rhs_ref, same_content_phrase, relation_text)
+        self.logger.info("Files %s and %s share content with %s.", lhs_ref, rhs_ref, relation_text)
 
     def _extrapolate_and_verify_global_linear(
         self,
