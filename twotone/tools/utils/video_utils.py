@@ -607,7 +607,10 @@ def extract_frames_at_ranges(
                     f"entry in probed metadata — skipping."
                 )
                 continue
-            final_path = os.path.join(target_dir, f"frame_{timestamp_ms:010d}.{format}")
+
+            frame_no = probed_metadata[timestamp_ms]["frame_id"]
+
+            final_path = os.path.join(target_dir, f"frame_{frame_no:06d}_{timestamp_ms:010d}.{format}")
             os.replace(os.path.join(work_dir, frame_files[i]), final_path)
             probed_metadata[timestamp_ms]["path"] = final_path
     finally:
