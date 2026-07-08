@@ -1378,7 +1378,7 @@ class PairMatcher:
         rejection reasons at DEBUG.
         """
         expected_ratio = self.rhs_fps / self.lhs_fps if self.lhs_fps else float("nan")
-        self.logger.info(
+        self.logger.debug(
             "Relation diagnostics: %s fps=%.4f, %s fps=%.4f, "
             "expected lhs/rhs time ratio=%.4f, matched pairs=%d",
             self.lhs_label, self.lhs_fps, self.rhs_label, self.rhs_fps,
@@ -1386,7 +1386,7 @@ class PairMatcher:
         )
 
         if len(matching_pairs) < 2:
-            self.logger.info("  too few matched pairs for offset/drift analysis")
+            self.logger.debug("  too few matched pairs for offset/drift analysis")
             return
 
         try:
@@ -1399,7 +1399,7 @@ class PairMatcher:
                 dtype=float,
             )
         except KeyError:
-            self.logger.info("  matched frames lack frame_id; skipping offset/drift analysis")
+            self.logger.debug("  matched frames lack frame_id; skipping offset/drift analysis")
             return
 
         frame_offsets = lhs_frame_ids - rhs_frame_ids
@@ -1414,7 +1414,7 @@ class PairMatcher:
             slope = float("nan")
         time_scale = slope * self.lhs_fps / self.rhs_fps if self.rhs_fps else float("nan")
 
-        self.logger.info(
+        self.logger.debug(
             "  frame-offset median=%.2f std=%.2f (constant offset needs std<=%.1f, "
             "else RANSAC drift with slope within %.2f of 1.0 or of the fps ratio); "
             "matched frame span=%.0f; observed time ratio=%.4f; "
