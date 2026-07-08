@@ -11,7 +11,7 @@ from pathlib import Path
 
 from twotone.tools.utils import generic_utils, video_utils
 from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, StaticSource
-from twotone.tools.utils.files_utils import ScopedDirectory
+from twotone.tools.utils.files_utils import Workspace
 from common import (
     TwoToneTestCase,
     FileCache,
@@ -44,17 +44,16 @@ def all_key_orders(d: dict) -> Iterator[dict]:
 def analyze_duplicates_helper(
     logger: logging.Logger,
     duplicates_source: StaticSource,
-    working_dir: str,
+    workspace: Workspace,
     allow_length_mismatch: bool = False,
     tolerance_ms: int = DEFAULT_TOLERANCE_MS,
 ):
-    os.makedirs(working_dir, exist_ok=True)
     duplicates_raw = duplicates_source.collect_duplicates()
     duplicates = {title: list(files) for title, files in duplicates_raw.items()}
     analyzer = MeltAnalyzer(
         logger,
         duplicates_source,
-        working_dir,
+        workspace,
         allow_length_mismatch,
         tolerance_ms,
     )
@@ -64,7 +63,7 @@ def analyze_duplicates_helper(
 def process_duplicates_helper(
     logger: logging.Logger,
     interruption: generic_utils.InterruptibleProcess,
-    working_dir: str,
+    workspace: Workspace,
     output_dir: str,
     plan,
     tolerance_ms: int = DEFAULT_TOLERANCE_MS,
@@ -72,7 +71,7 @@ def process_duplicates_helper(
     performer = MeltPerformer(
         logger,
         interruption,
-        working_dir,
+        workspace,
         output_dir,
         tolerance_ms,
     )
@@ -107,9 +106,7 @@ class MeltTestBase(TwoToneTestCase):
                       "806912__kevp888__250510_122217_fr_large_crowd_in_palais_garnier.wav"]
 
             #unify fps and add audio path
-            output_dir = os.path.join(self.wd.path, "gen_sample")
-
-            with ScopedDirectory(output_dir) as sd:
+            with tempfile.TemporaryDirectory(dir=self.wd.path) as output_dir:
                 output_files = []
                 for video, audio in zip(videos, audios):
                     video_input_path = get_video(video)

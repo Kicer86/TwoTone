@@ -1,11 +1,10 @@
 
 import logging
-import tempfile
 import unittest
 
 from unittest.mock import patch
 
-from twotone.tools.utils import generic_utils, image_utils, video_utils
+from twotone.tools.utils import files_utils, generic_utils, image_utils, video_utils
 from twotone.tools.melt.melt import MappingRelation, PairMatcher
 from twotone.tools.melt.pair_matcher import GlobalLinearFit
 
@@ -24,11 +23,13 @@ class PairMatcherUnitTest(unittest.TestCase):
         """Create a PairMatcher using the real constructor with mocked externals."""
         fps_map = {"/fake/lhs.mp4": str(lhs_fps), "/fake/rhs.mp4": str(rhs_fps)}
 
+        wd = files_utils.Workspace.temporary()
+        self.addCleanup(wd.close)
         with patch.object(video_utils, 'get_video_data',
                           side_effect=lambda p, **_kwargs: {"video": [{"fps": fps_map[p]}]}):
             pm = PairMatcher(
                 interruption=generic_utils.InterruptibleProcess(),
-                wd=tempfile.mkdtemp(),
+                wd=wd.root,
                 lhs_path="/fake/lhs.mp4",
                 rhs_path="/fake/rhs.mp4",
                 logger=logging.getLogger("test.PairMatcher"),

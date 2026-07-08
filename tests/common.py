@@ -77,6 +77,8 @@ class TwoToneTestCase(unittest.TestCase):
         self.logger = self.__class__.logger
         self.wd = WorkingDirectoryForTest(self.__class__.__name__, self._testMethodName)
         self.wd.__enter__()
+        self.workspace = files_utils.Workspace.temporary()
+        self.addCleanup(self.workspace.close)
 
     def tearDown(self):
         self.wd.__exit__(None, None, None)
@@ -486,12 +488,16 @@ def run_twotone(tool: str, tool_options: list[str] | None = None, global_options
         if opt in ("-w", "--working-dir") or opt.startswith("--working-dir=") or opt.startswith("-w="):
             raise ValueError("Tests must not override working directory")
 
-    wd = generic_utils.get_twotone_working_dir()
-    os.makedirs(wd, exist_ok=True)
+    # An explicit working dir keeps tests away from the user's default
+    # location (and from its stale-instance collection).
+    wd = tempfile.mkdtemp(prefix="twotone_test_wd_")
 
     global_options.extend(["--quiet", "--working-dir", wd])
 
-    twotone.twotone.execute([*global_options, tool, *tool_options])
+    try:
+        twotone.twotone.execute([*global_options, tool, *tool_options])
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
 
 
 @contextmanager

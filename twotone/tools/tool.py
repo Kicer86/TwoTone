@@ -5,7 +5,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Protocol, runtime_checkable
 
-from twotone.tools.utils import requirements_utils
+from twotone.tools.utils import files_utils, requirements_utils
 
 
 @runtime_checkable
@@ -34,9 +34,9 @@ class Tool(ABC):
         return requirements_utils.collect_required_tools(self.analyze, self.perform)
 
     @abstractmethod
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str) -> Plan:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
         raise NotImplementedError
 
     @abstractmethod
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
         raise NotImplementedError

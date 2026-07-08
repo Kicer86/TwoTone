@@ -10,7 +10,7 @@ from ..utils import files_utils, generic_utils, language_utils, process_utils, v
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
 from .pair_matcher import CoverageSummary, MappingRelation, PairMatcher, SegmentsMappingResult
-from .melt_common import FramesInfo, StreamType, _ensure_working_dir, _is_length_mismatch
+from .melt_common import FramesInfo, StreamType, _is_length_mismatch
 from .track_timeline import TrackTimelineMixin
 
 
@@ -71,7 +71,7 @@ class MeltPerformer(TrackTimelineMixin):
         self,
         logger: logging.Logger,
         interruption: generic_utils.InterruptibleProcess,
-        working_dir: str,
+        workspace: files_utils.Workspace,
         output_dir: str,
         tolerance_ms: int,
         cache: MeltCache | None = None,
@@ -84,9 +84,8 @@ class MeltPerformer(TrackTimelineMixin):
         self.cache = cache
         self.fill_audio_gaps = fill_audio_gaps
         self._normalized_audio_cache: dict[tuple[str, int, int | None, int | None], str] = {}
-        self._temporary_audio_counter = 0
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
-        self.wd = _ensure_working_dir(working_dir)
+        self.workspace = workspace
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
         planned_items = [item for item in plan if item.get("groups")]
@@ -133,7 +132,6 @@ class MeltPerformer(TrackTimelineMixin):
                 else:
                     # Convert streams to unified list (and patch audios if needed)
                     self._normalized_audio_cache.clear()
-                    self._temporary_audio_counter = 0
                     self._pair_match_cache.clear()
                     files_details = group.get("files_details", {})
                     prepared_streams = self._prepare_stream_entries(
@@ -986,7 +984,7 @@ class MeltPerformer(TrackTimelineMixin):
     ) -> _PatchedAudio:
         """Run PairMatcher and apply the appropriate audio patching strategy."""
         audio_path, stream_index = audio_stream
-        with files_utils.ScopedDirectory(os.path.join(self.wd, "matching")) as mwd, \
+        with self.workspace.scoped_dir("matching") as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
             lhs_id = file_ids[video_path_base]
             rhs_id = file_ids[audio_path]
@@ -1061,7 +1059,7 @@ class MeltPerformer(TrackTimelineMixin):
 
             fill_gaps = self.fill_audio_gaps
 
-            patched_audio = os.path.join(self.wd, f"tmp_{os.getpid()}_{stream_index}.mka")
+            patched_audio = self._temporary_audio_path("patched_audio", stream_index)
             if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
                 timeline_start_ms = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, fill_gaps_from_base=fill_gaps)
             else:
@@ -1410,12 +1408,7 @@ class MeltPerformer(TrackTimelineMixin):
         return video_utils.get_video_duration(path, logger=logger)
 
     def _temporary_audio_path(self, label: str, stream_index: int) -> str:
-        path = os.path.join(
-            self.wd,
-            f"tmp_{os.getpid()}_{label}_{self._temporary_audio_counter}_{stream_index}.mka",
-        )
-        self._temporary_audio_counter += 1
-        return path
+        return self.workspace.unique_file(f"{label}_{stream_index}", "mka")
 
     def _prepare_passthrough_audio(
         self,
@@ -1469,7 +1462,7 @@ class MeltPerformer(TrackTimelineMixin):
         channel_layout = self._get_audio_channel_layout(source_path, logger=self.logger)
         self._concat_and_encode(
             [prepared_flac], False, "", False, "",
-            os.path.join(self.wd, f"passthrough_concat_{os.getpid()}_{stream_index}.txt"),
+            self.workspace.unique_file(f"passthrough_concat_{stream_index}", "txt"),
             output_path,
             channel_layout=channel_layout,
             logger=self.logger,

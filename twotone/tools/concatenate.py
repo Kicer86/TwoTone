@@ -13,10 +13,10 @@ from twotone.tools.utils import generic_utils, process_utils, video_utils, files
 
 
 class Concatenate(generic_utils.InterruptibleProcess):
-    def __init__(self, logger: logging.Logger, working_dir: str):
+    def __init__(self, logger: logging.Logger, workspace: files_utils.Workspace):
         super().__init__(logger)
         self.logger = logger
-        self.working_dir = working_dir
+        self.workspace = workspace
 
     def analyze(self, path: str, ignore_warnings: bool = False) -> dict[str, list[tuple[str, int]]] | None:
         self.logger.info(f"Collecting video files from path {path}")
@@ -120,7 +120,7 @@ class Concatenate(generic_utils.InterruptibleProcess):
                 return path.replace("'", "'\\''")
 
             input_file_content = [f"file '{escape_path(input_file)}'" for input_file in input_files]
-            with files_utils.TempFileManager("\n".join(input_file_content), "txt", directory=self.working_dir) as input_file:
+            with self.workspace.text_file("\n".join(input_file_content), "txt") as input_file:
                 ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c:v", "copy", "-c:a", audio_codec, output]
 
                 self.logger.info(f"Concatenating files into {output} file")
@@ -158,19 +158,19 @@ class ConcatenateTool(Tool):
                             help='Skip videos with warnings and continue with valid groups.')
 
     @override
-    def analyze(self, args, logger: logging.Logger, working_dir: str) -> Plan:
-        concatenator = Concatenate(logger, working_dir=working_dir)
+    def analyze(self, args, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
+        concatenator = Concatenate(logger, workspace=workspace)
         analysis = concatenator.analyze(args.videos_path[0], ignore_warnings=args.ignore_warnings)
         if analysis is None:
             return EmptyPlan()
         return ConcatenatePlan(items=analysis)
 
     @override
-    def perform(self, args, logger: logging.Logger, working_dir: str, plan: Plan) -> None:
+    def perform(self, args, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
         if not isinstance(plan, ConcatenatePlan):
             raise TypeError(f"Expected ConcatenatePlan, got {type(plan).__name__}")
 
-        concatenator = Concatenate(logger, working_dir)
+        concatenator = Concatenate(logger, workspace)
         concatenator.perform(plan.items)
 
 

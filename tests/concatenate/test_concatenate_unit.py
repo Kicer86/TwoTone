@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from twotone.tools.concatenate import Concatenate
+from twotone.tools.utils import files_utils
 
 
 class ConcatenateAnalyzeUnitTest(unittest.TestCase):
@@ -11,7 +12,7 @@ class ConcatenateAnalyzeUnitTest(unittest.TestCase):
     def setUp(self):
         self.logger = logging.getLogger("test")
         self.logger.setLevel(logging.CRITICAL)
-        self.concatenator = Concatenate(self.logger, working_dir="/tmp")
+        self.concatenator = Concatenate(self.logger, workspace=files_utils.Workspace.temporary())
 
     def _analyze(self, file_paths, **kwargs):
         with patch("twotone.tools.concatenate.video_utils.collect_video_files", return_value=file_paths):

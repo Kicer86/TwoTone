@@ -36,8 +36,8 @@ class MeltIntegrationTest(MeltTestBase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         # expect output to be equal to the first of files
         output_file_hash = hashes(output_dir)
@@ -64,7 +64,7 @@ class MeltIntegrationTest(MeltTestBase):
 
         logger = self.logger.getChild("Melter")
         # Dry run: only prepare plan, do not execute
-        _ = analyze_duplicates_helper(logger, duplicates, self.wd.path)
+        _ = analyze_duplicates_helper(logger, duplicates, self.workspace)
 
         # expect output to be empty
         output_file_hash = hashes(output_dir)
@@ -83,8 +83,8 @@ class MeltIntegrationTest(MeltTestBase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         self.assertTrue(os.path.exists(file1))
         self.assertTrue(os.path.exists(file2))
@@ -106,8 +106,8 @@ class MeltIntegrationTest(MeltTestBase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 0)
@@ -130,10 +130,10 @@ class MeltIntegrationTest(MeltTestBase):
         plan = analyze_duplicates_helper(
             logger,
             duplicates,
-            self.wd.path,
+            self.workspace,
             allow_length_mismatch=True,
         )
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
@@ -171,8 +171,8 @@ class MeltIntegrationTest(MeltTestBase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
@@ -222,8 +222,8 @@ class MeltIntegrationTest(MeltTestBase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
@@ -257,10 +257,10 @@ class MeltIntegrationTest(MeltTestBase):
         plan = analyze_duplicates_helper(
             logger,
             duplicates,
-            self.wd.path,
+            self.workspace,
             allow_length_mismatch=True,
         )
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         # validate output
         output_file_hash = hashes(output_dir)
@@ -303,8 +303,8 @@ class MeltIntegrationTest(MeltTestBase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         # validate output
         output_file_hash = hashes(output_dir)
@@ -337,8 +337,8 @@ class MeltIntegrationTest(MeltTestBase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         # validate alphabetical order
         output_file_hash = hashes(output_dir)
@@ -371,8 +371,8 @@ class MeltIntegrationTest(MeltTestBase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
@@ -400,8 +400,8 @@ class MeltIntegrationTest(MeltTestBase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         # validate alphabetical order
         output_file_hash = hashes(output_dir)
@@ -437,8 +437,8 @@ class MeltIntegrationTest(MeltTestBase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         # validate output
         output_file_hash = hashes(output_dir)
@@ -473,8 +473,8 @@ class MeltIntegrationTest(MeltTestBase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         # validate output
         output_file_hash = hashes(output_dir)
@@ -503,8 +503,8 @@ class MeltIntegrationTest(MeltTestBase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        plan = analyze_duplicates_helper(logger, duplicates, self.wd.path)
-        process_duplicates_helper(logger, interruption, self.wd.path, output_dir, plan)
+        plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
         # validate output
         output_file_hash = hashes(output_dir)

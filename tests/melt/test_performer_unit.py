@@ -7,9 +7,10 @@ import unittest
 from parameterized import parameterized
 from unittest.mock import patch
 
-from twotone.tools.utils import generic_utils, process_utils, video_utils
+from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
 from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltPerformer
-from twotone.tools.melt.melt_performer import _StreamEntry
+from twotone.tools.melt.melt_performer import _PairMatchResult, _StreamEntry
+from twotone.tools.melt.pair_matcher import MappingRelation, SegmentsMappingResult
 from common import run_ffmpeg
 from melt.helpers import _FAKE_PROCESS_OK
 
@@ -18,11 +19,13 @@ class MeltPerformerUnitTest(unittest.TestCase):
     """Unit tests for MeltPerformer internal methods."""
 
     def _make_performer(self) -> MeltPerformer:
+        output = files_utils.Workspace.temporary()
+        self.addCleanup(output.close)
         return MeltPerformer(
             logger=logging.getLogger("test.MeltPerformer"),
             interruption=generic_utils.InterruptibleProcess(),
-            working_dir=tempfile.mkdtemp(),
-            output_dir=tempfile.mkdtemp(),
+            workspace=files_utils.Workspace.temporary(),
+            output_dir=output.root,
             tolerance_ms=DEFAULT_TOLERANCE_MS,
         )
 
@@ -1128,6 +1131,62 @@ class MeltPerformerUnitTest(unittest.TestCase):
             offset = performer._track_sync_offset_ms("/tmp/normalized.mka", "audio", 0, 471)
 
         self.assertEqual(offset, 471)
+
+    def test_patch_mismatched_audio_uses_unique_temp_paths_for_same_stream_index(self):
+        performer = self._make_performer()
+        base_video = "/tmp/base.mkv"
+        audio_a = "/tmp/audio-a.mkv"
+        audio_b = "/tmp/audio-b.avi"
+        base_duration = 60000
+        # A real speed change (spans differ) so the GLOBAL_LINEAR relation
+        # routes to the global-time-scale patcher whose output path we probe.
+        mapping = [(0, 0), (base_duration, 58000)]
+
+        def make_match_result(source_duration: int) -> _PairMatchResult:
+            return _PairMatchResult(
+                matching=SegmentsMappingResult(
+                    mapping=mapping,
+                    lhs_all_frames={},
+                    rhs_all_frames={},
+                    relation=MappingRelation.GLOBAL_LINEAR,
+                    lhs_fps=24.0,
+                    rhs_fps=24.0,
+                ),
+                source_duration=source_duration,
+            )
+
+        performer._pair_match_cache[(base_video, audio_a)] = make_match_result(base_duration)
+        performer._pair_match_cache[(base_video, audio_b)] = make_match_result(base_duration)
+
+        patch_outputs = []
+
+        def fake_patch_audio_constant_offset(
+            _wd,
+            _base_video,
+            _source_video,
+            output_path,
+            _mapping,
+            **_kwargs,
+        ):
+            patch_outputs.append(output_path)
+            return 0
+
+        file_ids = {base_video: 1, audio_a: 2, audio_b: 3}
+        with patch.object(performer, "_log_coverage", lambda *args, **kwargs: None), \
+             patch.object(performer, "patch_audio_constant_offset", side_effect=fake_patch_audio_constant_offset):
+            first_path, first_tid, first_start = performer._patch_mismatched_audio(
+                base_video, (audio_a, 1), base_duration, None, file_ids,
+            )
+            second_path, second_tid, second_start = performer._patch_mismatched_audio(
+                base_video, (audio_b, 1), base_duration, None, file_ids,
+            )
+
+        self.assertEqual(first_tid, 0)
+        self.assertEqual(second_tid, 0)
+        self.assertEqual(first_start, 0)
+        self.assertEqual(second_start, 0)
+        self.assertEqual(patch_outputs, [first_path, second_path])
+        self.assertNotEqual(first_path, second_path)
 
     def test_patch_audio_fps_mismatch_with_audio_start_offset(self):
         """Exact scenario: 23.976fps base + 25fps AVI source with audio start offset.
