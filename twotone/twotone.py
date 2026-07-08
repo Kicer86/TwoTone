@@ -140,16 +140,13 @@ def execute(argv: list[str]) -> None:
         "-w",
         default=None,
         help="Directory for temporary files.\n"
-             f"When omitted, twotone works in a per-run subdirectory of {generic_utils.get_twotone_working_dir()}\n"
-             "and removes leftovers of crashed runs from there.\n"
-             "When provided, the directory is used exactly as given: no per-run subdirectory\n"
-             "is created and no other run's data is scanned or removed.",
+             f"Defaults to a per-run subdirectory of {generic_utils.get_twotone_working_dir()}.\n"
+             "A provided directory is used as given and must be new or empty.",
     )
     parser.add_argument(
         "--keep-wd",
         action="store_true",
-        help="Do not delete anything from the working directory.\n"
-             "Keeps all intermediate files (frames, audio segments, debug dumps) for inspection.",
+        help="Keep the working directory and its intermediate files for inspection.",
     )
     parser.add_argument(
         "--version",
