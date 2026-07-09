@@ -353,7 +353,7 @@ class MeltIntegrationTest(MeltTestBase):
         self.assertEqual(output_file_data["audio"][4]["language"], "pol")
 
     def test_unknown_language_streams_sorted_last(self):
-        """Streams with unknown language (from --force-all-streams) should appear after all known-language streams."""
+        """Streams with unknown language should appear after all known-language streams."""
         video1 = build_test_video(os.path.join(self.wd.path, "o1.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = True)
         video2 = build_test_video(os.path.join(self.wd.path, "o2.mkv"), self.wd.path, "sea-waves-crashing-on-beach-shore-4793288.mp4", subtitle = True)
 
@@ -364,8 +364,8 @@ class MeltIntegrationTest(MeltTestBase):
         duplicates.add_metadata(video1, "audio_lang", "eng")
         duplicates.add_metadata(video2, "audio_lang", "pol")
         duplicates.add_metadata(video1, "subtitle_lang", "pol")
-        # video2 subtitle: unknown language, kept via force_all_streams
-        duplicates.add_metadata(video2, "force_all_streams", True)
+        # video2 subtitle: unknown language, kept via keep-all flag
+        duplicates.add_metadata(video2, "keep_all_audio_subtitle_streams", True)
 
         output_dir = os.path.join(self.wd.path, "output")
         os.makedirs(output_dir)

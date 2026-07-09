@@ -80,7 +80,8 @@ class MeltTool(Tool):
                                   help='Video (movie or series when directory is provided as an input) title.')
         manual_group.add_argument('-i', '--input', dest='input_entries', action=InputAction,
                                   help='Add an input video file or directory with video files (can be specified multiple times).\n'
-                                       'Per-input metadata can be specified with --audio-lang, --audio-prod-lang, --subtitle-lang\n'
+                                       'Per-input metadata can be specified with --audio-lang, --audio-prod-lang,\n'
+                                       '--subtitle-lang, --use-video, and --keep-all-audio-subtitle-streams\n'
                                        'flags placed after each -i.\n\n'
                                        'Example of usage:\n'
                                        '-i some/path/file.mp4 --audio-lang jp -i some/path/file2.mp4 --audio-lang eng\n\n'
@@ -100,12 +101,21 @@ class MeltTool(Tool):
                                   default=argparse.SUPPRESS,
                                   help='Subtitle language for the preceding -i input.\n'
                                        'Can be specified after each -i to set different languages per input.')
+        manual_group.add_argument('--use-video', dest='use_video', action=PerInputFlagAction,
+                                  nargs=0,
+                                  default=argparse.SUPPRESS,
+                                  help='Use video stream(s) from the preceding -i input as the output video.')
+        manual_group.add_argument('--keep-all-audio-subtitle-streams', dest='keep_all_audio_subtitle_streams',
+                                  action=PerInputFlagAction,
+                                  nargs=0,
+                                  default=argparse.SUPPRESS,
+                                  help='Keep all audio and subtitle streams from the preceding -i input,\n'
+                                       'even if their language is unknown. Streams from other inputs are\n'
+                                       'only used when kept inputs do not already cover the same language.')
         manual_group.add_argument('--force-all-streams', dest='force_all_streams', action=PerInputFlagAction,
                                   nargs=0,
                                   default=argparse.SUPPRESS,
-                                  help='Force all audio and subtitle streams from the preceding -i input to be kept,\n'
-                                       'even if their language is unknown. Streams from non-forced inputs are\n'
-                                       'only used when forced inputs do not already cover the same language.')
+                                  help='Deprecated alias for --keep-all-audio-subtitle-streams.')
 
         # global options
         parser.add_argument('-o', '--output-dir',
@@ -178,7 +188,19 @@ class MeltTool(Tool):
 
                 src.add_entry(title, path)
 
-                for key in ('audio_lang', 'audio_prod_lang', 'subtitle_lang', 'force_all_streams'):
+                if entry.get('force_all_streams') is not None:
+                    logger.warning(
+                        "--force-all-streams is deprecated; use --keep-all-audio-subtitle-streams instead."
+                    )
+                    entry['keep_all_audio_subtitle_streams'] = True
+
+                for key in (
+                    'audio_lang',
+                    'audio_prod_lang',
+                    'subtitle_lang',
+                    'keep_all_audio_subtitle_streams',
+                    'use_video',
+                ):
                     value = entry.get(key)
                     if value is not None:
                         src.add_metadata(path, key, value)

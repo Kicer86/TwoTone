@@ -25,9 +25,14 @@ class StreamsPicker:
             if vd.get("attached_pic", False)
         ]
 
-        best_file_candidate = StreamsPicker._pick_best_file_candidate(files_details)
+        forced_video_path = self._forced_video_path(files_details)
+        best_file_candidate = forced_video_path or StreamsPicker._pick_best_file_candidate(files_details)
+        if forced_video_path is not None:
+            video_files_details = {forced_video_path: files_details[forced_video_path]}
+        else:
+            video_files_details = files_details
         video_streams = self._pick_streams(
-            files_details,
+            video_files_details,
             best_file_candidate,
             ids,
             "video",
@@ -36,6 +41,8 @@ class StreamsPicker:
             get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids)
         )
         video_streams = [video_stream for video_stream in video_streams if (video_stream[0], video_stream[1]) not in attached_pics]
+        if not video_streams:
+            raise RuntimeError("Could not find any usable video stream.")
         video_stream = video_streams[0]
         video_stream_path = video_stream[0]
 
@@ -74,9 +81,22 @@ class StreamsPicker:
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return False
 
-    def _path_forces_all_streams(self, path: str) -> bool:
+    def _path_keeps_all_audio_subtitle_streams(self, path: str) -> bool:
         metadata = self.duplicates_source.get_metadata_for(path)
-        return self._metadata_flag_is_enabled(metadata.get("force_all_streams"))
+        return (
+            self._metadata_flag_is_enabled(metadata.get("keep_all_audio_subtitle_streams"))
+            or self._metadata_flag_is_enabled(metadata.get("force_all_streams"))
+        )
+
+    def _path_uses_video(self, path: str) -> bool:
+        metadata = self.duplicates_source.get_metadata_for(path)
+        return self._metadata_flag_is_enabled(metadata.get("use_video"))
+
+    def _forced_video_path(self, files_details: dict[str, dict]) -> str | None:
+        forced_paths = [path for path in files_details if self._path_uses_video(path)]
+        if len(forced_paths) > 1:
+            raise RuntimeError("Only one input in a duplicate group can be marked with --use-video.")
+        return forced_paths[0] if forced_paths else None
 
     def _metadata_language_overrides(self, files_details: dict, key: str, *, normalize: bool) -> dict[str, str]:
         overrides: dict[str, str] = {}
@@ -147,14 +167,17 @@ class StreamsPicker:
 
         # organize all streams by unique_key and file
         for path, details in StreamsPicker._iter_starting_with(files_details, best_file):
-            force_all_streams = stream_type in ("audio", "subtitle") and self._path_forces_all_streams(path)
+            keep_all_audio_subtitle_streams = (
+                stream_type in ("audio", "subtitle")
+                and self._path_keeps_all_audio_subtitle_streams(path)
+            )
             for stream in details.get(stream_type, []):
                 # Build a modified copy of the stream for comparison
                 stream_view = stream.copy()
 
                 # Determine language if available
                 lang = get_language(stream, stream_type, path)
-                if force_all_streams:
+                if keep_all_audio_subtitle_streams:
                     lang = lang or _UNDEFINED_LANGUAGE
                 stream_view["language"] = lang
 
@@ -176,7 +199,7 @@ class StreamsPicker:
                 tid = stream_view["tid"]
 
                 current = {"file": path, "tid": tid, "details": stream_view}
-                if force_all_streams:
+                if keep_all_audio_subtitle_streams:
                     forced_streams.append((unique_key, current))
                     forced_keys.add(unique_key)
                 else:
