@@ -2,6 +2,7 @@ import enum
 import logging
 import os
 import shutil
+import statistics
 
 from typing import Any, Iterable, NamedTuple, Sequence
 from tqdm import tqdm
@@ -38,9 +39,10 @@ class _StreamEntry(NamedTuple):
 class _AudioStrategy(enum.Enum):
     """How a mismatched source audio track is fitted to the base video."""
 
-    # No time-scale needed — keep the source audio exact (a single decode →
-    # encode pass) and position it by its content start via mkvmerge --sync.
-    PASSTHROUGH = "drift_passthrough"
+    # No time-scale needed — normalize the source audio without changing its
+    # speed, then position it by its content start plus the matched-pair
+    # timeline shift via mkvmerge --sync (or a head trim for negative shifts).
+    UNSCALED = "unscaled_normalized"
     # A real playback-speed difference with a global linear relation — trim
     # and time-scale the whole track once (the constant-offset patcher).
     GLOBAL_TIME_SCALE = "constant_offset"
@@ -1020,18 +1022,32 @@ class MeltPerformer(TrackTimelineMixin):
             )
             self.logger.info("  Audio strategy: %s", strategy.value)
 
-            if strategy == _AudioStrategy.PASSTHROUGH:
-                desired_start_ms = self._audio_content_start_ms(
+            if strategy == _AudioStrategy.UNSCALED:
+                content_start_ms = self._audio_content_start_ms(
                     self._stream_info(audio_path, "audio", stream_index)
                 )
-                patched_audio, patched_index = self._prepare_passthrough_audio(
+                stream_bias_ms = (
+                    self._mapping_stream_bias_ms(video_path_base, matching.lhs_all_frames)
+                    - self._mapping_stream_bias_ms(audio_path, matching.rhs_all_frames)
+                )
+                shift_ms = self._unscaled_timeline_shift_ms(
+                    mapping, matching.lhs_fps, stream_bias_ms,
+                )
+                if shift_ms:
+                    self.logger.info(
+                        "  Unscaled timeline shift: %+d ms (matched content offset)",
+                        shift_ms,
+                    )
+                desired_start_ms = content_start_ms + shift_ms
+                patched_audio, patched_index = self._prepare_normalized_unscaled_audio(
                     audio_path,
                     stream_index,
                     desired_end_ms=base_audio_end if base_audio_end is not None else base_duration,
                     desired_start_ms=desired_start_ms,
                 )
-                self.logger.info("  Desired audio start: %d ms", desired_start_ms)
-                return _PatchedAudio(patched_audio, patched_index, desired_start_ms)
+                timeline_start_ms = max(0, desired_start_ms)
+                self.logger.info("  Desired audio start: %d ms", timeline_start_ms)
+                return _PatchedAudio(patched_audio, patched_index, timeline_start_ms)
             else:
                 self._log_coverage(
                     video_path_base,
@@ -1084,18 +1100,22 @@ class MeltPerformer(TrackTimelineMixin):
 
         Decision table (mapping relation × observed drift):
 
-        - GLOBAL_LINEAR, same speed          → PASSTHROUGH
+        - GLOBAL_LINEAR, same speed          → UNSCALED
         - GLOBAL_LINEAR, real speed change   → GLOBAL_TIME_SCALE
-        - GENERIC, pure frame-rate drift     → PASSTHROUGH
+        - GENERIC, pure frame-rate drift     → UNSCALED
         - GENERIC otherwise                  → SUBSEGMENT
 
-        Passthrough applies when no global time-scale is needed: a same-speed
+        UNSCALED applies when no global time-scale is needed: a same-speed
         global-linear relation (a constant offset, or a frame-rate conversion
         that preserves playback time — different fps but same speed), or a
         generic match that is a pure frame-rate drift.  Only a genuine
         playback-speed difference (e.g. a 25 fps PAL transfer vs 24 fps) is
-        time-scaled.  Passthrough is exact and avoids a re-encode that could
-        shift the track by one frame.
+        time-scaled.  UNSCALED still normalizes through the FLAC-domain flow
+        because mismatched inputs need deterministic trimming and placement; a
+        constant timeline shift carried by the mapping (shared content genuinely
+        starting on different wall-clock positions, with no container offset
+        recording it) is applied at placement time — see
+        ``_unscaled_timeline_shift_ms``.
 
         Returns ``(strategy, mapping)`` where *mapping* is the audio mapping
         the strategy must be applied with.  For SUBSEGMENT the mapping may be
@@ -1127,11 +1147,11 @@ class MeltPerformer(TrackTimelineMixin):
             # merely a same-speed frame-rate conversion.
             needs_scaling = self._needs_fps_scaling(raw_source_per_base) and not frame_rate_only_drift
             if not needs_scaling:
-                return _AudioStrategy.PASSTHROUGH, mapping
+                return _AudioStrategy.UNSCALED, mapping
             return _AudioStrategy.GLOBAL_TIME_SCALE, self._strict_audio_mapping(mapping)
 
         if frame_rate_only_drift:
-            return _AudioStrategy.PASSTHROUGH, mapping
+            return _AudioStrategy.UNSCALED, mapping
 
         mapping = self._strict_audio_mapping(mapping)
         recovered_mapping = self._try_effective_fps_audio_mapping(
@@ -1161,6 +1181,58 @@ class MeltPerformer(TrackTimelineMixin):
                 generic_utils.ms_to_time(mapping[-1][1]),
             )
         return _AudioStrategy.SUBSEGMENT, mapping
+
+    @staticmethod
+    def _mapping_stream_bias_ms(path: str, frames: FramesInfo) -> int:
+        """Offset from *path*'s mapping space to its stream space.
+
+        The frame timestamps feeding the pair mapping are container-dependent:
+        some demuxers keep the video stream's start offset in frame PTS (mp4),
+        others hand out frames rebased to zero (mkv).  The gap between the
+        probed stream start and the first probed frame measures which
+        convention this side uses, so mapping deltas from two files can be
+        compared in one (stream) space.
+        """
+        if not frames:
+            return 0
+        info = video_utils.get_video_full_info(path)
+        stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
+        if stream is None:
+            return 0
+        return MeltPerformer._stream_start_offset_ms(stream) - min(frames)
+
+    @staticmethod
+    def _unscaled_timeline_shift_ms(
+        mapping: list[tuple[int, int]],
+        lhs_fps: float | None,
+        stream_bias_ms: int = 0,
+    ) -> int:
+        """Base-minus-source timeline shift carried by an unscaled mapping.
+
+        UNSCALED plays the source audio without changing speed, so the only degree of
+        freedom left is where the track starts on the base timeline.  The
+        matched pairs yield that shift as the median of ``lhs - rhs``,
+        corrected by ``stream_bias_ms`` — the difference of the two sides'
+        mapping-to-stream biases (see ``_mapping_stream_bias_ms``) — so the
+        shift lands in stream space, the space tracks are placed in.  There a
+        container start offset cancels out: content restored to its canonical
+        position by such an offset yields a zero shift and keeps being placed
+        by its content start alone.  Content can only be offset by dropped or
+        added frames, so a genuine shift puts the median on the whole-frame
+        grid of the base (residual under a millisecond); the shift is accepted
+        only there.  Frame-rate-drift pairs carry deltas quantized to the
+        coarser side's frame grid instead, and their median can sit anywhere
+        within ±half of that frame — off-grid, rejected here as matcher noise
+        rather than rounded up to a spurious whole frame.
+        """
+        if not mapping or not lhs_fps or lhs_fps <= 0:
+            return 0
+        frame_ms = 1000 / lhs_fps
+        median_delta = statistics.median(lhs - rhs for lhs, rhs in mapping) + stream_bias_ms
+        frames = round(median_delta / frame_ms)
+        if abs(median_delta - frames * frame_ms) > frame_ms / 4:
+            return 0
+        return round(frames * frame_ms)
 
     @staticmethod
     def _strict_audio_mapping(mapping: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -1411,16 +1483,24 @@ class MeltPerformer(TrackTimelineMixin):
     def _temporary_audio_path(self, label: str, stream_index: int) -> str:
         return self.workspace.unique_file(f"{label}_{stream_index}", "mka")
 
-    def _prepare_passthrough_audio(
+    def _prepare_normalized_unscaled_audio(
         self,
         source_path: str,
         stream_index: int,
         desired_end_ms: int | None = None,
         desired_start_ms: int | None = None,
     ) -> tuple[str, int]:
-        """Prepare an unscaled (length-matching) audio stream for mkvmerge through a
-        single FLAC-domain flow: decode to a priming-free FLAC, optionally trim its
-        tail to the output-timeline end, then encode to AAC exactly once.
+        """Prepare an audio stream for mkvmerge without changing playback speed.
+
+        The flow stays in a single FLAC-domain pass: decode to a priming-free
+        FLAC, optionally trim it to the output timeline, then encode to AAC
+        exactly once.
+
+        ``desired_start_ms`` is where the decoded stream's first sample lands on
+        the output timeline; the caller muxes the track at that position.  A
+        negative value means that much of the head precedes the timeline and is
+        cut here instead (the caller then muxes at zero).  ``desired_end_ms``
+        bounds the track to the output-timeline end.
 
         Every extra AAC encode re-applies encoder-delay priming on builds that
         expose it (see ``track_timeline``), shifting the track ~21 ms per pass —
@@ -1432,7 +1512,7 @@ class MeltPerformer(TrackTimelineMixin):
         if cached_path is not None:
             return cached_path, 0
 
-        flac_path = self._temporary_audio_path("passthrough_flac", stream_index)
+        flac_path = self._temporary_audio_path("normalized_unscaled_flac", stream_index)
         self._decode_source_audio_to_flac(
             source_path,
             flac_path,
@@ -1445,10 +1525,11 @@ class MeltPerformer(TrackTimelineMixin):
         if desired_end_ms is not None:
             if desired_start_ms is None:
                 desired_start_ms = self._source_stream_start_offset_ms(flac_path, "audio", 0)
-            relative_end_ms = max(0, desired_end_ms - desired_start_ms)
-            prepared_flac = self._temporary_audio_path("passthrough_trim", stream_index)
+            window_start_ms = max(0, -desired_start_ms)
+            window_end_ms = max(window_start_ms, desired_end_ms - desired_start_ms)
+            prepared_flac = self._temporary_audio_path("normalized_unscaled_trim", stream_index)
             trim_filter = (
-                f"atrim=start=0.000000:end={relative_end_ms / 1000:.6f},"
+                f"atrim=start={window_start_ms / 1000:.6f}:end={window_end_ms / 1000:.6f},"
                 "asetpts=PTS-STARTPTS"
             )
             process_utils.raise_on_error(
@@ -1459,11 +1540,11 @@ class MeltPerformer(TrackTimelineMixin):
                 ], logger=self.logger)
             )
 
-        output_path = self._temporary_audio_path("passthrough_audio", stream_index)
+        output_path = self._temporary_audio_path("normalized_unscaled_audio", stream_index)
         channel_layout = self._get_audio_channel_layout(source_path, logger=self.logger)
         self._concat_and_encode(
             [prepared_flac], False, "", False, "",
-            self.workspace.unique_file(f"passthrough_concat_{stream_index}", "txt"),
+            self.workspace.unique_file(f"normalized_unscaled_concat_{stream_index}", "txt"),
             output_path,
             channel_layout=channel_layout,
             logger=self.logger,
@@ -1555,19 +1636,21 @@ class MeltPerformer(TrackTimelineMixin):
                 if original_path not in protected_paths:
                     input_files.discard(original_path)
             else:
-                # Length-matching audio is passed through unchanged, except for
-                # two mkvmerge concerns handled by the single FLAC-domain flow:
-                # AAC that needs a priming-free remux (see track_timeline), and
-                # audio overrunning the output timeline, which must be trimmed.
-                needs_normalization = self._audio_needs_mkvmerge_normalization(path, stream_index)
+                # Length-matching audio is direct-passthrough by default: keep
+                # the original file/stream and let final mkvmerge mux it.  Use
+                # the FLAC-domain normalization flow only when direct mkvmerge
+                # would change timing semantics or the track must be trimmed to
+                # the output timeline.
+                needs_mkvmerge_normalization = self._audio_needs_mkvmerge_normalization(path, stream_index)
                 trim_end_ms: int | None = None
                 if path != video_path_base and audio_desired_start_ms is not None and base_output_end_ms is not None:
                     audio_end_ms = self._source_stream_end_offset_ms(path, "audio", stream_index)
                     if audio_end_ms is not None and audio_end_ms > base_output_end_ms + self.tolerance_ms:
                         trim_end_ms = base_output_end_ms
-                if needs_normalization or trim_end_ms is not None:
+                needs_unscaled_preparation = needs_mkvmerge_normalization or trim_end_ms is not None
+                if needs_unscaled_preparation:
                     original_path = path
-                    path, stream_index = self._prepare_passthrough_audio(
+                    path, stream_index = self._prepare_normalized_unscaled_audio(
                         path, stream_index,
                         desired_end_ms=trim_end_ms,
                         desired_start_ms=audio_desired_start_ms,

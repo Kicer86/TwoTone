@@ -126,10 +126,19 @@ class AudioAlignmentTest(TwoToneTestCase):
     matrix but fixes speed at 1.0 and gives one side real extra or dropped video
     frames via 24<->25/23 fps resampling.  That isolates frame-number drift
     detection from ordinary temporal speedup/slowdown.
+
+    The constant-offset group drops the first few real frames (video and audio)
+    with no compensating container offset — a rip missing a few leading frames.
+    Unlike the vsO/asO variants, whose trimmed start is restored by a container
+    start offset, here the whole timeline genuinely starts early, so the shared
+    content sits at a constant frame offset between the pair and the alternate
+    audio must be shifted by that offset in the output.
     """
 
     CACHE_VERSION = "1"
     FRAME_DRIFT_CACHE_VERSION = "1"
+    CONSTANT_OFFSET_CACHE_VERSION = "2"
+    CONSTANT_OFFSET_FRAMES = 5
     BLACK_INTRO_SECONDS = 0.5
     BLACK_OUTRO_SECONDS = 0.5
     BEEP_DURATION_SECONDS = 0.12
@@ -150,6 +159,7 @@ class AudioAlignmentTest(TwoToneTestCase):
     variant_paths: ClassVar[dict[str, str]]
     frame_reference_variant_paths: ClassVar[dict[str, str]]
     frame_drift_variant_paths: ClassVar[dict[str, str]]
+    constant_offset_variant_paths: ClassVar[dict[str, str]]
     melt_cache: ClassVar[MeltCache | None]
 
     @classmethod
@@ -204,6 +214,18 @@ class AudioAlignmentTest(TwoToneTestCase):
                 lambda out_path, spec=spec: cls._generate_frame_drift_variant(spec, out_path),
             ))
             for spec in FRAME_DRIFT_VARIANTS
+        }
+
+        # The two widths pick which side of a pair with the full-size v00
+        # variant (1280x720) becomes the base video: "small" loses, "large" wins.
+        cls.constant_offset_variant_paths = {
+            name: str(file_cache.get_or_generate(
+                f"audio_align_constant_offset_{name}",
+                cls.CONSTANT_OFFSET_CACHE_VERSION,
+                "mkv",
+                lambda out_path, width=width: cls._generate_constant_offset_variant(width, out_path),
+            ))
+            for name, width in (("small", 1278), ("large", 1282))
         }
 
         cache_dir = Path(file_cache.base_dir) / "audio_alignment_melt_cache"
@@ -354,6 +376,44 @@ class AudioAlignmentTest(TwoToneTestCase):
             "asetpts=PTS-STARTPTS,"
             f"atempo={spec.speed:.8f},"
             f"asetpts=PTS+{audio_offset:.8f}/TB[a]"
+        )
+
+        run_ffmpeg(
+            [
+                "-y",
+                "-i", cls.canonical_video,
+                "-filter_complex", filter_complex,
+                "-map", "[v]",
+                "-map", "[a]",
+                "-fps_mode", "passthrough",
+                "-enc_time_base:v", "1:1000000",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "22",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac",
+                "-ar", str(cls.SAMPLE_RATE),
+                "-ac", "1",
+                str(out_path),
+            ],
+            expected_path=str(out_path),
+        )
+
+    @classmethod
+    def _generate_constant_offset_variant(cls, width: int, out_path: Path) -> None:
+        trim_seconds = cls.CONSTANT_OFFSET_FRAMES / cls.FPS
+        filter_complex = (
+            f"[0:v]trim=start_frame={cls.CONSTANT_OFFSET_FRAMES},"
+            # Rebase timestamps to zero: the dropped frames leave no container
+            # offset behind, the content itself starts earlier than canonical.
+            f"setpts=N/{cls.FPS}/TB,"
+            f"scale={width}:720[v];"
+            f"[0:a]atrim=start={trim_seconds:.6f},"
+            "asetpts=PTS-STARTPTS,"
+            # Even at 1.0 atempo displaces audio by ~11 ms; every fixture built
+            # by _generate_variant carries that displacement, so this one must
+            # run the same chain or pairs against them inherit the difference.
+            "atempo=1.0[a]"
         )
 
         run_ffmpeg(
@@ -656,6 +716,44 @@ class AudioAlignmentTest(TwoToneTestCase):
             self.variant_paths[lhs.name],
             self.variant_paths[rhs.name],
         )
+
+    @parameterized.expand([
+        ("offset_as_source", "small"),
+        ("offset_as_base", "large"),
+    ])
+    def test_audio_alignment_with_uncompensated_frame_offset(
+        self,
+        _case_name: str,
+        offset_variant: str,
+    ):
+        """A pair shifted by a few real frames must have the alternate audio
+        moved by that offset in the output.
+
+        PairMatcher detects the shift as a global-linear constant frame offset
+        and the audio strategy is passthrough; the offset must survive into the
+        muxed track placement, in both directions: the shifted file providing
+        the alternate audio (sync delay) and the shifted file being the base
+        (the alternate audio starts before the base timeline).
+        """
+        full_path = self.variant_paths["v00_asR_vsR_aeR_veR"]
+        offset_path = self.constant_offset_variant_paths[offset_variant]
+        offset_seconds = self.CONSTANT_OFFSET_FRAMES / self.FPS
+        # The base video defines the output timeline; when the shifted file
+        # wins, every beep sits one offset earlier than in the canonical cut.
+        base_shift = -offset_seconds if offset_variant == "large" else 0.0
+
+        output_file = self._run_melt_pair(full_path, offset_path)
+
+        output_data = video_utils.get_video_data_mkvmerge(output_file)
+        self.assertEqual(len(output_data["tracks"]["audio"]), 2)
+
+        first_centers = self._extract_audio_centers(output_file, 0)
+        second_centers = self._extract_audio_centers(output_file, 1)
+        self._assert_audio_tracks_aligned(first_centers, second_centers)
+
+        expected_centers = [value + base_shift for value in self.beep_centers]
+        self._assert_expected_positions(expected_centers, first_centers)
+        self._assert_expected_positions(expected_centers, second_centers)
 
     @parameterized.expand(FRAME_DRIFT_PAIR_CASES)
     def test_audio_alignment_after_melt_with_frame_drift(
