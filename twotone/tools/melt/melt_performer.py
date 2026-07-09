@@ -1032,46 +1032,47 @@ class MeltPerformer(TrackTimelineMixin):
                 )
                 self.logger.info("  Desired audio start: %d ms", desired_start_ms)
                 return _PatchedAudio(patched_audio, patched_index, desired_start_ms)
-
-            self._log_coverage(
-                video_path_base,
-                audio_path,
-                mapping,
-                base_duration,
-                duration,
-                matching.lhs_fps,
-                matching.rhs_fps,
-                lhs_id,
-                rhs_id,
-            )
-
-            self.logger.debug(
-                "Audio patching: base_duration=%d ms, source_duration=%d ms, "
-                "mapping_relation=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
-                base_duration, duration, matching.relation.value,
-                matching.lhs_fps, matching.rhs_fps, len(mapping),
-            )
-            if mapping:
-                self.logger.debug(
-                    "  Mapping range: lhs=[%d … %d] ms, rhs=[%d … %d] ms",
-                    mapping[0][0], mapping[-1][0], mapping[0][1], mapping[-1][1],
+            else:
+                self._log_coverage(
+                    video_path_base,
+                    audio_path,
+                    mapping,
+                    base_duration,
+                    duration,
+                    matching.lhs_fps,
+                    matching.rhs_fps,
+                    lhs_id,
+                    rhs_id,
                 )
 
-            fill_gaps = self.fill_audio_gaps
+                self.logger.debug(
+                    "Audio patching: base_duration=%d ms, source_duration=%d ms, "
+                    "mapping_relation=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
+                    base_duration, duration, matching.relation.value,
+                    matching.lhs_fps, matching.rhs_fps, len(mapping),
+                )
+                if mapping:
+                    self.logger.debug(
+                        "  Mapping range: lhs=[%d … %d] ms, rhs=[%d … %d] ms",
+                        mapping[0][0], mapping[-1][0], mapping[0][1], mapping[-1][1],
+                    )
 
-            patched_audio = self._temporary_audio_path("patched_audio", stream_index)
-            if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
-                timeline_start_ms = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, fill_gaps_from_base=fill_gaps)
-            else:
-                timeline_start_ms = self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, self._SUBSEGMENT_COUNT, lhs_all_frames, rhs_all_frames, fill_gaps_from_base=fill_gaps)
+                fill_gaps = self.fill_audio_gaps
 
-            if not fill_gaps:
-                self.logger.info("  Desired audio start: %d ms", timeline_start_ms)
-                return _PatchedAudio(patched_audio, 0, timeline_start_ms)
+                patched_audio = self._temporary_audio_path("patched_audio", stream_index)
+                if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
+                    timeline_start_ms = self.patch_audio_constant_offset(mwd, video_path_base, audio_path, patched_audio, mapping, fill_gaps_from_base=fill_gaps)
+                else:
+                    timeline_start_ms = self._patch_audio_segment(mwd, video_path_base, audio_path, patched_audio, mapping, self._SUBSEGMENT_COUNT, lhs_all_frames, rhs_all_frames, fill_gaps_from_base=fill_gaps)
 
-        # Gaps were filled from the base audio — the track embeds its own
-        # alignment and must be muxed without repositioning.
-        return _PatchedAudio(patched_audio, 0, None)
+                if fill_gaps:
+                    # Gaps were filled from the base audio — the track embeds its own
+                    # alignment and must be muxed without repositioning.
+                    return _PatchedAudio(patched_audio, 0, None)
+                else:
+                    self.logger.info("  Desired audio start: %d ms", timeline_start_ms)
+                    return _PatchedAudio(patched_audio, 0, timeline_start_ms)
+
 
     def _choose_audio_strategy(
         self,
