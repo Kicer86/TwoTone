@@ -75,14 +75,12 @@ class MeltPerformer(TrackTimelineMixin):
         interruption: generic_utils.InterruptibleProcess,
         workspace: files_utils.Workspace,
         output_dir: str,
-        tolerance_ms: int,
         cache: MeltCache | None = None,
         fill_audio_gaps: bool = False,
     ) -> None:
         self.logger = logger
         self.interruption = interruption
         self.output_dir = output_dir
-        self.tolerance_ms = tolerance_ms
         self.cache = cache
         self.fill_audio_gaps = fill_audio_gaps
         self._normalized_audio_cache: dict[tuple[str, int, int | None, int | None], str] = {}
@@ -127,15 +125,16 @@ class MeltPerformer(TrackTimelineMixin):
                 output_parent = os.path.dirname(output)
                 os.makedirs(output_parent, exist_ok=True)
 
+                self._normalized_audio_cache.clear()
+                self._pair_match_cache.clear()
+                files_details = group.get("files_details", {})
+
                 if len(required_input_files) == 1:
                     # only one file is being used, just copy it to the output dir
                     first_file_path = list(required_input_files)[0]
                     self._copy_single_input(first_file_path, output)
                 else:
                     # Convert streams to unified list (and patch audios if needed)
-                    self._normalized_audio_cache.clear()
-                    self._pair_match_cache.clear()
-                    files_details = group.get("files_details", {})
                     prepared_streams = self._prepare_stream_entries(
                         video_streams,
                         audio_streams,
@@ -433,7 +432,10 @@ class MeltPerformer(TrackTimelineMixin):
         """Build ASCII overlap diagram lines for two partially-overlapping files.
 
         All positions are projected onto the lhs (base) timeline so that speed
-        differences between files don't distort the visual overlap.
+        differences between files don't distort the visual overlap.  That
+        projection can surprise: the rhs bar and its timestamps are stretched
+        or shrunk by the speed factor, so they may exceed the file's real
+        duration — when the factor is not 1, a trailing note spells this out.
         """
         lhs_dur = lhs_duration_ms / 1000
         rhs_dur = rhs_duration_ms / 1000
@@ -519,6 +521,12 @@ class MeltPerformer(TrackTimelineMixin):
             s = "".join(row).rstrip()
             if s:
                 lines.append(s)
+        if abs(speed - 1.0) >= 0.001:
+            lines.append(
+                f"(#{rhs_id} plays at a different speed; its bar and times are projected "
+                f"onto #{lhs_id}'s timeline — {self._fmt_time(rhs_dur)} of #{rhs_id} "
+                f"spans {self._fmt_time(rhs_e - rhs_s)} there)"
+            )
         return lines
 
     def _log_coverage(
@@ -533,7 +541,16 @@ class MeltPerformer(TrackTimelineMixin):
         lhs_id: int,
         rhs_id: int,
     ) -> None:
-        """Log a human-readable coverage report after PairMatcher finishes."""
+        """Log an exact coverage report for a compared pair of files.
+
+        Files of equal length that share all content are dismissed in one
+        line.  Everything else gets the full report: exact edge gaps (to the
+        millisecond, no thresholds hide small differences), both durations,
+        the speed ratio, and the overlap diagram.  Files of different length
+        are by definition not identical — with one exception spelled out
+        explicitly: the same frames end to end played at a different frame
+        rate.
+        """
         summary = PairMatcher.coverage_summary(
             mappings,
             lhs_duration_ms,
@@ -543,48 +560,49 @@ class MeltPerformer(TrackTimelineMixin):
         )
         lhs_name = os.path.basename(lhs_path)
         rhs_name = os.path.basename(rhs_path)
+        ratio = summary["ratio"]
+        same_speed = abs(ratio - 1.0) < 0.001
+        same_length = lhs_duration_ms == rhs_duration_ms
 
-        if summary["full_coverage"]:
-            ratio = summary["ratio"]
-            if abs(ratio - 1.0) < 0.001:
-                self.logger.info(
-                    "Files are 100%% visually identical: %s ↔ %s",
-                    lhs_name, rhs_name,
-                )
-            else:
-                self.logger.info(
-                    "Files are 100%% visually identical (speed ratio %.4f): %s ↔ %s",
-                    ratio, lhs_name, rhs_name,
-                )
-        else:
-            parts: list[str] = []
-            lhs_sg = summary["lhs_start_gap_s"]
-            rhs_sg = summary["rhs_start_gap_s"]
-            lhs_eg = summary["lhs_end_gap_s"]
-            rhs_eg = summary["rhs_end_gap_s"]
-
-            if lhs_sg > 0.04 or rhs_sg > 0.04:
-                parts.append(
-                    f"shared content starts at {lhs_sg:.1f}s in #{lhs_id} "
-                    f"and {rhs_sg:.1f}s in #{rhs_id}"
-                )
-            if lhs_eg > 0.04 or rhs_eg > 0.04:
-                parts.append(
-                    f"shared content ends {lhs_eg:.1f}s before end of #{lhs_id} "
-                    f"and {rhs_eg:.1f}s before end of #{rhs_id}"
-                )
-
-            detail = "; ".join(parts) if parts else "partial overlap"
+        if same_length and same_speed and summary["full_coverage"]:
             self.logger.info(
-                "Files are NOT fully identical — %s",
-                detail,
+                "Files are 100%% visually identical: %s ↔ %s",
+                lhs_name, rhs_name,
             )
+            return
 
-            diagram = self._render_overlap_diagram(
-                lhs_id, rhs_id, lhs_duration_ms, rhs_duration_ms, summary,
+        lhs_len = generic_utils.ms_to_time(lhs_duration_ms)
+        rhs_len = generic_utils.ms_to_time(rhs_duration_ms)
+        if summary["full_coverage"]:
+            # The only way identical content yields different lengths: the
+            # same frames played at a different frame rate.
+            self.logger.info(
+                "Files share all content but play at different speeds "
+                "(same frames, different frame rate; speed ratio %.5f): "
+                "#%d (%s, %s) ↔ #%d (%s, %s)",
+                ratio, lhs_id, lhs_name, lhs_len, rhs_id, rhs_name, rhs_len,
             )
-            if diagram:
-                self.logger.info("Overlap diagram:\n%s", "\n".join(diagram))
+        else:
+            self.logger.info(
+                "Files are NOT fully identical: #%d (%s, %s) ↔ #%d (%s, %s)",
+                lhs_id, lhs_name, lhs_len, rhs_id, rhs_name, rhs_len,
+            )
+            if not same_speed:
+                self.logger.info("  speed ratio: %.5f", ratio)
+        self.logger.info(
+            "  shared content starts at %.3f s in #%d and at %.3f s in #%d",
+            summary["lhs_start_gap_s"], lhs_id, summary["rhs_start_gap_s"], rhs_id,
+        )
+        self.logger.info(
+            "  shared content ends %.3f s before end of #%d and %.3f s before end of #%d",
+            summary["lhs_end_gap_s"], lhs_id, summary["rhs_end_gap_s"], rhs_id,
+        )
+
+        diagram = self._render_overlap_diagram(
+            lhs_id, rhs_id, lhs_duration_ms, rhs_duration_ms, summary,
+        )
+        if diagram:
+            self.logger.info("Overlap diagram:\n%s", "\n".join(diagram))
 
     @staticmethod
     def _segment_range(pairs: Sequence[tuple[int, int]]) -> _SegmentRange:
@@ -976,6 +994,39 @@ class MeltPerformer(TrackTimelineMixin):
         )
         shutil.copy2(input_path, output_path)
 
+    def _pair_match(
+        self,
+        mwd: str,
+        video_path_base: str,
+        source_path: str,
+        file_ids: dict[str, int],
+    ) -> _PairMatchResult:
+        """Return the (cached) PairMatcher result for a (base, source) pair."""
+        lhs_id = file_ids[video_path_base]
+        rhs_id = file_ids[source_path]
+        cache_key = (video_path_base, source_path)
+        match_result = self._pair_match_cache.get(cache_key)
+
+        if match_result is None:
+            duration = video_utils.get_video_duration(source_path)
+            matcher = PairMatcher(
+                self.interruption, mwd, video_path_base, source_path,
+                self.logger.getChild("PairMatcher"),
+                lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
+                cache=self.cache,
+            )
+            match_result = _PairMatchResult(
+                matching=matcher.create_segments_mapping(),
+                source_duration=duration,
+            )
+            self._pair_match_cache[cache_key] = match_result
+        else:
+            self.logger.info(
+                "Reusing PairMatcher results for #%d ↔ #%d (same video pair).",
+                lhs_id, rhs_id,
+            )
+        return match_result
+
     def _patch_mismatched_audio(
         self,
         video_path_base: str,
@@ -988,34 +1039,28 @@ class MeltPerformer(TrackTimelineMixin):
         audio_path, stream_index = audio_stream
         with self.workspace.scoped_dir("matching") as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
-            lhs_id = file_ids[video_path_base]
-            rhs_id = file_ids[audio_path]
-            cache_key = (video_path_base, audio_path)
-            match_result = self._pair_match_cache.get(cache_key)
-
-            if match_result is None:
-                duration = video_utils.get_video_duration(audio_path)
-                matcher = PairMatcher(
-                    self.interruption, mwd, video_path_base, audio_path,
-                    self.logger.getChild("PairMatcher"),
-                    lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
-                    cache=self.cache,
-                )
-                match_result = _PairMatchResult(
-                    matching=matcher.create_segments_mapping(),
-                    source_duration=duration,
-                )
-                self._pair_match_cache[cache_key] = match_result
-            else:
-                self.logger.info(
-                    "Reusing PairMatcher results for #%d ↔ #%d (same video pair).",
-                    lhs_id, rhs_id,
-                )
+            first_match = (video_path_base, audio_path) not in self._pair_match_cache
+            match_result = self._pair_match(mwd, video_path_base, audio_path, file_ids)
 
             matching = match_result.matching
             lhs_all_frames = matching.lhs_all_frames
             rhs_all_frames = matching.rhs_all_frames
             duration = match_result.source_duration
+
+            # Coverage is a property of the file pair, not of the chosen audio
+            # strategy — report it right after the matcher, once per pair.
+            if first_match and matching.mapping:
+                self._log_coverage(
+                    video_path_base,
+                    audio_path,
+                    matching.mapping,
+                    base_duration,
+                    duration,
+                    matching.lhs_fps,
+                    matching.rhs_fps,
+                    file_ids[video_path_base],
+                    file_ids[audio_path],
+                )
 
             strategy, mapping = self._choose_audio_strategy(
                 video_path_base, audio_path, matching,
@@ -1049,18 +1094,6 @@ class MeltPerformer(TrackTimelineMixin):
                 self.logger.info("  Desired audio start: %d ms", timeline_start_ms)
                 return _PatchedAudio(patched_audio, patched_index, timeline_start_ms)
             else:
-                self._log_coverage(
-                    video_path_base,
-                    audio_path,
-                    mapping,
-                    base_duration,
-                    duration,
-                    matching.lhs_fps,
-                    matching.rhs_fps,
-                    lhs_id,
-                    rhs_id,
-                )
-
                 self.logger.debug(
                     "Audio patching: base_duration=%d ms, source_duration=%d ms, "
                     "mapping_relation=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
@@ -1623,7 +1656,7 @@ class MeltPerformer(TrackTimelineMixin):
                 self._stream_info(path, "audio", stream_index)
             )
             duration = self._video_track_duration(path, details, logger=self.logger)
-            if _is_length_mismatch(base_duration, duration, self.tolerance_ms):
+            if _is_length_mismatch(base_duration, duration):
                 assert base_duration is not None  # guaranteed by _is_length_mismatch
                 original_path = path
                 patched = self._patch_mismatched_audio(
@@ -1645,7 +1678,7 @@ class MeltPerformer(TrackTimelineMixin):
                 trim_end_ms: int | None = None
                 if path != video_path_base and audio_desired_start_ms is not None and base_output_end_ms is not None:
                     audio_end_ms = self._source_stream_end_offset_ms(path, "audio", stream_index)
-                    if audio_end_ms is not None and audio_end_ms > base_output_end_ms + self.tolerance_ms:
+                    if audio_end_ms is not None and audio_end_ms > base_output_end_ms:
                         trim_end_ms = base_output_end_ms
                 needs_unscaled_preparation = needs_mkvmerge_normalization or trim_end_ms is not None
                 if needs_unscaled_preparation:

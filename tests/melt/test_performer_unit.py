@@ -8,7 +8,7 @@ from parameterized import parameterized
 from unittest.mock import patch
 
 from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
-from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltPerformer
+from twotone.tools.melt.melt import MeltPerformer
 from twotone.tools.melt.melt_performer import _PairMatchResult, _StreamEntry
 from twotone.tools.melt.pair_matcher import MappingRelation, SegmentsMappingResult
 from common import run_ffmpeg
@@ -26,7 +26,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
             interruption=generic_utils.InterruptibleProcess(),
             workspace=files_utils.Workspace.temporary(),
             output_dir=output.root,
-            tolerance_ms=DEFAULT_TOLERANCE_MS,
         )
 
     def test_stream_sorting_puts_unknown_languages_last(self):

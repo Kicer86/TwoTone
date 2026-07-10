@@ -10,7 +10,7 @@ from itertools import permutations
 from pathlib import Path
 
 from twotone.tools.utils import generic_utils, video_utils
-from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, StaticSource
+from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
 from twotone.tools.utils.files_utils import Workspace
 from common import (
     TwoToneTestCase,
@@ -46,7 +46,6 @@ def analyze_duplicates_helper(
     duplicates_source: StaticSource,
     workspace: Workspace,
     allow_length_mismatch: bool = False,
-    tolerance_ms: int = DEFAULT_TOLERANCE_MS,
 ):
     duplicates_raw = duplicates_source.collect_duplicates()
     duplicates = {title: list(files) for title, files in duplicates_raw.items()}
@@ -55,7 +54,6 @@ def analyze_duplicates_helper(
         duplicates_source,
         workspace,
         allow_length_mismatch,
-        tolerance_ms,
     )
     return analyzer.analyze_duplicates(duplicates)
 
@@ -66,14 +64,12 @@ def process_duplicates_helper(
     workspace: Workspace,
     output_dir: str,
     plan,
-    tolerance_ms: int = DEFAULT_TOLERANCE_MS,
 ):
     performer = MeltPerformer(
         logger,
         interruption,
         workspace,
         output_dir,
-        tolerance_ms,
     )
     performer.process_duplicates(plan)
 

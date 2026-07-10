@@ -11,7 +11,7 @@ from .jellyfin import JellyfinSource
 from .static_source import StaticSource
 from .melt_analyzer import MeltAnalyzer
 from .melt_cache import MeltCache
-from .melt_common import DEFAULT_TOLERANCE_MS, _split_path_fix
+from .melt_common import _split_path_fix
 from .melt_performer import MeltPerformer
 from .melt_plan import MeltPlan
 
@@ -131,17 +131,6 @@ class MeltTool(Tool):
                                  'with audio from the base video file. By default, gaps are filled with silence\n'
                                  'and the audio is shifted/trimmed without re-encoding when possible.')
 
-        def _nonneg_int(value: str) -> int:
-            ival = int(value)
-            if ival < 0:
-                raise argparse.ArgumentTypeError(f"tolerance must be non-negative, got {ival}")
-            return ival
-
-        parser.add_argument('--tolerance', type=_nonneg_int, default=DEFAULT_TOLERANCE_MS,
-                            help='Maximum allowed duration difference (in ms) between input files\n'
-                                 'before alignment is triggered. Files within this tolerance are treated\n'
-                                 'as having equal length. Default: %(default)d ms.')
-
         parser.add_argument('--cache-dir',
                             help='Directory for caching expensive per-video operations (scene detection, '
                                  'frame probing, frame extraction). Speeds up repeated runs on the same input files. '
@@ -220,7 +209,6 @@ class MeltTool(Tool):
             data_source,
             workspace,
             args.allow_length_mismatch,
-            args.tolerance,
         )
         all_entries = [path for entries in duplicates.values() for path in entries]
         if path_fix:
@@ -248,7 +236,6 @@ class MeltTool(Tool):
             interruption,
             workspace,
             plan.output_dir,
-            args.tolerance,
             cache=cache,
             fill_audio_gaps=args.fill_audio_gaps,
         )

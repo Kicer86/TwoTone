@@ -19,13 +19,11 @@ class MeltAnalyzer:
         duplicates_source: DuplicatesSource,
         workspace: files_utils.Workspace,
         allow_length_mismatch: bool,
-        tolerance_ms: int,
     ) -> None:
         self.logger = logger
         self.duplicates_source = duplicates_source
         self.workspace = workspace
         self.allow_length_mismatch = allow_length_mismatch
-        self.tolerance_ms = tolerance_ms
         self.base_path: str | None = None
 
     def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
@@ -270,7 +268,7 @@ class MeltAnalyzer:
         for path, _, _ in subtitle_streams:
             file_id = ids[path]
             length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
-            if _is_length_mismatch(base_length, length, self.tolerance_ms):
+            if _is_length_mismatch(base_length, length):
                 base_fmt = generic_utils.ms_to_time(base_length) if base_length else "?"
                 other_fmt = generic_utils.ms_to_time(length) if length else "?"
                 self.logger.debug(
@@ -285,7 +283,7 @@ class MeltAnalyzer:
         for path, tid, _ in audio_streams:
             file_id = ids[path]
             length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
-            if _is_length_mismatch(base_length, length, self.tolerance_ms):
+            if _is_length_mismatch(base_length, length):
                 base_file_id = ids[v_path]
                 base_fmt = generic_utils.ms_to_time(base_length) if base_length else "?"
                 other_fmt = generic_utils.ms_to_time(length) if length else "?"
@@ -339,7 +337,7 @@ class MeltAnalyzer:
                 base_file_id = ids[path]
                 continue
 
-            if _is_length_mismatch(base_length, length, self.tolerance_ms):
+            if _is_length_mismatch(base_length, length):
                 issue = f"Video length mismatch between #{ids[path]} and #{base_file_id} (use --allow-length-mismatch)."
                 if self.allow_length_mismatch:
                     self.logger.debug(f"{issue} Continuing due to allow-length-mismatch.")

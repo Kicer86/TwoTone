@@ -18,8 +18,6 @@ class FrameInfo(TypedDict):
 FramesInfo = dict[int, FrameInfo]
 StreamType = Literal["video", "audio", "subtitle"]
 
-DEFAULT_TOLERANCE_MS = 0
-
 
 def _fmt_fps(value: str) -> str | None:
     try:
@@ -80,7 +78,7 @@ def _split_path_fix(value: str) -> list[str]:
     return [match.replace(r'\"', '"') for match in matches]
 
 
-def _is_length_mismatch(base_ms: int | None, other_ms: int | None, tolerance_ms: int) -> bool:
+def _is_length_mismatch(base_ms: int | None, other_ms: int | None) -> bool:
     if base_ms is None or other_ms is None:
         return False
-    return abs(base_ms - other_ms) > tolerance_ms
+    return base_ms != other_ms

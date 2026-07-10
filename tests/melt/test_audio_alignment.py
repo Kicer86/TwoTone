@@ -586,7 +586,7 @@ class AudioAlignmentTest(TwoToneTestCase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        analyzer = MeltAnalyzer(logger, duplicates, self.workspace, True, 100)
+        analyzer = MeltAnalyzer(logger, duplicates, self.workspace, True)
         duplicates_raw = duplicates.collect_duplicates()
         plan = analyzer.analyze_duplicates({
             title: list(files)
@@ -598,7 +598,6 @@ class AudioAlignmentTest(TwoToneTestCase):
             interruption,
             self.workspace,
             output_dir,
-            100,
             cache=self.melt_cache,
         )
         performer.process_duplicates(plan)
