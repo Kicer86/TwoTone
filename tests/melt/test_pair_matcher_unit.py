@@ -2,11 +2,13 @@
 import logging
 import unittest
 
+from typing import cast
 from unittest.mock import patch
 
 from twotone.tools.utils import files_utils, generic_utils, image_utils, video_utils
 from twotone.tools.melt.melt import MappingRelation, PairMatcher
 from twotone.tools.melt.pair_matcher import GlobalLinearFit, _BoundaryVerifyContext, _VerifySide
+from twotone.tools.melt.phash_cache import PhashCache
 
 
 class PairMatcherUnitTest(unittest.TestCase):
@@ -356,7 +358,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         ))
         self.assertFalse(any("median=" in message for message in info_messages))
         self.assertTrue(any(
-            "Files #1 (lhs.mp4) and #2 (rhs.mp4) have the same content" in message
+            "Files #1 (lhs.mp4) and #2 (rhs.mp4) share content with" in message
             for message in info_messages
         ))
         self.assertTrue(any(
@@ -664,7 +666,8 @@ class PairMatcherUnitTest(unittest.TestCase):
             )
 
         return _BoundaryVerifyContext(
-            lhs=side(lhs_images), rhs=side(rhs_images), phash=FakePhash(), cutoff=cutoff,
+            lhs=side(lhs_images), rhs=side(rhs_images),
+            phash=cast(PhashCache, FakePhash()), cutoff=cutoff,
         )
 
     def test_verified_extrapolation_extends_to_edges_when_content_matches(self):
