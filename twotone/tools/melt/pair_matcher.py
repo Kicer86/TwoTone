@@ -13,7 +13,7 @@ from typing import Callable, NamedTuple, TypedDict
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
 from .melt_common import FrameInfo, FramesInfo
-from .phash_cache import PhashCache, compute_phash
+from .phash_cache import PhashCache
 from ..utils import files_utils, generic_utils, image_utils, video_utils
 
 
@@ -86,6 +86,35 @@ class _BoundarySearchContext(NamedTuple):
     direction: int
 
 
+class _VerifySide(NamedTuple):
+    """One video's frame sources for boundary-gap verification.
+
+    ``comparison_cache`` maps a frame timestamp to its comparison-space image
+    (normalized and, when ``crop_fn`` is set, cropped to the shared region);
+    entries are produced lazily by ``PairMatcher._comparison_image``.
+    """
+    video_path: str
+    raw_dir: str
+    all_frames: FramesInfo
+    normalized: FramesInfo
+    crop_fn: Callable[[int], tuple[int, int, int, int]] | None
+    comparison_dir: str
+    comparison_cache: dict[int, str | None]
+
+
+class _BoundaryVerifyContext(NamedTuple):
+    """Comparison engine for verifying boundary-gap frames.
+
+    Both sides are compared in the exact representation the matching core
+    uses — normalized frames cropped to the shared region interpolated from
+    the matched pairs — against a cutoff calibrated on those matched pairs.
+    """
+    lhs: _VerifySide
+    rhs: _VerifySide
+    phash: PhashCache
+    cutoff: float
+
+
 class PairMatcher:
 
     _MAX_BOUNDARY_ERROR_FRAMES = 2
@@ -95,10 +124,39 @@ class PairMatcher:
     # would then demand pixel-perfect frames — impossible across a speed or
     # resolution difference — so it is floored to this value.
     _MIN_PHASH_CUTOFF = 16
-    # Maximum phash distance (bits, of hash_size 16 → 256) between two
-    # boundary-extrapolation frames still considered the same picture; see
-    # _boundary_content_matches for the measured separation behind the value.
-    _MAX_BOUNDARY_PHASH_DISTANCE = 96
+    # Cutoff floor for verifying boundary-gap frames (bits, of the 256-bit
+    # hash), applied in the comparison space (normalized frames cropped to the
+    # shared region).  Gap samples carry noise the matched calibration pairs
+    # do not: the fitted prediction can be a frame or two off (retried against
+    # ±2 neighbours) and the interpolated crop is extrapolated past the
+    # outermost match, where its per-pair estimation error no longer cancels
+    # between the two sides.  Measured in this space: genuinely shared gap
+    # samples on the degraded/speed-changed fixtures reach ~74 and the same
+    # frame across a real cross-geometry pair (16:9 open matte vs 2.35:1
+    # crop) sits at ~62, while divergent intros stay ≥ 122 — 96 keeps >20
+    # bits of margin to both sides.  Pairs whose matched frames are even
+    # farther apart raise the cutoff adaptively (see
+    # _build_boundary_verify_context).
+    _MIN_BOUNDARY_GAP_PHASH_CUTOFF = 96
+    # Entropy above which a frame carries enough texture for reliable
+    # phash/ORB comparison (see _is_rich).
+    _RICH_FRAME_ENTROPY = 3.5
+    # How many consecutive unverifiable samples the boundary-gap walk crosses
+    # before declaring divergence.  One isolated miss is phash noise (motion
+    # blur, hash saturation on smooth content) and must not end a multi-minute
+    # extension; a genuinely divergent intro/outro spans many samples, so two
+    # in a row already identify it.  The boundary only ever lands on a
+    # verified sample, never on a tolerated miss.
+    _MAX_BOUNDARY_GAP_MISSES = 1
+    # Entropy below which a boundary-gap frame counts as decisively black for
+    # the black-vs-content rejection.  _RICH_FRAME_ENTROPY marks frames too
+    # flat for reliable phash matching, but flat-yet-lit content (title
+    # cards, sky-heavy shots, ~3.5-4.0) straddles it: a framing difference
+    # between two transfers can push one side just below and hard-fail a
+    # genuinely shared frame.  Real black lead-ins/outs measure ~0-1; only
+    # those may veto a rich opposite side — borderline pairs fall through to
+    # phash.
+    _BLACK_FRAME_ENTROPY = 2.0
     # Global-linear detection thresholds, shared with the relation-diagnostics
     # log so the quoted limits never drift from the real ones.
     _MAX_CONSTANT_OFFSET_STD = 1.0
@@ -139,6 +197,8 @@ class PairMatcher:
         self.rhs_normalized_wd = os.path.join(rhs_wd, "norm")
         self.lhs_normalized_cropped_wd = os.path.join(lhs_wd, "norm_cropped")
         self.rhs_normalized_cropped_wd = os.path.join(rhs_wd, "norm_cropped")
+        self.lhs_boundary_cmp_wd = os.path.join(lhs_wd, "boundary_cmp")
+        self.rhs_boundary_cmp_wd = os.path.join(rhs_wd, "boundary_cmp")
         self.debug_wd = os.path.join(self.wd, "debug")
 
         for d in [lhs_wd,
@@ -151,6 +211,8 @@ class PairMatcher:
                   self.rhs_normalized_wd,
                   self.lhs_normalized_cropped_wd,
                   self.rhs_normalized_cropped_wd,
+                  self.lhs_boundary_cmp_wd,
+                  self.rhs_boundary_cmp_wd,
                   self.debug_wd,
         ]:
             os.makedirs(d)
@@ -746,20 +808,20 @@ class PairMatcher:
                 )
             else:
                 relation_text = "no frame offset"
-            same_content_phrase = "have the same content"
         else:
             relation_text = f"a linear frame drift (slope={slope:.6f}, intercept={intercept:+.1f})"
-            same_content_phrase = "share content"
 
         if abs(time_scale - 1.0) > 0.005:
             relation_text += f", audio time-scaled by {time_scale:.5f}"
 
-        self.logger.info("Files %s and %s %s with %s.", lhs_ref, rhs_ref, same_content_phrase, relation_text)
+        self.logger.info("Files %s and %s share content with %s.", lhs_ref, rhs_ref, relation_text)
 
     def _extrapolate_and_verify_global_linear(
         self,
         fit: GlobalLinearFit,
         matching_pairs: list[tuple[int, int]],
+        lhs_normalized_frames: FramesInfo,
+        rhs_normalized_frames: FramesInfo,
     ) -> list[tuple[int, int]]:
         """Extend the first/last common pair along the fitted line through verified content.
 
@@ -773,10 +835,19 @@ class PairMatcher:
         frame — so the gap is sampled.  When it does not verify, the boundary is
         left at the outermost real match; the line is never blindly projected
         across divergent content.
+
+        Verification uses the same comparison engine as the matching core: the
+        gap frames are normalized and cropped to the shared region interpolated
+        from the matched pairs, and compared against a cutoff calibrated on
+        those pairs (see ``_build_boundary_verify_context``).
         """
         slope, intercept = fit.slope, fit.intercept
         if slope == 0:
             return sorted(matching_pairs)
+
+        verify_ctx = self._build_boundary_verify_context(
+            matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
+        )
 
         lhs_by_frame = {int(info["frame_id"]): ts for ts, info in self.lhs_all_frames.items()}
         rhs_by_frame = {int(info["frame_id"]): ts for ts, info in self.rhs_all_frames.items()}
@@ -805,7 +876,7 @@ class PairMatcher:
             first_rhs_frame = rhs_min_frame
         first_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, first_rhs_frame))
         self._maybe_insert_verified_boundary(
-            result, "start", slope, intercept, first_lhs_frame, first_rhs_frame, lhs_by_frame, rhs_by_frame,
+            result, "start", slope, intercept, first_lhs_frame, first_rhs_frame, lhs_by_frame, rhs_by_frame, verify_ctx,
         )
 
         last_lhs_frame = min(lhs_max_frame, int(np.floor((rhs_max_frame - intercept) / slope + eps)))
@@ -818,10 +889,123 @@ class PairMatcher:
             last_rhs_frame = rhs_max_frame
         last_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, last_rhs_frame))
         self._maybe_insert_verified_boundary(
-            result, "end", slope, intercept, last_lhs_frame, last_rhs_frame, lhs_by_frame, rhs_by_frame,
+            result, "end", slope, intercept, last_lhs_frame, last_rhs_frame, lhs_by_frame, rhs_by_frame, verify_ctx,
         )
 
         return result
+
+    def _build_boundary_verify_context(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        lhs_normalized_frames: FramesInfo,
+        rhs_normalized_frames: FramesInfo,
+    ) -> _BoundaryVerifyContext:
+        """Build the comparison engine used to content-verify boundary-gap frames.
+
+        Mirrors what the matching core and the GENERIC boundary walk compare:
+        normalized frames cropped to the shared region interpolated from the
+        matched pairs (``_find_interpolated_crop``), with the phash cutoff
+        calibrated on the matched pairs themselves in that same representation
+        (``_calculate_cutoff``, floored by ``_MIN_BOUNDARY_GAP_PHASH_CUTOFF``
+        to cover the extra noise gap samples carry).  This keeps geometry
+        differences between the two transfers — letterboxing, an open-matte
+        master vs a widescreen crop, different grading — from failing
+        genuinely shared frames, which is exactly what a fixed cutoff on raw
+        extractions did.
+        """
+        crop_fns = PairMatcher._find_interpolated_crop(
+            matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
+        )
+        if crop_fns is None:
+            self.logger.debug(
+                "Boundary verification: no usable crop geometry found for any "
+                "matched pair — comparing uncropped normalized frames"
+            )
+            lhs_crop_fn = rhs_crop_fn = None
+        else:
+            lhs_crop_fn, rhs_crop_fn = crop_fns
+
+        lhs_side = _VerifySide(
+            video_path=self.lhs_path, raw_dir=self.lhs_boundary_wd,
+            all_frames=self.lhs_all_frames, normalized=lhs_normalized_frames,
+            crop_fn=lhs_crop_fn, comparison_dir=self.lhs_boundary_cmp_wd, comparison_cache={},
+        )
+        rhs_side = _VerifySide(
+            video_path=self.rhs_path, raw_dir=self.rhs_boundary_wd,
+            all_frames=self.rhs_all_frames, normalized=rhs_normalized_frames,
+            crop_fn=rhs_crop_fn, comparison_dir=self.rhs_boundary_cmp_wd, comparison_cache={},
+        )
+
+        phash = PhashCache()
+        lhs_cmp: FramesInfo = {}
+        rhs_cmp: FramesInfo = {}
+        for lhs_ts, rhs_ts in matching_pairs:
+            lhs_img = self._comparison_image(lhs_side, lhs_ts)
+            rhs_img = self._comparison_image(rhs_side, rhs_ts)
+            if lhs_img is None or rhs_img is None:
+                continue
+            lhs_cmp[lhs_ts] = PairMatcher._get_new_info(lhs_normalized_frames[lhs_ts], lhs_img)
+            rhs_cmp[rhs_ts] = PairMatcher._get_new_info(rhs_normalized_frames[rhs_ts], rhs_img)
+
+        usable_pairs = [
+            (l, r) for l, r in matching_pairs if l in lhs_cmp and r in rhs_cmp
+        ]
+        # The floor covers the prediction-jitter and crop-extrapolation noise
+        # gap samples carry on top of what the matched pairs measure (see the
+        # constant's comment); the adaptive term takes over for pairs whose
+        # transfers differ more than that noise.
+        cutoff = max(
+            self._calculate_cutoff(phash, usable_pairs, lhs_cmp, rhs_cmp),
+            self._MIN_BOUNDARY_GAP_PHASH_CUTOFF,
+        )
+        self.logger.debug(
+            f"Boundary verification cutoff: {cutoff:.1f} "
+            f"(calibrated on {len(usable_pairs)} matched pair(s))"
+        )
+
+        return _BoundaryVerifyContext(lhs=lhs_side, rhs=rhs_side, phash=phash, cutoff=cutoff)
+
+    def _comparison_image(self, side: _VerifySide, ts: int, frame_id: int | None = None) -> str | None:
+        """Comparison-space image for the frame at *ts*, produced lazily.
+
+        Reuses the already-normalized image when the frame went through the
+        matching pipeline; otherwise extracts the raw frame on demand (given
+        *frame_id*) and normalizes it the same way.  The side's interpolated
+        crop is then applied, so gap frames are compared in exactly the
+        representation the matched pairs were calibrated in.
+        """
+        if ts in side.comparison_cache:
+            return side.comparison_cache[ts]
+
+        path: str | None = None
+        try:
+            norm_info = side.normalized.get(ts)
+            if norm_info is not None:
+                norm_path = norm_info["path"]
+            elif frame_id is None:
+                norm_path = None
+            else:
+                raw_path = self._ensure_boundary_image(
+                    side.video_path, side.raw_dir, side.all_frames, frame_id, ts,
+                )
+                if raw_path is None:
+                    norm_path = None
+                else:
+                    norm_path = os.path.join(side.comparison_dir, f"n_{ts}.png")
+                    PairMatcher._normalize_image(raw_path, norm_path)
+
+            if norm_path is not None:
+                if side.crop_fn is None:
+                    path = norm_path
+                else:
+                    path = os.path.join(side.comparison_dir, f"c_{ts}.png")
+                    PairMatcher._crop_image(norm_path, path, side.crop_fn(ts))
+        except Exception as e:  # pragma: no cover - preparation failure is non-fatal
+            self.logger.debug("Comparison image preparation failed for %dms: %s", ts, e)
+            path = None
+
+        side.comparison_cache[ts] = path
+        return path
 
     def _maybe_insert_verified_boundary(
         self,
@@ -833,6 +1017,7 @@ class PairMatcher:
         rhs_frame: int,
         lhs_by_frame: dict[int, int],
         rhs_by_frame: dict[int, int],
+        verify_ctx: _BoundaryVerifyContext,
     ) -> None:
         """Extend the boundary toward the projected edge as far as content verifies.
 
@@ -862,7 +1047,7 @@ class PairMatcher:
         anchor_lhs_frame = int(anchor_info["frame_id"])
 
         verified = self._walk_shared_boundary(
-            slope, intercept, anchor_lhs_frame, lhs_frame, rhs_frame, lhs_by_frame, rhs_by_frame,
+            slope, intercept, anchor_lhs_frame, lhs_frame, rhs_frame, lhs_by_frame, rhs_by_frame, verify_ctx,
         )
         if verified is None or verified == anchor:
             self.logger.debug(
@@ -885,15 +1070,18 @@ class PairMatcher:
         boundary_rhs_frame: int,
         lhs_by_frame: dict[int, int],
         rhs_by_frame: dict[int, int],
+        verify_ctx: _BoundaryVerifyContext,
     ) -> tuple[int, int] | None:
         """Walk ~0.5s-spaced predicted pairs from the match toward the projected
         boundary; return the furthest ``(lhs_ts, rhs_ts)`` that is still shared.
 
         Sampling the whole gap (not just its endpoint) distinguishes a shared black
         lead-out from a divergent outro that merely fades to black on its last
-        frame, and stopping at the first divergence keeps the shared body that
-        precedes a different tail.  Returns ``None`` when the very first step
-        diverges.
+        frame, and stopping on divergence (``_MAX_BOUNDARY_GAP_MISSES``
+        consecutive unverifiable samples) keeps the shared body that precedes
+        a different tail.  The boundary only advances over verified samples,
+        so a tolerated miss never becomes the boundary itself.  Returns
+        ``None`` when the walk diverges before verifying anything.
         """
         direction = 1 if boundary_lhs_frame >= anchor_lhs_frame else -1
         step = max(1, int(self.lhs_fps * 0.5))
@@ -919,18 +1107,24 @@ class PairMatcher:
         self._prefetch_boundary_images(self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames, rhs_with_neighbours)
 
         best: tuple[int, int] | None = None
+        consecutive_misses = 0
         for lhs_f, rhs_f in samples:
             lhs_ts = lhs_by_frame.get(lhs_f)
             rhs_ts = rhs_by_frame.get(rhs_f)
             if lhs_ts is None or rhs_ts is None:
                 break
-            if not self._shared_content_at_prediction(lhs_f, rhs_f, lhs_ts, rhs_by_frame):
-                break
-            best = (lhs_ts, rhs_ts)
+            if self._shared_content_at_prediction(verify_ctx, lhs_f, rhs_f, lhs_ts, rhs_by_frame):
+                best = (lhs_ts, rhs_ts)
+                consecutive_misses = 0
+            else:
+                consecutive_misses += 1
+                if consecutive_misses > self._MAX_BOUNDARY_GAP_MISSES:
+                    break
         return best
 
     def _shared_content_at_prediction(
         self,
+        verify_ctx: _BoundaryVerifyContext,
         lhs_frame: int,
         rhs_frame: int,
         lhs_ts: int,
@@ -940,7 +1134,7 @@ class PairMatcher:
 
         The fit's rhs prediction can be a frame or two off (rounding, and
         frame-probe differences between ffmpeg builds); in fast motion that is
-        enough to push the exact predicted pair past the phash gate even for
+        enough to push the exact predicted pair past the phash cutoff even for
         genuinely shared content.  Retry against the rhs neighbours before
         declaring divergence — a divergent intro/outro fails for every
         neighbour, so the tolerance does not weaken divergence rejection, and
@@ -952,7 +1146,7 @@ class PairMatcher:
             candidate_ts = rhs_by_frame.get(candidate_frame)
             if candidate_ts is None:
                 continue
-            if self._boundary_content_matches(lhs_frame, candidate_frame, lhs_ts, candidate_ts):
+            if self._boundary_content_matches(verify_ctx, lhs_frame, candidate_frame, lhs_ts, candidate_ts):
                 return True
         return False
 
@@ -976,41 +1170,49 @@ class PairMatcher:
         except Exception as e:  # pragma: no cover - extraction failure is non-fatal
             self.logger.debug("Boundary gap extraction failed: %s", e)
 
-    def _boundary_content_matches(self, lhs_frame: int, rhs_frame: int, lhs_ts: int, rhs_ts: int) -> bool:
+    def _boundary_content_matches(self, ctx: _BoundaryVerifyContext, lhs_frame: int, rhs_frame: int, lhs_ts: int, rhs_ts: int) -> bool:
         """Verify that the extrapolated boundary frames actually share content.
 
-        True when both frames are low-entropy (a shared black lead-in/out) or the
-        two frames are visually the same picture.  A divergent intro/outro (e.g.
-        grass vs atoms) is neither, so the extrapolation is rejected there.
+        True when both frames are low-entropy (a shared black lead-in/out) or
+        their phash distance in the shared comparison space stays within the
+        pair-calibrated cutoff.  Both the representation (normalized frames
+        cropped to the shared region) and the cutoff come from the matched
+        pairs via ``_build_boundary_verify_context`` — the same engine the
+        matching core and the GENERIC boundary walk use — so transfer
+        differences the calibration already absorbed (geometry, grading, codec
+        degradation) cannot fail genuinely shared frames, while a divergent
+        intro/outro still lands far above the cutoff.
 
-        ORB match count alone cannot make that call: two unrelated textured
-        frames (grass vs atoms) can yield dozens of cross-checked ORB matches,
-        just with large descriptor distances.  The fit predicts the *same*
-        frame, so the perceptual hashes must also be close.  Measured on the
-        960px boundary frames (256-bit hash): the same frame across a
-        quality/speed change is ≲ 22 bits apart, a shared-content sample whose
-        prediction is a frame or two off in fast motion reaches ~66, and
-        divergent intros are ≳ 124 — the 96-bit gate keeps ~30 bits of margin
-        to both sides.
-
-        The hashes are computed fresh (not via ``self.phash``): each sampled
-        pair is checked once, so a cache would add nothing.
+        A decisively black frame (see ``_BLACK_FRAME_ENTROPY``) against a rich
+        one is rejected outright — one file is still in its lead-in/out while
+        the other already shows content; a merely flat-vs-rich split is left
+        to the phash comparison.
         """
-        lhs_path = self._ensure_boundary_image(self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames, lhs_frame, lhs_ts)
-        rhs_path = self._ensure_boundary_image(self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames, rhs_frame, rhs_ts)
+        lhs_path = self._comparison_image(ctx.lhs, lhs_ts, lhs_frame)
+        rhs_path = self._comparison_image(ctx.rhs, rhs_ts, rhs_frame)
         if lhs_path is None or rhs_path is None:
+            self.logger.debug(
+                f"Boundary gap sample {lhs_ts}ms vs {rhs_ts}ms: "
+                f"no comparison image ({lhs_path}, {rhs_path})"
+            )
             return False
 
-        lhs_black = not PairMatcher._is_rich(lhs_path)
-        rhs_black = not PairMatcher._is_rich(rhs_path)
-        if lhs_black and rhs_black:
+        lhs_entropy = image_utils.image_entropy(lhs_path)
+        rhs_entropy = image_utils.image_entropy(rhs_path)
+        if lhs_entropy <= self._RICH_FRAME_ENTROPY and rhs_entropy <= self._RICH_FRAME_ENTROPY:
             return True
-        if lhs_black != rhs_black:
+        if min(lhs_entropy, rhs_entropy) < self._BLACK_FRAME_ENTROPY:
+            self.logger.debug(
+                f"Boundary gap sample {lhs_ts}ms vs {rhs_ts}ms: black vs content "
+                f"(entropies {lhs_entropy:.2f}, {rhs_entropy:.2f})"
+            )
             return False
-        phash_distance = abs(compute_phash(lhs_path) - compute_phash(rhs_path))
-        if phash_distance > self._MAX_BOUNDARY_PHASH_DISTANCE:
-            return False
-        return image_utils.are_images_similar(lhs_path, rhs_path)
+        distance = abs(ctx.phash.get(lhs_path) - ctx.phash.get(rhs_path))
+        self.logger.debug(
+            f"Boundary gap sample {lhs_ts}ms vs {rhs_ts}ms: "
+            f"phash distance {distance} vs cutoff {ctx.cutoff:.1f}"
+        )
+        return distance <= ctx.cutoff
 
     def _ensure_boundary_image(
         self, video_path: str, out_dir: str, frames: FramesInfo, frame_id: int, ts: int,
@@ -1140,7 +1342,9 @@ class PairMatcher:
             # match — the line is never blindly projected across divergent
             # content.  No timestamp edge-snap here: the extension is already
             # frame-exact on the fitted line.
-            matching_pairs = self._extrapolate_and_verify_global_linear(global_linear_fit, matching_pairs)
+            matching_pairs = self._extrapolate_and_verify_global_linear(
+                global_linear_fit, matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
+            )
             debug.dump_matches(matching_pairs, "after verified global-linear extrapolation")
         else:
             relation = MappingRelation.GENERIC
@@ -1172,7 +1376,7 @@ class PairMatcher:
         rejection reasons at DEBUG.
         """
         expected_ratio = self.rhs_fps / self.lhs_fps if self.lhs_fps else float("nan")
-        self.logger.info(
+        self.logger.debug(
             "Relation diagnostics: %s fps=%.4f, %s fps=%.4f, "
             "expected lhs/rhs time ratio=%.4f, matched pairs=%d",
             self.lhs_label, self.lhs_fps, self.rhs_label, self.rhs_fps,
@@ -1180,7 +1384,7 @@ class PairMatcher:
         )
 
         if len(matching_pairs) < 2:
-            self.logger.info("  too few matched pairs for offset/drift analysis")
+            self.logger.debug("  too few matched pairs for offset/drift analysis")
             return
 
         try:
@@ -1193,7 +1397,7 @@ class PairMatcher:
                 dtype=float,
             )
         except KeyError:
-            self.logger.info("  matched frames lack frame_id; skipping offset/drift analysis")
+            self.logger.debug("  matched frames lack frame_id; skipping offset/drift analysis")
             return
 
         frame_offsets = lhs_frame_ids - rhs_frame_ids
@@ -1208,7 +1412,7 @@ class PairMatcher:
             slope = float("nan")
         time_scale = slope * self.lhs_fps / self.rhs_fps if self.rhs_fps else float("nan")
 
-        self.logger.info(
+        self.logger.debug(
             "  frame-offset median=%.2f std=%.2f (constant offset needs std<=%.1f, "
             "else RANSAC drift with slope within %.2f of 1.0 or of the fps ratio); "
             "matched frame span=%.0f; observed time ratio=%.4f; "
@@ -1218,30 +1422,29 @@ class PairMatcher:
             self._MAX_DRIFT_SLOPE_DELTA, lhs_span, ratio, slope, time_scale,
         )
 
+    @staticmethod
+    def _normalize_image(src_path: str, dst_path: str) -> None:
+        """Bring one frame into the matcher's comparison space: grayscale, 5% border crop, 256x256."""
+        img = cv.imread(src_path, cv.IMREAD_GRAYSCALE)
+        if img is None:
+            raise RuntimeError(f"Failed to read frame from {src_path}")
+        height, width = img.shape
+        dx = int(width * 0.05)
+        dy = int(height * 0.05)
+        img = img[dy:height - dy, dx:width - dx]
+        img = cv.resize(img, (256, 256), interpolation=cv.INTER_AREA)
+        cv.imwrite(dst_path, img)
+
     def _normalize_frames(self, frames_info: FramesInfo, wd: str, desc: str = "Normalizing frames", prefix: str = "") -> FramesInfo:
         PairMatcher._assert_frames_extracted(frames_info, f"_normalize_frames({desc})")
-
-        def crop_5_percent(image: cv.typing.MatLike) -> cv.typing.MatLike:
-            height, width = image.shape
-            dx = int(width * 0.05)
-            dy = int(height * 0.05)
-
-            image_cropped = image[dy:height - dy, dx:width - dx]
-
-            return image_cropped
 
         def process_frame(item):
             timestamp, info = item
             self.interruption.check_for_stop()
             path = info["path"]
-            img = cv.imread(path, cv.IMREAD_GRAYSCALE)
-            if img is None:
-                raise RuntimeError(f"Failed to read frame from {path}")
-            img = crop_5_percent(img)
-            img = cv.resize(img, (256, 256), interpolation=cv.INTER_AREA)
             _, file, ext = files_utils.split_path(path)
             new_path = os.path.join(wd, prefix + file + "." + ext)
-            cv.imwrite(new_path, img)
+            PairMatcher._normalize_image(path, new_path)
 
             return timestamp, PairMatcher._get_new_info(info, new_path)
 
@@ -1258,7 +1461,7 @@ class PairMatcher:
 
     @staticmethod
     def _is_rich(frame_path: str) -> bool:
-        return image_utils.image_entropy(frame_path) > 3.5
+        return image_utils.image_entropy(frame_path) > PairMatcher._RICH_FRAME_ENTROPY
 
     @staticmethod
     def _extracted_path(info: FrameInfo) -> str:
@@ -1359,7 +1562,7 @@ class PairMatcher:
         return interpolate
 
     @staticmethod
-    def _find_interpolated_crop(pairs_with_timestamps: list[tuple[int, int]], lhs_frames: FramesInfo, rhs_frames: FramesInfo) -> tuple[Callable[[int], tuple[int, int, int, int]], Callable[[int], tuple[int, int, int, int]]]:
+    def _find_interpolated_crop(pairs_with_timestamps: list[tuple[int, int]], lhs_frames: FramesInfo, rhs_frames: FramesInfo) -> tuple[Callable[[int], tuple[int, int, int, int]], Callable[[int], tuple[int, int, int, int]]] | None:
         timestamps_lhs = []
         timestamps_rhs = []
         lhs_crops = []
@@ -1400,20 +1603,30 @@ class PairMatcher:
             lhs_crops.append(lhs_overlap)
             rhs_crops.append(rhs_overlap)
 
+        if not timestamps_lhs:
+            return None
+
         # Return interpolators
         return PairMatcher._interpolate_crop_rects(timestamps_lhs, lhs_crops), PairMatcher._interpolate_crop_rects(timestamps_rhs, rhs_crops)
+
+    @staticmethod
+    def _crop_image(src_path: str, dst_path: str, rect: tuple[int, int, int, int]) -> None:
+        """Crop one comparison-space frame to *rect* and rescale to 128x128."""
+        img = cv.imread(src_path, cv.IMREAD_GRAYSCALE)
+        if img is None:
+            raise RuntimeError(f"Failed to read frame from {src_path}")
+        x, y, w, h = rect
+        cropped = img[y:y+h, x:x+w]
+        cropped = cv.resize(cropped, (128, 128))
+        cv.imwrite(dst_path, cropped)
 
     def _apply_crop_interpolated(self, frames: FramesInfo, dst_dir: str, crop_fn: Callable[[int], tuple[int, int, int, int]]) -> FramesInfo:
         def _process_frame(item):
             timestamp, info = item
             self.interruption.check_for_stop()
             path = info["path"]
-            img = cv.imread(path, cv.IMREAD_GRAYSCALE)
-            x, y, w, h = crop_fn(timestamp)
-            cropped = img[y:y+h, x:x+w]
-            cropped = cv.resize(cropped, (128, 128))
             dst_path = os.path.join(dst_dir, os.path.basename(path))
-            cv.imwrite(dst_path, cropped)
+            PairMatcher._crop_image(path, dst_path, crop_fn(timestamp))
             return timestamp, PairMatcher._get_new_info(info, dst_path)
 
         with ThreadPoolExecutor() as executor:
@@ -1569,7 +1782,11 @@ class PairMatcher:
         PairMatcher._assert_frames_extracted(rhs_frames, "_crop_both_sets(rhs)")
 
         # Step 1: Get interpolated crop functions for both sets
-        lhs_crop_fn, rhs_crop_fn = PairMatcher._find_interpolated_crop(pairs_with_timestamps, lhs_frames, rhs_frames)
+        crop_fns = PairMatcher._find_interpolated_crop(pairs_with_timestamps, lhs_frames, rhs_frames)
+        if crop_fns is None:
+            self.logger.debug("No usable crop geometry found for any matched pair — comparing uncropped frames")
+            return lhs_frames, rhs_frames
+        lhs_crop_fn, rhs_crop_fn = crop_fns
 
         # Step 2: Apply interpolated cropping to each frame
         lhs_cropped = self._apply_crop_interpolated(lhs_frames, lhs_cropped_dir, lhs_crop_fn)

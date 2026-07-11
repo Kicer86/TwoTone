@@ -11,7 +11,7 @@ from .jellyfin import JellyfinSource
 from .static_source import StaticSource
 from .melt_analyzer import MeltAnalyzer
 from .melt_cache import MeltCache
-from .melt_common import DEFAULT_TOLERANCE_MS, _split_path_fix
+from .melt_common import _split_path_fix
 from .melt_performer import MeltPerformer
 from .melt_plan import MeltPlan
 
@@ -80,7 +80,8 @@ class MeltTool(Tool):
                                   help='Video (movie or series when directory is provided as an input) title.')
         manual_group.add_argument('-i', '--input', dest='input_entries', action=InputAction,
                                   help='Add an input video file or directory with video files (can be specified multiple times).\n'
-                                       'Per-input metadata can be specified with --audio-lang, --audio-prod-lang, --subtitle-lang\n'
+                                       'Per-input metadata can be specified with --audio-lang, --audio-prod-lang,\n'
+                                       '--subtitle-lang, --use-video, and --keep-all-audio-subtitle-streams\n'
                                        'flags placed after each -i.\n\n'
                                        'Example of usage:\n'
                                        '-i some/path/file.mp4 --audio-lang jp -i some/path/file2.mp4 --audio-lang eng\n\n'
@@ -100,12 +101,21 @@ class MeltTool(Tool):
                                   default=argparse.SUPPRESS,
                                   help='Subtitle language for the preceding -i input.\n'
                                        'Can be specified after each -i to set different languages per input.')
+        manual_group.add_argument('--use-video', dest='use_video', action=PerInputFlagAction,
+                                  nargs=0,
+                                  default=argparse.SUPPRESS,
+                                  help='Use video stream(s) from the preceding -i input as the output video.')
+        manual_group.add_argument('--keep-all-audio-subtitle-streams', dest='keep_all_audio_subtitle_streams',
+                                  action=PerInputFlagAction,
+                                  nargs=0,
+                                  default=argparse.SUPPRESS,
+                                  help='Keep all audio and subtitle streams from the preceding -i input,\n'
+                                       'even if their language is unknown. Streams from other inputs are\n'
+                                       'only used when kept inputs do not already cover the same language.')
         manual_group.add_argument('--force-all-streams', dest='force_all_streams', action=PerInputFlagAction,
                                   nargs=0,
                                   default=argparse.SUPPRESS,
-                                  help='Force all audio and subtitle streams from the preceding -i input to be kept,\n'
-                                       'even if their language is unknown. Streams from non-forced inputs are\n'
-                                       'only used when forced inputs do not already cover the same language.')
+                                  help='Deprecated alias for --keep-all-audio-subtitle-streams.')
 
         # global options
         parser.add_argument('-o', '--output-dir',
@@ -120,17 +130,6 @@ class MeltTool(Tool):
                             help='When audio comes from a file with different length, fill head/tail gaps\n'
                                  'with audio from the base video file. By default, gaps are filled with silence\n'
                                  'and the audio is shifted/trimmed without re-encoding when possible.')
-
-        def _nonneg_int(value: str) -> int:
-            ival = int(value)
-            if ival < 0:
-                raise argparse.ArgumentTypeError(f"tolerance must be non-negative, got {ival}")
-            return ival
-
-        parser.add_argument('--tolerance', type=_nonneg_int, default=DEFAULT_TOLERANCE_MS,
-                            help='Maximum allowed duration difference (in ms) between input files\n'
-                                 'before alignment is triggered. Files within this tolerance are treated\n'
-                                 'as having equal length. Default: %(default)d ms.')
 
         parser.add_argument('--cache-dir',
                             help='Directory for caching expensive per-video operations (scene detection, '
@@ -178,7 +177,19 @@ class MeltTool(Tool):
 
                 src.add_entry(title, path)
 
-                for key in ('audio_lang', 'audio_prod_lang', 'subtitle_lang', 'force_all_streams'):
+                if entry.get('force_all_streams') is not None:
+                    logger.warning(
+                        "--force-all-streams is deprecated; use --keep-all-audio-subtitle-streams instead."
+                    )
+                    entry['keep_all_audio_subtitle_streams'] = True
+
+                for key in (
+                    'audio_lang',
+                    'audio_prod_lang',
+                    'subtitle_lang',
+                    'keep_all_audio_subtitle_streams',
+                    'use_video',
+                ):
                     value = entry.get(key)
                     if value is not None:
                         src.add_metadata(path, key, value)
@@ -198,7 +209,6 @@ class MeltTool(Tool):
             data_source,
             workspace,
             args.allow_length_mismatch,
-            args.tolerance,
         )
         all_entries = [path for entries in duplicates.values() for path in entries]
         if path_fix:
@@ -226,7 +236,6 @@ class MeltTool(Tool):
             interruption,
             workspace,
             plan.output_dir,
-            args.tolerance,
             cache=cache,
             fill_audio_gaps=args.fill_audio_gaps,
         )

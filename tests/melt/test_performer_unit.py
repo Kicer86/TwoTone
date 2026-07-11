@@ -8,7 +8,7 @@ from parameterized import parameterized
 from unittest.mock import patch
 
 from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
-from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltPerformer
+from twotone.tools.melt.melt import MeltPerformer
 from twotone.tools.melt.melt_performer import _PairMatchResult, _StreamEntry
 from twotone.tools.melt.pair_matcher import MappingRelation, SegmentsMappingResult
 from common import run_ffmpeg
@@ -26,7 +26,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
             interruption=generic_utils.InterruptibleProcess(),
             workspace=files_utils.Workspace.temporary(),
             output_dir=output.root,
-            tolerance_ms=DEFAULT_TOLERANCE_MS,
         )
 
     def test_stream_sorting_puts_unknown_languages_last(self):
@@ -104,6 +103,43 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 (63250, 64540),
             ],
         )
+
+    def test_unscaled_timeline_shift_accepts_whole_frame_offsets(self):
+        # 5 dropped leading frames at 24 fps: deltas sit on the whole-frame grid.
+        mapping = [(lhs, lhs - 208) for lhs in (500, 10000, 30000, 60000)]
+
+        shift = MeltPerformer._unscaled_timeline_shift_ms(mapping, 24.0)
+
+        self.assertEqual(shift, 208)
+
+    def test_unscaled_timeline_shift_rejects_off_grid_medians_as_noise(self):
+        # Frame-rate-drift pairs are quantized to the coarser 23 fps grid; a
+        # +21 ms median is phase noise, not a genuine 1-frame (42 ms) shift.
+        mapping = [(lhs, lhs - 21) for lhs in (500, 10000, 30000, 60000)]
+
+        shift = MeltPerformer._unscaled_timeline_shift_ms(mapping, 24.0)
+
+        self.assertEqual(shift, 0)
+
+    def test_unscaled_timeline_shift_applies_stream_bias_correction(self):
+        # A container start offset present in one side's frame times only
+        # (mkv rebases to zero, mp4 keeps the offset) must cancel out instead
+        # of being read as a genuine 12-frame shift.
+        mapping = [(lhs, lhs + 495) for lhs in (0, 10000, 30000, 60000)]
+
+        shift = MeltPerformer._unscaled_timeline_shift_ms(mapping, 24.0, stream_bias_ms=500)
+
+        self.assertEqual(shift, 0)
+
+    def test_mapping_stream_bias_measures_rebased_frame_times(self):
+        fake_info = {"streams": [{"codec_type": "video", "start_time": "0.500"}]}
+
+        with patch.object(video_utils, "get_video_full_info", return_value=fake_info):
+            rebased = MeltPerformer._mapping_stream_bias_ms("/tmp/a.mkv", {0: {}, 41: {}})
+            preserved = MeltPerformer._mapping_stream_bias_ms("/tmp/a.mp4", {500: {}, 541: {}})
+
+        self.assertEqual(rebased, 500)
+        self.assertEqual(preserved, 0)
 
     def test_sparse_linear_audio_extrapolation_does_not_extend_one_sided_boundaries(self):
         mapping = [
@@ -1073,7 +1109,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info(False)):
             self.assertFalse(performer._audio_needs_mkvmerge_normalization("/tmp/source.mkv", 1))
 
-    def test_prepare_passthrough_audio_decodes_via_flac_then_encodes_aac_once(self):
+    def test_prepare_normalized_unscaled_audio_decodes_via_flac_then_encodes_aac_once(self):
         performer = self._make_performer()
         calls = []
         source_full_info = {
@@ -1093,8 +1129,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
         with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info), \
              patch.object(process_utils, "start_process", side_effect=fake_start_process), \
              patch.object(process_utils, "raise_on_error", lambda r: None):
-            prepared_path, prepared_index = performer._prepare_passthrough_audio("/tmp/source.mov", 1)
-            cached_path, cached_index = performer._prepare_passthrough_audio("/tmp/source.mov", 1)
+            prepared_path, prepared_index = performer._prepare_normalized_unscaled_audio("/tmp/source.mov", 1)
+            cached_path, cached_index = performer._prepare_normalized_unscaled_audio("/tmp/source.mov", 1)
 
         self.assertEqual(prepared_index, 0)
         self.assertEqual(cached_index, 0)
@@ -1118,6 +1154,34 @@ class MeltPerformerUnitTest(unittest.TestCase):
             "aac" in args[args.index("-c:a") + 1:] and "/tmp/source.mov" in args
             for _tool, args in calls if "-c:a" in args
         ))
+
+    def test_length_matching_audio_uses_direct_passthrough_when_safe(self):
+        performer = self._make_performer()
+        base_video = "/tmp/base.mkv"
+        source_audio = "/tmp/source.mkv"
+
+        with patch.object(performer, "_video_track_duration", return_value=6000), \
+             patch.object(performer, "_base_output_end_ms", return_value=6000), \
+             patch.object(performer, "_base_audio_end_ms", return_value=6000), \
+             patch.object(performer, "_source_stream_start_offset_ms", return_value=0), \
+             patch.object(performer, "_source_stream_end_offset_ms", return_value=5900), \
+             patch.object(performer, "_audio_content_start_ms", return_value=0), \
+             patch.object(performer, "_stream_info", return_value={}), \
+             patch.object(performer, "_track_sync_offset_ms", return_value=None), \
+             patch.object(performer, "_audio_needs_mkvmerge_normalization", return_value=False), \
+             patch.object(performer, "_prepare_normalized_unscaled_audio", side_effect=AssertionError):
+            prepared = performer._prepare_stream_entries(
+                video_streams=[(base_video, 0, None)],
+                audio_streams=[(source_audio, 1, "eng")],
+                subtitle_streams=[],
+                required_input_files={base_video, source_audio},
+                attachments=[],
+                file_ids={base_video: 1, source_audio: 2},
+                files_details={},
+            )
+
+        self.assertIn(_StreamEntry("audio", 1, source_audio, "eng", None), prepared.entries)
+        self.assertEqual(prepared.input_files, {base_video, source_audio})
 
     def test_track_sync_offset_compensates_when_normalized_audio_start_is_lost(self):
         performer = self._make_performer()

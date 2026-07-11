@@ -10,7 +10,7 @@ from itertools import permutations
 from pathlib import Path
 
 from twotone.tools.utils import generic_utils, video_utils
-from twotone.tools.melt.melt import DEFAULT_TOLERANCE_MS, MeltAnalyzer, MeltPerformer, StaticSource
+from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
 from twotone.tools.utils.files_utils import Workspace
 from common import (
     TwoToneTestCase,
@@ -46,7 +46,6 @@ def analyze_duplicates_helper(
     duplicates_source: StaticSource,
     workspace: Workspace,
     allow_length_mismatch: bool = False,
-    tolerance_ms: int = DEFAULT_TOLERANCE_MS,
 ):
     duplicates_raw = duplicates_source.collect_duplicates()
     duplicates = {title: list(files) for title, files in duplicates_raw.items()}
@@ -55,7 +54,6 @@ def analyze_duplicates_helper(
         duplicates_source,
         workspace,
         allow_length_mismatch,
-        tolerance_ms,
     )
     return analyzer.analyze_duplicates(duplicates)
 
@@ -66,14 +64,12 @@ def process_duplicates_helper(
     workspace: Workspace,
     output_dir: str,
     plan,
-    tolerance_ms: int = DEFAULT_TOLERANCE_MS,
 ):
     performer = MeltPerformer(
         logger,
         interruption,
         workspace,
         output_dir,
-        tolerance_ms,
     )
     performer.process_duplicates(plan)
 
@@ -235,6 +231,17 @@ class MeltTestBase(TwoToneTestCase):
             with tempfile.TemporaryDirectory() as td:
                 self._append_video(bbb, woman, str(out), outro_seconds=3.0, tmp_dir=td)
 
+        def gen_bbb_trimmed(out: Path):
+            # bbb opens with ~10s of soft-gradient title frames — too flat for
+            # reliable frame comparison of any kind; the open-matte fixtures
+            # need real content at the video edges.
+            self._trim_video_start(bbb, str(out), 10.0)
+
+        bbb_t10 = str(file_cache.get_or_generate("pm_bbb_t10", V, "mp4", gen_bbb_trimmed))
+
+        def gen_widescreen_crop(out: Path):
+            self._crop_to_widescreen(bbb_t10, str(out))
+
         bbb_deg103 = str(file_cache.get_or_generate("pm_bbb_deg103", V, "mp4", gen_deg103))
         bbb_deg10 = str(file_cache.get_or_generate("pm_bbb_deg10", V, "mp4", gen_deg10))
         bbb_bi3 = str(file_cache.get_or_generate("pm_bbb_bi3", V, "mp4", gen_black_intro_3s))
@@ -243,6 +250,7 @@ class MeltTestBase(TwoToneTestCase):
         bbb_gi3 = str(file_cache.get_or_generate("pm_bbb_gi3", V, "mp4", gen_grass_intro_3s))
         bbb_gi2 = str(file_cache.get_or_generate("pm_bbb_gi2", V, "mp4", gen_grass_intro_2s))
         bbb_wo3 = str(file_cache.get_or_generate("pm_bbb_wo3", V, "mp4", gen_woman_outro_3s))
+        bbb_ws = str(file_cache.get_or_generate("pm_bbb_t10_ws", V, "mp4", gen_widescreen_crop))
 
         # --- Level 2: transforms depending on level 1 ---
 
@@ -272,6 +280,9 @@ class MeltTestBase(TwoToneTestCase):
             with tempfile.TemporaryDirectory() as td:
                 self._append_video(bbb_deg103, atoms, str(out), outro_seconds=3.0, tmp_dir=td)
 
+        def gen_ws_deg103(out: Path):
+            self._degrade_video(bbb_ws, str(out), speed=1.03)
+
         bi3_deg103 = str(file_cache.get_or_generate("pm_bi3_deg103", V, "mp4", gen_bi3_deg103))
         bi6_deg103 = str(file_cache.get_or_generate("pm_bi6_deg103", V, "mp4", gen_bi6_from_deg103))
         bo3_deg103 = str(file_cache.get_or_generate("pm_bo3_deg103", V, "mp4", gen_bo3_deg103))
@@ -279,6 +290,7 @@ class MeltTestBase(TwoToneTestCase):
         atoms_i3_deg = str(file_cache.get_or_generate("pm_atoms_i3_deg", V, "mp4", gen_atoms_i3_deg))
         atoms_i5_deg = str(file_cache.get_or_generate("pm_atoms_i5_deg", V, "mp4", gen_atoms_i5_deg))
         deg103_atoms_o3 = str(file_cache.get_or_generate("pm_deg103_atoms_o3", V, "mp4", gen_deg103_atoms_o3))
+        ws_deg103 = str(file_cache.get_or_generate("pm_ws_t10_deg103", V, "mp4", gen_ws_deg103))
 
         # --- Level 3: complex composites ---
 
@@ -309,6 +321,7 @@ class MeltTestBase(TwoToneTestCase):
             "diff_intro_diff":   (bbb_gi2, atoms_i5_deg),
             "diff_outro":        (bbb_wo3, deg103_atoms_o3),
             "diff_both":         (gi3_wo3, ai3d_swo3),
+            "open_matte":        (bbb_t10, ws_deg103),
         }
 
     # ---- Private helpers for edge-case fixture generation ----
@@ -380,6 +393,34 @@ class MeltTestBase(TwoToneTestCase):
         run_ffmpeg(args, expected_path=black_path)
 
         return self._concat_videos([reencoded_path, black_path], output_path, tmp_dir=td)
+
+    def _trim_video_start(self, input_path: str, output_path: str, seconds: float) -> str:
+        """Cut the first *seconds* off a video, reencoding for a clean start."""
+        args = [
+            "-y", "-ss", str(seconds), "-i", input_path,
+            "-c:v", "libx264", "-crf", "23", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            output_path,
+        ]
+        run_ffmpeg(args, expected_path=output_path)
+        return output_path
+
+    def _crop_to_widescreen(self, input_path: str, output_path: str, height_fraction: float = 0.756) -> str:
+        """Crop a 16:9 video to a ~2.35:1 widescreen slice of its center.
+
+        Models a widescreen theatrical crop of an open-matte master: the
+        result shows the same action but is missing the top/bottom bands of
+        the picture, like an SD 2.35:1 rip against a 16:9 open-matte 4K.
+        """
+        args = [
+            "-y", "-i", input_path,
+            "-vf", f"crop=iw:2*floor(ih*{height_fraction}/2)",
+            "-c:v", "libx264", "-crf", "23", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:a", "copy",
+            output_path,
+        ]
+        run_ffmpeg(args, expected_path=output_path)
+        return output_path
 
     def _degrade_video(self, input_path: str, output_path: str, speed: float = 1.0) -> str:
         """Create a degraded copy: lower quality, optional speed change."""

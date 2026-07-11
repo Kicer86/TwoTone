@@ -46,7 +46,22 @@ class StreamsPickerTest(MeltTestBase):
 
         self.assertEqual(audio_streams[0][0], file1)
 
-    def test_melt_tool_parses_force_all_streams_as_per_input_flag(self):
+    def test_melt_tool_parses_keep_all_audio_subtitle_streams_as_per_input_flag(self):
+        parser = argparse.ArgumentParser()
+        MeltTool().setup_parser(parser)
+
+        args = parser.parse_args([
+            "-o", "/tmp/out",
+            "-t", "Example",
+            "-i", "/tmp/a.mkv",
+            "--keep-all-audio-subtitle-streams",
+            "-i", "/tmp/b.mkv",
+        ])
+
+        self.assertTrue(args.input_entries[0]["keep_all_audio_subtitle_streams"])
+        self.assertNotIn("keep_all_audio_subtitle_streams", args.input_entries[1])
+
+    def test_melt_tool_parses_force_all_streams_as_deprecated_per_input_flag(self):
         parser = argparse.ArgumentParser()
         MeltTool().setup_parser(parser)
 
@@ -61,7 +76,22 @@ class StreamsPickerTest(MeltTestBase):
         self.assertTrue(args.input_entries[0]["force_all_streams"])
         self.assertNotIn("force_all_streams", args.input_entries[1])
 
-    def test_streams_picker_keeps_forced_streams_including_unknown_language(self):
+    def test_melt_tool_parses_use_video_as_per_input_flag(self):
+        parser = argparse.ArgumentParser()
+        MeltTool().setup_parser(parser)
+
+        args = parser.parse_args([
+            "-o", "/tmp/out",
+            "-t", "Example",
+            "-i", "/tmp/a.mkv",
+            "--use-video",
+            "-i", "/tmp/b.mkv",
+        ])
+
+        self.assertTrue(args.input_entries[0]["use_video"])
+        self.assertNotIn("use_video", args.input_entries[1])
+
+    def test_streams_picker_keeps_requested_audio_subtitle_streams_including_unknown_language(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
         sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
@@ -69,7 +99,7 @@ class StreamsPickerTest(MeltTestBase):
         file_forced = os.path.join(self.wd.path, "forced.mkv")
         file_other = os.path.join(self.wd.path, "other.mkv")
 
-        duplicates.add_metadata(file_forced, "force_all_streams", True)
+        duplicates.add_metadata(file_forced, "keep_all_audio_subtitle_streams", True)
 
         files_details = {
             file_forced: {
@@ -107,6 +137,27 @@ class StreamsPickerTest(MeltTestBase):
             (file_other, 8, "deu"),
         ])
 
+    def test_streams_picker_supports_deprecated_force_all_streams_metadata(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+
+        file_forced = os.path.join(self.wd.path, "forced.mkv")
+        duplicates.add_metadata(file_forced, "force_all_streams", True)
+
+        files_details = {
+            file_forced: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "24000/1001"}],
+                "audio": [{"tid": 1, "language": None, "channels": 2, "sample_rate": 48000}],
+                "subtitle": [],
+            },
+        }
+        ids = {file_forced: 1}
+
+        _, audio_streams, _ = sp.pick_streams(files_details, ids)
+
+        self.assertEqual(audio_streams, [(file_forced, 1, None)])
+
     def test_streams_picker_raises_on_unknown_language_without_force_flag(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
@@ -132,8 +183,8 @@ class StreamsPickerTest(MeltTestBase):
         with self.assertRaises(RuntimeError):
             sp.pick_streams(files_details, ids)
 
-    def test_force_all_streams_does_not_affect_video_selection(self):
-        """Force flag only applies to audio/subtitle — video uses normal preference."""
+    def test_keep_all_audio_subtitle_streams_does_not_affect_video_selection(self):
+        """Keep-all-audio/subtitle flag does not affect video selection."""
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
         sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
@@ -141,7 +192,7 @@ class StreamsPickerTest(MeltTestBase):
         file_forced = os.path.join(self.wd.path, "forced_lo.mkv")
         file_other = os.path.join(self.wd.path, "other_hi.mkv")
 
-        duplicates.add_metadata(file_forced, "force_all_streams", True)
+        duplicates.add_metadata(file_forced, "keep_all_audio_subtitle_streams", True)
 
         files_details = {
             file_forced: {
@@ -162,15 +213,71 @@ class StreamsPickerTest(MeltTestBase):
         # Higher resolution from non-forced file should be preferred
         self.assertEqual(video_streams[0][0], file_other)
 
-    def test_force_all_streams_treats_und_as_unknown(self):
-        """'und' language is normalized to None, then treated as undefined for forced inputs."""
+    def test_use_video_forces_video_selection(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+
+        file_forced = os.path.join(self.wd.path, "forced_lo.mkv")
+        file_other = os.path.join(self.wd.path, "other_hi.mkv")
+
+        duplicates.add_metadata(file_forced, "use_video", True)
+
+        files_details = {
+            file_forced: {
+                "video": [{"tid": 0, "width": 640, "height": 480, "fps": "25"}],
+                "audio": [{"tid": 1, "language": "eng", "channels": 2, "sample_rate": 48000}],
+                "subtitle": [],
+            },
+            file_other: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "25"}],
+                "audio": [{"tid": 1, "language": "eng", "channels": 2, "sample_rate": 48000}],
+                "subtitle": [],
+            },
+        }
+        ids = {file_forced: 1, file_other: 2}
+
+        video_streams, _, _ = sp.pick_streams(files_details, ids)
+
+        self.assertEqual(video_streams[0][0], file_forced)
+
+    def test_use_video_rejects_multiple_forced_inputs(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+
+        file_a = os.path.join(self.wd.path, "forced_a.mkv")
+        file_b = os.path.join(self.wd.path, "forced_b.mkv")
+
+        duplicates.add_metadata(file_a, "use_video", True)
+        duplicates.add_metadata(file_b, "use_video", True)
+
+        files_details = {
+            file_a: {
+                "video": [{"tid": 0, "width": 640, "height": 480, "fps": "25"}],
+                "audio": [],
+                "subtitle": [],
+            },
+            file_b: {
+                "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "25"}],
+                "audio": [],
+                "subtitle": [],
+            },
+        }
+        ids = {file_a: 1, file_b: 2}
+
+        with self.assertRaises(RuntimeError):
+            sp.pick_streams(files_details, ids)
+
+    def test_keep_all_audio_subtitle_streams_treats_und_as_unknown(self):
+        """'und' language is normalized to None, then treated as undefined for kept inputs."""
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
         sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
 
         file_forced = os.path.join(self.wd.path, "forced_und.mkv")
 
-        duplicates.add_metadata(file_forced, "force_all_streams", True)
+        duplicates.add_metadata(file_forced, "keep_all_audio_subtitle_streams", True)
 
         files_details = {
             file_forced: {
@@ -187,16 +294,32 @@ class StreamsPickerTest(MeltTestBase):
         self.assertEqual(len(audio_streams), 1)
         self.assertIsNone(audio_streams[0][2])
 
+    def test_keep_all_audio_subtitle_streams_parser_requires_preceding_input(self):
+        """--keep-all-audio-subtitle-streams before any -i should fail."""
+        parser = argparse.ArgumentParser()
+        MeltTool().setup_parser(parser)
+
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            parser.parse_args(["--keep-all-audio-subtitle-streams", "-i", "/tmp/a.mkv", "-o", "/out", "-t", "X"])
+
     def test_force_all_streams_parser_requires_preceding_input(self):
-        """--force-all-streams before any -i should fail."""
+        """Deprecated --force-all-streams before any -i should fail."""
         parser = argparse.ArgumentParser()
         MeltTool().setup_parser(parser)
 
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             parser.parse_args(["--force-all-streams", "-i", "/tmp/a.mkv", "-o", "/out", "-t", "X"])
 
-    def test_force_all_streams_both_inputs_forced_same_language(self):
-        """Two forced inputs with the same language keep all streams from both."""
+    def test_use_video_parser_requires_preceding_input(self):
+        """--use-video before any -i should fail."""
+        parser = argparse.ArgumentParser()
+        MeltTool().setup_parser(parser)
+
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            parser.parse_args(["--use-video", "-i", "/tmp/a.mkv", "-o", "/out", "-t", "X"])
+
+    def test_keep_all_audio_subtitle_streams_both_inputs_same_language(self):
+        """Two kept inputs with the same language keep all streams from both."""
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
         sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
@@ -204,8 +327,8 @@ class StreamsPickerTest(MeltTestBase):
         file_a = os.path.join(self.wd.path, "forced_a.mkv")
         file_b = os.path.join(self.wd.path, "forced_b.mkv")
 
-        duplicates.add_metadata(file_a, "force_all_streams", True)
-        duplicates.add_metadata(file_b, "force_all_streams", True)
+        duplicates.add_metadata(file_a, "keep_all_audio_subtitle_streams", True)
+        duplicates.add_metadata(file_b, "keep_all_audio_subtitle_streams", True)
 
         files_details = {
             file_a: {
@@ -228,8 +351,8 @@ class StreamsPickerTest(MeltTestBase):
         paths = {s[0] for s in audio_streams}
         self.assertEqual(paths, {file_a, file_b})
 
-    def test_force_all_streams_covers_all_languages_non_forced_skipped(self):
-        """When forced input covers all unique keys, non-forced contributes nothing."""
+    def test_keep_all_audio_subtitle_streams_covers_all_languages_non_forced_skipped(self):
+        """When kept input covers all unique keys, non-forced contributes nothing."""
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
         sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
@@ -237,7 +360,7 @@ class StreamsPickerTest(MeltTestBase):
         file_forced = os.path.join(self.wd.path, "forced_full.mkv")
         file_other = os.path.join(self.wd.path, "other.mkv")
 
-        duplicates.add_metadata(file_forced, "force_all_streams", True)
+        duplicates.add_metadata(file_forced, "keep_all_audio_subtitle_streams", True)
 
         files_details = {
             file_forced: {
