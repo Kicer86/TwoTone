@@ -692,9 +692,6 @@ class MeltPerformer(TrackTimelineMixin):
     # the files are not frame-for-frame and the fps ratio says nothing about
     # the time mapping.
     _MAX_FPS_VS_OBSERVED_RATIO_ERROR = 0.05
-    # A generic mapping counts as effectively linear when every pair sits
-    # within this distance of the line through its endpoints.
-    _MAX_LINEAR_RESIDUAL_MS = 1000
     # Collapsing a linear mapping to one global time-scale requires the
     # matched span to cover at least this fraction of the base video;
     # projecting a global tempo from a small matched window is guesswork.
@@ -1097,10 +1094,13 @@ class MeltPerformer(TrackTimelineMixin):
                     "discontinuities is not supported yet"
                 )
 
-            strategy, mapping = self._choose_audio_strategy(
+            strategy = self._choose_audio_strategy(
                 video_path_base, audio_path, matching,
             )
             self.logger.info("  Audio strategy: %s", strategy.value)
+            mapping = self._prepare_audio_mapping(
+                strategy, video_path_base, audio_path, matching,
+            )
 
             if strategy == _AudioStrategy.UNSCALED:
                 content_start_ms = self._audio_content_start_ms(
@@ -1163,7 +1163,7 @@ class MeltPerformer(TrackTimelineMixin):
         video_path_base: str,
         audio_path: str,
         matching: SegmentsMappingResult,
-    ) -> tuple[_AudioStrategy, list[tuple[int, int]]]:
+    ) -> _AudioStrategy:
         """Pick the strategy for fitting the source audio to the base video.
 
         Decision table (mapping relation × observed drift):
@@ -1185,16 +1185,10 @@ class MeltPerformer(TrackTimelineMixin):
         recording it) is applied at placement time — see
         ``_unscaled_timeline_shift_ms``.
 
-        Returns ``(strategy, mapping)`` where *mapping* is the audio mapping
-        the strategy must be applied with.  For SUBSEGMENT an effectively
-        linear generic match may be upgraded — collapsed to one clean line
-        (``_try_collapse_linear_mapping``) or extended to the video edges
-        (``_try_extrapolate_mapping_edges``) — so the subsegment patcher
-        scales correctly; container metadata may sharpen the line's slope
-        there but never override what the pairs observe.
+        The mapping the chosen strategy must be applied with is built
+        separately by ``_prepare_audio_mapping``.
         """
         mapping = matching.mapping
-        relation = matching.relation
 
         seg_raw = self._segment_range(mapping)
         raw_source_span = seg_raw.rhs_end - seg_raw.rhs_start
@@ -1210,18 +1204,41 @@ class MeltPerformer(TrackTimelineMixin):
             matching.rhs_fps,
         )
 
-        if relation == MappingRelation.GLOBAL_LINEAR:
+        if matching.relation == MappingRelation.GLOBAL_LINEAR:
             # Scale only when the span ratio is a real speed change and not
             # merely a same-speed frame-rate conversion.
             needs_scaling = self._needs_fps_scaling(raw_source_per_base) and not frame_rate_only_drift
-            if not needs_scaling:
-                return _AudioStrategy.UNSCALED, mapping
-            return _AudioStrategy.GLOBAL_TIME_SCALE, self._strict_audio_mapping(mapping)
+            return _AudioStrategy.GLOBAL_TIME_SCALE if needs_scaling else _AudioStrategy.UNSCALED
 
         if frame_rate_only_drift:
-            return _AudioStrategy.UNSCALED, mapping
+            return _AudioStrategy.UNSCALED
 
-        mapping = self._strict_audio_mapping(mapping)
+        return _AudioStrategy.SUBSEGMENT
+
+    def _prepare_audio_mapping(
+        self,
+        strategy: _AudioStrategy,
+        video_path_base: str,
+        audio_path: str,
+        matching: SegmentsMappingResult,
+    ) -> list[tuple[int, int]]:
+        """Build the audio mapping the chosen strategy must be applied with.
+
+        UNSCALED keeps the raw pairs (they only derive a placement shift);
+        GLOBAL_TIME_SCALE needs the strict cleanup for its trim ranges;
+        SUBSEGMENT may additionally collapse an effectively linear match to
+        one clean line (``_try_collapse_linear_mapping``) so the subsegment
+        patcher scales correctly — container metadata may sharpen the line's
+        slope there but never override what the pairs observe.  Mapping edges
+        are not touched here — boundary decisions belong to ``PairMatcher``.
+        """
+        if strategy == _AudioStrategy.UNSCALED:
+            return matching.mapping
+
+        mapping = self._strict_audio_mapping(matching.mapping)
+        if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
+            return mapping
+
         tempo_ratio = self._effective_tempo_ratio(
             video_path_base,
             audio_path,
@@ -1233,26 +1250,16 @@ class MeltPerformer(TrackTimelineMixin):
             matching.lhs_all_frames,
             tempo_ratio,
         )
-        recovery_label = "Collapsed linear audio mapping"
-        if recovered_mapping is None:
-            recovered_mapping = self._try_extrapolate_mapping_edges(
-                mapping,
-                matching.lhs_all_frames,
-                matching.rhs_all_frames,
-                tempo_ratio,
-            )
-            recovery_label = "Extrapolated mapping edges"
         if recovered_mapping is not None:
             mapping = recovered_mapping
             self.logger.info(
-                "  %s: using %s-%s ↔ %s-%s",
-                recovery_label,
+                "  Collapsed linear audio mapping: using %s-%s ↔ %s-%s",
                 generic_utils.ms_to_time(mapping[0][0]),
                 generic_utils.ms_to_time(mapping[-1][0]),
                 generic_utils.ms_to_time(mapping[0][1]),
                 generic_utils.ms_to_time(mapping[-1][1]),
             )
-        return _AudioStrategy.SUBSEGMENT, mapping
+        return mapping
 
     @staticmethod
     def _mapping_stream_bias_ms(path: str, frames: FramesInfo) -> int:
@@ -1378,34 +1385,6 @@ class MeltPerformer(TrackTimelineMixin):
         return len(frames) - 1
 
     @staticmethod
-    def _linear_mapping_slope(pairs: Sequence[tuple[int, int]]) -> float | None:
-        """Slope of the line through the endpoints of sorted *pairs*.
-
-        Returns None when any interior pair sits further than
-        ``_MAX_LINEAR_RESIDUAL_MS`` from that line — the mapping is not
-        linear and no line-based repair may be applied to it.
-        """
-        if len(pairs) < 2:
-            return None
-
-        first_lhs, first_rhs = pairs[0]
-        last_lhs, last_rhs = pairs[-1]
-        lhs_span = last_lhs - first_lhs
-        if lhs_span <= 0:
-            return None
-
-        slope = (last_rhs - first_rhs) / lhs_span
-        if slope <= 0:
-            return None
-
-        for lhs_time, rhs_time in pairs[1:-1]:
-            predicted_rhs = first_rhs + (lhs_time - first_lhs) * slope
-            if abs(predicted_rhs - rhs_time) > MeltPerformer._MAX_LINEAR_RESIDUAL_MS:
-                return None
-            
-        return slope
-
-    @staticmethod
     def _try_collapse_linear_mapping(
         mapping: list[tuple[int, int]],
         lhs_all_frames: FramesInfo,
@@ -1425,7 +1404,7 @@ class MeltPerformer(TrackTimelineMixin):
             return None
 
         pairs = sorted(mapping)
-        slope = MeltPerformer._linear_mapping_slope(pairs)
+        slope = PairMatcher._linear_mapping_slope(pairs)
         if slope is None:
             return None
         if abs(tempo_ratio / slope - 1.0) >= MeltPerformer._MAX_FPS_VS_OBSERVED_RATIO_ERROR:
@@ -1444,68 +1423,6 @@ class MeltPerformer(TrackTimelineMixin):
             (first_lhs, first_rhs),
             (last_lhs, first_rhs + round(lhs_span * tempo_ratio)),
         ]
-
-    @staticmethod
-    def _try_extrapolate_mapping_edges(
-        mapping: list[tuple[int, int]],
-        lhs_all_frames: FramesInfo,
-        rhs_all_frames: FramesInfo,
-        tempo_ratio: float | None,
-    ) -> list[tuple[int, int]] | None:
-        """Extrapolate a linear mapping to the videos' start and end.
-
-        Edge pairs predicted by the pairs' own line are added where the base
-        video extends past the matched range and the source still has
-        material (clamped to it).  *tempo_ratio* replaces the pair-derived
-        slope when both agree within ``_MAX_FPS_VS_OBSERVED_RATIO_ERROR`` —
-        it is free of the pairs' frame quantization — and never otherwise:
-        the fps ratio of a resampled transfer says nothing about the time
-        mapping.  Returns None when the pairs are not linear or nothing
-        changed.
-        """
-        if len(mapping) < 3 or not lhs_all_frames or not rhs_all_frames:
-            return None
-
-        pairs = sorted(mapping)
-        slope = MeltPerformer._linear_mapping_slope(pairs)
-        if slope is None:
-            return None
-        if (
-            tempo_ratio is not None
-            and tempo_ratio > 0
-            and abs(tempo_ratio / slope - 1.0) < MeltPerformer._MAX_FPS_VS_OBSERVED_RATIO_ERROR
-        ):
-            slope = tempo_ratio
-
-        first_lhs, first_rhs = pairs[0]
-        last_lhs, last_rhs = pairs[-1]
-
-        lhs_start = min(lhs_all_frames)
-        lhs_end = max(lhs_all_frames)
-        rhs_start = min(rhs_all_frames)
-        rhs_end = max(rhs_all_frames)
-
-        predicted_rhs_start = round(first_rhs + (lhs_start - first_lhs) * slope)
-        extrapolated_rhs_start = max(rhs_start, min(rhs_end, predicted_rhs_start))
-        predicted_rhs_end = round(first_rhs + (lhs_end - first_lhs) * slope)
-        extrapolated_rhs_end = max(rhs_start, min(rhs_end, predicted_rhs_end))
-        if extrapolated_rhs_end <= extrapolated_rhs_start:
-            return None
-
-        result = list(pairs)
-        if lhs_start < first_lhs and rhs_start < first_rhs and extrapolated_rhs_start < first_rhs:
-            result.insert(0, (lhs_start, extrapolated_rhs_start))
-        if lhs_end > last_lhs and rhs_end > last_rhs and extrapolated_rhs_end > last_rhs:
-            result.append((lhs_end, extrapolated_rhs_end))
-
-        if len(result) == len(pairs):
-            return None
-
-        result = MeltPerformer._strict_audio_mapping(result)
-        if result[0] == pairs[0] and result[-1] == pairs[-1]:
-            return None
-
-        return result
 
     @staticmethod
     def _is_frame_rate_only_drift_mapping(

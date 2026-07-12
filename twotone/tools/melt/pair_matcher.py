@@ -285,6 +285,38 @@ class PairMatcher:
                 discontinuities.append((l1, l2, r1, r2, deficit))
         return discontinuities
 
+    # A mapping counts as effectively linear when every pair sits within this
+    # distance of the line through its endpoints.
+    _MAX_LINEAR_RESIDUAL_MS = 1000
+
+    @staticmethod
+    def _linear_mapping_slope(pairs: list[tuple[int, int]]) -> float | None:
+        """Slope of the line through the endpoints of sorted *pairs*.
+
+        Returns None when any interior pair sits further than
+        ``_MAX_LINEAR_RESIDUAL_MS`` from that line — the mapping is not
+        linear and no line-based repair may be applied to it.
+        """
+        if len(pairs) < 2:
+            return None
+
+        first_lhs, first_rhs = pairs[0]
+        last_lhs, last_rhs = pairs[-1]
+        lhs_span = last_lhs - first_lhs
+        if lhs_span <= 0:
+            return None
+
+        slope = (last_rhs - first_rhs) / lhs_span
+        if slope <= 0:
+            return None
+
+        for lhs_time, rhs_time in pairs[1:-1]:
+            predicted_rhs = first_rhs + (lhs_time - first_lhs) * slope
+            if abs(predicted_rhs - rhs_time) > PairMatcher._MAX_LINEAR_RESIDUAL_MS:
+                return None
+        return slope
+
+
     @staticmethod
     def coverage_summary(
         mappings: list[tuple[int, int]],
@@ -1406,6 +1438,23 @@ class PairMatcher:
                 matching_pairs, lhs_scene_ranges, rhs_scene_ranges,
                 lhs_normalized_frames, rhs_normalized_frames, debug,
             )
+            # The refined pairs can reveal a linear relation the sparse
+            # initial matching could not certify.  A mapping that now passes
+            # the full global-linear detection earns the same verified
+            # boundary extension as a detected global-linear one: the fitted
+            # line predicts the edge pairs, and every extension is
+            # content-verified before being kept.  This must run before the
+            # edge snap: snapped pairs are artificial timestamps with no
+            # normalized frames behind them, while the fit and the
+            # verification may only ever see real matched pairs.
+            generic_fit = self.detect_global_linear(
+                matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
+            )
+            if generic_fit is not None:
+                matching_pairs = self._extrapolate_and_verify_global_linear(
+                    generic_fit, matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
+                )
+                debug.dump_matches(matching_pairs, "after verified linear extrapolation")
             matching_pairs = self.snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
 
         self.logger.info("Mapping relation chosen: %s", relation.value)

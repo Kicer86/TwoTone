@@ -141,58 +141,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(rebased, 500)
         self.assertEqual(preserved, 0)
 
-    def test_extrapolate_mapping_edges_does_not_extend_one_sided_boundaries(self):
-        mapping = [
-            (500, 510),
-            (24041, 24532),
-            (63250, 64540),
-        ]
-        lhs_frames = {
-            0: {"path": "lhs_0.jpg"},
-            500: {"path": "lhs_500.jpg"},
-            63250: {"path": "lhs_63250.jpg"},
-        }
-        rhs_frames = {
-            510: {"path": "rhs_510.jpg"},
-            64540: {"path": "rhs_64540.jpg"},
-            65050: {"path": "rhs_65050.jpg"},
-        }
-
-        result = MeltPerformer._try_extrapolate_mapping_edges(
-            mapping,
-            lhs_frames,
-            rhs_frames,
-            tempo_ratio=None,
-        )
-
-        self.assertIsNone(result)
-
-    def test_extrapolate_mapping_edges_does_not_project_past_source_frames(self):
-        mapping = [
-            (500, 500),
-            (13458, 13458),
-            (62791, 62791),
-        ]
-        lhs_frames = {
-            0: {"path": "lhs_0.jpg"},
-            500: {"path": "lhs_500.jpg"},
-            62791: {"path": "lhs_62791.jpg"},
-            63250: {"path": "lhs_63250.jpg"},
-        }
-        rhs_frames = {
-            500: {"path": "rhs_500.jpg"},
-            62791: {"path": "rhs_62791.jpg"},
-        }
-
-        result = MeltPerformer._try_extrapolate_mapping_edges(
-            mapping,
-            lhs_frames,
-            rhs_frames,
-            tempo_ratio=None,
-        )
-
-        self.assertIsNone(result)
-
     def test_collapse_linear_mapping_sharpens_slope_with_metadata_tempo(self):
         # The matched endpoint carries a ~1 s low-entropy-zone error (observed
         # slope 1.0043 vs the real 1.0204); the effective-fps tempo agrees
@@ -254,8 +202,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
     def test_collapse_linear_mapping_skips_partial_coverage(self):
         # Metadata agrees with the pairs, but the matched span covers well
         # under 80% of the base — projecting one global time-scale from a
-        # small window is guesswork, and with only two pairs there is nothing
-        # to extend either.
+        # small window is guesswork.
         mapping = [
             (5708, 4536),
             (46208, 44438),
@@ -264,26 +211,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
             round(index * 63292 / 1497): {"path": f"lhs_{index}.jpg"}
             for index in range(1498)
         }
-        rhs_frames = {
-            round(index * 64030 / 1506): {"path": f"rhs_{index}.jpg"}
-            for index in range(1507)
-        }
 
-        self.assertIsNone(
-            MeltPerformer._try_collapse_linear_mapping(
-                mapping,
-                lhs_frames,
-                tempo_ratio=0.9715,
-            )
+        result = MeltPerformer._try_collapse_linear_mapping(
+            mapping,
+            lhs_frames,
+            tempo_ratio=0.9715,
         )
-        self.assertIsNone(
-            MeltPerformer._try_extrapolate_mapping_edges(
-                mapping,
-                lhs_frames,
-                rhs_frames,
-                tempo_ratio=0.9715,
-            )
-        )
+
+        self.assertIsNone(result)
 
     def test_frame_rate_only_drift_mapping_detected(self):
         # A 23<->24 fps resample preserving playback time: the effective fps
@@ -366,33 +301,20 @@ class MeltPerformerUnitTest(unittest.TestCase):
             0: {"path": "lhs_0.jpg"},
             1369994: {"path": "lhs_1369994.jpg"},
         }
-        rhs_frames = {
-            0: {"path": "rhs_0.jpg"},
-            1320333: {"path": "rhs_1320333.jpg"},
-        }
 
-        self.assertIsNone(
-            MeltPerformer._try_collapse_linear_mapping(
-                mapping,
-                lhs_frames,
-                tempo_ratio=0.7992,
-            )
-        )
-        self.assertIsNone(
-            MeltPerformer._try_extrapolate_mapping_edges(
-                mapping,
-                lhs_frames,
-                rhs_frames,
-                tempo_ratio=0.7992,
-            )
+        result = MeltPerformer._try_collapse_linear_mapping(
+            mapping,
+            lhs_frames,
+            tempo_ratio=0.7992,
         )
 
-    def test_extrapolate_mapping_edges_keeps_pair_slope_when_metadata_contradicts(self):
+        self.assertIsNone(result)
+
+    def test_collapse_linear_mapping_keeps_pairs_when_metadata_contradicts(self):
         # A clean (cut-free) variant of the TMNT class: pairs perfectly linear
         # at 0.96651, while the effective-fps tempo says 0.7992 (resampled
         # transfer — the fps ratio is unrelated to the time mapping).  The
-        # metadata must be ignored: the end extension follows the pairs' own
-        # slope, clamped to the source material.
+        # contradicting metadata must not rebuild the mapping.
         pairs = [
             (1084 + i * 300000, round(i * 300000 * 0.96651))
             for i in range(5)
@@ -401,19 +323,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
             0: {"path": "lhs_0.jpg"},
             1369994: {"path": "lhs_1369994.jpg"},
         }
-        rhs_frames = {
-            0: {"path": "rhs_0.jpg"},
-            1320333: {"path": "rhs_1320333.jpg"},
-        }
 
-        result = MeltPerformer._try_extrapolate_mapping_edges(
+        result = MeltPerformer._try_collapse_linear_mapping(
             pairs,
             lhs_frames,
-            rhs_frames,
             tempo_ratio=0.7992,
         )
 
-        self.assertEqual(result, pairs + [(1369994, 1320333)])
+        self.assertIsNone(result)
 
     # ---- _patch_audio_constant_offset ----
 

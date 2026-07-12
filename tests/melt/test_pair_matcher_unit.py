@@ -1027,6 +1027,41 @@ class PairMatcherUnitTest(unittest.TestCase):
             [(last_lhs, last_lhs + 20000, last_rhs, last_rhs + 17500, 2500)],
         )
 
+    # ---- detect_global_linear on refined generic pairs ----
+
+    def test_detect_global_linear_certifies_refined_linear_pairs(self):
+        # 24 fps base vs a 25 fps frame-for-frame transfer: the refined pairs
+        # lie on one line, so the detection certifies the frame relation and
+        # the implied time scale — earning the mapping the verified boundary
+        # extension in the GENERIC branch.
+        pm = self._make_pair_matcher(lhs_fps=24.0, rhs_fps=25.0)
+        pm.lhs_all_frames = {i * 500: {"frame_id": i * 12} for i in range(121)}
+        pm.rhs_all_frames = {i * 480: {"frame_id": i * 12} for i in range(121)}
+        pairs = [(i * 500, i * 480) for i in (0, 30, 60, 90, 120)]
+
+        fit = pm.detect_global_linear(pairs, pm.lhs_all_frames, pm.rhs_all_frames)
+
+        self.assertIsNotNone(fit)
+        self.assertAlmostEqual(fit.slope, 1.0, places=6)
+        self.assertAlmostEqual(fit.intercept, 0.0, places=6)
+        self.assertAlmostEqual(fit.time_scale, 24.0 / 25.0, places=6)
+
+    def test_detect_global_linear_rejects_piecewise_refined_pairs(self):
+        # 7 s of content missing on the rhs side halfway through: the pairs do
+        # not lie on one line, so no boundary predictor may be built and the
+        # edges stay where the content search left them.
+        pm = self._make_pair_matcher(lhs_fps=24.0, rhs_fps=24.0)
+        pm.lhs_all_frames = {i * 500: {"frame_id": i * 12} for i in range(121)}
+        pm.rhs_all_frames = {i * 500: {"frame_id": i * 12} for i in range(121)}
+        pairs = [
+            (i * 500, i * 500 - (7000 if i >= 60 else 0))
+            for i in (0, 30, 45, 60, 90, 120)
+        ]
+
+        self.assertIsNone(
+            pm.detect_global_linear(pairs, pm.lhs_all_frames, pm.rhs_all_frames)
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
