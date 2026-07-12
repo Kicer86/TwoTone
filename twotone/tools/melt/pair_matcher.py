@@ -233,6 +233,58 @@ class PairMatcher:
     def is_ratio_acceptable(ratio: float, perfect_ratio: float) -> bool:
         return abs(ratio - perfect_ratio) < PairMatcher._MAX_RELATIVE_RATIO_ERROR * perfect_ratio
 
+    # A gap between consecutive matched pairs may miss the mapping's median
+    # local slope by at most this much (absolute, and relative for long gaps)
+    # before it counts as a hole in the shared scene sequence.  Speed waviness
+    # (a VHS-style source) oscillates around the median and stays well below;
+    # a content cut (e.g. a commercial break) is one-sided and multi-second.
+    _MAX_GAP_TIME_DEFICIT_MS = 2000
+    _MAX_GAP_TIME_DEFICIT_RATIO = 0.02
+
+    @staticmethod
+    def find_content_discontinuities(
+        mapping: list[tuple[int, int]],
+    ) -> list[tuple[int, int, int, int, int]]:
+        """Locate holes in the shared scene sequence of a matched pair.
+
+        For every gap between consecutive matched pairs the expected rhs
+        advance is the lhs advance times the mapping's median local slope — a
+        robust reference that a few corrupted gaps cannot drag away.  A gap
+        whose rhs advance misses that expectation by more than
+        ``max(_MAX_GAP_TIME_DEFICIT_MS, _MAX_GAP_TIME_DEFICIT_RATIO * gap)``
+        in either direction marks content present on one side only.
+
+        Returns ``(lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms)`` per
+        offending gap; a positive deficit means rhs is missing content there,
+        a negative one means lhs is.
+        """
+        if len(mapping) < 3:
+            return []
+
+        pairs = sorted(mapping)
+        slopes = [
+            (r2 - r1) / (l2 - l1)
+            for (l1, r1), (l2, r2) in zip(pairs[:-1], pairs[1:])
+            if l2 > l1
+        ]
+        if not slopes:
+            return []
+        median_slope = float(np.median(slopes))
+
+        discontinuities: list[tuple[int, int, int, int, int]] = []
+        for (l1, r1), (l2, r2) in zip(pairs[:-1], pairs[1:]):
+            gap = l2 - l1
+            if gap <= 0:
+                continue
+            deficit = round(gap * median_slope - (r2 - r1))
+            threshold = max(
+                PairMatcher._MAX_GAP_TIME_DEFICIT_MS,
+                PairMatcher._MAX_GAP_TIME_DEFICIT_RATIO * gap,
+            )
+            if abs(deficit) > threshold:
+                discontinuities.append((l1, l2, r1, r2, deficit))
+        return discontinuities
+
     @staticmethod
     def coverage_summary(
         mappings: list[tuple[int, int]],

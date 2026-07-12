@@ -983,6 +983,50 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertGreaterEqual(result_first[0], 8000,
             "Boundary should stop at dark zone when content doesn't match on the other side")
 
+    # ---- find_content_discontinuities ----
+
+    def test_content_discontinuity_flags_commercial_cut(self):
+        # TMNT-like pair: steady 0.9864 slope, but 7 s of rhs content missing
+        # in one gap (an ad-break cut in the rhs transfer).
+        mapping = [
+            (lhs, round(lhs * 0.9864) - (7000 if lhs > 300000 else 0))
+            for lhs in range(0, 600001, 10000)
+        ]
+
+        result = PairMatcher.find_content_discontinuities(mapping)
+
+        self.assertEqual(result, [(300000, 310000, 295920, 298784, 7000)])
+
+    def test_content_discontinuity_tolerates_speed_waviness(self):
+        # VHS-style source: scene durations wobble ±3% around the median
+        # speed, with no content missing on either side.
+        mapping = [(0, 0)]
+        lhs = rhs = 0
+        for i in range(60):
+            lhs += 10000
+            rhs += round(10000 * (1.03 if i % 2 else 0.97))
+            mapping.append((lhs, rhs))
+
+        result = PairMatcher.find_content_discontinuities(mapping)
+
+        self.assertEqual(result, [])
+
+    def test_content_discontinuity_threshold_scales_with_gap_length(self):
+        # The same 2.5 s deviation is drift/matcher noise across a sparse
+        # 160 s gap (under the 2% relative threshold) but a genuine hole in
+        # a 20 s gap.
+        base = [(i * 10000, i * 10000) for i in range(30)]
+        last_lhs, last_rhs = base[-1]
+
+        sparse = base + [(last_lhs + 160000, last_rhs + 157500)]
+        dense = base + [(last_lhs + 20000, last_rhs + 17500)]
+
+        self.assertEqual(PairMatcher.find_content_discontinuities(sparse), [])
+        self.assertEqual(
+            PairMatcher.find_content_discontinuities(dense),
+            [(last_lhs, last_lhs + 20000, last_rhs, last_rhs + 17500, 2500)],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
