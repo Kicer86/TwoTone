@@ -193,7 +193,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         self.assertIsNone(result)
 
-    def test_extrapolate_mapping_edges_sharpens_slope_with_metadata_tempo(self):
+    def test_collapse_linear_mapping_sharpens_slope_with_metadata_tempo(self):
         # The matched endpoint carries a ~1 s low-entropy-zone error (observed
         # slope 1.0043 vs the real 1.0204); the effective-fps tempo agrees
         # with the pairs within tolerance, so it replaces the noisy slope and
@@ -243,16 +243,15 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 rhs_frames,
             )
 
-        result = MeltPerformer._try_extrapolate_mapping_edges(
+        result = MeltPerformer._try_collapse_linear_mapping(
             mapping,
             lhs_frames,
-            rhs_frames,
             tempo_ratio,
         )
 
         self.assertEqual(result, [(0, 0), (63292, 64583)])
 
-    def test_extrapolate_mapping_edges_skips_rebuild_on_partial_coverage(self):
+    def test_collapse_linear_mapping_skips_partial_coverage(self):
         # Metadata agrees with the pairs, but the matched span covers well
         # under 80% of the base — projecting one global time-scale from a
         # small window is guesswork, and with only two pairs there is nothing
@@ -270,14 +269,21 @@ class MeltPerformerUnitTest(unittest.TestCase):
             for index in range(1507)
         }
 
-        result = MeltPerformer._try_extrapolate_mapping_edges(
-            mapping,
-            lhs_frames,
-            rhs_frames,
-            tempo_ratio=0.9715,
+        self.assertIsNone(
+            MeltPerformer._try_collapse_linear_mapping(
+                mapping,
+                lhs_frames,
+                tempo_ratio=0.9715,
+            )
         )
-
-        self.assertIsNone(result)
+        self.assertIsNone(
+            MeltPerformer._try_extrapolate_mapping_edges(
+                mapping,
+                lhs_frames,
+                rhs_frames,
+                tempo_ratio=0.9715,
+            )
+        )
 
     def test_frame_rate_only_drift_mapping_detected(self):
         # A 23<->24 fps resample preserving playback time: the effective fps
@@ -338,7 +344,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         self.assertTrue(result)
 
-    def test_extrapolate_mapping_edges_rejects_tmnt_piecewise_pairs(self):
+    def test_linear_recovery_rejects_tmnt_piecewise_pairs(self):
         # A 23.976 fps base against a 30 fps resampled transfer with ad-break
         # cuts.  The pairs are piecewise (interior residuals of ~1.4 s against
         # the endpoint line), so no line may be recovered — and the fps tempo
@@ -365,14 +371,21 @@ class MeltPerformerUnitTest(unittest.TestCase):
             1320333: {"path": "rhs_1320333.jpg"},
         }
 
-        result = MeltPerformer._try_extrapolate_mapping_edges(
-            mapping,
-            lhs_frames,
-            rhs_frames,
-            tempo_ratio=0.7992,
+        self.assertIsNone(
+            MeltPerformer._try_collapse_linear_mapping(
+                mapping,
+                lhs_frames,
+                tempo_ratio=0.7992,
+            )
         )
-
-        self.assertIsNone(result)
+        self.assertIsNone(
+            MeltPerformer._try_extrapolate_mapping_edges(
+                mapping,
+                lhs_frames,
+                rhs_frames,
+                tempo_ratio=0.7992,
+            )
+        )
 
     def test_extrapolate_mapping_edges_keeps_pair_slope_when_metadata_contradicts(self):
         # A clean (cut-free) variant of the TMNT class: pairs perfectly linear

@@ -1187,10 +1187,11 @@ class MeltPerformer(TrackTimelineMixin):
 
         Returns ``(strategy, mapping)`` where *mapping* is the audio mapping
         the strategy must be applied with.  For SUBSEGMENT an effectively
-        linear generic match may be upgraded by ``_try_extrapolate_mapping_edges``
-        — collapsed to (or extended along) one clean line so the subsegment
-        patcher scales correctly; container metadata may sharpen the line's
-        slope there but never override what the pairs observe.
+        linear generic match may be upgraded — collapsed to one clean line
+        (``_try_collapse_linear_mapping``) or extended to the video edges
+        (``_try_extrapolate_mapping_edges``) — so the subsegment patcher
+        scales correctly; container metadata may sharpen the line's slope
+        there but never override what the pairs observe.
         """
         mapping = matching.mapping
         relation = matching.relation
@@ -1227,16 +1228,25 @@ class MeltPerformer(TrackTimelineMixin):
             matching.lhs_all_frames,
             matching.rhs_all_frames,
         )
-        recovered_mapping = self._try_extrapolate_mapping_edges(
+        recovered_mapping = self._try_collapse_linear_mapping(
             mapping,
             matching.lhs_all_frames,
-            matching.rhs_all_frames,
             tempo_ratio,
         )
+        recovery_label = "Collapsed linear audio mapping"
+        if recovered_mapping is None:
+            recovered_mapping = self._try_extrapolate_mapping_edges(
+                mapping,
+                matching.lhs_all_frames,
+                matching.rhs_all_frames,
+                tempo_ratio,
+            )
+            recovery_label = "Extrapolated mapping edges"
         if recovered_mapping is not None:
             mapping = recovered_mapping
             self.logger.info(
-                "  Linear audio mapping recovered: using %s-%s ↔ %s-%s",
+                "  %s: using %s-%s ↔ %s-%s",
+                recovery_label,
                 generic_utils.ms_to_time(mapping[0][0]),
                 generic_utils.ms_to_time(mapping[-1][0]),
                 generic_utils.ms_to_time(mapping[0][1]),
@@ -1368,35 +1378,16 @@ class MeltPerformer(TrackTimelineMixin):
         return len(frames) - 1
 
     @staticmethod
-    def _try_extrapolate_mapping_edges(
-        mapping: list[tuple[int, int]],
-        lhs_all_frames: FramesInfo,
-        rhs_all_frames: FramesInfo,
-        tempo_ratio: float | None,
-    ) -> list[tuple[int, int]] | None:
-        """Extrapolate an effectively linear mapping to the videos' start and end.
+    def _linear_mapping_slope(pairs: Sequence[tuple[int, int]]) -> float | None:
+        """Slope of the line through the endpoints of sorted *pairs*.
 
-        The pairs must lie on one line (residuals ≤ ``_MAX_LINEAR_RESIDUAL_MS``);
-        edge pairs predicted by that line are then added where the base video
-        extends past the matched range and the source still has material.
-
-        *tempo_ratio* (the effective-fps tempo from container metadata) replaces
-        the pair-derived slope when both agree within
-        ``_MAX_FPS_VS_OBSERVED_RATIO_ERROR`` — it is free of the pairs' frame
-        quantization — and never otherwise: the fps ratio of a resampled
-        transfer says nothing about the time mapping.  A
-        metadata-confirmed tempo whose matched span covers
-        ≥ ``_MIN_LINEAR_REBUILD_COVERAGE`` of the base additionally drops the
-        noisy interior pairs, collapsing the mapping to the line's endpoints
-        (one global time-scale).
-
-        Returns None when the pairs are not linear or nothing changed.  The
-        caller must have excluded frame-rate-only drift beforehand.
+        Returns None when any interior pair sits further than
+        ``_MAX_LINEAR_RESIDUAL_MS`` from that line — the mapping is not
+        linear and no line-based repair may be applied to it.
         """
-        if len(mapping) < 2 or not lhs_all_frames or not rhs_all_frames:
+        if len(pairs) < 2:
             return None
 
-        pairs = sorted(mapping)
         first_lhs, first_rhs = pairs[0]
         last_lhs, last_rhs = pairs[-1]
         lhs_span = last_lhs - first_lhs
@@ -1411,29 +1402,83 @@ class MeltPerformer(TrackTimelineMixin):
             predicted_rhs = first_rhs + (lhs_time - first_lhs) * slope
             if abs(predicted_rhs - rhs_time) > MeltPerformer._MAX_LINEAR_RESIDUAL_MS:
                 return None
+            
+        return slope
 
-        metadata_confirmed = (
+    @staticmethod
+    def _try_collapse_linear_mapping(
+        mapping: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        tempo_ratio: float | None,
+    ) -> list[tuple[int, int]] | None:
+        """Collapse a linear mapping to the two endpoints of a tempo-built line.
+
+        The pairs are frame-quantized and can carry a corrupted anchor from a
+        low-entropy zone; *tempo_ratio* (the effective-fps tempo from
+        container metadata) is free of both defects, so when it agrees with
+        the pairs' slope within ``_MAX_FPS_VS_OBSERVED_RATIO_ERROR``,
+        describes a real speed change, and the matched span covers
+        ≥ ``_MIN_LINEAR_REBUILD_COVERAGE`` of the base, the mapping is
+        replaced with a two-point line at that tempo — one global time-scale.
+        """
+        if not lhs_all_frames or tempo_ratio is None or tempo_ratio <= 0:
+            return None
+
+        pairs = sorted(mapping)
+        slope = MeltPerformer._linear_mapping_slope(pairs)
+        if slope is None:
+            return None
+        if abs(tempo_ratio / slope - 1.0) >= MeltPerformer._MAX_FPS_VS_OBSERVED_RATIO_ERROR:
+            return None
+        if abs(tempo_ratio - 1.0) < MeltPerformer._MIN_TEMPO_RATIO_DELTA:
+            return None
+
+        first_lhs, first_rhs = pairs[0]
+        last_lhs, _ = pairs[-1]
+        lhs_span = last_lhs - first_lhs
+        lhs_frame_span = max(lhs_all_frames) - min(lhs_all_frames)
+        if lhs_frame_span <= 0 or lhs_span < lhs_frame_span * MeltPerformer._MIN_LINEAR_REBUILD_COVERAGE:
+            return None
+
+        return [
+            (first_lhs, first_rhs),
+            (last_lhs, first_rhs + round(lhs_span * tempo_ratio)),
+        ]
+
+    @staticmethod
+    def _try_extrapolate_mapping_edges(
+        mapping: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+        tempo_ratio: float | None,
+    ) -> list[tuple[int, int]] | None:
+        """Extrapolate a linear mapping to the videos' start and end.
+
+        Edge pairs predicted by the pairs' own line are added where the base
+        video extends past the matched range and the source still has
+        material (clamped to it).  *tempo_ratio* replaces the pair-derived
+        slope when both agree within ``_MAX_FPS_VS_OBSERVED_RATIO_ERROR`` —
+        it is free of the pairs' frame quantization — and never otherwise:
+        the fps ratio of a resampled transfer says nothing about the time
+        mapping.  Returns None when the pairs are not linear or nothing
+        changed.
+        """
+        if len(mapping) < 3 or not lhs_all_frames or not rhs_all_frames:
+            return None
+
+        pairs = sorted(mapping)
+        slope = MeltPerformer._linear_mapping_slope(pairs)
+        if slope is None:
+            return None
+        if (
             tempo_ratio is not None
             and tempo_ratio > 0
             and abs(tempo_ratio / slope - 1.0) < MeltPerformer._MAX_FPS_VS_OBSERVED_RATIO_ERROR
-        )
-        if metadata_confirmed:
+        ):
             slope = tempo_ratio
 
-        lhs_frame_span = max(lhs_all_frames) - min(lhs_all_frames)
-        if (
-            metadata_confirmed
-            and abs(slope - 1.0) >= MeltPerformer._MIN_TEMPO_RATIO_DELTA
-            and lhs_frame_span > 0
-            and lhs_span >= lhs_frame_span * MeltPerformer._MIN_LINEAR_REBUILD_COVERAGE
-        ):
-            return [
-                (first_lhs, first_rhs),
-                (last_lhs, first_rhs + round(lhs_span * slope)),
-            ]
-
-        if len(pairs) < 3:
-            return None
+        first_lhs, first_rhs = pairs[0]
+        last_lhs, last_rhs = pairs[-1]
 
         lhs_start = min(lhs_all_frames)
         lhs_end = max(lhs_all_frames)
