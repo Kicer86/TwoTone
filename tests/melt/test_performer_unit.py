@@ -28,6 +28,37 @@ class MeltPerformerUnitTest(unittest.TestCase):
             output_dir=output.root,
         )
 
+    def _process_single_source_plan(
+        self,
+        source_path: str,
+        selected_streams: dict[str, list[tuple[str, int, str | None]]],
+        prepared_entries: list[_StreamEntry],
+    ) -> list[str]:
+        performer = self._make_performer()
+        plan = [{
+            "title": "Title",
+            "groups": [{
+                "output_name": "Movie",
+                "files": [source_path],
+                "streams": selected_streams,
+            }],
+        }]
+        prepared = Mock(entries=prepared_entries, input_files={source_path})
+        captured_args: list[str] = []
+
+        def run_mkvmerge(_tool, args, **_kwargs):
+            captured_args.extend(args)
+            with open(args[1], "wb") as output_file:
+                output_file.write(b"muxed")
+            return _FAKE_PROCESS_OK
+
+        with patch.object(performer, "_prepare_stream_entries", return_value=prepared), \
+             patch.object(process_utils, "start_process", side_effect=run_mkvmerge), \
+             patch.object(video_utils, "validate_media_output"):
+            performer.process_duplicates(plan)
+
+        return captured_args
+
     def test_process_duplicates_rejects_output_aliasing_input(self):
         performer = self._make_performer()
         title_dir = os.path.join(performer.output_dir, "Title")
@@ -46,13 +77,56 @@ class MeltPerformerUnitTest(unittest.TestCase):
             }],
         }]
 
-        with patch.object(performer, "_copy_single_input") as copy_input:
+        with patch.object(process_utils, "start_process") as start_process:
             with self.assertRaisesRegex(RuntimeError, "aliases input"):
                 performer.process_duplicates(plan)
 
-        copy_input.assert_not_called()
+        start_process.assert_not_called()
         with open(input_path, "rb") as input_file:
             self.assertEqual(input_file.read(), b"source")
+
+    def test_process_duplicates_remuxes_single_mp4_input(self):
+        source_path = "/library/Movie.mp4"
+
+        args = self._process_single_source_plan(
+            source_path,
+            {"video": [(source_path, 0, None)]},
+            [_StreamEntry("video", 0, source_path, None)],
+        )
+
+        self.assertEqual(args[-1], "0:0")
+        self.assertIn(source_path, args)
+        self.assertEqual(args[args.index("--video-tracks") + 1], "0")
+
+    def test_process_duplicates_remuxes_single_mkv_with_unselected_tracks(self):
+        source_path = "/library/Movie.mkv"
+
+        args = self._process_single_source_plan(
+            source_path,
+            {
+                "video": [(source_path, 0, None)],
+                "audio": [(source_path, 2, "eng")],
+            },
+            [
+                _StreamEntry("video", 0, source_path, None),
+                _StreamEntry("audio", 2, source_path, "eng"),
+            ],
+        )
+
+        self.assertEqual(args[args.index("--audio-tracks") + 1], "2")
+        self.assertNotIn("1", args[args.index("--audio-tracks") + 1].split(","))
+
+    def test_process_duplicates_remuxes_single_mkv_with_metadata_and_sync_changes(self):
+        source_path = "/library/Movie.mkv"
+
+        args = self._process_single_source_plan(
+            source_path,
+            {"audio": [(source_path, 1, "pol")]},
+            [_StreamEntry("audio", 1, source_path, "pol", 125)],
+        )
+
+        self.assertEqual(args[args.index("--language") + 1], "1:pol")
+        self.assertEqual(args[args.index("--sync") + 1], "1:125")
 
     def test_process_duplicates_failed_mux_preserves_existing_output(self):
         performer = self._make_performer()

@@ -1,7 +1,6 @@
 import enum
 import logging
 import os
-import shutil
 import statistics
 
 from typing import Any, Iterable, NamedTuple, Sequence
@@ -128,50 +127,45 @@ class MeltPerformer(TrackTimelineMixin):
                 files_details = group.get("files_details", {})
 
                 with self.workspace.staging_for(output) as staged_output:
-                    if len(required_input_files) == 1:
-                        # only one file is being used, just copy it to the output dir
-                        first_file_path = list(required_input_files)[0]
-                        self._copy_single_input(first_file_path, staged_output.path)
-                    else:
-                        # Convert streams to unified list (and patch audios if needed)
-                        prepared_streams = self._prepare_stream_entries(
-                            video_streams,
-                            audio_streams,
-                            subtitle_streams,
-                            required_input_files,
-                            attachments,
-                            file_ids,
-                            files_details,
-                        )
+                    # Convert streams to unified list (and patch audios if needed)
+                    prepared_streams = self._prepare_stream_entries(
+                        video_streams,
+                        audio_streams,
+                        subtitle_streams,
+                        required_input_files,
+                        attachments,
+                        file_ids,
+                        files_details,
+                    )
 
-                        # Sort streams by language alphabetically, unknown languages last
-                        streams_list_sorted = sorted(
-                            prepared_streams.entries,
-                            key=lambda stream: (stream.language is None, stream.language or ""),
-                        )
+                    # Sort streams by language alphabetically, unknown languages last
+                    streams_list_sorted = sorted(
+                        prepared_streams.entries,
+                        key=lambda stream: (stream.language is None, stream.language or ""),
+                    )
 
-                        # Decide which track should be default
-                        default_audio_stream = next((s for s in prepared_streams.entries if s.stream_type == "audio"), None)
-                        default_audio_lang = default_audio_stream.language if default_audio_stream else None
-                        preferred_audio = self._choose_preferred_audio(
-                            group.get("audio_prod_lang"),
-                            streams_list_sorted,
-                            default_audio_lang,
-                        )
+                    # Decide which track should be default
+                    default_audio_stream = next((s for s in prepared_streams.entries if s.stream_type == "audio"), None)
+                    default_audio_lang = default_audio_stream.language if default_audio_stream else None
+                    preferred_audio = self._choose_preferred_audio(
+                        group.get("audio_prod_lang"),
+                        streams_list_sorted,
+                        default_audio_lang,
+                    )
 
-                        generation_args = self.build_mkvmerge_args(
-                            staged_output.path,
-                            streams_list_sorted,
-                            attachments,
-                            preferred_audio,
-                            prepared_streams.input_files,
-                        )
+                    generation_args = self.build_mkvmerge_args(
+                        staged_output.path,
+                        streams_list_sorted,
+                        attachments,
+                        preferred_audio,
+                        prepared_streams.input_files,
+                    )
 
-                        self.logger.info("Generating file: %s", self._display_path(output))
+                    self.logger.info("Generating file: %s", self._display_path(output))
 
-                        process_utils.raise_on_error(
-                            process_utils.start_process("mkvmerge", generation_args, show_progress=True, logger=self.logger)
-                        )
+                    process_utils.raise_on_error(
+                        process_utils.start_process("mkvmerge", generation_args, show_progress=True, logger=self.logger)
+                    )
 
                     video_utils.validate_media_output(staged_output.path, logger=self.logger)
                     staged_output.commit()
@@ -1010,13 +1004,6 @@ class MeltPerformer(TrackTimelineMixin):
 
     def _display_path(self, path: str) -> str:
         return files_utils.format_path(path, self.output_dir)
-
-    def _copy_single_input(self, input_path: str, output_path: str) -> None:
-        self.logger.info(
-            "File %s is superior. Using it whole as output %s.",
-            self._display_path(input_path), self._display_path(output_path),
-        )
-        shutil.copy2(input_path, output_path)
 
     def _pair_match(
         self,
