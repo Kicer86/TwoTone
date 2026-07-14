@@ -6,6 +6,7 @@ from typing import Any, Generator
 
 from ..utils import generic_utils, language_utils
 from .duplicates_source import DuplicatesSource
+from .melt_common import AudioStreamRef, SubtitleStreamRef, VideoStreamRef
 
 
 _UNDEFINED_LANGUAGE = "undefined"
@@ -16,7 +17,11 @@ class StreamsPicker:
         self.duplicates_source = duplicates_source
         self.wd = wd
 
-    def pick_streams(self, files_details: dict, ids: dict[str, int]):
+    def pick_streams(
+        self,
+        files_details: dict,
+        ids: dict[str, int],
+    ) -> tuple[list[VideoStreamRef], list[AudioStreamRef], list[SubtitleStreamRef]]:
         #collect video streams (path and tid) which are attached_pics so we can drop them later as not handled now
         attached_pics = [
             (file_path, vd.get("tid"))
@@ -71,7 +76,11 @@ class StreamsPicker:
         )
 
         # results
-        return video_streams, audio_streams, subtitle_streams
+        return (
+            [VideoStreamRef(*stream) for stream in video_streams],
+            [AudioStreamRef(*stream) for stream in audio_streams],
+            [SubtitleStreamRef(*stream) for stream in subtitle_streams],
+        )
 
     @staticmethod
     def _metadata_flag_is_enabled(value: object) -> bool:

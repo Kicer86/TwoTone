@@ -9,7 +9,15 @@ from ..utils import files_utils, generic_utils, language_utils, video_utils
 from .attachments_picker import AttachmentsPicker
 from .duplicates_source import DuplicatesSource
 from .streams_picker import StreamsPicker
-from .melt_common import StreamType, _is_length_mismatch, stream_short_details
+from .melt_common import (
+    AttachmentRef,
+    AudioStreamRef,
+    StreamType,
+    SubtitleStreamRef,
+    VideoStreamRef,
+    _is_length_mismatch,
+    stream_short_details,
+)
 
 
 class MeltAnalyzer:
@@ -137,7 +145,9 @@ class MeltAnalyzer:
     def _print_streams_details(
         self,
         ids: dict[str, int],
-        all_streams: Iterable[tuple[StreamType, Iterable[tuple[str, int, str | None]]]],
+        all_streams: Iterable[
+            tuple[StreamType, Iterable[VideoStreamRef | AudioStreamRef | SubtitleStreamRef]]
+        ],
         tracks: dict[str, dict],
     ) -> None:
         for stype, type_stream in all_streams:
@@ -158,7 +168,7 @@ class MeltAnalyzer:
                 file_id = ids[path]
                 self.logger.debug(f"{stype} track #{tid}: {language} from file #{file_id}{extra}")
 
-    def _print_attachments_details(self, ids: dict[str, int], all_attachments: Iterable[tuple[str, int]]) -> None:
+    def _print_attachments_details(self, ids: dict[str, int], all_attachments: Iterable[AttachmentRef]) -> None:
         for stream in all_attachments:
             path = stream[0]
             tid = stream[1]
@@ -239,7 +249,7 @@ class MeltAnalyzer:
         self,
         tracks: dict[str, Any],
         ids: dict[str, int],
-    ) -> tuple[list[tuple[str, int, str | None]], list[tuple[str, int, str | None]], list[tuple[str, int, str | None]]]:
+    ) -> tuple[list[VideoStreamRef], list[AudioStreamRef], list[SubtitleStreamRef]]:
         picker_wd = self.workspace.unique_dir("stream_picker")
         streams_picker = StreamsPicker(
             self.logger,
@@ -252,9 +262,9 @@ class MeltAnalyzer:
         self,
         tracks: dict[str, Any],
         ids: dict[str, int],
-        video_streams: list[tuple[str, int, str | None]],
-        audio_streams: list[tuple[str, int, str | None]],
-        subtitle_streams: list[tuple[str, int, str | None]],
+        video_streams: list[VideoStreamRef],
+        audio_streams: list[AudioStreamRef],
+        subtitle_streams: list[SubtitleStreamRef],
     ) -> str | None:
         # Validate lengths across used files
 
