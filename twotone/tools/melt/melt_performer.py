@@ -118,9 +118,7 @@ class MeltPerformer(TrackTimelineMixin):
                 )
 
                 output = self._build_output_path(title, output_name)
-                if os.path.exists(output):
-                    self.logger.info("Output file %s exists, removing it.", output)
-                    os.remove(output)
+                self._reject_output_input_alias(output, set(files) | required_input_files)
 
                 output_parent = os.path.dirname(output)
                 os.makedirs(output_parent, exist_ok=True)
@@ -129,52 +127,77 @@ class MeltPerformer(TrackTimelineMixin):
                 self._pair_match_cache.clear()
                 files_details = group.get("files_details", {})
 
-                if len(required_input_files) == 1:
-                    # only one file is being used, just copy it to the output dir
-                    first_file_path = list(required_input_files)[0]
-                    self._copy_single_input(first_file_path, output)
-                else:
-                    # Convert streams to unified list (and patch audios if needed)
-                    prepared_streams = self._prepare_stream_entries(
-                        video_streams,
-                        audio_streams,
-                        subtitle_streams,
-                        required_input_files,
-                        attachments,
-                        file_ids,
-                        files_details,
-                    )
+                with self.workspace.staging_for(output) as staged_output:
+                    if len(required_input_files) == 1:
+                        # only one file is being used, just copy it to the output dir
+                        first_file_path = list(required_input_files)[0]
+                        self._copy_single_input(first_file_path, staged_output.path)
+                    else:
+                        # Convert streams to unified list (and patch audios if needed)
+                        prepared_streams = self._prepare_stream_entries(
+                            video_streams,
+                            audio_streams,
+                            subtitle_streams,
+                            required_input_files,
+                            attachments,
+                            file_ids,
+                            files_details,
+                        )
 
-                    # Sort streams by language alphabetically, unknown languages last
-                    streams_list_sorted = sorted(
-                        prepared_streams.entries,
-                        key=lambda stream: (stream.language is None, stream.language or ""),
-                    )
+                        # Sort streams by language alphabetically, unknown languages last
+                        streams_list_sorted = sorted(
+                            prepared_streams.entries,
+                            key=lambda stream: (stream.language is None, stream.language or ""),
+                        )
 
-                    # Decide which track should be default
-                    default_audio_stream = next((s for s in prepared_streams.entries if s.stream_type == "audio"), None)
-                    default_audio_lang = default_audio_stream.language if default_audio_stream else None
-                    preferred_audio = self._choose_preferred_audio(
-                        group.get("audio_prod_lang"),
-                        streams_list_sorted,
-                        default_audio_lang,
-                    )
+                        # Decide which track should be default
+                        default_audio_stream = next((s for s in prepared_streams.entries if s.stream_type == "audio"), None)
+                        default_audio_lang = default_audio_stream.language if default_audio_stream else None
+                        preferred_audio = self._choose_preferred_audio(
+                            group.get("audio_prod_lang"),
+                            streams_list_sorted,
+                            default_audio_lang,
+                        )
 
-                    generation_args = self.build_mkvmerge_args(
-                        output,
-                        streams_list_sorted,
-                        attachments,
-                        preferred_audio,
-                        prepared_streams.input_files,
-                    )
+                        generation_args = self.build_mkvmerge_args(
+                            staged_output.path,
+                            streams_list_sorted,
+                            attachments,
+                            preferred_audio,
+                            prepared_streams.input_files,
+                        )
 
-                    self.logger.info("Generating file: %s", self._display_path(output))
+                        self.logger.info("Generating file: %s", self._display_path(output))
 
-                    process_utils.raise_on_error(
-                        process_utils.start_process("mkvmerge", generation_args, show_progress=True, logger=self.logger)
-                    )
+                        process_utils.raise_on_error(
+                            process_utils.start_process("mkvmerge", generation_args, show_progress=True, logger=self.logger)
+                        )
 
-                    self.logger.info("%s saved.", output)
+                    self._validate_staged_output(staged_output.path)
+                    staged_output.commit()
+
+                self.logger.info("%s saved.", output)
+
+    @staticmethod
+    def _resolved_path(path: str) -> str:
+        return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+    def _reject_output_input_alias(self, output: str, input_files: Iterable[str]) -> None:
+        resolved_output = self._resolved_path(output)
+        for input_path in input_files:
+            if resolved_output == self._resolved_path(input_path):
+                raise RuntimeError(
+                    f"Output path {output} aliases input path {input_path}; "
+                    "refusing to overwrite an input file."
+                )
+
+    def _validate_staged_output(self, staged_output: str) -> None:
+        if not os.path.isfile(staged_output) or os.path.getsize(staged_output) == 0:
+            raise RuntimeError(f"Generated output is missing or empty: {staged_output}")
+
+        info = video_utils.get_video_full_info(staged_output, logger=self.logger)
+        if not info.get("format") or not info.get("streams"):
+            raise RuntimeError(f"Generated output is not a valid media file: {staged_output}")
 
     def build_mkvmerge_args(
         self,

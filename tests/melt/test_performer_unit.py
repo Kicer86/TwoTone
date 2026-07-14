@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from parameterized import parameterized
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
 from twotone.tools.melt.melt import MeltPerformer
@@ -27,6 +27,68 @@ class MeltPerformerUnitTest(unittest.TestCase):
             workspace=files_utils.Workspace.temporary(),
             output_dir=output.root,
         )
+
+    def test_process_duplicates_rejects_output_aliasing_input(self):
+        performer = self._make_performer()
+        title_dir = os.path.join(performer.output_dir, "Title")
+        os.makedirs(title_dir)
+        input_path = os.path.join(title_dir, "Movie.mkv")
+        with open(input_path, "wb") as input_file:
+            input_file.write(b"source")
+        input_alias = os.path.join(performer.output_dir, "movie-source.mkv")
+        os.symlink(input_path, input_alias)
+        plan = [{
+            "title": "Title",
+            "groups": [{
+                "output_name": "Movie",
+                "files": [input_alias],
+                "streams": {"video": [(input_alias, 0, None)]},
+            }],
+        }]
+
+        with patch.object(performer, "_copy_single_input") as copy_input:
+            with self.assertRaisesRegex(RuntimeError, "aliases input"):
+                performer.process_duplicates(plan)
+
+        copy_input.assert_not_called()
+        with open(input_path, "rb") as input_file:
+            self.assertEqual(input_file.read(), b"source")
+
+    def test_process_duplicates_failed_mux_preserves_existing_output(self):
+        performer = self._make_performer()
+        input_a = os.path.join(performer.output_dir, "a.mkv")
+        input_b = os.path.join(performer.output_dir, "b.mkv")
+        for path in (input_a, input_b):
+            with open(path, "wb") as input_file:
+                input_file.write(b"input")
+        output_path = os.path.join(performer.output_dir, "Title", "Movie.mkv")
+        os.makedirs(os.path.dirname(output_path))
+        with open(output_path, "wb") as output_file:
+            output_file.write(b"previous output")
+        plan = [{
+            "title": "Title",
+            "groups": [{
+                "output_name": "Movie",
+                "files": [input_a, input_b],
+                "streams": {
+                    "video": [(input_a, 0, None)],
+                    "audio": [(input_b, 1, "eng")],
+                },
+            }],
+        }]
+        prepared = Mock(entries=[
+            _StreamEntry("video", 0, input_a, None),
+            _StreamEntry("audio", 1, input_b, "eng"),
+        ], input_files={input_a, input_b})
+
+        with patch.object(performer, "_prepare_stream_entries", return_value=prepared), \
+             patch.object(performer, "build_mkvmerge_args", return_value=[]), \
+             patch.object(process_utils, "start_process", return_value=Mock(returncode=2, stderr="failed")):
+            with self.assertRaises(RuntimeError):
+                performer.process_duplicates(plan)
+
+        with open(output_path, "rb") as output_file:
+            self.assertEqual(output_file.read(), b"previous output")
 
     def test_stream_sorting_puts_unknown_languages_last(self):
         streams = [
