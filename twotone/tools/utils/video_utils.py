@@ -649,6 +649,17 @@ def get_video_full_info(path: str, logger: logging.Logger | None = None) -> dict
     return output_json
 
 
+def validate_media_output(path: str, logger: logging.Logger | None = None) -> None:
+    """Verify that an output exists and can be probed as a media container."""
+    logger = logger or DEFAULT_LOGGER
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        raise RuntimeError(f"Generated output is missing or empty: {path}")
+
+    info = get_video_full_info(path, logger=logger)
+    if not info.get("format") or not info.get("streams"):
+        raise RuntimeError(f"Generated output is not a valid media file: {path}")
+
+
 def get_video_data(path: str, logger: logging.Logger | None = None) -> dict:
     logger = logger or DEFAULT_LOGGER
 
@@ -1097,6 +1108,4 @@ def generate_mkv(
             os.remove(output_path)
         raise RuntimeError(f"{cmd} exited with unexpected error:\n{result.stderr}\n\nAnd output: {result.stdout}")
 
-    if not os.path.exists(output_path):
-        logger.error("Output file was not created")
-        raise RuntimeError(f"{cmd} did not create output file")
+    validate_media_output(output_path, logger=logger)

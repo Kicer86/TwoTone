@@ -10,6 +10,32 @@ from common import TwoToneTestCase, get_video, remove_key, write_subtitle, gener
 
 
 class UtilsTests(TwoToneTestCase):
+    def test_validate_media_output_rejects_empty_file(self):
+        output_path = os.path.join(self.wd.path, "empty.mkv")
+        with open(output_path, "wb"):
+            pass
+
+        with self.assertRaisesRegex(RuntimeError, "missing or empty"):
+            video_utils.validate_media_output(output_path, logger=self.logger)
+
+    def test_validate_media_output_rejects_file_without_streams(self):
+        output_path = os.path.join(self.wd.path, "invalid.mkv")
+        with open(output_path, "wb") as output_file:
+            output_file.write(b"not empty")
+
+        with patch.object(video_utils, "get_video_full_info", return_value={"format": {}, "streams": []}):
+            with self.assertRaisesRegex(RuntimeError, "not a valid media file"):
+                video_utils.validate_media_output(output_path, logger=self.logger)
+
+    def test_validate_media_output_accepts_probed_container_with_streams(self):
+        output_path = os.path.join(self.wd.path, "valid.mkv")
+        with open(output_path, "wb") as output_file:
+            output_file.write(b"media")
+
+        info = {"format": {"format_name": "matroska"}, "streams": [{"codec_type": "video"}]}
+        with patch.object(video_utils, "get_video_full_info", return_value=info):
+            video_utils.validate_media_output(output_path, logger=self.logger)
+
     def _test_content(self, ext: str, content: str, valid: bool):
         subtitle_path = os.path.join(self.wd.path, f"subtitle.{ext}")
 

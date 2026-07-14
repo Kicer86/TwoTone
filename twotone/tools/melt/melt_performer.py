@@ -173,7 +173,7 @@ class MeltPerformer(TrackTimelineMixin):
                             process_utils.start_process("mkvmerge", generation_args, show_progress=True, logger=self.logger)
                         )
 
-                    self._validate_staged_output(staged_output.path)
+                    video_utils.validate_media_output(staged_output.path, logger=self.logger)
                     staged_output.commit()
 
                 self.logger.info("%s saved.", output)
@@ -190,14 +190,6 @@ class MeltPerformer(TrackTimelineMixin):
                     f"Output path {output} aliases input path {input_path}; "
                     "refusing to overwrite an input file."
                 )
-
-    def _validate_staged_output(self, staged_output: str) -> None:
-        if not os.path.isfile(staged_output) or os.path.getsize(staged_output) == 0:
-            raise RuntimeError(f"Generated output is missing or empty: {staged_output}")
-
-        info = video_utils.get_video_full_info(staged_output, logger=self.logger)
-        if not info.get("format") or not info.get("streams"):
-            raise RuntimeError(f"Generated output is not a valid media file: {staged_output}")
 
     def build_mkvmerge_args(
         self,
