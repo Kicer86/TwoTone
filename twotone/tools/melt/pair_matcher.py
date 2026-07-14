@@ -233,6 +233,147 @@ class PairMatcher:
     def is_ratio_acceptable(ratio: float, perfect_ratio: float) -> bool:
         return abs(ratio - perfect_ratio) < PairMatcher._MAX_RELATIVE_RATIO_ERROR * perfect_ratio
 
+    # A gap between consecutive matched pairs may miss the mapping's median
+    # local slope by at most this much (absolute, and relative for long gaps)
+    # before it counts as a hole in the shared scene sequence.  Speed waviness
+    # (a VHS-style source) oscillates around the median and stays well below;
+    # a content cut (e.g. a commercial break) is one-sided and multi-second.
+    _MAX_GAP_TIME_DEFICIT_MS = 2000
+    _MAX_GAP_TIME_DEFICIT_RATIO = 0.02
+
+    @staticmethod
+    def _flagged_gap_deficits(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Gaps of sorted *pairs* whose rhs advance defies the median slope.
+
+        For every gap between consecutive pairs the expected rhs advance is
+        the lhs advance times the mapping's median local slope — a robust
+        reference that a few corrupted gaps cannot drag away.  A gap whose
+        rhs advance misses that expectation by more than
+        ``max(_MAX_GAP_TIME_DEFICIT_MS, _MAX_GAP_TIME_DEFICIT_RATIO * gap)``
+        in either direction gets flagged.
+
+        Returns ``(gap_index, deficit_ms)`` per flagged gap, where gap ``i``
+        spans ``pairs[i]`` → ``pairs[i + 1]``; a positive deficit means rhs
+        advances less than the slope predicts there, a negative one means
+        lhs does.
+        """
+        if len(pairs) < 3:
+            return []
+
+        slopes = [
+            (r2 - r1) / (l2 - l1)
+            for (l1, r1), (l2, r2) in zip(pairs[:-1], pairs[1:])
+            if l2 > l1
+        ]
+        if not slopes:
+            return []
+        median_slope = float(np.median(slopes))
+
+        flagged: list[tuple[int, int]] = []
+        for i, ((l1, r1), (l2, r2)) in enumerate(zip(pairs[:-1], pairs[1:])):
+            gap = l2 - l1
+            if gap <= 0:
+                continue
+            deficit = round(gap * median_slope - (r2 - r1))
+            threshold = max(
+                PairMatcher._MAX_GAP_TIME_DEFICIT_MS,
+                PairMatcher._MAX_GAP_TIME_DEFICIT_RATIO * gap,
+            )
+            if abs(deficit) > threshold:
+                flagged.append((i, deficit))
+        return flagged
+
+    @staticmethod
+    def find_content_discontinuities(
+        mapping: list[tuple[int, int]],
+    ) -> list[tuple[int, int, int, int, int]]:
+        """Locate holes in the shared scene sequence of a matched pair.
+
+        A gap whose rhs advance misses the median-slope expectation (see
+        ``_flagged_gap_deficits``) marks content present on one side only.
+
+        Returns ``(lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms)`` per
+        offending gap; a positive deficit means rhs is missing content there,
+        a negative one means lhs is.
+        """
+        pairs = sorted(mapping)
+        return [
+            (pairs[i][0], pairs[i + 1][0], pairs[i][1], pairs[i + 1][1], deficit)
+            for i, deficit in PairMatcher._flagged_gap_deficits(pairs)
+        ]
+
+    def _drop_pairs_breaking_local_linearity(
+        self, pairs: list[tuple[int, int]]
+    ) -> list[tuple[int, int]]:
+        """Drop single pairs whose removal restores local linearity.
+
+        A mismatched pair (two visually alike frames from different moments)
+        bends the mapping around itself: the gaps on its sides show time
+        deficits of opposite signs that cancel once the pair is gone.  Such
+        pairs are removed one at a time until none is left.  A genuine
+        content hole (e.g. a commercial-break cut) shifts the offset
+        persistently instead — its deficit is one-sided, nothing cancels it,
+        and the gap stays for ``find_content_discontinuities`` to report.
+        """
+        result = sorted(pairs)
+        while True:
+            flagged = PairMatcher._flagged_gap_deficits(result)
+            rogue: tuple[int, int, int] | None = None
+            for (gap_a, deficit_a), (gap_b, deficit_b) in zip(flagged, flagged[1:]):
+                if gap_b != gap_a + 1 or deficit_a * deficit_b >= 0:
+                    continue
+                merged_gap = result[gap_b + 1][0] - result[gap_a][0]
+                threshold = max(
+                    PairMatcher._MAX_GAP_TIME_DEFICIT_MS,
+                    PairMatcher._MAX_GAP_TIME_DEFICIT_RATIO * merged_gap,
+                )
+                if abs(deficit_a + deficit_b) <= threshold:
+                    rogue = (gap_a + 1, deficit_a, deficit_b)
+                    break
+            if rogue is None:
+                return result
+            rogue_index, deficit_before, deficit_after = rogue
+            lhs_ts, rhs_ts = result.pop(rogue_index)
+            self.logger.warning(
+                "Dropping pair %s ↔ %s — it bends the mapping its neighbours agree on (%+d ms before, %+d ms after)",
+                generic_utils.ms_to_time(lhs_ts),
+                generic_utils.ms_to_time(rhs_ts),
+                deficit_before,
+                deficit_after,
+            )
+
+    # A mapping counts as effectively linear when every pair sits within this
+    # distance of the line through its endpoints.
+    _MAX_LINEAR_RESIDUAL_MS = 1000
+
+    @staticmethod
+    def _linear_mapping_slope(pairs: list[tuple[int, int]]) -> float | None:
+        """Slope of the line through the endpoints of sorted *pairs*.
+
+        Returns None when any interior pair sits further than
+        ``_MAX_LINEAR_RESIDUAL_MS`` from that line — the mapping is not
+        linear and no line-based repair may be applied to it.
+        """
+        if len(pairs) < 2:
+            return None
+
+        first_lhs, first_rhs = pairs[0]
+        last_lhs, last_rhs = pairs[-1]
+        lhs_span = last_lhs - first_lhs
+        if lhs_span <= 0:
+            return None
+
+        slope = (last_rhs - first_rhs) / lhs_span
+        if slope <= 0:
+            return None
+
+        for lhs_time, rhs_time in pairs[1:-1]:
+            predicted_rhs = first_rhs + (lhs_time - first_lhs) * slope
+            if abs(predicted_rhs - rhs_time) > PairMatcher._MAX_LINEAR_RESIDUAL_MS:
+                return None
+        return slope
+
+
     @staticmethod
     def coverage_summary(
         mappings: list[tuple[int, int]],
@@ -1354,6 +1495,23 @@ class PairMatcher:
                 matching_pairs, lhs_scene_ranges, rhs_scene_ranges,
                 lhs_normalized_frames, rhs_normalized_frames, debug,
             )
+            # The refined pairs can reveal a linear relation the sparse
+            # initial matching could not certify.  A mapping that now passes
+            # the full global-linear detection earns the same verified
+            # boundary extension as a detected global-linear one: the fitted
+            # line predicts the edge pairs, and every extension is
+            # content-verified before being kept.  This must run before the
+            # edge snap: snapped pairs are artificial timestamps with no
+            # normalized frames behind them, while the fit and the
+            # verification may only ever see real matched pairs.
+            generic_fit = self.detect_global_linear(
+                matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
+            )
+            if generic_fit is not None:
+                matching_pairs = self._extrapolate_and_verify_global_linear(
+                    generic_fit, matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
+                )
+                debug.dump_matches(matching_pairs, "after verified linear extrapolation")
             matching_pairs = self.snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
 
         self.logger.info("Mapping relation chosen: %s", relation.value)
@@ -1876,9 +2034,12 @@ class PairMatcher:
 
         unique_pairs = sorted(set(final))
 
-        self.logger.debug(PairMatcher.summarize_segments(unique_pairs, self.lhs_fps, self.rhs_fps, lhs_label=self.lhs_label, rhs_label=self.rhs_label))
+        consistent = self._drop_pairs_breaking_local_linearity(unique_pairs)
+        self.logger.debug(f"Local linearity filter:    {PairMatcher.summarize_pairs(self.phash, consistent, lhs_all, rhs_all)}")
 
-        return unique_pairs
+        self.logger.debug(PairMatcher.summarize_segments(consistent, self.lhs_fps, self.rhs_fps, lhs_label=self.lhs_label, rhs_label=self.rhs_label))
+
+        return consistent
 
     def _matched_predicted_pair(
         self,

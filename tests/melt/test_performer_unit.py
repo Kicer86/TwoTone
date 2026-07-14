@@ -141,61 +141,13 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(rebased, 500)
         self.assertEqual(preserved, 0)
 
-    def test_sparse_linear_audio_extrapolation_does_not_extend_one_sided_boundaries(self):
-        mapping = [
-            (500, 510),
-            (24041, 24532),
-            (63250, 64540),
-        ]
-        lhs_frames = {
-            0: {"path": "lhs_0.jpg"},
-            500: {"path": "lhs_500.jpg"},
-            63250: {"path": "lhs_63250.jpg"},
-        }
-        rhs_frames = {
-            510: {"path": "rhs_510.jpg"},
-            64540: {"path": "rhs_64540.jpg"},
-            65050: {"path": "rhs_65050.jpg"},
-        }
-
-        result = MeltPerformer._try_sparse_linear_audio_extrapolation(
-            mapping,
-            lhs_frames,
-            rhs_frames,
-            lhs_fps=24.0,
-            rhs_fps=24.0,
-        )
-
-        self.assertIsNone(result)
-
-    def test_sparse_linear_audio_extrapolation_does_not_project_past_source_frames(self):
-        mapping = [
-            (500, 500),
-            (13458, 13458),
-            (62791, 62791),
-        ]
-        lhs_frames = {
-            0: {"path": "lhs_0.jpg"},
-            500: {"path": "lhs_500.jpg"},
-            62791: {"path": "lhs_62791.jpg"},
-            63250: {"path": "lhs_63250.jpg"},
-        }
-        rhs_frames = {
-            500: {"path": "rhs_500.jpg"},
-            62791: {"path": "rhs_62791.jpg"},
-        }
-
-        result = MeltPerformer._try_sparse_linear_audio_extrapolation(
-            mapping,
-            lhs_frames,
-            rhs_frames,
-            lhs_fps=24.0,
-            rhs_fps=24.0,
-        )
-
-        self.assertIsNone(result)
-
-    def test_effective_fps_audio_mapping_uses_stream_duration_and_matroska_start(self):
+    def test_collapse_linear_mapping_sharpens_slope_with_metadata_tempo(self):
+        # The matched endpoint carries a ~1 s low-entropy-zone error (observed
+        # slope 1.0043 vs the real 1.0204); the effective-fps tempo agrees
+        # with the pairs within tolerance, so it replaces the noisy slope and
+        # the mapping collapses to one clean global time-scale.  The tempo is
+        # derived from stream durations (mp4 duration, matroska DURATION tag)
+        # and start offsets.
         mapping = [
             (0, 0),
             (63292, 63562),
@@ -232,17 +184,25 @@ class MeltPerformerUnitTest(unittest.TestCase):
             }
 
         with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info):
-            result = MeltPerformer._try_effective_fps_audio_mapping(
+            tempo_ratio = MeltPerformer._effective_tempo_ratio(
                 "/tmp/base.mp4",
                 "/tmp/source.mkv",
-                mapping,
                 lhs_frames,
                 rhs_frames,
             )
 
+        result = MeltPerformer._try_collapse_linear_mapping(
+            mapping,
+            lhs_frames,
+            tempo_ratio,
+        )
+
         self.assertEqual(result, [(0, 0), (63292, 64583)])
 
-    def test_effective_fps_audio_mapping_ignores_partial_coverage(self):
+    def test_collapse_linear_mapping_skips_partial_coverage(self):
+        # Metadata agrees with the pairs, but the matched span covers well
+        # under 80% of the base — projecting one global time-scale from a
+        # small window is guesswork.
         mapping = [
             (5708, 4536),
             (46208, 44438),
@@ -251,45 +211,21 @@ class MeltPerformerUnitTest(unittest.TestCase):
             round(index * 63292 / 1497): {"path": f"lhs_{index}.jpg"}
             for index in range(1498)
         }
-        rhs_frames = {
-            round(index * 64030 / 1506): {"path": f"rhs_{index}.jpg"}
-            for index in range(1507)
-        }
 
-        def fake_full_info(path):
-            if path == "/tmp/base.mkv":
-                return {
-                    "streams": [
-                        {
-                            "codec_type": "video",
-                            "start_time": "0.000000",
-                            "tags": {"DURATION": "00:01:03.292000000"},
-                        }
-                    ]
-                }
-            return {
-                "streams": [
-                    {
-                        "codec_type": "video",
-                        "start_time": "0.492000",
-                        "duration": "61.863000",
-                        "nb_frames": "1507",
-                    }
-                ]
-            }
-
-        with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info):
-            result = MeltPerformer._try_effective_fps_audio_mapping(
-                "/tmp/base.mkv",
-                "/tmp/source.mov",
-                mapping,
-                lhs_frames,
-                rhs_frames,
-            )
+        result = MeltPerformer._try_collapse_linear_mapping(
+            mapping,
+            lhs_frames,
+            tempo_ratio=0.9715,
+        )
 
         self.assertIsNone(result)
 
-    def test_effective_fps_audio_mapping_ignores_frame_rate_only_drift(self):
+    def test_frame_rate_only_drift_mapping_detected(self):
+        # A 23<->24 fps resample preserving playback time: the effective fps
+        # differ (tempo far from 1) and match the nominal ratio, while the
+        # matched spans agree in wall-clock duration.  Such pairs must go the
+        # UNSCALED route — _choose_audio_strategy excludes them before any
+        # linear-mapping recovery runs.
         mapping = [
             (739, 0),
             (16522, 16063),
@@ -331,7 +267,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             }
 
         with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info):
-            result = MeltPerformer._try_effective_fps_audio_mapping(
+            result = MeltPerformer._is_frame_rate_only_drift_mapping(
                 "/tmp/base.mkv",
                 "/tmp/source.mp4",
                 mapping,
@@ -340,6 +276,59 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 lhs_nominal_fps=23.0,
                 rhs_nominal_fps=24.0,
             )
+
+        self.assertTrue(result)
+
+    def test_linear_recovery_rejects_tmnt_piecewise_pairs(self):
+        # A 23.976 fps base against a 30 fps resampled transfer with ad-break
+        # cuts.  The pairs are piecewise (interior residuals of ~1.4 s against
+        # the endpoint line), so no line may be recovered — and the fps tempo
+        # 0.7992, contradicting the pairs' ~0.9665 span slope, must never be
+        # applied: an fps-derived mapping would stretch the audio by 25%.
+        mapping = [
+            (1084, 0),
+            (4755, 3633),
+            (5130, 4000),
+            (5589, 4467),
+            (17851, 16800),
+            (1250918, 1206600),
+            (1253337, 1208967),
+            (1256590, 1212200),
+            (1315148, 1270067),
+            (1335794, 1290000),
+        ]
+        lhs_frames = {
+            0: {"path": "lhs_0.jpg"},
+            1369994: {"path": "lhs_1369994.jpg"},
+        }
+
+        result = MeltPerformer._try_collapse_linear_mapping(
+            mapping,
+            lhs_frames,
+            tempo_ratio=0.7992,
+        )
+
+        self.assertIsNone(result)
+
+    def test_collapse_linear_mapping_keeps_pairs_when_metadata_contradicts(self):
+        # A clean (cut-free) variant of the TMNT class: pairs perfectly linear
+        # at 0.96651, while the effective-fps tempo says 0.7992 (resampled
+        # transfer — the fps ratio is unrelated to the time mapping).  The
+        # contradicting metadata must not rebuild the mapping.
+        pairs = [
+            (1084 + i * 300000, round(i * 300000 * 0.96651))
+            for i in range(5)
+        ]
+        lhs_frames = {
+            0: {"path": "lhs_0.jpg"},
+            1369994: {"path": "lhs_1369994.jpg"},
+        }
+
+        result = MeltPerformer._try_collapse_linear_mapping(
+            pairs,
+            lhs_frames,
+            tempo_ratio=0.7992,
+        )
 
         self.assertIsNone(result)
 

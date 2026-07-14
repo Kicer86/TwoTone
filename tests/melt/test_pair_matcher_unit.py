@@ -983,6 +983,167 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertGreaterEqual(result_first[0], 8000,
             "Boundary should stop at dark zone when content doesn't match on the other side")
 
+    # ---- find_content_discontinuities ----
+
+    def test_content_discontinuity_flags_commercial_cut(self):
+        # TMNT-like pair: steady 0.9864 slope, but 7 s of rhs content missing
+        # in one gap (an ad-break cut in the rhs transfer).
+        mapping = [
+            (lhs, round(lhs * 0.9864) - (7000 if lhs > 300000 else 0))
+            for lhs in range(0, 600001, 10000)
+        ]
+
+        result = PairMatcher.find_content_discontinuities(mapping)
+
+        self.assertEqual(result, [(300000, 310000, 295920, 298784, 7000)])
+
+    def test_content_discontinuity_tolerates_speed_waviness(self):
+        # VHS-style source: scene durations wobble ±3% around the median
+        # speed, with no content missing on either side.
+        mapping = [(0, 0)]
+        lhs = rhs = 0
+        for i in range(60):
+            lhs += 10000
+            rhs += round(10000 * (1.03 if i % 2 else 0.97))
+            mapping.append((lhs, rhs))
+
+        result = PairMatcher.find_content_discontinuities(mapping)
+
+        self.assertEqual(result, [])
+
+    def test_content_discontinuity_threshold_scales_with_gap_length(self):
+        # The same 2.5 s deviation is drift/matcher noise across a sparse
+        # 160 s gap (under the 2% relative threshold) but a genuine hole in
+        # a 20 s gap.
+        base = [(i * 10000, i * 10000) for i in range(30)]
+        last_lhs, last_rhs = base[-1]
+
+        sparse = base + [(last_lhs + 160000, last_rhs + 157500)]
+        dense = base + [(last_lhs + 20000, last_rhs + 17500)]
+
+        self.assertEqual(PairMatcher.find_content_discontinuities(sparse), [])
+        self.assertEqual(
+            PairMatcher.find_content_discontinuities(dense),
+            [(last_lhs, last_lhs + 20000, last_rhs, last_rhs + 17500, 2500)],
+        )
+
+    # ---- _drop_pairs_breaking_local_linearity ----
+
+    def test_local_linearity_filter_drops_mismatched_gendarme_pair(self):
+        # Real pairs #310-#329 from a Gendarme Gets Married melt (24 fps
+        # BluRay vs 25 fps AVI transfer, slope 0.96).  The pair
+        # (3671813, 3527080) matched two near-identical shots 2.8 s apart,
+        # bending the line: gap deficits -2800/+2800 ms around it cancel
+        # once it is removed.
+        pm = self._make_pair_matcher()
+        good = [
+            (3608813, 3463840), (3611938, 3466840), (3626188, 3480560),
+            (3644438, 3498000), (3648771, 3502160), (3656021, 3509160),
+            (3668313, 3520960), (3669605, 3522160), (3670563, 3523080),
+            (3678355, 3530560), (3681021, 3533120), (3682980, 3535000),
+            (3684105, 3536120), (3688813, 3540600), (3690730, 3542400),
+            (3693855, 3545440), (3698313, 3549720), (3704605, 3555760),
+            (3708980, 3559960),
+        ]
+        rogue = (3671813, 3527080)
+
+        result = pm._drop_pairs_breaking_local_linearity(sorted(good + [rogue]))
+
+        self.assertEqual(result, good)
+        self.assertEqual(PairMatcher.find_content_discontinuities(result), [])
+
+    def test_local_linearity_filter_keeps_genuine_content_cut(self):
+        # A commercial-break cut shifts the offset persistently: its deficit
+        # is one-sided, no removal can cancel it, so every pair must survive
+        # for find_content_discontinuities to report the hole.
+        pm = self._make_pair_matcher()
+        mapping = [
+            (lhs, round(lhs * 0.9864) - (7000 if lhs > 300000 else 0))
+            for lhs in range(0, 600001, 10000)
+        ]
+
+        result = pm._drop_pairs_breaking_local_linearity(mapping)
+
+        self.assertEqual(result, mapping)
+        self.assertEqual(len(PairMatcher.find_content_discontinuities(result)), 1)
+
+    def test_local_linearity_filter_keeps_adjacent_same_sign_cuts(self):
+        # Two cuts in consecutive gaps push the deficit the same way; they do
+        # not cancel, so the pair between them is genuine and must survive.
+        pm = self._make_pair_matcher()
+        mapping = []
+        for lhs in range(0, 600001, 10000):
+            cut = (7000 if lhs > 300000 else 0) + (7000 if lhs > 310000 else 0)
+            mapping.append((lhs, lhs - cut))
+
+        result = pm._drop_pairs_breaking_local_linearity(mapping)
+
+        self.assertEqual(result, mapping)
+
+    def test_local_linearity_filter_tolerates_speed_waviness(self):
+        # VHS-style wobble oscillates below the deficit threshold — no gap
+        # gets flagged and no pair gets dropped.
+        pm = self._make_pair_matcher()
+        mapping = [(0, 0)]
+        lhs = rhs = 0
+        for i in range(60):
+            lhs += 10000
+            rhs += round(10000 * (1.03 if i % 2 else 0.97))
+            mapping.append((lhs, rhs))
+
+        result = pm._drop_pairs_breaking_local_linearity(mapping)
+
+        self.assertEqual(result, mapping)
+
+    def test_local_linearity_filter_drops_multiple_isolated_rogue_pairs(self):
+        # Each mismatched pair bends the line locally; removals repeat until
+        # every remaining gap follows the median slope again.
+        pm = self._make_pair_matcher()
+        base = [(i * 10000, i * 10000) for i in range(40)]
+        corrupted = list(base)
+        corrupted[10] = (100000, 103000)
+        corrupted[30] = (300000, 297200)
+
+        result = pm._drop_pairs_breaking_local_linearity(corrupted)
+
+        expected = [p for i, p in enumerate(base) if i not in (10, 30)]
+        self.assertEqual(result, expected)
+
+    # ---- detect_global_linear on refined generic pairs ----
+
+    def test_detect_global_linear_certifies_refined_linear_pairs(self):
+        # 24 fps base vs a 25 fps frame-for-frame transfer: the refined pairs
+        # lie on one line, so the detection certifies the frame relation and
+        # the implied time scale — earning the mapping the verified boundary
+        # extension in the GENERIC branch.
+        pm = self._make_pair_matcher(lhs_fps=24.0, rhs_fps=25.0)
+        pm.lhs_all_frames = {i * 500: {"frame_id": i * 12} for i in range(121)}
+        pm.rhs_all_frames = {i * 480: {"frame_id": i * 12} for i in range(121)}
+        pairs = [(i * 500, i * 480) for i in (0, 30, 60, 90, 120)]
+
+        fit = pm.detect_global_linear(pairs, pm.lhs_all_frames, pm.rhs_all_frames)
+
+        self.assertIsNotNone(fit)
+        self.assertAlmostEqual(fit.slope, 1.0, places=6)
+        self.assertAlmostEqual(fit.intercept, 0.0, places=6)
+        self.assertAlmostEqual(fit.time_scale, 24.0 / 25.0, places=6)
+
+    def test_detect_global_linear_rejects_piecewise_refined_pairs(self):
+        # 7 s of content missing on the rhs side halfway through: the pairs do
+        # not lie on one line, so no boundary predictor may be built and the
+        # edges stay where the content search left them.
+        pm = self._make_pair_matcher(lhs_fps=24.0, rhs_fps=24.0)
+        pm.lhs_all_frames = {i * 500: {"frame_id": i * 12} for i in range(121)}
+        pm.rhs_all_frames = {i * 500: {"frame_id": i * 12} for i in range(121)}
+        pairs = [
+            (i * 500, i * 500 - (7000 if i >= 60 else 0))
+            for i in (0, 30, 45, 60, 90, 120)
+        ]
+
+        self.assertIsNone(
+            pm.detect_global_linear(pairs, pm.lhs_all_frames, pm.rhs_all_frames)
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
