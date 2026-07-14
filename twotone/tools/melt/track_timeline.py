@@ -34,6 +34,7 @@ import os
 from typing import Any
 
 from ..utils import files_utils, generic_utils, process_utils, video_utils
+from .melt_common import AudioStreamRef
 
 
 class TrackTimelineMixin:
@@ -44,6 +45,8 @@ class TrackTimelineMixin:
 
     workspace: files_utils.Workspace
     logger: logging.Logger
+    _media_info_cache: dict[str, dict[str, Any]]
+    _stream_info_cache: dict[tuple[str, str, int], dict[str, Any] | None]
 
     _aac_priming_exposed_cache: bool | None = None
 
@@ -52,9 +55,19 @@ class TrackTimelineMixin:
 
     # --- plain stream-timeline probing -----------------------------------
 
-    @staticmethod
-    def _stream_info(path: str, stream_type: str, stream_index: int) -> dict[str, Any] | None:
-        info = video_utils.get_video_full_info(path)
+    def _media_info(self, path: str) -> dict[str, Any]:
+        info = self._media_info_cache.get(path)
+        if info is None:
+            info = video_utils.get_video_full_info(path, logger=self.logger)
+            self._media_info_cache[path] = info
+        return info
+
+    def _stream_info(self, path: str, stream_type: str, stream_index: int) -> dict[str, Any] | None:
+        cache_key = (path, stream_type, stream_index)
+        if cache_key in self._stream_info_cache:
+            return self._stream_info_cache[cache_key]
+
+        info = self._media_info(path)
         for stream in info.get("streams", []):
             if stream.get("codec_type") != stream_type:
                 continue
@@ -63,12 +76,13 @@ class TrackTimelineMixin:
             except (TypeError, ValueError):
                 continue
             if probed_index == stream_index:
+                self._stream_info_cache[cache_key] = stream
                 return stream
+        self._stream_info_cache[cache_key] = None
         return None
 
-    @staticmethod
-    def _audio_stream_info(path: str, stream_index: int) -> dict[str, Any] | None:
-        return TrackTimelineMixin._stream_info(path, "audio", stream_index)
+    def _audio_stream_info(self, stream: AudioStreamRef) -> dict[str, Any] | None:
+        return self._stream_info(stream.path, "audio", stream.stream_index)
 
     @staticmethod
     def _stream_start_offset_ms(stream: dict[str, Any] | None) -> int:
@@ -125,9 +139,8 @@ class TrackTimelineMixin:
 
     # --- AAC encoder-delay (priming) handling ----------------------------
 
-    @classmethod
     def _source_audio_priming(
-        cls,
+        self,
         video_path: str,
         logger: logging.Logger | None = None,
         *,
@@ -141,16 +154,12 @@ class TrackTimelineMixin:
         ``audio_stream_index`` selects a specific stream by its absolute container
         index; when omitted the first audio stream is used.
         """
-        info = video_utils.get_video_full_info(video_path, logger=logger)
-        streams = info.get("streams", [])
         stream: dict[str, Any]
         if audio_stream_index is not None:
-            stream = next(
-                (s for s in streams
-                 if s.get("codec_type") == "audio" and s.get("index") == audio_stream_index),
-                {},
-            )
+            stream = self._stream_info(video_path, "audio", audio_stream_index) or {}
         else:
+            info = video_utils.get_video_full_info(video_path, logger=logger)
+            streams = info.get("streams", [])
             stream = next((s for s in streams if s.get("codec_type") == "audio"), {})
         codec = stream.get("codec_name")
         try:
@@ -294,7 +303,36 @@ class TrackTimelineMixin:
     def _extract_audio_to_flac(self, video_path: str, output_path: str, logger: logging.Logger | None = None) -> None:
         self._decode_source_audio_to_flac(video_path, output_path, sample_fmt="s32", logger=logger)
 
-    def _audio_needs_mkvmerge_normalization(self, path: str, stream_index: int) -> bool:
+    def _decode_audio_stream_to_flac(
+        self,
+        stream: AudioStreamRef,
+        output_path: str,
+        *,
+        sample_fmt: str = "s32",
+        trim_start_ms: int | None = None,
+        trim_end_ms: int | None = None,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        """Decode one explicitly selected audio stream to priming-free FLAC."""
+        self._decode_source_audio_to_flac(
+            stream.path,
+            output_path,
+            sample_fmt=sample_fmt,
+            trim_start_ms=trim_start_ms,
+            trim_end_ms=trim_end_ms,
+            audio_stream_index=stream.stream_index,
+            logger=logger,
+        )
+
+    def _extract_selected_audio_to_flac(
+        self,
+        stream: AudioStreamRef,
+        output_path: str,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self._decode_audio_stream_to_flac(stream, output_path, sample_fmt="s32", logger=logger)
+
+    def _audio_needs_mkvmerge_normalization(self, stream_ref: AudioStreamRef) -> bool:
         """Return True when direct mkvmerge remux can shift decoded AAC timing.
 
         Non-Matroska AAC always needs a priming-free remux: mkvmerge would otherwise
@@ -306,10 +344,10 @@ class TrackTimelineMixin:
         Route those through the FLAC-domain flow too so the priming is removed
         deterministically, exactly as for non-Matroska inputs.
         """
-        stream = self._audio_stream_info(path, stream_index)
+        stream = self._audio_stream_info(stream_ref)
         if stream is None or stream.get("codec_name") != "aac":
             return False
-        extension = os.path.splitext(path)[1].lower()
+        extension = os.path.splitext(stream_ref.path)[1].lower()
         if extension not in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
             return True
         try:
