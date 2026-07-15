@@ -1,5 +1,6 @@
 
 import os
+import unittest
 
 from twotone.tools.utils import generic_utils, video_utils
 from twotone.tools.melt.melt import StaticSource
@@ -21,6 +22,24 @@ from melt.helpers import (
 class MeltIntegrationTest(MeltTestBase):
 
     def test_simple_duplicate_detection(self):
+        def dicts_equal_skip_key(d1, d2, skip_keys):
+            if isinstance(d1, dict) and isinstance(d2, dict):
+                if set(d1) != set(d2):
+                    return False
+                return all(
+                    k in skip_keys or dicts_equal_skip_key(v1, d2[k], skip_keys)
+                    for k, v1 in d1.items()
+                )
+            elif isinstance(d1, list) and isinstance(d2, list):
+                if len(d1) != len(d2):
+                    return False
+                return all(
+                    dicts_equal_skip_key(i1, i2, skip_keys)
+                    for i1, i2 in zip(d1, d2)
+                )
+            else:
+                return d1 == d2
+
         file1 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = ["v1"])[0]
         file2 = add_test_media("Grass - 66810.mp4", self.wd.path, suffixes = ["v2"])[0]
 
@@ -39,12 +58,15 @@ class MeltIntegrationTest(MeltTestBase):
         plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
         process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
-        # expect output to be equal to the first of files
+        # expect output to be equal (in terms of streams count and type) as input file
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 1)
 
         # check if file was not altered
-        self.assertEqual(next(iter(output_file_hash.values())), input_file_hashes[file1])
+        input_file_data = video_utils.get_video_data(file1)
+        output_file = next(iter(output_file_hash))
+        output_file_data = video_utils.get_video_data(output_file)
+        self.assertTrue(dicts_equal_skip_key(input_file_data, output_file_data, {"length", "fps"})) # melt changes container so fps and length may change slightly
 
 
     def test_dry_run_is_being_respected(self):
@@ -548,3 +570,7 @@ class MeltIntegrationTest(MeltTestBase):
 
         output_files = list_files(output_dir)
         self.assertEqual(len(output_files), 0)
+
+
+if __name__ == '__main__':
+    unittest.main()
