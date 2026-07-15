@@ -1137,59 +1137,6 @@ class MeltPerformer(TrackTimelineMixin):
             return "s32"
         return sample_fmt
 
-    @staticmethod
-    def _normalize_args(params: tuple[int, int, str]) -> list[str]:
-        """Return ffmpeg args that re-encode audio to match *params* (channels, sample_rate, sample_fmt)."""
-        channels, sample_rate, sample_fmt = params
-        sample_fmt = MeltPerformer._flac_safe_fmt(sample_fmt)
-        return ["-ac", str(channels), "-ar", str(sample_rate), "-sample_fmt", sample_fmt]
-
-    @staticmethod
-    def _extract_head_tail(
-        base_audio: str,
-        base_video: str,
-        seg_start_ms: int,
-        seg_end_ms: int,
-        head_path: str,
-        tail_path: str,
-        normalize_to: tuple[int, int, str] | None = None,
-        logger: logging.Logger | None = None,
-    ) -> tuple[bool, bool]:
-        """Extract head/tail segments from the base audio track.
-
-        When *normalize_to* is given as (channels, sample_rate, sample_fmt),
-        head and tail are re-encoded to match those parameters so that FLAC
-        concatenation with the main segment works without parameter mismatches.
-
-        Returns (has_head, has_tail) indicating which parts were extracted.
-        """
-        norm_args: list[str] = []
-        if normalize_to:
-            norm_args = MeltPerformer._normalize_args(normalize_to)
-        else:
-            norm_args = ["-sample_fmt", "s32"]
-
-        has_head = seg_start_ms > 0
-        if has_head:
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y", "-ss", "0", "-to", str(seg_start_ms / 1000),
-                    "-i", base_audio, *norm_args, "-c:a", "flac", head_path,
-                ], logger=logger)
-            )
-
-        base_duration_ms = video_utils.get_video_duration(base_video, logger=logger)
-        has_tail = seg_end_ms < base_duration_ms
-        if has_tail:
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y", "-ss", str(seg_end_ms / 1000),
-                    "-i", base_audio, *norm_args, "-c:a", "flac", tail_path,
-                ], logger=logger)
-            )
-
-        return has_head, has_tail
-
     # Channel layouts that have a standard AAC channel configuration index.
     # Non-standard layouts (e.g., "5.1(side)") force the AAC encoder to use a
     # Program Config Element (PCE) which many decoders/muxers handle poorly,
@@ -1266,142 +1213,28 @@ class MeltPerformer(TrackTimelineMixin):
         *,
         fill_gaps_from_base: bool = True,
     ) -> int:
-        """Replace an audio segment in the base video with time-adjusted audio from another video.
-
-        The replacement is split into smaller, corresponding subsegments to better handle drift.
-        When *fill_gaps_from_base* is False, head/tail gaps are skipped
-        entirely — the caller is expected to position the track via mkvmerge
-        ``--sync`` and leave the gaps silent.
-
-        Returns the timeline start (ms) of the produced track on the base-video
-        timeline, mirroring ``patch_audio_constant_offset``.
-        """
-
-        wd = os.path.join(wd, "audio_extraction")
-        debug_wd = os.path.join(wd, "debug")
-        os.makedirs(wd, exist_ok=True)
-        os.makedirs(debug_wd, exist_ok=True)
-
-        v2_audio = os.path.join(wd, "v2_audio.flac")
-        head_path = os.path.join(wd, "head.flac")
-        tail_path = os.path.join(wd, "tail.flac")
-
-        debug = DebugRoutines(debug_wd, lhs_frames, rhs_frames)
-
-        # Compute global segment range (milliseconds)
-        seg = self._segment_range(segment_pairs)
-        seg1_start, seg1_end = seg.lhs_start, seg.lhs_end
-
-        # 1. Extract audio tracks
-        if fill_gaps_from_base:
-            if base_audio is None:
-                raise RuntimeError("Cannot fill audio gaps without an explicitly selected base audio stream.")
-            v1_audio = os.path.join(wd, "v1_audio.flac")
-            self._extract_selected_audio_to_flac(base_audio, v1_audio, logger=self.logger)
-        self._extract_selected_audio_to_flac(source_audio, v2_audio, logger=self.logger)
-
-        source_params = self._get_audio_params(source_audio)
-
-        # 2. Extract head/tail from base audio (when skipped, caller uses --sync)
-        if not fill_gaps_from_base:
-            has_head = False
-            has_tail = False
-        else:
-            has_head, has_tail = self._extract_head_tail(
-                v1_audio, base_video.path, seg1_start, seg1_end, head_path, tail_path,
-                normalize_to=source_params,
-                logger=self.logger,
-            )
-
-        # 3. Generate subsegment split points from provided mapping pairs
-        total_left_duration = seg1_end - seg1_start
-        left_targets = [seg1_start + i * total_left_duration // segment_count for i in range(segment_count + 1)]
-
-        def closest_pair(value: int, pairs: Sequence[tuple[int, int]]) -> tuple[int, int]:
-            return min(pairs, key=lambda p: abs(p[0] - value))
-
-        selected_pairs = [closest_pair(t, segment_pairs) for t in left_targets]
-
-        # Merge short segments with a neighbor
-        cleaned_pairs: list[tuple[int, int, int, int]] = []
-        i = 0
-        while i < len(selected_pairs) - 1:
-            l_start = selected_pairs[i][0]
-            l_end = selected_pairs[i + 1][0]
-            r_start = selected_pairs[i][1]
-            r_end = selected_pairs[i + 1][1]
-
-            l_dur = l_end - l_start
-            r_dur = r_end - r_start
-
-            if l_dur < min_subsegment_duration * 1000 or r_dur < min_subsegment_duration * 1000:
-                if i + 2 < len(selected_pairs):
-                    selected_pairs[i + 1] = selected_pairs[i + 2]
-                    del selected_pairs[i + 2]
-                    continue
-                if i > 0:
-                    prev = cleaned_pairs[-1]
-                    cleaned_pairs[-1] = (prev[0], l_end, prev[2], r_end)
-                    i += 1
-                    continue
-
-            cleaned_pairs.append((l_start, l_end, r_start, r_end))
-            i += 1
-
-        debug.dump_pairs(cleaned_pairs)
-
-        # 4. Extract, time-scale and collect replacement parts
-        temp_segments: list[str] = []
-        for idx, (l_start, l_end, r_start, r_end) in enumerate(cleaned_pairs):
-            left_duration = l_end - l_start
-            right_duration = r_end - r_start
-            source_per_base = right_duration / left_duration if left_duration else 1.0
-
-            if abs(source_per_base - 1.0) > 0.10:
-                self.logger.error("Segment %d duration mismatch exceeds 10%%", idx)
-
-            raw_cut = os.path.join(wd, f"cut_{idx}.flac")
-            scaled_cut = os.path.join(wd, f"scaled_{idx}.flac")
-
-            process_utils.raise_on_error(
-                process_utils.start_process(
-                    "ffmpeg", [
-                        "-y",
-                        "-ss", str(r_start / 1000),
-                        "-to", str(r_end / 1000),
-                        "-i", v2_audio,
-                        "-c:a", "flac",
-                        raw_cut,
-                    ],
-                    logger=self.logger,
-                )
-            )
-
-            process_utils.raise_on_error(
-                process_utils.start_process(
-                    "ffmpeg", [
-                        "-y",
-                        "-i", raw_cut,
-                        "-filter:a", f"atempo={source_per_base:.3f}",
-                        "-sample_fmt", "s32", "-c:a", "flac",
-                        scaled_cut,
-                    ],
-                    logger=self.logger,
-                )
-            )
-
-            temp_segments.append(scaled_cut)
-
-        # 5. Concatenate and encode
-        channel_layout = self._get_audio_channel_layout(source_audio)
-        self._concat_and_encode(
-            temp_segments, has_head, head_path, has_tail, tail_path,
-            os.path.join(wd, "concat.txt"), output_path,
-            channel_layout=channel_layout,
-            logger=self.logger,
+        """Compatibility entry point for a subsegment patch request."""
+        base_duration_ms = video_utils.get_video_duration(base_video.path, logger=self.logger)
+        if base_duration_ms is None:
+            raise RuntimeError(f"Could not determine base video duration for {base_video.path}.")
+        request = self._create_audio_patch_request(
+            wd,
+            base_video,
+            source_audio,
+            base_audio,
+            output_path,
+            segment_pairs,
+            base_duration_ms,
+            lhs_frames=lhs_frames,
+            rhs_frames=rhs_frames,
+            fill_gaps_from_base=fill_gaps_from_base,
         )
-
-        return seg1_start
+        return self._execute_audio_patch(
+            request,
+            _AudioStrategy.SUBSEGMENT,
+            segment_count=segment_count,
+            min_subsegment_duration=min_subsegment_duration,
+        ).timeline_start_ms
 
     def _build_output_path(self, title: str, output_name: str) -> str:
         return os.path.join(self.output_dir, title, output_name + ".mkv")
