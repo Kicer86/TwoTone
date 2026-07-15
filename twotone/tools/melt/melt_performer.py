@@ -364,143 +364,26 @@ class MeltPerformer(TrackTimelineMixin):
         *,
         fill_gaps_from_base: bool = True,
     ) -> int:
-        """Replace audio using a single global time-scale for constant-offset cases.
+        """Compatibility entry point for one globally scaled audio patch.
 
-        Instead of splitting into many subsegments and applying per-segment atempo,
-        this trims and time-scales the source audio directly from the video file,
-        avoiding full audio extraction.
-
-        When *fill_gaps_from_base* is False, head/tail gaps are skipped
-        entirely — the caller is expected to position the track via mkvmerge
-        ``--sync`` and leave the gaps silent.
-
-        Returns the effective sync offset (ms) for positioning the produced
-        audio track on the base-video timeline.
+        The production path constructs :class:`AudioPatchRequest` before
+        selecting a strategy.  Keeping this small wrapper preserves the focused
+        unit-level seam while ensuring it executes the exact same pipeline.
         """
-
-        wd = os.path.join(wd, "audio_extraction")
-        os.makedirs(wd, exist_ok=True)
-
-        # Compute global segment range (milliseconds)
-        seg = self._segment_range(segment_pairs)
-        seg1_start, seg1_end = seg.lhs_start, seg.lhs_end
-        seg2_start, seg2_end = seg.rhs_start, seg.rhs_end
-
-        # 1. Extract head/tail directly from base video, normalized to source params
-        source_params = self._get_audio_params(source_audio)
         base_duration_ms = video_utils.get_video_duration(base_video.path, logger=self.logger)
-        has_head = seg1_start > 0 and fill_gaps_from_base
-        has_tail = seg1_end < base_duration_ms and fill_gaps_from_base
-        if (has_head or has_tail) and base_audio is None:
-            raise RuntimeError("Cannot fill audio gaps without an explicitly selected base audio stream.")
-
-        # Time-scale from matched video-frame spans (true playback-rate
-        # relationship, independent of audio track).  It must not be skewed by
-        # where the audio stream happens to start relative to its video,
-        # otherwise a constant-offset source whose audio merely leads its video
-        # gets a spurious global time-scale.
-        #
-        # Naming convention: ``x_per_y`` = x-timeline duration / y-timeline
-        # duration; multiplying a y-timeline duration by it yields x-timeline.
-        base_span_ms = seg1_end - seg1_start
-        source_span_ms = seg2_end - seg2_start
-        base_per_source = base_span_ms / source_span_ms if source_span_ms else 1.0
-        source_per_base = source_span_ms / base_span_ms if base_span_ms else 1.0
-        needs_scaling = self._needs_fps_scaling(source_per_base)
-
-        self.logger.info(
-            "Audio patch (constant-offset): base=[%d…%d] ms, source=[%d…%d] ms, source/base span ratio=%.4f",
-            seg1_start, seg1_end, seg2_start, seg2_end, source_per_base,
-        )
-
-        head_path = os.path.join(wd, "head.flac")
-        tail_path = os.path.join(wd, "tail.flac")
-
-        if has_head:
-            assert base_audio is not None
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y", "-to", str(seg1_start / 1000),
-                    "-i", base_audio.path, "-map", f"0:{base_audio.stream_index}",
-                    *self._normalize_args(source_params),
-                    "-c:a", "flac", head_path,
-                ], logger=self.logger)
-            )
-        if has_tail:
-            assert base_audio is not None
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y", "-ss", str(seg1_end / 1000),
-                    "-i", base_audio.path, "-map", f"0:{base_audio.stream_index}",
-                    *self._normalize_args(source_params),
-                    "-c:a", "flac", tail_path,
-                ], logger=self.logger)
-            )
-
-        # 2. Trim + time-scale source audio.
-        #    The scaling ratio is derived from video-frame timestamps (fps
-        #    relationship), NOT from measured audio duration.
-
-        trimmed_audio = os.path.join(wd, "source_trimmed.flac")
-        self._decode_audio_stream_to_flac(
+        if base_duration_ms is None:
+            raise RuntimeError(f"Could not determine base video duration for {base_video.path}.")
+        request = self._create_audio_patch_request(
+            wd,
+            base_video,
             source_audio,
-            trimmed_audio,
-            sample_fmt=self._flac_safe_fmt(source_params[2]),
-            trim_start_ms=seg2_start,
-            trim_end_ms=seg2_end,
-            logger=self.logger,
+            base_audio,
+            output_path,
+            segment_pairs,
+            base_duration_ms,
+            fill_gaps_from_base=fill_gaps_from_base,
         )
-
-        actual_source_dur = video_utils.get_video_duration(trimmed_audio, logger=self.logger)
-        expected_scaled_dur = round(actual_source_dur * base_per_source)
-
-        # The priming-aware content start (see track_timeline) already makes
-        # this offset correct on both ffmpeg priming conventions.
-        sync_offset = self._patched_audio_start_ms(
-            source_audio,
-            seg1_start,
-            seg2_start,
-            base_per_source,
-        )
-        start_correction = sync_offset - seg1_start
-        if fill_gaps_from_base and start_correction > self._SIGNIFICANT_START_CORRECTION_MS:
-            raise RuntimeError(
-                f"Audio start correction of {start_correction} ms detected "
-                f"in fill-audio-gaps mode. "
-                f"The source container's audio starts later than its video, "
-                f"which cannot be compensated when head/tail are filled from "
-                f"the base file. Use default (silence) mode instead."
-            )
-
-        # Scale with the video-frame span ratio (true playback-rate relationship)
-        scaled_audio = os.path.join(wd, "source_scaled.flac")
-        if not needs_scaling:
-            scaled_audio = trimmed_audio
-        else:
-            sample_rate = source_params[1]
-            adjusted_rate = sample_rate * source_per_base
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y", "-i", trimmed_audio,
-                    "-filter:a", f"asetrate={adjusted_rate:.6f},aresample={sample_rate}",
-                    "-sample_fmt", "s32", "-c:a", "flac",
-                    scaled_audio,
-                ], logger=self.logger)
-            )
-
-        scaled_dur = video_utils.get_video_duration(scaled_audio, logger=self.logger)
-        self._validate_audio_duration(scaled_dur, expected_scaled_dur, "scaled audio")
-
-        # 3. Concatenate and encode to AAC
-        channel_layout = self._get_audio_channel_layout(source_audio)
-        self._concat_and_encode(
-            [scaled_audio], has_head, head_path, has_tail, tail_path,
-            os.path.join(wd, "concat.txt"), output_path,
-            channel_layout=channel_layout,
-            logger=self.logger,
-        )
-
-        return sync_offset
+        return self._execute_audio_patch(request, _AudioStrategy.GLOBAL_TIME_SCALE).timeline_start_ms
 
     def _create_audio_patch_request(
         self,
@@ -1142,57 +1025,6 @@ class MeltPerformer(TrackTimelineMixin):
             )
         return stream.get("channel_layout") or None
 
-    def _patched_audio_start_ms(
-        self,
-        source_audio: AudioStreamRef,
-        seg1_start: int,
-        seg2_start: int,
-        base_per_source: float,
-    ) -> int:
-        """Return timeline start for a decoded source-audio trim.
-
-        The trim window starts at ``seg2_start`` on the source content
-        timeline, but the decoded audio may actually begin later than that:
-
-        - when the source audio stream starts after its video (and after the
-          window start), the first ``audio_start - seg2_start`` of the window
-          simply do not exist in the decode, or
-        - when the whole container starts at a positive offset, the decode is
-          shifted relative to the mapped video frames.
-
-        Each case yields a lower bound on how far past ``seg1_start`` the
-        decoded samples really begin (both estimate the same physical gap from
-        different metadata), so the larger bound wins and is added to the sync
-        offset.
-        """
-        info = self._media_info(source_audio.path)
-        video_stream = next((s for s in info["streams"] if s.get("codec_type") == "video"), None)
-        audio_stream = self._audio_stream_info(source_audio)
-        video_start_ms = self._stream_start_offset_ms(video_stream)
-        audio_start_ms = self._audio_content_start_ms(audio_stream)
-
-        audio_start_correction = 0
-        if audio_start_ms > video_start_ms and audio_start_ms > seg2_start:
-            audio_start_correction = round((audio_start_ms - seg2_start) * base_per_source)
-
-        try:
-            container_start = float(info.get("format", {}).get("start_time") or 0.0)
-        except (TypeError, ValueError):
-            container_start = 0.0
-
-        positive_timeline_correction = 0
-        timeline_start_ms = max(video_start_ms, audio_start_ms)
-        if container_start > 0 and timeline_start_ms > seg2_start:
-            positive_timeline_correction = max(0, round(timeline_start_ms * base_per_source) - seg1_start)
-
-        correction = max(audio_start_correction, positive_timeline_correction)
-        if correction > self._SIGNIFICANT_START_CORRECTION_MS:
-            self.logger.info(
-                "Audio trim start correction: %d ms → sync offset: %d ms",
-                correction,
-                seg1_start + correction,
-            )
-        return seg1_start + correction
     _FPS_RATIO_TOLERANCE = 0.001
     # A start correction below this is normal probe noise; above it the audio
     # placement genuinely moves — logged, and rejected in fill-gaps mode where
@@ -1216,24 +1048,85 @@ class MeltPerformer(TrackTimelineMixin):
     # Number of subsegments the per-scene audio patcher splits the mapped
     # range into.
     _SUBSEGMENT_COUNT = 20
+    # FFmpeg's atempo filter can retain up to one 1024-sample processing block
+    # at EOF.  Its duration check must account for that bounded filter tail,
+    # while final placement validation still catches accumulated error.
+    _ATEMPO_TAIL_SAMPLES = 1024
 
     @staticmethod
     def _needs_fps_scaling(ratio: float) -> bool:
         """Return True when *ratio* deviates enough from 1.0 to need asetrate scaling."""
         return abs(ratio - 1.0) >= MeltPerformer._FPS_RATIO_TOLERANCE
 
-    _MAX_DURATION_DEVIATION = 0.05  # 5%
+    @staticmethod
+    def _audio_duration_tolerance_ms(
+        sample_rate: int,
+        *,
+        segment_count: int = 1,
+        encoded: bool = False,
+        filter_tail_samples: int = 0,
+    ) -> int:
+        """Return the measurable duration budget for a FLAC/AAC transformation.
 
-    def _validate_audio_duration(self, actual_ms: int, expected_ms: int, label: str) -> None:
-        """Raise if *actual_ms* deviates from *expected_ms* by more than 5%."""
-        if expected_ms == 0:
-            return
-        deviation = abs(actual_ms - expected_ms) / expected_ms
-        if deviation > self._MAX_DURATION_DEVIATION:
+        Each independently time-scaled segment can round by one sample.  The
+        final AAC encode can additionally round to one 1024-sample AAC frame.
+        Some filters, such as atempo, can retain a bounded tail block at EOF.
+        ffprobe then reports the result in milliseconds.  This is a physical
+        error budget, not a percentage that grows with film length.
+        """
+        if sample_rate <= 0:
+            raise ValueError("Audio sample rate must be positive.")
+        sample_rounding_ms = math.ceil(max(1, segment_count) * 1000 / sample_rate)
+        aac_frame_ms = math.ceil(1024 * 1000 / sample_rate) if encoded else 0
+        filter_tail_ms = math.ceil(max(0, filter_tail_samples) * 1000 / sample_rate)
+        probe_rounding_ms = 2
+        return sample_rounding_ms + aac_frame_ms + filter_tail_ms + probe_rounding_ms
+
+    def _validate_audio_duration(
+        self,
+        actual_ms: int,
+        expected_ms: int,
+        label: str,
+        *,
+        sample_rate: int = 48000,
+        segment_count: int = 1,
+        encoded: bool = False,
+        filter_tail_samples: int = 0,
+    ) -> None:
+        """Raise when duration exceeds the sample/filter-derived precision budget."""
+        tolerance_ms = self._audio_duration_tolerance_ms(
+            sample_rate,
+            segment_count=segment_count,
+            encoded=encoded,
+            filter_tail_samples=filter_tail_samples,
+        )
+        deviation_ms = abs(actual_ms - expected_ms)
+        if deviation_ms > tolerance_ms:
             raise RuntimeError(
-                f"Audio duration mismatch in {label}: "
-                f"got {actual_ms} ms, expected {expected_ms} ms "
-                f"(deviation: {deviation:.1%}, max allowed: {self._MAX_DURATION_DEVIATION:.0%})"
+                f"Audio duration mismatch in {label}: got {actual_ms} ms, "
+                f"expected {expected_ms} ms (difference: {deviation_ms} ms, "
+                f"max allowed: {tolerance_ms} ms)."
+            )
+
+    def _validate_audio_placement(
+        self,
+        start_ms: int,
+        duration_ms: int,
+        expected_end_ms: int,
+        sample_rate: int,
+        segment_count: int,
+    ) -> None:
+        actual_end_ms = start_ms + duration_ms
+        tolerance_ms = self._audio_duration_tolerance_ms(
+            sample_rate,
+            segment_count=segment_count,
+            encoded=True,
+        )
+        if abs(actual_end_ms - expected_end_ms) > tolerance_ms:
+            raise RuntimeError(
+                "Patched audio placement mismatch: "
+                f"track ends at {actual_end_ms} ms, expected {expected_end_ms} ms "
+                f"(max allowed: {tolerance_ms} ms)."
             )
 
     @staticmethod
