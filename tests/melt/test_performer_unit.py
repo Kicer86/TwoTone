@@ -10,7 +10,11 @@ from unittest.mock import Mock, patch
 from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
 from twotone.tools.melt.melt import MeltPerformer
 from twotone.tools.melt.melt_common import AudioStreamRef, VideoStreamRef
-from twotone.tools.melt.melt_performer import _AudioStrategy, _PairMatchResult, _StreamEntry
+from twotone.tools.melt.melt_performer import (
+    TimelineInterval,
+    VideoToAudioTimeline,
+    _AudioStrategy, _PairMatchResult, _StreamEntry,
+)
 from twotone.tools.melt.pair_matcher import MappingRelation, SegmentsMappingResult
 from common import run_ffmpeg
 from melt.helpers import _FAKE_PROCESS_OK
@@ -1882,6 +1886,17 @@ class MeltPerformerUnitTest(unittest.TestCase):
                     start_gap_ms * ((seg1_end - seg1_start) / source_dur)
                 )
                 self.assertIn(str(expected_correction), str(ctx.exception))
+
+    def test_audio_timeline_value_objects_preserve_explicit_origins(self):
+        interval = TimelineInterval(500, 1000)
+        timeline = VideoToAudioTimeline(mapping_to_video_ms=500, audio_content_start_ms=488)
+
+        self.assertEqual(interval.duration_ms, 500)
+        self.assertEqual(timeline.video_to_stream_ms(0), 500)
+        self.assertEqual(timeline.video_to_rebased_audio_ms(0), 12)
+        self.assertEqual(timeline.rebased_audio_to_video_ms(12), 0)
+        with self.assertRaises(ValueError):
+            TimelineInterval(1000, 500)
 
     def test_validate_audio_duration_raises_on_excessive_deviation(self):
         """_validate_audio_duration should raise when deviation exceeds 5%."""

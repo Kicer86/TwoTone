@@ -3,6 +3,7 @@ import logging
 import os
 import statistics
 
+from dataclasses import dataclass
 from typing import Any, Iterable, NamedTuple, Sequence
 from tqdm import tqdm
 
@@ -65,8 +66,92 @@ class _PatchedAudio(NamedTuple):
     ``None`` means the track must be muxed as-is: it already embeds its own
     alignment (head/tail gaps filled from the base audio).
     """
+
     stream: AudioStreamRef
     timeline_start_ms: int | None
+
+
+@dataclass(frozen=True)
+class TimelineInterval:
+    """A closed-open interval on a named millisecond timeline."""
+
+    start_ms: int
+    end_ms: int
+
+    def __post_init__(self) -> None:
+        if self.end_ms < self.start_ms:
+            raise ValueError("Timeline interval end precedes its start.")
+
+    @property
+    def duration_ms(self) -> int:
+        return self.end_ms - self.start_ms
+
+
+@dataclass(frozen=True)
+class VideoToAudioTimeline:
+    """Translate PairMatcher video timestamps to one selected audio stream.
+
+    PairMatcher timestamps are produced by ``showinfo`` and may be rebased by a
+    container.  Decoded FLAC, in contrast, is deliberately rebased to its first
+    audio-content sample.  This transform makes the two origins explicit so no
+    patcher can use a raw RHS video timestamp as an audio cut position.
+    """
+
+    mapping_to_video_ms: int
+    audio_content_start_ms: int
+
+    def video_to_stream_ms(self, timestamp_ms: int) -> int:
+        """Return the timestamp on the selected stream's source timeline."""
+        return timestamp_ms + self.mapping_to_video_ms
+
+    def video_to_rebased_audio_ms(self, timestamp_ms: int) -> int:
+        """Return the timestamp on the selected decoded-FLAC timeline."""
+        return self.video_to_stream_ms(timestamp_ms) - self.audio_content_start_ms
+
+    def rebased_audio_to_video_ms(self, timestamp_ms: int) -> int:
+        """Return the PairMatcher timestamp corresponding to decoded-FLAC time."""
+        return timestamp_ms - self.mapping_to_video_ms + self.audio_content_start_ms
+
+
+@dataclass(frozen=True)
+class AudioPatchRequest:
+    """All immutable inputs shared by global and subsegment audio patchers."""
+
+    working_dir: str
+    output_path: str
+    base_video: VideoStreamRef
+    source_audio: AudioStreamRef
+    base_audio: AudioStreamRef | None
+    mapping: tuple[tuple[int, int], ...]
+    target_interval: TimelineInterval
+    base_duration_ms: int
+    source_timeline: VideoToAudioTimeline
+    base_timeline: VideoToAudioTimeline | None
+    fill_gaps_from_base: bool
+    lhs_frames: FramesInfo
+    rhs_frames: FramesInfo
+
+
+@dataclass(frozen=True)
+class AudioPatchResult:
+    """A validated patched audio track and its exact output-timeline placement."""
+
+    stream: AudioStreamRef
+    timeline_start_ms: int
+    duration_ms: int
+    transformation: str
+
+
+@dataclass(frozen=True)
+class _AudioMappingSegment:
+    target: TimelineInterval
+    source: TimelineInterval
+
+
+@dataclass(frozen=True)
+class _AudioPart:
+    path: str
+    duration_ms: int
 
 
 class _PreparedStreams(NamedTuple):
