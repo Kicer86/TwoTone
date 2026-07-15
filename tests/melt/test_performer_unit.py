@@ -1411,39 +1411,103 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         patch_outputs = []
 
-        def fake_patch_audio_constant_offset(
+        def fake_request(
             _wd,
             _base_video,
             source_audio,
             _base_audio,
             output_path,
             _mapping,
+            _base_duration,
             **_kwargs,
         ):
             self.assertEqual(source_audio.stream_index, 1)
-            patch_outputs.append(output_path)
-            return 0
+            return Mock(source_audio=source_audio, output_path=output_path)
+
+        def fake_execute(request, _strategy, **_kwargs):
+            patch_outputs.append(request.output_path)
+            return AudioPatchResult(
+                AudioStreamRef(request.output_path, 0, request.source_audio.language),
+                0,
+                base_duration,
+                "global-time-scale",
+            )
 
         file_ids = {base_video: 1, audio_a: 2, audio_b: 3}
         with patch.object(performer, "_log_coverage", lambda *args, **kwargs: None), \
-             patch.object(performer, "patch_audio_constant_offset", side_effect=fake_patch_audio_constant_offset):
-            first_stream, first_start = performer._patch_mismatched_audio(
+             patch.object(performer, "_create_audio_patch_request", side_effect=fake_request), \
+             patch.object(performer, "_execute_audio_patch", side_effect=fake_execute):
+            first = performer._patch_mismatched_audio(
                 VideoStreamRef(base_video, 0, None), AudioStreamRef(audio_a, 1, "pol"),
                 None, base_duration, None, file_ids,
             )
-            second_stream, second_start = performer._patch_mismatched_audio(
+            second = performer._patch_mismatched_audio(
                 VideoStreamRef(base_video, 0, None), AudioStreamRef(audio_b, 1, "pol"),
                 None, base_duration, None, file_ids,
             )
 
-        self.assertEqual(first_stream.stream_index, 0)
-        self.assertEqual(second_stream.stream_index, 0)
-        self.assertEqual(first_stream.language, "pol")
-        self.assertEqual(second_stream.language, "pol")
-        self.assertEqual(first_start, 0)
-        self.assertEqual(second_start, 0)
-        self.assertEqual(patch_outputs, [first_stream.path, second_stream.path])
-        self.assertNotEqual(first_stream.path, second_stream.path)
+        self.assertEqual(first.stream.stream_index, 0)
+        self.assertEqual(second.stream.stream_index, 0)
+        self.assertEqual(first.stream.language, "pol")
+        self.assertEqual(second.stream.language, "pol")
+        self.assertEqual(first.timeline_start_ms, 0)
+        self.assertEqual(second.timeline_start_ms, 0)
+        self.assertEqual(patch_outputs, [first.stream.path, second.stream.path])
+        self.assertNotEqual(first.stream.path, second.stream.path)
+
+    def test_unscaled_audio_patch_validates_placement_before_returning_result(self):
+        performer = self._make_performer()
+        base_video = VideoStreamRef("/tmp/base.mkv", 0, None)
+        source_audio = AudioStreamRef("/tmp/source.mkv", 2, "pol")
+        mapping = [(0, 0), (60000, 60000)]
+        performer._pair_match_cache[(base_video.path, source_audio.path)] = _PairMatchResult(
+            matching=SegmentsMappingResult(
+                mapping=mapping,
+                lhs_all_frames={},
+                rhs_all_frames={},
+                relation=MappingRelation.GLOBAL_LINEAR,
+                lhs_fps=24.0,
+                rhs_fps=24.0,
+            ),
+            source_duration=60000,
+        )
+        patched_stream = AudioStreamRef("/tmp/normalized.mka", 0, "pol")
+
+        with patch.object(performer, "_choose_audio_strategy", return_value=_AudioStrategy.UNSCALED), \
+             patch.object(performer, "_prepare_audio_mapping", return_value=mapping), \
+             patch.object(performer, "_audio_stream_info", return_value={}), \
+             patch.object(performer, "_audio_content_start_ms", return_value=0), \
+             patch.object(performer, "_mapping_stream_bias_ms", return_value=0), \
+             patch.object(performer, "_unscaled_timeline_shift_ms", return_value=500), \
+             patch.object(performer, "_prepare_normalized_unscaled_audio", return_value=patched_stream) as prepare, \
+             patch.object(video_utils, "get_video_duration", return_value=59500), \
+             patch.object(performer, "_get_audio_params", return_value=(2, 48000, "s16")), \
+             patch.object(performer, "_validate_audio_duration", wraps=performer._validate_audio_duration) as duration, \
+             patch.object(performer, "_validate_audio_placement", wraps=performer._validate_audio_placement) as placement:
+            result = performer._patch_mismatched_audio(
+                base_video,
+                source_audio,
+                None,
+                60000,
+                None,
+                {base_video.path: 1, source_audio.path: 2},
+            )
+
+        prepare.assert_called_once_with(source_audio, desired_end_ms=60000, desired_start_ms=500)
+        duration.assert_called_once_with(
+            59500,
+            59500,
+            "unscaled patched audio",
+            sample_rate=48000,
+            encoded=True,
+        )
+        placement.assert_called_once_with(500, 59500, 60000, 48000, 1)
+        self.assertEqual(result, AudioPatchResult(
+            patched_stream,
+            500,
+            59500,
+            "unscaled-normalization",
+        ))
 
     def test_subsegment_audio_patch_preserves_selected_stream_identity(self):
         performer = self._make_performer()
@@ -1463,26 +1527,34 @@ class MeltPerformerUnitTest(unittest.TestCase):
             source_duration=60000,
         )
 
-        def fake_patch_audio_segment(
+        def fake_request(
             _wd,
             received_base_video,
             received_source_audio,
             received_base_audio,
-            _output_path,
+            output_path,
             _mapping,
-            _segment_count,
-            _lhs_frames,
-            _rhs_frames,
+            _base_duration,
             **_kwargs,
         ):
             self.assertEqual(received_base_video, base_video)
             self.assertEqual(received_source_audio, source_audio)
             self.assertEqual(received_base_audio, base_audio)
-            return 125
+            return Mock(source_audio=received_source_audio, output_path=output_path)
+
+        def fake_execute(request, strategy, **_kwargs):
+            self.assertEqual(strategy, _AudioStrategy.SUBSEGMENT)
+            return AudioPatchResult(
+                AudioStreamRef(request.output_path, 0, request.source_audio.language),
+                125,
+                59875,
+                "subsegment-atempo (1 segments)",
+            )
 
         with patch.object(performer, "_choose_audio_strategy", return_value=_AudioStrategy.SUBSEGMENT), \
              patch.object(performer, "_prepare_audio_mapping", return_value=mapping), \
-             patch.object(performer, "_patch_audio_segment", side_effect=fake_patch_audio_segment):
+             patch.object(performer, "_create_audio_patch_request", side_effect=fake_request), \
+             patch.object(performer, "_execute_audio_patch", side_effect=fake_execute):
             patched = performer._patch_mismatched_audio(
                 base_video,
                 source_audio,
@@ -1495,6 +1567,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(patched.stream.stream_index, 0)
         self.assertEqual(patched.stream.language, "pol")
         self.assertEqual(patched.timeline_start_ms, 125)
+        self.assertEqual(patched.duration_ms, 59875)
 
     def test_subsegment_patcher_decodes_selected_later_audio_stream(self):
         performer = self._make_performer()

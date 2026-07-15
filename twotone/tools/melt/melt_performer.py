@@ -59,19 +59,6 @@ class _AudioStrategy(enum.Enum):
     SUBSEGMENT = "subsegment"
 
 
-class _PatchedAudio(NamedTuple):
-    """An audio track prepared for muxing, with its placement decision.
-
-    ``timeline_start_ms`` is the absolute position of the track's first sample
-    on the output (base-video) timeline, to be applied via mkvmerge ``--sync``.
-    ``None`` means the track must be muxed as-is: it already embeds its own
-    alignment (head/tail gaps filled from the base audio).
-    """
-
-    stream: AudioStreamRef
-    timeline_start_ms: int | None
-
-
 @dataclass(frozen=True)
 class TimelineInterval:
     """A closed-open interval on a named millisecond timeline."""
@@ -1283,7 +1270,7 @@ class MeltPerformer(TrackTimelineMixin):
         base_duration: int,
         base_audio_end: int | None,
         file_ids: dict[str, int],
-    ) -> _PatchedAudio:
+    ) -> AudioPatchResult:
         """Run PairMatcher and apply the appropriate audio patching strategy."""
         video_path_base = base_video.path
         audio_path = audio_stream.path
@@ -1367,8 +1354,32 @@ class MeltPerformer(TrackTimelineMixin):
                     desired_start_ms=desired_start_ms,
                 )
                 timeline_start_ms = max(0, desired_start_ms)
+                target_end_ms = base_audio_end if base_audio_end is not None else base_duration
+                actual_duration_ms = video_utils.get_video_duration(patched_stream.path, logger=self.logger)
+                if actual_duration_ms is None:
+                    raise RuntimeError(f"Could not determine duration for {patched_stream.path}.")
+                source_params = self._get_audio_params(audio_stream)
+                self._validate_audio_duration(
+                    actual_duration_ms,
+                    max(0, target_end_ms - timeline_start_ms),
+                    "unscaled patched audio",
+                    sample_rate=source_params[1],
+                    encoded=True,
+                )
+                self._validate_audio_placement(
+                    timeline_start_ms,
+                    actual_duration_ms,
+                    target_end_ms,
+                    source_params[1],
+                    1,
+                )
                 self.logger.info("  Desired audio start: %d ms", timeline_start_ms)
-                return _PatchedAudio(patched_stream, timeline_start_ms)
+                return AudioPatchResult(
+                    stream=patched_stream,
+                    timeline_start_ms=timeline_start_ms,
+                    duration_ms=actual_duration_ms,
+                    transformation="unscaled-normalization",
+                )
             else:
                 self.logger.debug(
                     "Audio patching: base_duration=%d ms, source_duration=%d ms, "
@@ -1382,30 +1393,26 @@ class MeltPerformer(TrackTimelineMixin):
                         mapping[0][0], mapping[-1][0], mapping[0][1], mapping[-1][1],
                     )
 
-                fill_gaps = self.fill_audio_gaps
-
                 patched_audio = self._temporary_audio_path("patched_audio", stream_index)
-                if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
-                    timeline_start_ms = self.patch_audio_constant_offset(
-                        mwd, base_video, audio_stream, base_audio, patched_audio, mapping,
-                        fill_gaps_from_base=fill_gaps,
-                    )
-                else:
-                    timeline_start_ms = self._patch_audio_segment(
-                        mwd, base_video, audio_stream, base_audio, patched_audio, mapping,
-                        self._SUBSEGMENT_COUNT, lhs_all_frames, rhs_all_frames,
-                        fill_gaps_from_base=fill_gaps,
-                    )
-
-                patched_stream = AudioStreamRef(patched_audio, 0, audio_stream.language)
-
-                if fill_gaps:
-                    # Gaps were filled from the base audio — the track embeds its own
-                    # alignment and must be muxed without repositioning.
-                    return _PatchedAudio(patched_stream, None)
-                else:
-                    self.logger.info("  Desired audio start: %d ms", timeline_start_ms)
-                    return _PatchedAudio(patched_stream, timeline_start_ms)
+                request = self._create_audio_patch_request(
+                    mwd,
+                    base_video,
+                    audio_stream,
+                    base_audio,
+                    patched_audio,
+                    mapping,
+                    base_duration,
+                    lhs_frames=lhs_all_frames,
+                    rhs_frames=rhs_all_frames,
+                    fill_gaps_from_base=self.fill_audio_gaps,
+                )
+                result = self._execute_audio_patch(
+                    request,
+                    strategy,
+                    segment_count=self._SUBSEGMENT_COUNT if strategy == _AudioStrategy.SUBSEGMENT else 1,
+                )
+                self.logger.info("  Desired audio start: %d ms", result.timeline_start_ms)
+                return result
 
 
     def _choose_audio_strategy(
