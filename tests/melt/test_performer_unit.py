@@ -871,6 +871,35 @@ class MeltPerformerUnitTest(unittest.TestCase):
             "atrim=start=0.021333:end=62.771333,asetpts=PTS-STARTPTS",
         )
 
+    def test_full_selected_audio_decode_is_rebased_and_normalized(self):
+        """A whole selected stream uses one zero-based, normalized FLAC timeline."""
+        performer = self._make_performer()
+        calls = []
+        source_info = {
+            "streams": [
+                {"codec_type": "audio", "index": 2, "codec_name": "flac", "sample_rate": "44100"},
+            ],
+        }
+
+        def fake_start_process(tool, args, **_kwargs):
+            calls.append((tool, list(args)))
+            return _FAKE_PROCESS_OK
+
+        with patch.object(video_utils, "get_video_full_info", return_value=source_info), \
+             patch.object(process_utils, "start_process", side_effect=fake_start_process), \
+             patch.object(process_utils, "raise_on_error", lambda result: None):
+            performer._decode_audio_stream_to_flac(
+                AudioStreamRef("/tmp/source.mkv", 2, "pol"),
+                "/tmp/output.flac",
+                normalize_to=(1, 48000, "s32"),
+            )
+
+        decode_args = calls[-1][1]
+        self.assertEqual(decode_args[decode_args.index("-map") + 1], "0:2")
+        self.assertEqual(decode_args[decode_args.index("-filter:a") + 1], "asetpts=PTS-STARTPTS")
+        self.assertEqual(decode_args[decode_args.index("-ac") + 1], "1")
+        self.assertEqual(decode_args[decode_args.index("-ar") + 1], "48000")
+
     def test_patch_audio_constant_offset_concat_single_pass(self):
         """When head/tail needed, concat should encode to AAC in a single pass (no intermediate FLAC)."""
         performer = self._make_performer()

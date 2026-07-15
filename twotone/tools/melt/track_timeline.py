@@ -237,6 +237,8 @@ class TrackTimelineMixin:
         trim_start_ms: int | None = None,
         trim_end_ms: int | None = None,
         audio_stream_index: int | None = None,
+        output_channels: int | None = None,
+        output_sample_rate: int | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         """Decode the first audio stream of *source_video* to FLAC with the lossy-codec
@@ -247,11 +249,12 @@ class TrackTimelineMixin:
         the now-always-present priming, and trim exactly ``initial_padding`` samples
         ourselves — identical output on exposing and absorbing builds.
 
-        ``trim_start_ms`` / ``trim_end_ms`` select a window of the *priming-free*
-        stream, matching what a priming-honouring decoder would have produced.  These
-        bounds are expressed on the source's content timeline.  When the priming strip
-        drops the container timestamps, re-anchor the window to the priming-independent
-        content start so exposing and absorbing ffmpeg builds select identical samples.
+        ``trim_start_ms`` / ``trim_end_ms`` select a window on the source stream's
+        timeline.  Callers that start from video-frame timestamps must first transform
+        those timestamps into this timeline.  When the priming strip drops container
+        timestamps, the window is re-anchored to the priming-independent content start
+        so exposing and absorbing ffmpeg builds select identical samples.  The emitted
+        FLAC is always rebased to its first selected sample.
         """
         codec, init_pad, sample_rate, stream = self._source_audio_priming(
             source_video, logger=logger, audio_stream_index=audio_stream_index,
@@ -288,11 +291,17 @@ class TrackTimelineMixin:
                 end_s = prime_offset_s + max(0, trim_end_ms - window_anchor_ms) / 1000
                 atrim += f":end={end_s:.6f}"
             filters.append(atrim)
-            filters.append("asetpts=PTS-STARTPTS")
+        # All downstream patching works in a priming-free, zero-based FLAC
+        # timeline.  Rebase even a whole-stream decode so segment cutters never
+        # accidentally compare a source-video timestamp with a preserved audio PTS.
+        filters.append("asetpts=PTS-STARTPTS")
 
         args = ["-y", "-i", input_path, "-map", input_map]
-        if filters:
-            args += ["-filter:a", ",".join(filters)]
+        args += ["-filter:a", ",".join(filters)]
+        if output_channels is not None:
+            args += ["-ac", str(output_channels)]
+        if output_sample_rate is not None:
+            args += ["-ar", str(output_sample_rate)]
         args += ["-sample_fmt", sample_fmt, "-c:a", "flac", output_path]
         try:
             process_utils.raise_on_error(process_utils.start_process("ffmpeg", args, logger=logger))
@@ -311,9 +320,14 @@ class TrackTimelineMixin:
         sample_fmt: str = "s32",
         trim_start_ms: int | None = None,
         trim_end_ms: int | None = None,
+        normalize_to: tuple[int, int, str] | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         """Decode one explicitly selected audio stream to priming-free FLAC."""
+        output_channels: int | None = None
+        output_sample_rate: int | None = None
+        if normalize_to is not None:
+            output_channels, output_sample_rate, sample_fmt = normalize_to
         self._decode_source_audio_to_flac(
             stream.path,
             output_path,
@@ -321,6 +335,8 @@ class TrackTimelineMixin:
             trim_start_ms=trim_start_ms,
             trim_end_ms=trim_end_ms,
             audio_stream_index=stream.stream_index,
+            output_channels=output_channels,
+            output_sample_rate=output_sample_rate,
             logger=logger,
         )
 
