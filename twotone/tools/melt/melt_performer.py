@@ -1,5 +1,6 @@
 import enum
 import logging
+import math
 import os
 import statistics
 
@@ -501,6 +502,410 @@ class MeltPerformer(TrackTimelineMixin):
 
         return sync_offset
 
+    def _create_audio_patch_request(
+        self,
+        working_dir: str,
+        base_video: VideoStreamRef,
+        source_audio: AudioStreamRef,
+        base_audio: AudioStreamRef | None,
+        output_path: str,
+        mapping: Sequence[tuple[int, int]],
+        base_duration_ms: int,
+        *,
+        lhs_frames: FramesInfo | None = None,
+        rhs_frames: FramesInfo | None = None,
+        fill_gaps_from_base: bool,
+    ) -> AudioPatchRequest:
+        if not mapping:
+            raise RuntimeError("Cannot patch audio without matched frame pairs.")
+
+        mapping_tuple = tuple(mapping)
+        segment = self._segment_range(mapping_tuple)
+        source_video = VideoStreamRef(source_audio.path, 0, None)
+        source_timeline = self._video_to_audio_timeline(source_video, source_audio, rhs_frames or {})
+        base_timeline = (
+            self._video_to_audio_timeline(base_video, base_audio, lhs_frames or {})
+            if base_audio is not None
+            else None
+        )
+        return AudioPatchRequest(
+            working_dir=working_dir,
+            output_path=output_path,
+            base_video=base_video,
+            source_audio=source_audio,
+            base_audio=base_audio,
+            mapping=mapping_tuple,
+            target_interval=TimelineInterval(segment.lhs_start, segment.lhs_end),
+            base_duration_ms=base_duration_ms,
+            source_timeline=source_timeline,
+            base_timeline=base_timeline,
+            fill_gaps_from_base=fill_gaps_from_base,
+            lhs_frames=lhs_frames or {},
+            rhs_frames=rhs_frames or {},
+        )
+
+    def _video_to_audio_timeline(
+        self,
+        video_stream: VideoStreamRef,
+        audio_stream: AudioStreamRef,
+        frames: FramesInfo,
+    ) -> VideoToAudioTimeline:
+        """Build the explicit mapping-video-to-selected-audio transform."""
+        video_info = self._stream_info(video_stream.path, "video", video_stream.stream_index)
+        video_start_ms = self._stream_start_offset_ms(video_info)
+        mapping_start_ms = min(frames) if frames else video_start_ms
+        return VideoToAudioTimeline(
+            mapping_to_video_ms=video_start_ms - mapping_start_ms,
+            audio_content_start_ms=self._audio_content_start_ms(self._audio_stream_info(audio_stream)),
+        )
+
+    def _execute_audio_patch(
+        self,
+        request: AudioPatchRequest,
+        strategy: _AudioStrategy,
+        *,
+        segment_count: int = 1,
+        min_subsegment_duration: float = 30.0,
+    ) -> AudioPatchResult:
+        """Decode, transform, concatenate, and validate one audio patch request.
+
+        GLOBAL_TIME_SCALE and SUBSEGMENT deliberately share this executor.  The
+        only strategy-specific decision is how the matched mapping is divided
+        and which time-scale filter is used for an individual segment.
+        """
+        working_dir = os.path.join(request.working_dir, "audio_extraction")
+        os.makedirs(working_dir, exist_ok=True)
+
+        source_params = self._get_audio_params(request.source_audio)
+        normalized_params = (
+            source_params[0],
+            source_params[1],
+            self._flac_safe_fmt(source_params[2]),
+        )
+        if strategy == _AudioStrategy.SUBSEGMENT:
+            segments = self._build_audio_subsegments(
+                request.mapping,
+                segment_count,
+                min_subsegment_duration,
+            )
+        else:
+            source_range = self._segment_range(request.mapping)
+            segments = [_AudioMappingSegment(
+                request.target_interval,
+                TimelineInterval(source_range.rhs_start, source_range.rhs_end),
+            )]
+
+        if strategy == _AudioStrategy.SUBSEGMENT and request.lhs_frames and request.rhs_frames:
+            debug_dir = os.path.join(working_dir, "debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            DebugRoutines(debug_dir, request.lhs_frames, request.rhs_frames).dump_pairs([
+                (
+                    segment.target.start_ms,
+                    segment.target.end_ms,
+                    segment.source.start_ms,
+                    segment.source.end_ms,
+                )
+                for segment in segments
+            ])
+
+        self.logger.info(
+            "Audio patch (%s): base=[%d…%d] ms, source=[%d…%d] ms, segments=%d",
+            strategy.value,
+            request.target_interval.start_ms,
+            request.target_interval.end_ms,
+            segments[0].source.start_ms,
+            segments[-1].source.end_ms,
+            len(segments),
+        )
+
+        source_parts: list[_AudioPart] = []
+        for index, segment in enumerate(segments):
+            raw_label = "source_trimmed" if strategy == _AudioStrategy.GLOBAL_TIME_SCALE else f"source_segment_{index}"
+            raw_part = self._decode_audio_window(
+                request.source_audio,
+                request.source_timeline,
+                segment.source,
+                os.path.join(working_dir, f"{raw_label}.flac"),
+                normalized_params,
+                label=f"{raw_label} audio",
+            )
+            source_per_base = segment.source.duration_ms / segment.target.duration_ms
+            scaled_label = "source_scaled" if strategy == _AudioStrategy.GLOBAL_TIME_SCALE else f"source_segment_{index}_scaled"
+            source_parts.append(self._scale_audio_part(
+                raw_part,
+                source_per_base,
+                os.path.join(working_dir, f"{scaled_label}.flac"),
+                source_params[1],
+                strategy,
+                label=f"{scaled_label} audio",
+            ))
+
+        source_timeline_start_ms = self._source_patch_start_ms(request, segments[0])
+        start_correction_ms = source_timeline_start_ms - request.target_interval.start_ms
+        if request.fill_gaps_from_base and start_correction_ms > self._SIGNIFICANT_START_CORRECTION_MS:
+            raise RuntimeError(
+                f"Audio start correction of {start_correction_ms} ms detected "
+                "in fill-audio-gaps mode. The source container's audio starts "
+                "later than its video, which cannot be compensated when head/tail "
+                "are filled from the base file. Use default (silence) mode instead."
+            )
+
+        head_part, tail_part = self._prepare_audio_gap_parts(
+            request,
+            normalized_params,
+            working_dir,
+        )
+        timeline_start_ms = source_timeline_start_ms
+        if head_part is not None:
+            assert request.base_timeline is not None
+            head_start_on_base = max(0, request.base_timeline.video_to_rebased_audio_ms(0))
+            timeline_start_ms = request.base_timeline.rebased_audio_to_video_ms(head_start_on_base)
+
+        self._concat_and_encode(
+            [part.path for part in source_parts],
+            head_part is not None,
+            head_part.path if head_part is not None else "",
+            tail_part is not None,
+            tail_part.path if tail_part is not None else "",
+            os.path.join(working_dir, "concat.txt"),
+            request.output_path,
+            channel_layout=self._get_audio_channel_layout(request.source_audio),
+            logger=self.logger,
+        )
+
+        expected_duration_ms = sum(part.duration_ms for part in source_parts)
+        if head_part is not None:
+            expected_duration_ms += head_part.duration_ms
+        if tail_part is not None:
+            expected_duration_ms += tail_part.duration_ms
+        actual_duration_ms = video_utils.get_video_duration(request.output_path, logger=self.logger)
+        if actual_duration_ms is None:
+            raise RuntimeError(f"Could not determine patched audio duration for {request.output_path}.")
+        self._validate_audio_duration(
+            actual_duration_ms,
+            expected_duration_ms,
+            "final patched audio",
+            sample_rate=source_params[1],
+            segment_count=len(source_parts),
+            encoded=True,
+        )
+        expected_end_ms = request.base_duration_ms if request.fill_gaps_from_base else request.target_interval.end_ms
+        self._validate_audio_placement(
+            timeline_start_ms,
+            actual_duration_ms,
+            expected_end_ms,
+            source_params[1],
+            len(source_parts),
+        )
+
+        transformation = (
+            "global-time-scale"
+            if strategy == _AudioStrategy.GLOBAL_TIME_SCALE
+            else f"subsegment-atempo ({len(source_parts)} segments)"
+        )
+        return AudioPatchResult(
+            stream=AudioStreamRef(request.output_path, 0, request.source_audio.language),
+            timeline_start_ms=timeline_start_ms,
+            duration_ms=actual_duration_ms,
+            transformation=transformation,
+        )
+
+    @staticmethod
+    def _build_audio_subsegments(
+        mapping: Sequence[tuple[int, int]],
+        segment_count: int,
+        min_subsegment_duration: float,
+    ) -> list[_AudioMappingSegment]:
+        segment = MeltPerformer._segment_range(mapping)
+        target_duration = segment.lhs_end - segment.lhs_start
+        if target_duration <= 0:
+            raise RuntimeError("Audio mapping has no positive target duration.")
+
+        count = max(1, segment_count)
+        targets = [segment.lhs_start + index * target_duration // count for index in range(count + 1)]
+
+        def closest_pair(value: int) -> tuple[int, int]:
+            return min(mapping, key=lambda pair: abs(pair[0] - value))
+
+        selected_pairs: list[tuple[int, int]] = []
+        for target in targets:
+            pair = closest_pair(target)
+            if not selected_pairs or pair != selected_pairs[-1]:
+                selected_pairs.append(pair)
+
+        raw_segments = [
+            [
+                selected_pairs[index][0],
+                selected_pairs[index + 1][0],
+                selected_pairs[index][1],
+                selected_pairs[index + 1][1],
+            ]
+            for index in range(len(selected_pairs) - 1)
+            if selected_pairs[index + 1][0] > selected_pairs[index][0]
+            and selected_pairs[index + 1][1] > selected_pairs[index][1]
+        ]
+        if not raw_segments:
+            raise RuntimeError("Audio mapping cannot form a positive subsegment.")
+
+        minimum_ms = round(min_subsegment_duration * 1000)
+        while len(raw_segments) > 1:
+            short_index = next((
+                index for index, part in enumerate(raw_segments)
+                if part[1] - part[0] < minimum_ms or part[3] - part[2] < minimum_ms
+            ), None)
+            if short_index is None:
+                break
+            if short_index == 0:
+                first, second = raw_segments[0], raw_segments[1]
+                raw_segments[1] = [first[0], second[1], first[2], second[3]]
+                del raw_segments[0]
+            else:
+                previous, current = raw_segments[short_index - 1], raw_segments[short_index]
+                raw_segments[short_index - 1] = [previous[0], current[1], previous[2], current[3]]
+                del raw_segments[short_index]
+
+        return [
+            _AudioMappingSegment(
+                TimelineInterval(part[0], part[1]),
+                TimelineInterval(part[2], part[3]),
+            )
+            for part in raw_segments
+        ]
+
+    def _decode_audio_window(
+        self,
+        stream: AudioStreamRef,
+        timeline: VideoToAudioTimeline,
+        video_interval: TimelineInterval,
+        output_path: str,
+        normalize_to: tuple[int, int, str],
+        *,
+        label: str,
+    ) -> _AudioPart:
+        """Decode one video-time interval through the selected stream transform."""
+        stream_start_ms = timeline.video_to_stream_ms(video_interval.start_ms)
+        stream_end_ms = timeline.video_to_stream_ms(video_interval.end_ms)
+        trim_start_ms = max(0, stream_start_ms)
+        trim_end_ms = max(trim_start_ms, stream_end_ms)
+        expected_start_ms = max(trim_start_ms, timeline.audio_content_start_ms)
+        expected_duration_ms = trim_end_ms - expected_start_ms
+        if expected_duration_ms <= 0:
+            raise RuntimeError(f"{label} lies outside the selected audio stream.")
+
+        self._decode_audio_stream_to_flac(
+            stream,
+            output_path,
+            trim_start_ms=trim_start_ms,
+            trim_end_ms=trim_end_ms,
+            normalize_to=normalize_to,
+            logger=self.logger,
+        )
+        actual_duration_ms = video_utils.get_video_duration(output_path, logger=self.logger)
+        if actual_duration_ms is None:
+            raise RuntimeError(f"Could not determine duration for {label}.")
+        self._validate_audio_duration(
+            actual_duration_ms,
+            expected_duration_ms,
+            label,
+            sample_rate=normalize_to[1],
+        )
+        return _AudioPart(output_path, actual_duration_ms)
+
+    def _scale_audio_part(
+        self,
+        source_part: _AudioPart,
+        source_per_base: float,
+        output_path: str,
+        sample_rate: int,
+        strategy: _AudioStrategy,
+        *,
+        label: str,
+    ) -> _AudioPart:
+        if source_per_base <= 0:
+            raise RuntimeError("Audio mapping has no positive source duration.")
+        expected_duration_ms = round(source_part.duration_ms / source_per_base)
+        if not self._needs_fps_scaling(source_per_base):
+            self._validate_audio_duration(
+                source_part.duration_ms,
+                expected_duration_ms,
+                label,
+                sample_rate=sample_rate,
+            )
+            return source_part
+
+        if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
+            filter_arg = f"asetrate={sample_rate * source_per_base:.12g},aresample={sample_rate}"
+        else:
+            # The factor must retain enough precision for a film-length segment;
+            # three decimal places can accumulate hundreds of milliseconds of drift.
+            filter_arg = f"atempo={source_per_base:.12g}"
+        process_utils.raise_on_error(
+            process_utils.start_process("ffmpeg", [
+                "-y", "-i", source_part.path,
+                "-filter:a", filter_arg,
+                "-sample_fmt", "s32", "-c:a", "flac",
+                output_path,
+            ], logger=self.logger)
+        )
+        actual_duration_ms = video_utils.get_video_duration(output_path, logger=self.logger)
+        if actual_duration_ms is None:
+            raise RuntimeError(f"Could not determine duration for {label}.")
+        self._validate_audio_duration(
+            actual_duration_ms,
+            expected_duration_ms,
+            label,
+            sample_rate=sample_rate,
+            filter_tail_samples=(
+                self._ATEMPO_TAIL_SAMPLES
+                if strategy == _AudioStrategy.SUBSEGMENT
+                else 0
+            ),
+        )
+        return _AudioPart(output_path, actual_duration_ms)
+
+    def _source_patch_start_ms(
+        self,
+        request: AudioPatchRequest,
+        first_segment: _AudioMappingSegment,
+    ) -> int:
+        source_per_base = first_segment.source.duration_ms / first_segment.target.duration_ms
+        source_stream_start_ms = request.source_timeline.video_to_stream_ms(first_segment.source.start_ms)
+        missing_source_ms = max(0, request.source_timeline.audio_content_start_ms - source_stream_start_ms)
+        return first_segment.target.start_ms + round(missing_source_ms / source_per_base)
+
+    def _prepare_audio_gap_parts(
+        self,
+        request: AudioPatchRequest,
+        normalize_to: tuple[int, int, str],
+        working_dir: str,
+    ) -> tuple[_AudioPart | None, _AudioPart | None]:
+        if not request.fill_gaps_from_base:
+            return None, None
+        if request.base_audio is None or request.base_timeline is None:
+            raise RuntimeError("Cannot fill audio gaps without an explicitly selected base audio stream.")
+
+        head_part = None
+        tail_part = None
+        if request.target_interval.start_ms > 0:
+            head_part = self._decode_audio_window(
+                request.base_audio,
+                request.base_timeline,
+                TimelineInterval(0, request.target_interval.start_ms),
+                os.path.join(working_dir, "head.flac"),
+                normalize_to,
+                label="base-audio head",
+            )
+        if request.target_interval.end_ms < request.base_duration_ms:
+            tail_part = self._decode_audio_window(
+                request.base_audio,
+                request.base_timeline,
+                TimelineInterval(request.target_interval.end_ms, request.base_duration_ms),
+                os.path.join(working_dir, "tail.flac"),
+                normalize_to,
+                label="base-audio tail",
+            )
+        return head_part, tail_part
+
     @staticmethod
     def _collect_required_input_files(
         video_streams: Sequence[VideoStreamRef],
@@ -788,7 +1193,6 @@ class MeltPerformer(TrackTimelineMixin):
                 seg1_start + correction,
             )
         return seg1_start + correction
-
     _FPS_RATIO_TOLERANCE = 0.001
     # A start correction below this is normal probe noise; above it the audio
     # placement genuinely moves — logged, and rejected in fill-gaps mode where
