@@ -758,31 +758,49 @@ class MeltPerformer(TrackTimelineMixin):
             available_start_ms,
             max(available_start_ms, available_end_ms),
         )
-        source_window = AudioSourceWindow(requested_window, available_window)
-        if source_window.available.duration_ms <= 0:
+        planned_source_window = AudioSourceWindow(requested_window, available_window)
+        if planned_source_window.available.duration_ms <= 0:
             raise RuntimeError(f"{label} lies outside the selected audio stream.")
 
         self._decode_audio_stream_to_flac(
             stream,
             output_path,
             # The audio file can carry only physical samples.  Keep the wider
-            # requested range in ``source_window`` for later placement, but
+            # requested range in ``planned_source_window`` for later placement, but
             # cut the FLAC exactly to the available range so decoder tail
             # padding never turns a virtual suffix into extra audio.
-            trim_start_ms=max(0, source_window.available.start_ms),
-            trim_end_ms=max(0, source_window.available.end_ms),
+            trim_start_ms=max(0, planned_source_window.available.start_ms),
+            trim_end_ms=max(0, planned_source_window.available.end_ms),
             normalize_to=normalize_to,
             logger=self.logger,
         )
         actual_duration_ms = video_utils.get_video_duration(output_path, logger=self.logger)
         if actual_duration_ms is None:
             raise RuntimeError(f"Could not determine duration for {label}.")
-        self._validate_audio_duration(
-            actual_duration_ms,
-            source_window.available.duration_ms,
-            label,
-            sample_rate=normalize_to[1],
+        if actual_duration_ms > planned_source_window.available.duration_ms:
+            raise RuntimeError(
+                f"Decoded {label} exceeds its requested source window: got "
+                f"{actual_duration_ms} ms, expected at most "
+                f"{planned_source_window.available.duration_ms} ms."
+            )
+        if actual_duration_ms == planned_source_window.available.duration_ms:
+            self._validate_audio_duration(
+                actual_duration_ms,
+                planned_source_window.available.duration_ms,
+                label,
+                sample_rate=normalize_to[1],
+            )
+
+        # Stream/container duration metadata can extend beyond the decodable
+        # samples (for example after AAC priming removal).  Treat that early
+        # EOF as a virtual suffix in the same source-window model used for a
+        # declared stream end.  Every patch strategy subsequently scales and
+        # places this window through the common executor.
+        actual_available_window = TimelineInterval(
+            planned_source_window.available.start_ms,
+            planned_source_window.available.start_ms + actual_duration_ms,
         )
+        source_window = AudioSourceWindow(requested_window, actual_available_window)
         return _AudioPart(output_path, actual_duration_ms, source_window)
 
     def _scale_audio_part(

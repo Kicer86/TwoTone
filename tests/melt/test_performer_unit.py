@@ -1635,6 +1635,37 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(result.timeline_start_ms, 0)
         self.assertEqual(result.duration_ms, 59000)
 
+    def test_decode_audio_window_measures_early_end_as_a_virtual_suffix(self):
+        """Decoded samples, not optimistic container metadata, define the source tail."""
+        performer = self._make_performer()
+        stream = AudioStreamRef("/tmp/source.mkv", 2, "pol")
+
+        with patch.object(performer, "_decode_audio_stream_to_flac") as decode, \
+             patch.object(video_utils, "get_video_duration", return_value=59991):
+            part = performer._decode_audio_window(
+                stream,
+                VideoToAudioTimeline(0, 0),
+                TimelineInterval(0, 60000),
+                "/tmp/source.flac",
+                (2, 48000, "s16"),
+                label="source audio",
+            )
+
+        decode.assert_called_once_with(
+            stream,
+            "/tmp/source.flac",
+            trim_start_ms=0,
+            trim_end_ms=60000,
+            normalize_to=(2, 48000, "s16"),
+            logger=performer.logger,
+        )
+        self.assertEqual(part.duration_ms, 59991)
+        self.assertEqual(part.source_window, AudioSourceWindow(
+            TimelineInterval(0, 60000),
+            TimelineInterval(0, 59991),
+        ))
+        self.assertEqual(part.source_window.missing_suffix_ms, 9)
+
     def test_subsegment_audio_patch_preserves_selected_stream_identity(self):
         performer = self._make_performer()
         base_video = VideoStreamRef("/tmp/base.mkv", 0, None)
