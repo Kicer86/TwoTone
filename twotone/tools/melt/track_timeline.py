@@ -216,7 +216,7 @@ class TrackTimelineMixin:
         unaffected; only positive (asO) offsets carry the leaked frame.
         """
         base = self._stream_start_offset_ms(stream)
-        if not stream or stream.get("codec_name") != "aac" or not self._aac_priming_exposed():
+        if not stream or stream.get("codec_name") != "aac":
             return base
         try:
             pad = int(stream.get("initial_padding") or 0)
@@ -225,6 +225,8 @@ class TrackTimelineMixin:
         except (TypeError, ValueError):
             return base
         if pad <= 0 or sample_rate <= 0:
+            return base
+        if not self._aac_priming_exposed():
             return base
         return max(0, round((raw_start + pad / sample_rate) * 1000))
 
@@ -262,7 +264,10 @@ class TrackTimelineMixin:
         source_map = f"0:{audio_stream_index}" if audio_stream_index is not None else "0:a:0"
 
         prime_offset_s = 0.0
-        window_anchor_ms = 0
+        # Keep the public trim arguments on the source-stream timeline, then
+        # move them into the decoded-content timeline here.  This must apply
+        # to every codec, not only the AAC-to-ADTS priming path below.
+        window_anchor_ms = self._audio_content_start_ms(stream)
         input_path = source_video
         input_map = source_map
         adts_path: str | None = None
@@ -278,12 +283,16 @@ class TrackTimelineMixin:
             input_map = "0:a:0"  # the remuxed ADTS file carries only the selected stream
             prime_offset_s = init_pad / sample_rate
             # ADTS carries no container timestamps, so the decoded frames start at 0
-            # instead of the source's content start.  The raw start_time on builds
-            # exposing AAC priming is one encoder-delay frame too early, so use the
-            # same priming-independent content start as final track placement.
-            window_anchor_ms = self._audio_content_start_ms(stream)
+            # instead of the source's content start.  ``window_anchor_ms`` above
+            # already uses that same priming-independent content start for every
+            # decode path.
 
-        filters: list[str] = []
+        # Containers such as MP4/MOV can preserve a positive audio-frame PTS
+        # even though the trim window above is relative to content.  Rebase
+        # before cutting so ``atrim`` always sees that same zero-based content
+        # timeline.  Rebase again afterwards because a selected window must
+        # itself start at zero for downstream patching.
+        filters = ["asetpts=PTS-STARTPTS"]
         if prime_offset_s or trim_start_ms is not None or trim_end_ms is not None:
             start_s = prime_offset_s + max(0, (trim_start_ms or 0) - window_anchor_ms) / 1000
             atrim = f"atrim=start={start_s:.6f}"
@@ -291,10 +300,7 @@ class TrackTimelineMixin:
                 end_s = prime_offset_s + max(0, trim_end_ms - window_anchor_ms) / 1000
                 atrim += f":end={end_s:.6f}"
             filters.append(atrim)
-        # All downstream patching works in a priming-free, zero-based FLAC
-        # timeline.  Rebase even a whole-stream decode so segment cutters never
-        # accidentally compare a source-video timestamp with a preserved audio PTS.
-        filters.append("asetpts=PTS-STARTPTS")
+            filters.append("asetpts=PTS-STARTPTS")
 
         args = ["-y", "-i", input_path, "-map", input_map]
         args += ["-filter:a", ",".join(filters)]

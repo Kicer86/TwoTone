@@ -886,7 +886,44 @@ class MeltPerformerUnitTest(unittest.TestCase):
         trim_filter = decode_args[decode_args.index("-filter:a") + 1]
         self.assertEqual(
             trim_filter,
-            "atrim=start=0.021333:end=62.771333,asetpts=PTS-STARTPTS",
+            "asetpts=PTS-STARTPTS,atrim=start=0.021333:end=62.771333,asetpts=PTS-STARTPTS",
+        )
+
+    def test_non_primed_trim_window_is_anchored_to_content_start(self):
+        """MP4/MOV decode rebases positive frame PTS before and after ``atrim``."""
+        performer = self._make_performer()
+        calls = []
+        source_info = {
+            "streams": [{
+                "codec_type": "audio",
+                "index": 1,
+                "codec_name": "aac",
+                "sample_rate": "48000",
+                "start_time": "0.478000",
+            }],
+        }
+
+        def fake_start_process(tool, args, **_kwargs):
+            calls.append((tool, list(args)))
+            return _FAKE_PROCESS_OK
+
+        with patch.object(video_utils, "get_video_full_info", return_value=source_info), \
+             patch.object(performer, "_aac_priming_exposed", return_value=False), \
+             patch.object(process_utils, "start_process", side_effect=fake_start_process), \
+             patch.object(process_utils, "raise_on_error", lambda result: None):
+            performer._decode_source_audio_to_flac(
+                "/tmp/source.mp4",
+                "/tmp/output.flac",
+                trim_start_ms=541,
+                trim_end_ms=62791,
+                audio_stream_index=1,
+            )
+
+        decode_args = calls[0][1]
+        trim_filter = decode_args[decode_args.index("-filter:a") + 1]
+        self.assertEqual(
+            trim_filter,
+            "asetpts=PTS-STARTPTS,atrim=start=0.063000:end=62.313000,asetpts=PTS-STARTPTS",
         )
 
     def test_full_selected_audio_decode_is_rebased_and_normalized(self):
@@ -1805,7 +1842,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertIn(f"asetrate={expected_rate:.12g}", filter_arg)
         self.assertIn("aresample=48000", filter_arg)
 
-        # --- Trim timestamps must match mapping endpoints sample-accurately ---
+        # --- Trim timestamps use the decoded, rebased audio timeline ---
         ffmpeg_args = [c[1] for c in calls if c[0] == "ffmpeg"]
         trim_call = next(a for a in ffmpeg_args if "source_trimmed" in str(a))
         self.assertNotIn("-ss", trim_call)
