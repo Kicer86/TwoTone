@@ -11,11 +11,13 @@ from twotone.tools.utils import files_utils, generic_utils, process_utils, video
 from twotone.tools.melt.melt import MeltPerformer
 from twotone.tools.melt.melt_common import AudioStreamRef, VideoStreamRef
 from twotone.tools.melt.melt_performer import (
+    AudioSourceWindow,
     AudioPatchRequest,
     AudioPatchResult,
     TimelineInterval,
     VideoToAudioTimeline,
     _AudioStrategy,
+    _AudioPart,
     _PairMatchResult,
     _StreamEntry,
 )
@@ -1492,7 +1494,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(patch_outputs, [first.stream.path, second.stream.path])
         self.assertNotEqual(first.stream.path, second.stream.path)
 
-    def test_unscaled_audio_patch_validates_placement_before_returning_result(self):
+    def test_unscaled_audio_patch_routes_through_shared_executor(self):
         performer = self._make_performer()
         base_video = VideoStreamRef("/tmp/base.mkv", 0, None)
         source_audio = AudioStreamRef("/tmp/source.mkv", 2, "pol")
@@ -1508,20 +1510,21 @@ class MeltPerformerUnitTest(unittest.TestCase):
             ),
             source_duration=60000,
         )
-        patched_stream = AudioStreamRef("/tmp/normalized.mka", 0, "pol")
+        request = Mock(output_path="/tmp/patched.mka", source_audio=source_audio)
+        result = AudioPatchResult(
+            AudioStreamRef("/tmp/patched.mka", 0, "pol"),
+            500,
+            59500,
+            "unscaled-normalization",
+        )
 
         with patch.object(performer, "_choose_audio_strategy", return_value=_AudioStrategy.UNSCALED), \
              patch.object(performer, "_prepare_audio_mapping", return_value=mapping), \
-             patch.object(performer, "_audio_stream_info", return_value={}), \
-             patch.object(performer, "_audio_content_start_ms", return_value=0), \
              patch.object(performer, "_mapping_stream_bias_ms", return_value=0), \
              patch.object(performer, "_unscaled_timeline_shift_ms", return_value=500), \
-             patch.object(performer, "_prepare_normalized_unscaled_audio", return_value=patched_stream) as prepare, \
-             patch.object(video_utils, "get_video_duration", return_value=59500), \
-             patch.object(performer, "_get_audio_params", return_value=(2, 48000, "s16")), \
-             patch.object(performer, "_validate_audio_duration", wraps=performer._validate_audio_duration) as duration, \
-             patch.object(performer, "_validate_audio_placement", wraps=performer._validate_audio_placement) as placement:
-            result = performer._patch_mismatched_audio(
+             patch.object(performer, "_create_audio_patch_request", return_value=request) as create, \
+             patch.object(performer, "_execute_audio_patch", return_value=result) as execute:
+            actual = performer._patch_mismatched_audio(
                 base_video,
                 source_audio,
                 None,
@@ -1530,21 +1533,107 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 {base_video.path: 1, source_audio.path: 2},
             )
 
-        prepare.assert_called_once_with(source_audio, desired_end_ms=60000, desired_start_ms=500)
-        duration.assert_called_once_with(
-            59500,
-            59500,
-            "unscaled patched audio",
-            sample_rate=48000,
-            encoded=True,
+        self.assertEqual(actual, result)
+        self.assertEqual(create.call_args.kwargs["output_end_ms"], 60000)
+        execute.assert_called_once_with(
+            request,
+            _AudioStrategy.UNSCALED,
+            segment_count=1,
+            unscaled_shift_ms=500,
         )
-        placement.assert_called_once_with(500, 59500, 60000, 48000, 1)
-        self.assertEqual(result, AudioPatchResult(
-            patched_stream,
-            500,
-            59500,
-            "unscaled-normalization",
-        ))
+
+    def test_unscaled_executor_preserves_delayed_source_audio_as_a_virtual_prefix(self):
+        """Missing leading samples shift placement instead of breaking duration checks."""
+        performer = self._make_performer()
+        source_audio = AudioStreamRef("/tmp/source.mkv", 2, "pol")
+        request = AudioPatchRequest(
+            working_dir="/tmp/work",
+            output_path="/tmp/out.mka",
+            base_video=VideoStreamRef("/tmp/base.mkv", 0, None),
+            source_audio=source_audio,
+            base_audio=None,
+            mapping=((0, 0), (62792, 62792)),
+            target_interval=TimelineInterval(0, 62792),
+            output_interval=TimelineInterval(0, 62792),
+            base_duration_ms=62792,
+            source_timeline=VideoToAudioTimeline(0, 478, 62792),
+            base_timeline=None,
+            fill_gaps_from_base=False,
+            lhs_frames={},
+            rhs_frames={},
+        )
+        decoded: list[dict[str, object]] = []
+
+        def fake_decode(_stream, _output_path, **kwargs):
+            decoded.append(kwargs)
+
+        def fake_duration(path, **_kwargs):
+            if "source_unscaled" in path or path.endswith("out.mka"):
+                return 62314
+            raise AssertionError(f"Unexpected duration probe for {path}")
+
+        with patch.object(performer, "_decode_audio_stream_to_flac", side_effect=fake_decode), \
+             patch.object(performer, "_get_audio_params", return_value=(2, 48000, "s16")), \
+             patch.object(performer, "_get_audio_channel_layout", return_value="stereo"), \
+             patch.object(performer, "_concat_and_encode"), \
+             patch.object(video_utils, "get_video_duration", side_effect=fake_duration):
+            result = performer._execute_audio_patch(request, _AudioStrategy.UNSCALED)
+
+        self.assertEqual(decoded, [{
+            "trim_start_ms": 478,
+            "trim_end_ms": 62792,
+            "normalize_to": (2, 48000, "s16"),
+            "logger": performer.logger,
+        }])
+        self.assertEqual(result.timeline_start_ms, 478)
+        self.assertEqual(result.duration_ms, 62314)
+        self.assertEqual(result.transformation, "unscaled-normalization")
+
+    def test_unscaled_executor_preserves_early_source_end_as_a_virtual_suffix(self):
+        """A source tail outside the stream is remembered as output silence."""
+        performer = self._make_performer()
+        source_audio = AudioStreamRef("/tmp/source.mkv", 2, "pol")
+        request = AudioPatchRequest(
+            working_dir="/tmp/work",
+            output_path="/tmp/out.mka",
+            base_video=VideoStreamRef("/tmp/base.mkv", 0, None),
+            source_audio=source_audio,
+            base_audio=None,
+            mapping=((0, 0), (60000, 60000)),
+            target_interval=TimelineInterval(0, 60000),
+            output_interval=TimelineInterval(0, 60000),
+            base_duration_ms=60000,
+            source_timeline=VideoToAudioTimeline(0, 0, 59000),
+            base_timeline=None,
+            fill_gaps_from_base=False,
+            lhs_frames={},
+            rhs_frames={},
+        )
+        decoded: list[dict[str, object]] = []
+
+        def fake_decode(_stream, _output_path, **kwargs):
+            decoded.append(kwargs)
+
+        def fake_duration(path, **_kwargs):
+            if "source_unscaled" in path or path.endswith("out.mka"):
+                return 59000
+            raise AssertionError(f"Unexpected duration probe for {path}")
+
+        with patch.object(performer, "_decode_audio_stream_to_flac", side_effect=fake_decode), \
+             patch.object(performer, "_get_audio_params", return_value=(2, 48000, "s16")), \
+             patch.object(performer, "_get_audio_channel_layout", return_value="stereo"), \
+             patch.object(performer, "_concat_and_encode"), \
+             patch.object(video_utils, "get_video_duration", side_effect=fake_duration):
+            result = performer._execute_audio_patch(request, _AudioStrategy.UNSCALED)
+
+        self.assertEqual(decoded, [{
+            "trim_start_ms": 0,
+            "trim_end_ms": 59000,
+            "normalize_to": (2, 48000, "s16"),
+            "logger": performer.logger,
+        }])
+        self.assertEqual(result.timeline_start_ms, 0)
+        self.assertEqual(result.duration_ms, 59000)
 
     def test_subsegment_audio_patch_preserves_selected_stream_identity(self):
         performer = self._make_performer()
@@ -1619,6 +1708,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             base_audio=None,
             mapping=((0, 0), (60000, 60000)),
             target_interval=TimelineInterval(0, 60000),
+            output_interval=TimelineInterval(0, 60000),
             base_duration_ms=60000,
             source_timeline=VideoToAudioTimeline(0, 0),
             base_timeline=None,
@@ -1645,7 +1735,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         get_layout.assert_called_once_with(source_audio)
 
     def test_subsegment_patcher_transforms_video_time_before_decoding_audio(self):
-        """A delayed stream is cut on its source timeline, never at a rebased FLAC offset."""
+        """A delayed stream cuts physical source samples while retaining its virtual prefix."""
         performer = self._make_performer()
         source_audio = AudioStreamRef("/tmp/source.mkv", 2, "pol")
         request = AudioPatchRequest(
@@ -1656,6 +1746,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             base_audio=None,
             mapping=((2420, 40), (62420, 60040)),
             target_interval=TimelineInterval(2420, 62420),
+            output_interval=TimelineInterval(0, 62420),
             base_duration_ms=62420,
             source_timeline=VideoToAudioTimeline(0, 488),
             base_timeline=None,
@@ -1683,7 +1774,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(decoded, [(
             source_audio,
             {
-                "trim_start_ms": 40,
+                "trim_start_ms": 488,
                 "trim_end_ms": 60040,
                 "normalize_to": (2, 48000, "s16"),
                 "logger": performer.logger,
@@ -1707,6 +1798,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             base_audio=None,
             mapping=((0, 0), (target_mid, source_mid), (target_end, source_end)),
             target_interval=TimelineInterval(0, target_end),
+            output_interval=TimelineInterval(0, target_end),
             base_duration_ms=target_end,
             source_timeline=VideoToAudioTimeline(0, 0),
             base_timeline=None,
@@ -1850,7 +1942,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertLess(trim_call.index("-i"), trim_call.index("-filter:a"))
         trim_filter = trim_call[trim_call.index("-filter:a") + 1]
         self.assertIn(
-            f"atrim=start={seg2_start / 1000:.6f}:end={seg2_end / 1000:.6f}",
+            f"atrim=start=0.000000:end={(seg2_end - audio_start_ms) / 1000:.6f}",
             trim_filter,
         )
         self.assertIn("asetpts=PTS-STARTPTS", trim_filter)
@@ -1922,6 +2014,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             base_audio=None,
             mapping=((target_start, source_start), (target_end, source_end)),
             target_interval=TimelineInterval(target_start, target_end),
+            output_interval=TimelineInterval(0, target_end),
             base_duration_ms=target_end,
             source_timeline=VideoToAudioTimeline(mapping_to_video, audio_content_start),
             base_timeline=None,
@@ -1930,8 +2023,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
             rhs_frames={},
         )
         first_segment = performer._build_audio_subsegments(request.mapping, 1, 30.0)[0]
+        source_start_on_stream = source_start + mapping_to_video
+        source_window = AudioSourceWindow(
+            TimelineInterval(source_start_on_stream, source_end + mapping_to_video),
+            TimelineInterval(max(source_start_on_stream, audio_content_start), source_end + mapping_to_video),
+        )
+        first_part = _AudioPart("/tmp/source.flac", source_window.available.duration_ms, source_window)
 
-        self.assertEqual(performer._source_patch_start_ms(request, first_segment), expected_start)
+        self.assertEqual(performer._source_patch_start_ms(first_segment, first_part), expected_start)
 
     def test_patch_audio_fill_gaps_raises_on_start_offset(self):
         """In fill-audio-gaps mode, audio start correction cannot be compensated."""
