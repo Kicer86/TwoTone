@@ -21,25 +21,28 @@ StreamType = Literal["video", "audio", "subtitle"]
 
 class VideoStreamRef(NamedTuple):
     path: str
-    stream_index: int
+    mkvmerge_track_id: int
+    ffprobe_stream_index: int
     language: str | None
 
 
 class AudioStreamRef(NamedTuple):
     path: str
-    stream_index: int
+    mkvmerge_track_id: int
+    ffprobe_stream_index: int
     language: str | None
 
 
 class SubtitleStreamRef(NamedTuple):
     path: str
-    stream_index: int
+    mkvmerge_track_id: int
+    ffprobe_stream_index: int
     language: str | None
 
 
 class AttachmentRef(NamedTuple):
     path: str
-    stream_index: int
+    mkvmerge_attachment_id: int
 
 
 def _fmt_fps(value: str) -> str | None:

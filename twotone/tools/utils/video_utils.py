@@ -795,7 +795,12 @@ def validate_media_output(
         )
 
 
-def get_video_data(path: str, logger: logging.Logger | None = None) -> dict:
+def get_video_data(
+    path: str,
+    logger: logging.Logger | None = None,
+    *,
+    _probe_info: dict[str, Any] | None = None,
+) -> dict:
     logger = logger or DEFAULT_LOGGER
 
     def get_length(stream) -> int | None:
@@ -830,7 +835,7 @@ def get_video_data(path: str, logger: logging.Logger | None = None) -> dict:
 
         return language
 
-    output_json = get_video_full_info(path, logger=logger)
+    output_json = _probe_info if _probe_info is not None else get_video_full_info(path, logger=logger)
 
     streams = defaultdict(list)
     for stream in output_json["streams"]:
@@ -914,17 +919,127 @@ def get_video_data_mkvmerge(
     """
         Return stream information parsed from ``mkvmerge -J`` output.
         For non mkv files, mkvmerge does not provide as much information as ffprobe.
-        Set 'enrich' to True to enrich mkvmerge's outpput with data from ffprobe.
+        Set 'enrich' to True to enrich mkvmerge's output with data from ffprobe.
+        In enriched results, ``tid`` remains the mkvmerge track ID while
+        ``ffprobe_stream_index`` is the absolute ffprobe/ffmpeg stream index.
     """
     logger = logger or DEFAULT_LOGGER
 
-    def find_ffprobe_track(track_id: int, ffprobe_info: dict | None) -> dict:
-        for streams in (ffprobe_info or {}).values():
-            for stream in streams:
-                if stream.get("tid", None) == track_id:
-                    return stream
+    def normalized_track_type(track_type: str | None) -> str | None:
+        if track_type in ("subtitle", "subtitles"):
+            return "subtitle"
+        if track_type in ("video", "audio"):
+            return track_type
+        return None
 
-        return {}
+    def native_track_id(value: object) -> int | None:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value, 0)
+            except ValueError:
+                return None
+        return None
+
+    def build_track_mapping(mkv_tracks: list[dict], probe_info: dict) -> dict[int, int]:
+        """Map mkvmerge track IDs to absolute ffprobe stream indexes.
+
+        The two tools use independent namespaces.  A container-native track
+        number is used when both tools expose it; Matroska commonly does not
+        expose one through ffprobe, so remaining tracks are correlated by
+        order within their already-validated media type.
+        """
+        mapping: dict[int, int] = {}
+        for stream_type in ("video", "audio", "subtitle"):
+            typed_tracks = [
+                track for track in mkv_tracks
+                if normalized_track_type(track.get("type")) == stream_type
+            ]
+            typed_streams = [
+                stream for stream in probe_info.get("streams", [])
+                if stream.get("codec_type") == stream_type
+                and not stream.get("disposition", {}).get("attached_pic", 0)
+            ]
+            if len(typed_tracks) != len(typed_streams):
+                raise RuntimeError(
+                    f"Cannot map {stream_type} tracks between mkvmerge and ffprobe: "
+                    f"mkvmerge reported {len(typed_tracks)}, ffprobe reported {len(typed_streams)}."
+                )
+
+            unmatched_tracks: list[dict] = []
+            used_probe_indexes: set[int] = set()
+            for track in typed_tracks:
+                track_number = native_track_id(track.get("properties", {}).get("number"))
+                native_matches = [
+                    stream for stream in typed_streams
+                    if stream["index"] not in used_probe_indexes
+                    and native_track_id(stream.get("id")) == track_number
+                    and track_number is not None
+                ]
+                if len(native_matches) == 1:
+                    probe_index = int(native_matches[0]["index"])
+                    mapping[int(track["id"])] = probe_index
+                    used_probe_indexes.add(probe_index)
+                else:
+                    unmatched_tracks.append(track)
+
+            unmatched_streams = [
+                stream for stream in typed_streams
+                if int(stream["index"]) not in used_probe_indexes
+            ]
+            if len(unmatched_tracks) != len(unmatched_streams):
+                raise RuntimeError(
+                    f"Cannot build a one-to-one {stream_type} track mapping "
+                    "between mkvmerge and ffprobe."
+                )
+            for track, stream in zip(unmatched_tracks, unmatched_streams):
+                track_id = int(track["id"])
+                probe_index = int(stream["index"])
+                if track_id in mapping or probe_index in used_probe_indexes:
+                    raise RuntimeError(
+                        f"Ambiguous {stream_type} track mapping between mkvmerge and ffprobe."
+                    )
+                mapping[track_id] = probe_index
+                used_probe_indexes.add(probe_index)
+
+        supported_track_ids = [
+            int(track["id"])
+            for track in mkv_tracks
+            if normalized_track_type(track.get("type")) is not None
+        ]
+        supported_probe_indexes = [
+            int(stream["index"])
+            for stream in probe_info.get("streams", [])
+            if normalized_track_type(stream.get("codec_type")) is not None
+            and not stream.get("disposition", {}).get("attached_pic", 0)
+        ]
+        if (
+            set(mapping) != set(supported_track_ids)
+            or len(mapping) != len(supported_track_ids)
+            or set(mapping.values()) != set(supported_probe_indexes)
+            or len(mapping) != len(supported_probe_indexes)
+        ):
+            raise RuntimeError("Cannot build a one-to-one track mapping between mkvmerge and ffprobe.")
+
+        return mapping
+
+    def find_ffprobe_track(
+        track: dict,
+        ffprobe_info: dict | None,
+        track_mapping: dict[int, int],
+    ) -> dict:
+        if ffprobe_info is None:
+            return {}
+        track_type = normalized_track_type(track.get("type"))
+        probe_index = track_mapping.get(int(track["id"]))
+        for stream in ffprobe_info.get(track_type or "", []):
+            if stream.get("tid") == probe_index:
+                return stream
+        raise RuntimeError(
+            f"Mapped ffprobe {track_type} stream #{probe_index} was not found "
+            f"for mkvmerge track #{track.get('id')}."
+        )
 
     def merge_properties(initial: dict | None, update: dict) -> dict:
         if initial is None:
@@ -950,7 +1065,13 @@ def get_video_data_mkvmerge(
 
     # process streams/tracks
     streams = defaultdict(list)
-    ffprobe_info = get_video_data(path, logger=logger) if enrich else None
+    probe_info = get_video_full_info(path, logger=logger) if enrich else None
+    ffprobe_info = (
+        get_video_data(path, logger=logger, _probe_info=probe_info)
+        if probe_info is not None
+        else None
+    )
+    track_mapping = build_track_mapping(info.get("tracks", []), probe_info) if probe_info is not None else {}
 
     for track in info.get("tracks", []):
         track_type = track.get("type")
@@ -972,7 +1093,7 @@ def get_video_data_mkvmerge(
         except Exception:
             language = None
 
-        track_initial_data = find_ffprobe_track(tid, ffprobe_info)
+        track_initial_data = find_ffprobe_track(track, ffprobe_info, track_mapping)
 
         # Prepare common data for all stream types first
         stream_data = {
@@ -985,6 +1106,8 @@ def get_video_data_mkvmerge(
             "enabled": props.get("enabled_track", track_initial_data.get("enabled", True)),
             "forced": props.get("forced_track", track_initial_data.get("forced", False)),
         }
+        if enrich:
+            stream_data["ffprobe_stream_index"] = track_mapping[int(tid)]
 
         if track_type == "video":
             dims = props.get("pixel_dimensions") or props.get("display_dimensions")

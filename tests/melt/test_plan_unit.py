@@ -40,9 +40,9 @@ class MeltPlanCollectSelectedTest(unittest.TestCase):
     def test_collect_selected_returns_language_overrides(self):
         group = {
             "streams": {
-                "video": [("/a.mkv", 0, None)],
-                "audio": [("/a.mkv", 1, "eng"), ("/b.avi", 1, "pol")],
-                "subtitle": [("/a.mkv", 2, "eng")],
+                "video": [("/a.mkv", 0, 0, None)],
+                "audio": [("/a.mkv", 1, 1, "eng"), ("/b.avi", 1, 1, "pol")],
+                "subtitle": [("/a.mkv", 2, 2, "eng")],
             },
             "attachments": [],
         }
@@ -59,7 +59,7 @@ class MeltPlanCollectSelectedTest(unittest.TestCase):
     def test_collect_selected_none_language_not_in_overrides(self):
         group = {
             "streams": {
-                "video": [("/a.mkv", 0, None)],
+                "video": [("/a.mkv", 0, 0, None)],
                 "audio": [],
                 "subtitle": [],
             },
@@ -78,8 +78,8 @@ class MeltPlanRenderOverrideTest(unittest.TestCase):
             "files": ["/a.mkv", "/b.avi"],
             "output_name": "output",
             "streams": {
-                "video": [("/a.mkv", 0, None)],
-                "audio": [("/a.mkv", 1, "eng"), ("/b.avi", 1, "pol")],
+                "video": [("/a.mkv", 0, 0, None)],
+                "audio": [("/a.mkv", 1, 1, "eng"), ("/b.avi", 1, 1, "pol")],
                 "subtitle": [],
             },
             "attachments": [],

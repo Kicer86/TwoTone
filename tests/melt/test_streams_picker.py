@@ -18,6 +18,14 @@ from melt.helpers import (
 )
 
 
+def _with_ffprobe_stream_indexes(files_details):
+    for details in files_details.values():
+        for stream_type in ("video", "audio", "subtitle"):
+            for stream in details.get(stream_type, []):
+                stream.setdefault("ffprobe_stream_index", stream["tid"])
+    return files_details
+
+
 class StreamsPickerTest(MeltTestBase):
 
     def test_streams_picker_prefers_higher_sample_rate_audio(self):
@@ -42,7 +50,9 @@ class StreamsPickerTest(MeltTestBase):
         }
         ids = {file1: 1, file2: 2}
 
-        _, audio_streams, _ = sp.pick_streams(files_details, ids)
+        _, audio_streams, _ = sp.pick_streams(
+            _with_ffprobe_stream_indexes(files_details), ids
+        )
 
         self.assertEqual(audio_streams[0][0], file1)
 
@@ -125,16 +135,18 @@ class StreamsPickerTest(MeltTestBase):
         }
         ids = {file_forced: 1, file_other: 2}
 
-        _, audio_streams, subtitle_streams = sp.pick_streams(files_details, ids)
+        _, audio_streams, subtitle_streams = sp.pick_streams(
+            _with_ffprobe_stream_indexes(files_details), ids
+        )
 
         self.assertEqual(audio_streams, [
-            (file_forced, 1, None),
-            (file_forced, 2, "eng"),
-            (file_other, 5, "pol"),
+            (file_forced, 1, 1, None),
+            (file_forced, 2, 2, "eng"),
+            (file_other, 5, 5, "pol"),
         ])
         self.assertEqual(subtitle_streams, [
-            (file_forced, 3, None),
-            (file_other, 8, "deu"),
+            (file_forced, 3, 3, None),
+            (file_other, 8, 8, "deu"),
         ])
 
     def test_streams_picker_supports_deprecated_force_all_streams_metadata(self):
@@ -154,9 +166,11 @@ class StreamsPickerTest(MeltTestBase):
         }
         ids = {file_forced: 1}
 
-        _, audio_streams, _ = sp.pick_streams(files_details, ids)
+        _, audio_streams, _ = sp.pick_streams(
+            _with_ffprobe_stream_indexes(files_details), ids
+        )
 
-        self.assertEqual(audio_streams, [(file_forced, 1, None)])
+        self.assertEqual(audio_streams, [(file_forced, 1, 1, None)])
 
     def test_streams_picker_raises_on_unknown_language_without_force_flag(self):
         interruption = generic_utils.InterruptibleProcess()
@@ -181,7 +195,7 @@ class StreamsPickerTest(MeltTestBase):
         ids = {file1: 1, file2: 2}
 
         with self.assertRaises(RuntimeError):
-            sp.pick_streams(files_details, ids)
+            sp.pick_streams(_with_ffprobe_stream_indexes(files_details), ids)
 
     def test_keep_all_audio_subtitle_streams_does_not_affect_video_selection(self):
         """Keep-all-audio/subtitle flag does not affect video selection."""
@@ -208,7 +222,9 @@ class StreamsPickerTest(MeltTestBase):
         }
         ids = {file_forced: 1, file_other: 2}
 
-        video_streams, _, _ = sp.pick_streams(files_details, ids)
+        video_streams, _, _ = sp.pick_streams(
+            _with_ffprobe_stream_indexes(files_details), ids
+        )
 
         # Higher resolution from non-forced file should be preferred
         self.assertEqual(video_streams[0][0], file_other)
@@ -237,7 +253,9 @@ class StreamsPickerTest(MeltTestBase):
         }
         ids = {file_forced: 1, file_other: 2}
 
-        video_streams, _, _ = sp.pick_streams(files_details, ids)
+        video_streams, _, _ = sp.pick_streams(
+            _with_ffprobe_stream_indexes(files_details), ids
+        )
 
         self.assertEqual(video_streams[0][0], file_forced)
 
@@ -267,7 +285,7 @@ class StreamsPickerTest(MeltTestBase):
         ids = {file_a: 1, file_b: 2}
 
         with self.assertRaises(RuntimeError):
-            sp.pick_streams(files_details, ids)
+            sp.pick_streams(_with_ffprobe_stream_indexes(files_details), ids)
 
     def test_keep_all_audio_subtitle_streams_treats_und_as_unknown(self):
         """'und' language is normalized to None, then treated as undefined for kept inputs."""
@@ -288,11 +306,13 @@ class StreamsPickerTest(MeltTestBase):
         }
         ids = {file_forced: 1}
 
-        _, audio_streams, _ = sp.pick_streams(files_details, ids)
+        _, audio_streams, _ = sp.pick_streams(
+            _with_ffprobe_stream_indexes(files_details), ids
+        )
 
         # 'und' → None in output (normalized through undefined bucket)
         self.assertEqual(len(audio_streams), 1)
-        self.assertIsNone(audio_streams[0][2])
+        self.assertIsNone(audio_streams[0].language)
 
     def test_keep_all_audio_subtitle_streams_parser_requires_preceding_input(self):
         """--keep-all-audio-subtitle-streams before any -i should fail."""
@@ -344,7 +364,9 @@ class StreamsPickerTest(MeltTestBase):
         }
         ids = {file_a: 1, file_b: 2}
 
-        _, audio_streams, _ = sp.pick_streams(files_details, ids)
+        _, audio_streams, _ = sp.pick_streams(
+            _with_ffprobe_stream_indexes(files_details), ids
+        )
 
         # Both forced — both eng streams kept
         self.assertEqual(len(audio_streams), 2)
@@ -382,7 +404,9 @@ class StreamsPickerTest(MeltTestBase):
         }
         ids = {file_forced: 1, file_other: 2}
 
-        _, audio_streams, subtitle_streams = sp.pick_streams(files_details, ids)
+        _, audio_streams, subtitle_streams = sp.pick_streams(
+            _with_ffprobe_stream_indexes(files_details), ids
+        )
 
         # All from forced, nothing from other (same language+channels = same key)
         forced_audio = [s for s in audio_streams if s[0] == file_forced]
@@ -417,7 +441,9 @@ class StreamsPickerTest(MeltTestBase):
         }
         ids = {file1: 1, file2: 2}
 
-        video_streams, _, _ = sp.pick_streams(files_details, ids)
+        video_streams, _, _ = sp.pick_streams(
+            _with_ffprobe_stream_indexes(files_details), ids
+        )
 
         self.assertEqual(video_streams[0][0], file1)
 
@@ -455,8 +481,9 @@ class StreamsPickerTest(MeltTestBase):
             },
             # expected output
             (
-                [("fileB", 6, None)],
-                [("fileA", 2, "jp"), ("fileA", 4, "de"), ("fileB", 8, "br"), ("fileB", 10, "nl")],
+                [("fileB", 6, 6, None)],
+                [("fileA", 2, 2, "jp"), ("fileA", 4, 4, "de"),
+                 ("fileB", 8, 8, "br"), ("fileB", 10, 10, "nl")],
                 []
             )
         ),
@@ -480,9 +507,9 @@ class StreamsPickerTest(MeltTestBase):
             # expected output
             # Explanation: fileB is a superset of fileA, so no need to pick any streams from fileA
             (
-                [("fileB", 1, None)],
-                [("fileB", 2, "cz")],
-                [("fileB", 4, "pl"), ("fileB", 3, "br")]
+                [("fileB", 1, 1, None)],
+                [("fileB", 2, 2, "cz")],
+                [("fileB", 4, 4, "pl"), ("fileB", 3, 3, "br")]
             )
         ),
 
@@ -513,9 +540,11 @@ class StreamsPickerTest(MeltTestBase):
             # Same logic goes for subtitles. Include both (most likely different) subtitle tracks from file A and
             # both subtitle tracks from file B
             (
-                [("fileB", 2, None)],
-                [("fileA", 4, "jp"), ("fileA", 6, "jp"), ("fileB", 0, "jp")],
-                [("fileA", 15, "de"), ("fileA", 8, "de"), ("fileB", 15, "pl"), ("fileB", 17, "pl")]
+                [("fileB", 2, 2, None)],
+                [("fileA", 4, 4, "jp"), ("fileA", 6, 6, "jp"),
+                 ("fileB", 0, 0, "jp")],
+                [("fileA", 15, 15, "de"), ("fileA", 8, 8, "de"),
+                 ("fileB", 15, 15, "pl"), ("fileB", 17, 17, "pl")]
             )
         ),
     ]
@@ -530,7 +559,9 @@ class StreamsPickerTest(MeltTestBase):
 
         # Test all possible combinations of order of input files. Output should be stable
         for video_info in all_key_orders(input):
-            picked_streams = streams_picker.pick_streams(video_info, ids)
+            picked_streams = streams_picker.pick_streams(
+                _with_ffprobe_stream_indexes(video_info), ids
+            )
             picked_streams_normalized = normalize(picked_streams)
             expected_streams_normalized = normalize(expected_streams)
 

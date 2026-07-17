@@ -10,6 +10,53 @@ from common import TwoToneTestCase, generate_subtitles, get_video, remove_key, r
 
 
 class UtilsTests(TwoToneTestCase):
+    def test_mkvmerge_enrichment_rejects_unmappable_track_counts(self):
+        mkvmerge_info = {
+            "tracks": [
+                {"id": 0, "type": "audio", "properties": {}},
+            ],
+        }
+        ffprobe_info = {"streams": []}
+
+        with patch.object(video_utils, "get_video_full_info_mkvmerge", return_value=mkvmerge_info), \
+             patch.object(video_utils, "get_video_full_info", return_value=ffprobe_info):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Cannot map audio tracks between mkvmerge and ffprobe",
+            ):
+                video_utils.get_video_data_mkvmerge("unmappable.mkv", enrich=True)
+
+    def test_mkvmerge_enrichment_maps_track_id_with_intervening_mov_data_stream(self):
+        ordered_path = os.path.join(self.wd.path, "video-data-audio.mov")
+        source_path = os.path.join(self.wd.path, "source.mov")
+        run_ffmpeg([
+            "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=24:duration=2",
+            "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=2",
+            "-map", "0:v", "-map", "1:a",
+            "-c:v", "mpeg4", "-c:a", "pcm_s16le",
+            "-timecode", "00:00:00:00",
+            source_path,
+        ], expected_path=source_path)
+        run_ffmpeg([
+            "-y", "-i", source_path,
+            "-map", "0:v", "-map", "0:d", "-map", "0:a",
+            "-c", "copy",
+            ordered_path,
+        ], expected_path=ordered_path)
+
+        full_info = video_utils.get_video_full_info(ordered_path, logger=self.logger)
+        self.assertEqual(
+            [(stream["index"], stream["codec_type"]) for stream in full_info["streams"]],
+            [(0, "video"), (1, "data"), (2, "audio")],
+        )
+
+        enriched = video_utils.get_video_data_mkvmerge(ordered_path, enrich=True, logger=self.logger)
+        self.assertEqual(enriched["tracks"]["video"][0]["tid"], 0)
+        self.assertEqual(enriched["tracks"]["video"][0]["ffprobe_stream_index"], 0)
+        self.assertEqual(enriched["tracks"]["audio"][0]["tid"], 1)
+        self.assertEqual(enriched["tracks"]["audio"][0]["ffprobe_stream_index"], 2)
+
     def test_validate_media_output_rejects_empty_file(self):
         output_path = os.path.join(self.wd.path, "empty.mkv")
         with open(output_path, "wb"):
@@ -473,6 +520,7 @@ class UtilsTests(TwoToneTestCase):
         file_info = video_utils.get_video_data_mkvmerge(input_file_name, enrich = True)
 
         file_info = remove_key(file_info, "uid")
+        file_info = remove_key(file_info, "ffprobe_stream_index")
         expected_streams = remove_key(expected_streams, "uid")
 
         self.assertEqual(expected_streams, file_info)

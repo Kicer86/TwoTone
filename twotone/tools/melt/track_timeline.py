@@ -62,8 +62,8 @@ class TrackTimelineMixin:
             self._media_info_cache[path] = info
         return info
 
-    def _stream_info(self, path: str, stream_type: str, stream_index: int) -> dict[str, Any] | None:
-        cache_key = (path, stream_type, stream_index)
+    def _stream_info(self, path: str, stream_type: str, ffprobe_stream_index: int) -> dict[str, Any] | None:
+        cache_key = (path, stream_type, ffprobe_stream_index)
         if cache_key in self._stream_info_cache:
             return self._stream_info_cache[cache_key]
 
@@ -75,14 +75,14 @@ class TrackTimelineMixin:
                 probed_index = int(stream.get("index", -1))
             except (TypeError, ValueError):
                 continue
-            if probed_index == stream_index:
+            if probed_index == ffprobe_stream_index:
                 self._stream_info_cache[cache_key] = stream
                 return stream
         self._stream_info_cache[cache_key] = None
         return None
 
     def _audio_stream_info(self, stream: AudioStreamRef) -> dict[str, Any] | None:
-        return self._stream_info(stream.path, "audio", stream.stream_index)
+        return self._stream_info(stream.path, "audio", stream.ffprobe_stream_index)
 
     @staticmethod
     def _stream_start_offset_ms(stream: dict[str, Any] | None) -> int:
@@ -112,28 +112,33 @@ class TrackTimelineMixin:
 
         return None
 
-    def _source_stream_start_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int:
-        return self._stream_start_offset_ms(self._stream_info(path, stream_type, stream_index))
+    def _source_stream_start_offset_ms(self, path: str, stream_type: str, ffprobe_stream_index: int) -> int:
+        return self._stream_start_offset_ms(self._stream_info(path, stream_type, ffprobe_stream_index))
 
-    def _source_stream_end_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int | None:
-        return self._stream_end_offset_ms(self._stream_info(path, stream_type, stream_index))
+    def _source_stream_end_offset_ms(self, path: str, stream_type: str, ffprobe_stream_index: int) -> int | None:
+        return self._stream_end_offset_ms(self._stream_info(path, stream_type, ffprobe_stream_index))
 
-    def _mkvmerge_input_start_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int:
+    def _mkvmerge_input_start_offset_ms(
+        self,
+        path: str,
+        stream_type: str,
+        ffprobe_stream_index: int,
+    ) -> int:
         extension = os.path.splitext(path)[1].lower()
         if extension in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
-            return self._source_stream_start_offset_ms(path, stream_type, stream_index)
+            return self._source_stream_start_offset_ms(path, stream_type, ffprobe_stream_index)
         return 0
 
     def _track_sync_offset_ms(
         self,
         path: str,
         stream_type: str,
-        stream_index: int,
+        ffprobe_stream_index: int,
         desired_start_ms: int | None,
     ) -> int | None:
         if desired_start_ms is None:
             return None
-        input_start_ms = self._mkvmerge_input_start_offset_ms(path, stream_type, stream_index)
+        input_start_ms = self._mkvmerge_input_start_offset_ms(path, stream_type, ffprobe_stream_index)
         sync_offset_ms = desired_start_ms - input_start_ms
         return sync_offset_ms if sync_offset_ms else None
 
@@ -144,19 +149,19 @@ class TrackTimelineMixin:
         video_path: str,
         logger: logging.Logger | None = None,
         *,
-        audio_stream_index: int | None = None,
+        audio_ffprobe_stream_index: int | None = None,
     ) -> tuple[str | None, int, int, dict[str, Any]]:
         """Return (codec_name, initial_padding_samples, sample_rate, stream).
 
         ``initial_padding`` is the lossy-codec encoder-delay (priming) sample count the
         container signals via Matroska *CodecDelay*; it is 0 for MP4/MOV (where the same
         delay is carried by an edit list that every ffmpeg build honours on decode).
-        ``audio_stream_index`` selects a specific stream by its absolute container
+        ``audio_ffprobe_stream_index`` selects a specific stream by its absolute container
         index; when omitted the first audio stream is used.
         """
         stream: dict[str, Any]
-        if audio_stream_index is not None:
-            stream = self._stream_info(video_path, "audio", audio_stream_index) or {}
+        if audio_ffprobe_stream_index is not None:
+            stream = self._stream_info(video_path, "audio", audio_ffprobe_stream_index) or {}
         else:
             info = video_utils.get_video_full_info(video_path, logger=logger)
             streams = info.get("streams", [])
@@ -238,7 +243,7 @@ class TrackTimelineMixin:
         sample_fmt: str = "s32",
         trim_start_ms: int | None = None,
         trim_end_ms: int | None = None,
-        audio_stream_index: int | None = None,
+        audio_ffprobe_stream_index: int | None = None,
         output_channels: int | None = None,
         output_sample_rate: int | None = None,
         logger: logging.Logger | None = None,
@@ -259,9 +264,15 @@ class TrackTimelineMixin:
         FLAC is always rebased to its first selected sample.
         """
         codec, init_pad, sample_rate, stream = self._source_audio_priming(
-            source_video, logger=logger, audio_stream_index=audio_stream_index,
+            source_video,
+            logger=logger,
+            audio_ffprobe_stream_index=audio_ffprobe_stream_index,
         )
-        source_map = f"0:{audio_stream_index}" if audio_stream_index is not None else "0:a:0"
+        source_map = (
+            f"0:{audio_ffprobe_stream_index}"
+            if audio_ffprobe_stream_index is not None
+            else "0:a:0"
+        )
 
         prime_offset_s = 0.0
         # Keep the public trim arguments on the source-stream timeline, then
@@ -340,7 +351,7 @@ class TrackTimelineMixin:
             sample_fmt=sample_fmt,
             trim_start_ms=trim_start_ms,
             trim_end_ms=trim_end_ms,
-            audio_stream_index=stream.stream_index,
+            audio_ffprobe_stream_index=stream.ffprobe_stream_index,
             output_channels=output_channels,
             output_sample_rate=output_sample_rate,
             logger=logger,

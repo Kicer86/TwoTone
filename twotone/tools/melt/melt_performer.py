@@ -40,7 +40,7 @@ class _PairMatchResult(NamedTuple):
 
 class _StreamEntry(NamedTuple):
     stream_type: StreamType
-    tid: int
+    mkvmerge_track_id: int
     path: str
     language: str | None
     sync_offset_ms: int | None = None
@@ -110,6 +110,7 @@ class AudioPatchRequest:
     working_dir: str
     output_path: str
     base_video: VideoStreamRef
+    source_video: VideoStreamRef
     source_audio: AudioStreamRef
     base_audio: AudioStreamRef | None
     mapping: tuple[tuple[int, int], ...]
@@ -251,7 +252,6 @@ class MeltPerformer(TrackTimelineMixin):
                         video_streams,
                         audio_streams,
                         subtitle_streams,
-                        required_input_files,
                         attachment_refs,
                         file_ids,
                         files_details,
@@ -323,7 +323,7 @@ class MeltPerformer(TrackTimelineMixin):
     ) -> int | None:
         tracks = files_details.get(base_video.path, {}).get("tracks", {}).get("video", [])
         for track in tracks:
-            if track.get("tid") == base_video.stream_index and not track.get("attached_pic", False):
+            if track.get("tid") == base_video.mkvmerge_track_id and not track.get("attached_pic", False):
                 return track.get("length")
         return None
 
@@ -353,14 +353,14 @@ class MeltPerformer(TrackTimelineMixin):
         track_order: list[str] = []
         for stream in streams_list_sorted:
             fo: dict[str, Any] = files_opts[stream.path]
-            fo[stream.stream_type].append(stream.tid)
-            fo["languages"][stream.tid] = stream.language or "und"
+            fo[stream.stream_type].append(stream.mkvmerge_track_id)
+            fo["languages"][stream.mkvmerge_track_id] = stream.language or "und"
             if stream.stream_type in ("audio", "subtitle") and preferred_audio and stream == preferred_audio:
-                fo["defaults"].add(stream.tid)
+                fo["defaults"].add(stream.mkvmerge_track_id)
             if stream.sync_offset_ms is not None:
-                fo["sync_offsets"][stream.tid] = stream.sync_offset_ms
+                fo["sync_offsets"][stream.mkvmerge_track_id] = stream.sync_offset_ms
             file_index = generic_utils.get_key_position(files_opts, stream.path)
-            track_order.append(f"{file_index}:{stream.tid}")
+            track_order.append(f"{file_index}:{stream.mkvmerge_track_id}")
 
         for file_path, tid in attachments:
             fo = files_opts[file_path]
@@ -403,6 +403,7 @@ class MeltPerformer(TrackTimelineMixin):
         self,
         wd: str,
         base_video: VideoStreamRef,
+        source_video: VideoStreamRef,
         source_audio: AudioStreamRef,
         base_audio: AudioStreamRef | None,
         output_path: str,
@@ -422,6 +423,7 @@ class MeltPerformer(TrackTimelineMixin):
         request = self._create_audio_patch_request(
             wd,
             base_video,
+            source_video,
             source_audio,
             base_audio,
             output_path,
@@ -435,6 +437,7 @@ class MeltPerformer(TrackTimelineMixin):
         self,
         working_dir: str,
         base_video: VideoStreamRef,
+        source_video: VideoStreamRef,
         source_audio: AudioStreamRef,
         base_audio: AudioStreamRef | None,
         output_path: str,
@@ -451,7 +454,6 @@ class MeltPerformer(TrackTimelineMixin):
 
         mapping_tuple = tuple(mapping)
         segment = self._segment_range(mapping_tuple)
-        source_video = VideoStreamRef(source_audio.path, 0, None)
         source_timeline = self._video_to_audio_timeline(source_video, source_audio, rhs_frames or {})
         base_timeline = (
             self._video_to_audio_timeline(base_video, base_audio, lhs_frames or {})
@@ -462,6 +464,7 @@ class MeltPerformer(TrackTimelineMixin):
             working_dir=working_dir,
             output_path=output_path,
             base_video=base_video,
+            source_video=source_video,
             source_audio=source_audio,
             base_audio=base_audio,
             mapping=mapping_tuple,
@@ -482,7 +485,11 @@ class MeltPerformer(TrackTimelineMixin):
         frames: FramesInfo,
     ) -> int:
         """Return the base-stream PTS corresponding to PairMatcher timestamp zero."""
-        video_info = self._stream_info(video_stream.path, "video", video_stream.stream_index)
+        video_info = self._stream_info(
+            video_stream.path,
+            "video",
+            video_stream.ffprobe_stream_index,
+        )
         video_start_ms = self._stream_start_offset_ms(video_info)
         mapping_start_ms = min(frames) if frames else video_start_ms
         return video_start_ms - mapping_start_ms
@@ -672,7 +679,7 @@ class MeltPerformer(TrackTimelineMixin):
             else f"subsegment-atempo ({len(source_parts)} segments)"
         )
         return AudioPatchResult(
-            stream=AudioStreamRef(request.output_path, 0, request.source_audio.language),
+            stream=AudioStreamRef(request.output_path, 0, 0, request.source_audio.language),
             timeline_start_ms=timeline_start_ms,
             duration_ms=actual_duration_ms,
             transformation=transformation,
@@ -976,12 +983,12 @@ class MeltPerformer(TrackTimelineMixin):
         subtitle_streams: Sequence[SubtitleStreamRef],
         attachments: Sequence[AttachmentRef],
     ) -> set[str]:
-        required_input_files: set[str] = set()
-        required_input_files |= {p for (p, _, _) in video_streams}
-        required_input_files |= {p for (p, _, _) in audio_streams}
-        required_input_files |= {p for (p, _, _) in subtitle_streams}
-        required_input_files |= {info.path for info in attachments}
-        return required_input_files
+        return (
+            {stream.path for stream in video_streams}
+            | {stream.path for stream in audio_streams}
+            | {stream.path for stream in subtitle_streams}
+            | {attachment.path for attachment in attachments}
+        )
 
     @staticmethod
     def _fmt_time(seconds: float) -> str:
@@ -1192,7 +1199,8 @@ class MeltPerformer(TrackTimelineMixin):
         stream = self._audio_stream_info(audio_stream)
         if stream is None:
             raise RuntimeError(
-                f"Audio stream #{audio_stream.stream_index} not found in {audio_stream.path}."
+                f"ffprobe audio stream #{audio_stream.ffprobe_stream_index} "
+                f"not found in {audio_stream.path}."
             )
         return int(stream["channels"]), int(stream["sample_rate"]), stream["sample_fmt"]
 
@@ -1201,7 +1209,8 @@ class MeltPerformer(TrackTimelineMixin):
         stream = self._audio_stream_info(audio_stream)
         if stream is None:
             raise RuntimeError(
-                f"Audio stream #{audio_stream.stream_index} not found in {audio_stream.path}."
+                f"ffprobe audio stream #{audio_stream.ffprobe_stream_index} "
+                f"not found in {audio_stream.path}."
             )
         return stream.get("channel_layout") or None
 
@@ -1382,6 +1391,7 @@ class MeltPerformer(TrackTimelineMixin):
         self,
         wd: str,
         base_video: VideoStreamRef,
+        source_video: VideoStreamRef,
         source_audio: AudioStreamRef,
         base_audio: AudioStreamRef | None,
         output_path: str,
@@ -1400,6 +1410,7 @@ class MeltPerformer(TrackTimelineMixin):
         request = self._create_audio_patch_request(
             wd,
             base_video,
+            source_video,
             source_audio,
             base_audio,
             output_path,
@@ -1458,6 +1469,7 @@ class MeltPerformer(TrackTimelineMixin):
     def _patch_mismatched_audio(
         self,
         base_video: VideoStreamRef,
+        source_video: VideoStreamRef,
         audio_stream: AudioStreamRef,
         base_audio: AudioStreamRef | None,
         base_duration: int,
@@ -1467,7 +1479,7 @@ class MeltPerformer(TrackTimelineMixin):
         """Run PairMatcher and apply the appropriate audio patching strategy."""
         video_path_base = base_video.path
         audio_path = audio_stream.path
-        stream_index = audio_stream.stream_index
+        ffprobe_stream_index = audio_stream.ffprobe_stream_index
         with self.workspace.scoped_dir("matching") as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
             first_match = (video_path_base, audio_path) not in self._pair_match_cache
@@ -1551,10 +1563,11 @@ class MeltPerformer(TrackTimelineMixin):
                     mapping[0][0], mapping[-1][0], mapping[0][1], mapping[-1][1],
                 )
 
-            patched_audio = self._temporary_audio_path("patched_audio", stream_index)
+            patched_audio = self._temporary_audio_path("patched_audio", ffprobe_stream_index)
             request = self._create_audio_patch_request(
                 mwd,
                 base_video,
+                source_video,
                 audio_stream,
                 base_audio,
                 patched_audio,
@@ -1902,8 +1915,8 @@ class MeltPerformer(TrackTimelineMixin):
                         return length
         return video_utils.get_video_duration(path, logger=logger)
 
-    def _temporary_audio_path(self, label: str, stream_index: int) -> str:
-        return self.workspace.unique_file(f"{label}_{stream_index}", "mka")
+    def _temporary_audio_path(self, label: str, ffprobe_stream_index: int) -> str:
+        return self.workspace.unique_file(f"{label}_{ffprobe_stream_index}", "mka")
 
     def _prepare_normalized_unscaled_audio(
         self,
@@ -1929,13 +1942,13 @@ class MeltPerformer(TrackTimelineMixin):
         patch path.
         """
         source_path = source_stream.path
-        stream_index = source_stream.stream_index
-        cache_key = (source_path, stream_index, desired_end_ms, desired_start_ms)
+        ffprobe_stream_index = source_stream.ffprobe_stream_index
+        cache_key = (source_path, ffprobe_stream_index, desired_end_ms, desired_start_ms)
         cached_path = self._normalized_audio_cache.get(cache_key)
         if cached_path is not None:
-            return AudioStreamRef(cached_path, 0, source_stream.language)
+            return AudioStreamRef(cached_path, 0, 0, source_stream.language)
 
-        flac_path = self._temporary_audio_path("normalized_unscaled_flac", stream_index)
+        flac_path = self._temporary_audio_path("normalized_unscaled_flac", ffprobe_stream_index)
         self._decode_audio_stream_to_flac(
             source_stream,
             flac_path,
@@ -1949,7 +1962,7 @@ class MeltPerformer(TrackTimelineMixin):
                 desired_start_ms = self._source_stream_start_offset_ms(flac_path, "audio", 0)
             window_start_ms = max(0, -desired_start_ms)
             window_end_ms = max(window_start_ms, desired_end_ms - desired_start_ms)
-            prepared_flac = self._temporary_audio_path("normalized_unscaled_trim", stream_index)
+            prepared_flac = self._temporary_audio_path("normalized_unscaled_trim", ffprobe_stream_index)
             trim_filter = (
                 f"atrim=start={window_start_ms / 1000:.6f}:end={window_end_ms / 1000:.6f},"
                 "asetpts=PTS-STARTPTS"
@@ -1962,18 +1975,21 @@ class MeltPerformer(TrackTimelineMixin):
                 ], logger=self.logger)
             )
 
-        output_path = self._temporary_audio_path("normalized_unscaled_audio", stream_index)
+        output_path = self._temporary_audio_path("normalized_unscaled_audio", ffprobe_stream_index)
         channel_layout = self._get_audio_channel_layout(source_stream)
         self._concat_and_encode(
             [prepared_flac], False, "", False, "",
-            self.workspace.unique_file(f"normalized_unscaled_concat_{stream_index}", "txt"),
+            self.workspace.unique_file(
+                f"normalized_unscaled_concat_{ffprobe_stream_index}",
+                "txt",
+            ),
             output_path,
             channel_layout=channel_layout,
             logger=self.logger,
         )
 
         self._normalized_audio_cache[cache_key] = output_path
-        return AudioStreamRef(output_path, 0, source_stream.language)
+        return AudioStreamRef(output_path, 0, 0, source_stream.language)
 
     def _base_output_end_ms(
         self,
@@ -1982,14 +1998,22 @@ class MeltPerformer(TrackTimelineMixin):
         audio_streams: Sequence[AudioStreamRef],
     ) -> int | None:
         ends: list[int] = []
-        for path, stream_index, _language in video_streams:
-            if path == video_path_base:
-                end = self._source_stream_end_offset_ms(path, "video", stream_index)
+        for video_stream in video_streams:
+            if video_stream.path == video_path_base:
+                end = self._source_stream_end_offset_ms(
+                    video_stream.path,
+                    "video",
+                    video_stream.ffprobe_stream_index,
+                )
                 if end is not None:
                     ends.append(end)
-        for path, stream_index, _language in audio_streams:
-            if path == video_path_base:
-                end = self._source_stream_end_offset_ms(path, "audio", stream_index)
+        for audio_stream in audio_streams:
+            if audio_stream.path == video_path_base:
+                end = self._source_stream_end_offset_ms(
+                    audio_stream.path,
+                    "audio",
+                    audio_stream.ffprobe_stream_index,
+                )
                 if end is not None:
                     ends.append(end)
         return max(ends) if ends else None
@@ -2000,19 +2024,39 @@ class MeltPerformer(TrackTimelineMixin):
         audio_streams: Sequence[AudioStreamRef],
     ) -> int | None:
         ends: list[int] = []
-        for path, stream_index, _language in audio_streams:
-            if path == video_path_base:
-                end = self._source_stream_end_offset_ms(path, "audio", stream_index)
+        for stream in audio_streams:
+            if stream.path == video_path_base:
+                end = self._source_stream_end_offset_ms(
+                    stream.path,
+                    "audio",
+                    stream.ffprobe_stream_index,
+                )
                 if end is not None:
                     ends.append(end)
         return max(ends) if ends else None
+
+    @staticmethod
+    def _primary_video_ref(path: str, files_details: dict[str, Any]) -> VideoStreamRef:
+        tracks = files_details.get(path, {}).get("tracks", {}).get("video", [])
+        for track in tracks:
+            if track.get("attached_pic", False):
+                continue
+            mkvmerge_track_id = track.get("tid")
+            ffprobe_stream_index = track.get("ffprobe_stream_index")
+            if isinstance(mkvmerge_track_id, int) and isinstance(ffprobe_stream_index, int):
+                return VideoStreamRef(
+                    path,
+                    mkvmerge_track_id,
+                    ffprobe_stream_index,
+                    track.get("language"),
+                )
+        raise RuntimeError(f"No fully identified video track found in {path}.")
 
     def _prepare_stream_entries(
         self,
         video_streams: Sequence[VideoStreamRef],
         audio_streams: Sequence[AudioStreamRef],
         subtitle_streams: Sequence[SubtitleStreamRef],
-        required_input_files: set[str],
         attachments: Sequence[AttachmentRef],
         file_ids: dict[str, int],
         files_details: dict[str, Any] | None = None,
@@ -2022,7 +2066,6 @@ class MeltPerformer(TrackTimelineMixin):
         subtitle_streams = [SubtitleStreamRef(*stream) for stream in subtitle_streams]
         attachments = [AttachmentRef(*attachment) for attachment in attachments]
         streams_list: list[_StreamEntry] = []
-        input_files = set(required_input_files)
         base_video = video_streams[0]
         video_path_base = base_video.path
         base_audio = next((stream for stream in audio_streams if stream.path == video_path_base), None)
@@ -2030,40 +2073,46 @@ class MeltPerformer(TrackTimelineMixin):
         base_duration = self._video_track_duration(video_path_base, details, logger=self.logger)
         base_output_end_ms = self._base_output_end_ms(video_path_base, video_streams, audio_streams)
         base_audio_end_ms = self._base_audio_end_ms(video_path_base, audio_streams)
-        protected_paths = (
-            {p for (p, _, _) in video_streams}
-            | {p for (p, _, _) in subtitle_streams}
-            | {p for (p, _) in attachments}
-        )
-
-        for (path, stream_index, language) in video_streams:
-            video_desired_start_ms = self._source_stream_start_offset_ms(path, "video", stream_index)
+        for video_stream in video_streams:
+            video_desired_start_ms = self._source_stream_start_offset_ms(
+                video_stream.path,
+                "video",
+                video_stream.ffprobe_stream_index,
+            )
             streams_list.append(_StreamEntry(
                 "video",
-                stream_index,
-                path,
-                language,
-                self._track_sync_offset_ms(path, "video", stream_index, video_desired_start_ms),
+                video_stream.mkvmerge_track_id,
+                video_stream.path,
+                video_stream.language,
+                self._track_sync_offset_ms(
+                    video_stream.path,
+                    "video",
+                    video_stream.ffprobe_stream_index,
+                    video_desired_start_ms,
+                ),
             ))
 
         for audio_stream in audio_streams:
-            path, stream_index, language = audio_stream
+            path = audio_stream.path
+            output_stream = audio_stream
             audio_desired_start_ms: int | None = self._audio_content_start_ms(
-                self._stream_info(path, "audio", stream_index)
+                self._audio_stream_info(audio_stream)
             )
             duration = self._video_track_duration(path, details, logger=self.logger)
             if _is_length_mismatch(base_duration, duration):
                 assert base_duration is not None  # guaranteed by _is_length_mismatch
-                original_path = path
+                source_video = self._primary_video_ref(path, details)
                 patched = self._patch_mismatched_audio(
-                    base_video, audio_stream, base_audio, base_duration, base_audio_end_ms, file_ids,
+                    base_video,
+                    source_video,
+                    audio_stream,
+                    base_audio,
+                    base_duration,
+                    base_audio_end_ms,
+                    file_ids,
                 )
-                path = patched.stream.path
-                stream_index = patched.stream.stream_index
+                output_stream = patched.stream
                 audio_desired_start_ms = patched.timeline_start_ms
-                input_files.add(path)
-                if original_path not in protected_paths:
-                    input_files.discard(original_path)
             else:
                 # Length-matching audio is direct-passthrough by default: keep
                 # the original file/stream and let final mkvmerge mux it.  Use
@@ -2073,40 +2122,56 @@ class MeltPerformer(TrackTimelineMixin):
                 needs_mkvmerge_normalization = self._audio_needs_mkvmerge_normalization(audio_stream)
                 trim_end_ms: int | None = None
                 if path != video_path_base and audio_desired_start_ms is not None and base_output_end_ms is not None:
-                    audio_end_ms = self._source_stream_end_offset_ms(path, "audio", stream_index)
+                    audio_end_ms = self._source_stream_end_offset_ms(
+                        path,
+                        "audio",
+                        audio_stream.ffprobe_stream_index,
+                    )
                     if audio_end_ms is not None and audio_end_ms > base_output_end_ms:
                         trim_end_ms = base_output_end_ms
                 needs_unscaled_preparation = needs_mkvmerge_normalization or trim_end_ms is not None
                 if needs_unscaled_preparation:
-                    original_path = path
-                    prepared_stream = self._prepare_normalized_unscaled_audio(
+                    output_stream = self._prepare_normalized_unscaled_audio(
                         audio_stream,
                         desired_end_ms=trim_end_ms,
                         desired_start_ms=audio_desired_start_ms,
                     )
-                    path = prepared_stream.path
-                    stream_index = prepared_stream.stream_index
-                    input_files.add(path)
-                    if original_path not in protected_paths:
-                        input_files.discard(original_path)
             streams_list.append(_StreamEntry(
                 "audio",
-                stream_index,
-                path,
-                language,
-                self._track_sync_offset_ms(path, "audio", stream_index, audio_desired_start_ms),
+                output_stream.mkvmerge_track_id,
+                output_stream.path,
+                output_stream.language,
+                self._track_sync_offset_ms(
+                    output_stream.path,
+                    "audio",
+                    output_stream.ffprobe_stream_index,
+                    audio_desired_start_ms,
+                ),
             ))
 
-        for (path, stream_index, language) in subtitle_streams:
-            desired_start_ms = self._source_stream_start_offset_ms(path, "subtitle", stream_index)
+        for subtitle_stream in subtitle_streams:
+            desired_start_ms = self._source_stream_start_offset_ms(
+                subtitle_stream.path,
+                "subtitle",
+                subtitle_stream.ffprobe_stream_index,
+            )
             streams_list.append(_StreamEntry(
                 "subtitle",
-                stream_index,
-                path,
-                language,
-                self._track_sync_offset_ms(path, "subtitle", stream_index, desired_start_ms),
+                subtitle_stream.mkvmerge_track_id,
+                subtitle_stream.path,
+                subtitle_stream.language,
+                self._track_sync_offset_ms(
+                    subtitle_stream.path,
+                    "subtitle",
+                    subtitle_stream.ffprobe_stream_index,
+                    desired_start_ms,
+                ),
             ))
 
+        input_files = (
+            {entry.path for entry in streams_list}
+            | {attachment.path for attachment in attachments}
+        )
         return _PreparedStreams(streams_list, input_files)
 
     def _choose_preferred_audio(

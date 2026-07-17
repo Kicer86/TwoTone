@@ -152,9 +152,9 @@ class MeltAnalyzer:
     ) -> None:
         for stype, type_stream in all_streams:
             for stream in type_stream:
-                path = stream[0]
-                tid = stream[1]
-                language = language_utils.language_name(stream[2])
+                path = stream.path
+                tid = stream.mkvmerge_track_id
+                language = language_utils.language_name(stream.language)
 
                 stream_details = None
                 track_infos = tracks.get(path, {}).get(stype, [])
@@ -170,8 +170,8 @@ class MeltAnalyzer:
 
     def _print_attachments_details(self, ids: dict[str, int], all_attachments: Iterable[AttachmentRef]) -> None:
         for stream in all_attachments:
-            path = stream[0]
-            tid = stream[1]
+            path = stream.path
+            tid = stream.mkvmerge_attachment_id
 
             file_id = ids[path]
             self.logger.debug(f"Attachment ID #{tid} from file #{file_id}")
@@ -269,13 +269,16 @@ class MeltAnalyzer:
         # Validate lengths across used files
 
         # Base length for detailed checks
-        v_path, v_tid, _ = video_streams[0]
+        base_video = video_streams[0]
+        v_path = base_video.path
+        v_tid = base_video.mkvmerge_track_id
         base_file_id = ids[v_path]
         base_track = self._pick_track_by_tid(tracks[v_path]["video"], v_tid)
         base_length = base_track["length"]
 
         # Subtitle mismatch (unsupported)
-        for path, _, _ in subtitle_streams:
+        for subtitle_stream in subtitle_streams:
+            path = subtitle_stream.path
             file_id = ids[path]
             length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
             if _is_length_mismatch(base_length, length):
@@ -290,7 +293,8 @@ class MeltAnalyzer:
                 )
 
         # Audio lengths validation
-        for path, tid, _ in audio_streams:
+        for audio_stream in audio_streams:
+            path = audio_stream.path
             file_id = ids[path]
             length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
             if _is_length_mismatch(base_length, length):
@@ -379,7 +383,9 @@ class MeltAnalyzer:
             return None, "No video streams found.", details_full
 
         # If all streams come from a single file, length mismatches are irrelevant.
-        stream_paths = {path for path, _, _ in (video_streams + audio_streams + subtitle_streams)}
+        stream_paths = {
+            stream.path for stream in (video_streams + audio_streams + subtitle_streams)
+        }
         if len(stream_paths) > 1:
             # Only validate lengths for files from which streams are actually used
             used_tracks = {path: info for path, info in tracks.items() if path in stream_paths}
@@ -394,7 +400,7 @@ class MeltAnalyzer:
 
         # Attachments picking
         picked_attachments = AttachmentsPicker(self.logger).pick_attachments(attachments)
-        audio_prod_lang = self.duplicates_source.get_metadata_for(video_streams[0][0]).get("audio_prod_lang")
+        audio_prod_lang = self.duplicates_source.get_metadata_for(video_streams[0].path).get("audio_prod_lang")
 
         # Present proposed output
         self.logger.debug("Streams used to create output video file:")

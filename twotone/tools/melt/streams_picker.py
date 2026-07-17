@@ -160,7 +160,7 @@ class StreamsPicker:
         unique_keys: list[str],
         preference,
         get_language
-    ) -> list[tuple[str, int, str | None]]:
+    ) -> list[tuple[str, int, int, str | None]]:
         """Pick best streams of ``stream_type`` from ``files_details``.
 
         ``unique_keys`` determines the grouping for uniqueness. ``preference`` is
@@ -251,14 +251,19 @@ class StreamsPicker:
                 picked_streams.append((key, stream))
 
         # Flatten result
-        result: list[tuple[str, int, str | None]] = []
+        result: list[tuple[str, int, int, str | None]] = []
         for unique_key, entry in picked_streams:
             tid = entry["tid"]
             path = entry["file"]
             language = entry["details"].get("language")
+            ffprobe_stream_index = entry["details"].get("ffprobe_stream_index")
+            if not isinstance(ffprobe_stream_index, int):
+                raise RuntimeError(
+                    f"Missing ffprobe stream identity for {stream_type} track #{tid} in {path}."
+                )
             if language == _UNDEFINED_LANGUAGE:
                 language = None
-            result.append((path, tid, language))
+            result.append((path, tid, ffprobe_stream_index, language))
 
         return result
 
