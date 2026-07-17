@@ -1589,6 +1589,82 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(result.duration_ms, 62314)
         self.assertEqual(result.transformation, "unscaled-normalization")
 
+    def test_unscaled_executor_does_not_turn_a_shared_stream_offset_into_a_gap(self):
+        """Audio and video at the same positive PTS still begin together."""
+        performer = self._make_performer()
+        source_audio = AudioStreamRef("/tmp/source.mkv", 2, "pol")
+        request = AudioPatchRequest(
+            working_dir="/tmp/work",
+            output_path="/tmp/out.mka",
+            base_video=VideoStreamRef("/tmp/base.mkv", 0, None),
+            source_audio=source_audio,
+            base_audio=None,
+            mapping=((0, 0), (60000, 60000)),
+            target_interval=TimelineInterval(0, 60000),
+            output_interval=TimelineInterval(0, 60000),
+            base_duration_ms=60000,
+            source_timeline=VideoToAudioTimeline(500, 500),
+            base_timeline=None,
+            fill_gaps_from_base=False,
+            lhs_frames={},
+            rhs_frames={},
+            output_mapping_to_video_ms=500,
+        )
+        decoded: list[dict[str, object]] = []
+
+        def fake_decode(_stream, _output_path, **kwargs):
+            decoded.append(kwargs)
+
+        with patch.object(performer, "_decode_audio_stream_to_flac", side_effect=fake_decode), \
+             patch.object(performer, "_get_audio_params", return_value=(2, 48000, "s16")), \
+             patch.object(performer, "_get_audio_channel_layout", return_value="stereo"), \
+             patch.object(performer, "_concat_and_encode"), \
+             patch.object(video_utils, "get_video_duration", return_value=60000):
+            result = performer._execute_audio_patch(request, _AudioStrategy.UNSCALED)
+
+        self.assertEqual(decoded, [{
+            "trim_start_ms": 500,
+            "trim_end_ms": 60500,
+            "normalize_to": (2, 48000, "s16"),
+            "logger": performer.logger,
+        }])
+        self.assertEqual(result.timeline_start_ms, 500)
+
+    def test_unscaled_executor_preserves_container_phase_between_mapping_origins(self):
+        """A source AAC phase is carried as a small virtual prefix, not dropped."""
+        performer = self._make_performer()
+        source_audio = AudioStreamRef("/tmp/source.mkv", 2, "pol")
+        request = AudioPatchRequest(
+            working_dir="/tmp/work",
+            output_path="/tmp/out.mka",
+            base_video=VideoStreamRef("/tmp/base.mkv", 0, None),
+            source_audio=source_audio,
+            base_audio=None,
+            mapping=((22, 0), (60022, 60000)),
+            target_interval=TimelineInterval(22, 60022),
+            output_interval=TimelineInterval(0, 60022),
+            base_duration_ms=60022,
+            source_timeline=VideoToAudioTimeline(500, 500),
+            base_timeline=None,
+            fill_gaps_from_base=False,
+            lhs_frames={},
+            rhs_frames={},
+            output_mapping_to_video_ms=478,
+        )
+        decoded: list[dict[str, object]] = []
+
+        def fake_decode(_stream, _output_path, **kwargs):
+            decoded.append(kwargs)
+
+        with patch.object(performer, "_decode_audio_stream_to_flac", side_effect=fake_decode), \
+             patch.object(performer, "_get_audio_params", return_value=(2, 48000, "s16")), \
+             patch.object(performer, "_get_audio_channel_layout", return_value="stereo"), \
+             patch.object(performer, "_concat_and_encode"), \
+             patch.object(video_utils, "get_video_duration", return_value=60000):
+            result = performer._execute_audio_patch(request, _AudioStrategy.UNSCALED)
+
+        self.assertEqual(result.timeline_start_ms, 500)
+
     def test_global_executor_places_audio_on_base_video_stream_timeline(self):
         """A rebased mapping must be translated back to the muxed base-video PTS."""
         performer = self._make_performer()

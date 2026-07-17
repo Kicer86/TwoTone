@@ -665,12 +665,18 @@ class MeltPerformer(TrackTimelineMixin):
     ) -> list[_AudioMappingSegment]:
         """Return strategy-specific time transforms, without touching audio data."""
         if strategy == _AudioStrategy.UNSCALED:
-            # Source-stream time maps to the output timeline as
-            # ``output = source + unscaled_shift_ms``.  Convert the requested
-            # source-stream range back to PairMatcher's RHS video space so the
-            # common decoder can apply the same timeline conversion as every
-            # other strategy.
-            source_start_ms = -unscaled_shift_ms - request.source_timeline.mapping_to_video_ms
+            # ``unscaled_shift_ms`` is measured in stream space, while this
+            # segment must stay in PairMatcher's RHS video space.  Translate
+            # it through both mapping origins; the common decoder then adds
+            # the source origin exactly once when it cuts source-stream PTS.
+            # This preserves small AAC/container phases (such as 22 ms) but
+            # does not turn a shared positive container offset into a fake
+            # half-second audio prefix.
+            source_start_ms = (
+                -unscaled_shift_ms
+                + request.output_mapping_to_video_ms
+                - request.source_timeline.mapping_to_video_ms
+            )
             return [_AudioMappingSegment(
                 request.output_interval,
                 TimelineInterval(
