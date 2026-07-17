@@ -7,9 +7,9 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from tqdm import tqdm
 
@@ -20,6 +20,11 @@ from .subtitles_utils import SubtitleFile
 DEFAULT_LOGGER = logging.getLogger("TwoTone.utils.video_utils")
 _SHOWINFO_PTS_TIME_RE = re.compile(r"pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))")
 _SHOWINFO_FRAME_RE = re.compile(r"n: *(\d+).*pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))")
+_MEDIA_STREAM_TYPES = ("video", "audio", "subtitle")
+_OUTPUT_DURATION_TOLERANCE_MS = 1000
+_OUTPUT_END_PACKET_TOLERANCE_MS = 250
+_OUTPUT_TAIL_PROBE_LOOKBACK_MS = 30_000
+_OUTPUT_TAIL_PROBE_DURATION_SECONDS = 60
 
 
 def _start_ffmpeg_streaming(
@@ -649,15 +654,145 @@ def get_video_full_info(path: str, logger: logging.Logger | None = None) -> dict
     return output_json
 
 
-def validate_media_output(path: str, logger: logging.Logger | None = None) -> None:
-    """Verify that an output exists and can be probed as a media container."""
+def _seconds_to_ms(value: Any) -> int | None:
+    try:
+        return round(float(value) * 1000)
+    except (TypeError, ValueError):
+        return None
+
+
+def _stream_duration_ms(stream: Mapping[str, Any]) -> int | None:
+    duration_ms = _seconds_to_ms(stream.get("duration"))
+    if duration_ms is not None:
+        return duration_ms
+
+    tag_duration = stream.get("tags", {}).get("DURATION")
+    if tag_duration is None:
+        return None
+    try:
+        return time_to_ms(tag_duration)
+    except (TypeError, ValueError):
+        return None
+
+
+def _last_content_packet_timestamp_ms(
+    path: str,
+    stream_index: int,
+    expected_end_ms: int,
+    logger: logging.Logger,
+) -> int | None:
+    """Return the end timestamp of the last packet in a bounded tail probe."""
+    probe_start_ms = max(0, expected_end_ms - _OUTPUT_TAIL_PROBE_LOOKBACK_MS)
+    result = process_utils.start_process(
+        "ffprobe",
+        [
+            "-v", "error",
+            "-select_streams", str(stream_index),
+            "-read_intervals", f"{probe_start_ms / 1000:.6f}%+{_OUTPUT_TAIL_PROBE_DURATION_SECONDS}",
+            "-show_entries", "packet=pts_time,dts_time,duration_time",
+            "-of", "json",
+            path,
+        ],
+        logger=logger,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe could not read generated output packets:\n{result.stderr}")
+
+    try:
+        packets = json.loads(result.stdout).get("packets", [])
+    except json.JSONDecodeError as error:
+        raise RuntimeError("ffprobe returned invalid packet data for generated output") from error
+
+    packet_ends: list[int] = []
+    for packet in packets:
+        timestamp_ms = _seconds_to_ms(packet.get("pts_time"))
+        if timestamp_ms is None:
+            timestamp_ms = _seconds_to_ms(packet.get("dts_time"))
+        if timestamp_ms is None:
+            continue
+        duration_ms = _seconds_to_ms(packet.get("duration_time")) or 0
+        packet_ends.append(timestamp_ms + duration_ms)
+    return max(packet_ends, default=None)
+
+
+def validate_media_output(
+    path: str,
+    logger: logging.Logger | None = None,
+    *,
+    expected_stream_counts: Mapping[str, int] | None = None,
+    expected_duration_ms: int | None = None,
+) -> None:
+    """Verify a generated media file before it may replace its destination.
+
+    Header probing alone is insufficient because a truncated Matroska file can
+    retain valid stream and duration metadata.  In addition to the declared
+    layout and duration, this check reads packet metadata from one fixed-size
+    window near the expected end.  Runtime is therefore bounded independently
+    of the input film's duration and no media samples are decoded.
+    """
     logger = logger or DEFAULT_LOGGER
     if not os.path.isfile(path) or os.path.getsize(path) == 0:
         raise RuntimeError(f"Generated output is missing or empty: {path}")
 
     info = get_video_full_info(path, logger=logger)
-    if not info.get("format") or not info.get("streams"):
+    media_format = info.get("format")
+    streams = info.get("streams")
+    if not media_format or not streams:
         raise RuntimeError(f"Generated output is not a valid media file: {path}")
+
+    content_streams = [
+        stream for stream in streams
+        if stream.get("codec_type") in _MEDIA_STREAM_TYPES
+        and not stream.get("disposition", {}).get("attached_pic", 0)
+    ]
+    actual_stream_counts = Counter(stream.get("codec_type") for stream in content_streams)
+    if expected_stream_counts is not None:
+        expected_counts = Counter({
+            stream_type: count
+            for stream_type, count in expected_stream_counts.items()
+            if stream_type in _MEDIA_STREAM_TYPES and count
+        })
+        if actual_stream_counts != expected_counts:
+            raise RuntimeError(
+                "Generated output stream layout does not match the mux plan: "
+                f"expected {dict(expected_counts)}, got {dict(actual_stream_counts)}"
+            )
+
+    packet_stream = next(
+        (stream for stream_type in ("video", "audio")
+         for stream in content_streams if stream.get("codec_type") == stream_type),
+        None,
+    )
+    if packet_stream is None or packet_stream.get("index") is None:
+        raise RuntimeError(f"Generated output has no packet-bearing media stream: {path}")
+
+    actual_duration_ms = _seconds_to_ms(media_format.get("duration"))
+    if actual_duration_ms is None:
+        actual_duration_ms = _stream_duration_ms(packet_stream)
+    if actual_duration_ms is None or actual_duration_ms <= 0:
+        raise RuntimeError(f"Generated output has no valid duration: {path}")
+    if expected_duration_ms is not None \
+            and actual_duration_ms + _OUTPUT_DURATION_TOLERANCE_MS < expected_duration_ms:
+        raise RuntimeError(
+            f"Generated output is too short: {actual_duration_ms} ms, "
+            f"expected at least {expected_duration_ms} ms"
+        )
+
+    content_end_ms = expected_duration_ms
+    if content_end_ms is None:
+        content_end_ms = _stream_duration_ms(packet_stream) or actual_duration_ms
+    last_packet_ms = _last_content_packet_timestamp_ms(
+        path,
+        packet_stream["index"],
+        content_end_ms,
+        logger,
+    )
+    if last_packet_ms is None \
+            or last_packet_ms + _OUTPUT_END_PACKET_TOLERANCE_MS < content_end_ms:
+        raise RuntimeError(
+            "Generated output has no media packets near its expected end: "
+            f"last packet ends at {last_packet_ms} ms, expected {content_end_ms} ms"
+        )
 
 
 def get_video_data(path: str, logger: logging.Logger | None = None) -> dict:

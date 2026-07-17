@@ -175,6 +175,55 @@ class MeltPerformerUnitTest(unittest.TestCase):
         with open(output_path, "rb") as output_file:
             self.assertEqual(output_file.read(), b"previous output")
 
+    def test_process_duplicates_failed_validation_preserves_output_and_removes_staging(self):
+        performer = self._make_performer()
+        input_path = os.path.join(performer.output_dir, "input.mkv")
+        with open(input_path, "wb") as input_file:
+            input_file.write(b"input")
+        output_path = os.path.join(performer.output_dir, "Title", "Movie.mkv")
+        os.makedirs(os.path.dirname(output_path))
+        with open(output_path, "wb") as output_file:
+            output_file.write(b"previous output")
+        plan = [{
+            "title": "Title",
+            "groups": [{
+                "output_name": "Movie",
+                "files": [input_path],
+                "streams": {"video": [(input_path, 0, None)]},
+                "files_details": {
+                    input_path: {
+                        "tracks": {"video": [{"tid": 0, "length": 2000}]},
+                    },
+                },
+            }],
+        }]
+        prepared = Mock(
+            entries=[_StreamEntry("video", 0, input_path, None)],
+            input_files={input_path},
+        )
+
+        def create_truncated_output(_tool, args, **_kwargs):
+            with open(args[1], "wb") as staged_file:
+                staged_file.write(b"probeable but truncated")
+            return _FAKE_PROCESS_OK
+
+        with patch.object(performer, "_prepare_stream_entries", return_value=prepared), \
+             patch.object(process_utils, "start_process", side_effect=create_truncated_output), \
+             patch.object(
+                 video_utils,
+                 "validate_media_output",
+                 side_effect=RuntimeError("missing content near its expected end"),
+             ) as validate:
+            with self.assertRaisesRegex(RuntimeError, "missing content"):
+                performer.process_duplicates(plan)
+
+        staged_path = validate.call_args.args[0]
+        self.assertEqual(validate.call_args.kwargs["expected_stream_counts"], {"video": 1})
+        self.assertEqual(validate.call_args.kwargs["expected_duration_ms"], 2000)
+        self.assertFalse(os.path.exists(staged_path))
+        with open(output_path, "rb") as output_file:
+            self.assertEqual(output_file.read(), b"previous output")
+
     def test_stream_sorting_puts_unknown_languages_last(self):
         streams = [
             _StreamEntry("audio", 1, "/a.mkv", None),

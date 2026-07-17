@@ -4,8 +4,9 @@ import math
 import os
 import statistics
 
+from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Iterable, NamedTuple, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 from tqdm import tqdm
 
 from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
@@ -285,7 +286,19 @@ class MeltPerformer(TrackTimelineMixin):
                         process_utils.start_process("mkvmerge", generation_args, show_progress=True, logger=self.logger)
                     )
 
-                    video_utils.validate_media_output(staged_output.path, logger=self.logger)
+                    expected_duration_ms = (
+                        self._planned_video_duration_ms(video_streams[0], files_details)
+                        if video_streams
+                        else None
+                    )
+                    video_utils.validate_media_output(
+                        staged_output.path,
+                        expected_stream_counts=Counter(
+                            stream.stream_type for stream in streams_list_sorted
+                        ),
+                        expected_duration_ms=expected_duration_ms,
+                        logger=self.logger,
+                    )
                     staged_output.commit()
 
                 self.logger.info("%s saved.", output)
@@ -302,6 +315,17 @@ class MeltPerformer(TrackTimelineMixin):
                     f"Output path {output} aliases input path {input_path}; "
                     "refusing to overwrite an input file."
                 )
+
+    @staticmethod
+    def _planned_video_duration_ms(
+        base_video: VideoStreamRef,
+        files_details: Mapping[str, Any],
+    ) -> int | None:
+        tracks = files_details.get(base_video.path, {}).get("tracks", {}).get("video", [])
+        for track in tracks:
+            if track.get("tid") == base_video.stream_index and not track.get("attached_pic", False):
+                return track.get("length")
+        return None
 
     def build_mkvmerge_args(
         self,

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from twotone.tools.utils import process_utils
 from twotone.tools.utils import subtitles_utils, video_utils
-from common import TwoToneTestCase, get_video, remove_key, write_subtitle, generate_subtitles
+from common import TwoToneTestCase, generate_subtitles, get_video, remove_key, run_ffmpeg, write_subtitle
 
 
 class UtilsTests(TwoToneTestCase):
@@ -32,9 +32,66 @@ class UtilsTests(TwoToneTestCase):
         with open(output_path, "wb") as output_file:
             output_file.write(b"media")
 
-        info = {"format": {"format_name": "matroska"}, "streams": [{"codec_type": "video"}]}
+        info = {
+            "format": {"format_name": "matroska", "duration": "2.000"},
+            "streams": [{"index": 0, "codec_type": "video", "duration": "2.000"}],
+        }
+        with patch.object(video_utils, "get_video_full_info", return_value=info), \
+             patch.object(video_utils, "_last_content_packet_timestamp_ms", return_value=1990):
+            video_utils.validate_media_output(
+                output_path,
+                expected_stream_counts={"video": 1},
+                expected_duration_ms=2000,
+                logger=self.logger,
+            )
+
+    def test_validate_media_output_rejects_unexpected_stream_count(self):
+        output_path = os.path.join(self.wd.path, "wrong-streams.mkv")
+        with open(output_path, "wb") as output_file:
+            output_file.write(b"media")
+
+        info = {
+            "format": {"duration": "2.000"},
+            "streams": [
+                {"index": 0, "codec_type": "video", "duration": "2.000"},
+                {"index": 1, "codec_type": "audio", "duration": "2.000"},
+            ],
+        }
         with patch.object(video_utils, "get_video_full_info", return_value=info):
-            video_utils.validate_media_output(output_path, logger=self.logger)
+            with self.assertRaisesRegex(RuntimeError, "stream layout"):
+                video_utils.validate_media_output(
+                    output_path,
+                    expected_stream_counts={"video": 1, "audio": 2},
+                    expected_duration_ms=2000,
+                    logger=self.logger,
+                )
+
+    def test_validate_media_output_rejects_probeable_truncated_mkv(self):
+        valid_path = os.path.join(self.wd.path, "valid.mkv")
+        truncated_path = os.path.join(self.wd.path, "truncated.mkv")
+        run_ffmpeg([
+            "-y",
+            "-f", "lavfi",
+            "-i", "testsrc=size=64x64:rate=24:duration=2",
+            "-c:v", "ffv1",
+            valid_path,
+        ], expected_path=valid_path)
+        with open(valid_path, "rb") as valid_file, open(truncated_path, "wb") as truncated_file:
+            truncated_file.write(valid_file.read(4096))
+
+        # The reproduction is intentionally stronger than an arbitrary broken
+        # file: its Matroska header and stream metadata remain ffprobe-readable.
+        truncated_info = video_utils.get_video_full_info(truncated_path, logger=self.logger)
+        self.assertEqual(truncated_info["format"]["duration"], "2.000000")
+        self.assertEqual(len(truncated_info["streams"]), 1)
+
+        with self.assertRaisesRegex(RuntimeError, "packets near its expected end"):
+            video_utils.validate_media_output(
+                truncated_path,
+                expected_stream_counts={"video": 1},
+                expected_duration_ms=2000,
+                logger=self.logger,
+            )
 
     def _test_content(self, ext: str, content: str, valid: bool):
         subtitle_path = os.path.join(self.wd.path, f"subtitle.{ext}")
