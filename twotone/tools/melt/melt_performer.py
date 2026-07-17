@@ -120,6 +120,11 @@ class AudioPatchRequest:
     fill_gaps_from_base: bool
     lhs_frames: FramesInfo
     rhs_frames: FramesInfo
+    # PairMatcher timestamps may be rebased while the selected base video
+    # retains a positive container PTS.  Patched audio is muxed beside that
+    # untouched video, so translate every physical patch position back to the
+    # base stream's output timeline before returning an mkvmerge --sync value.
+    output_mapping_to_video_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -444,7 +449,19 @@ class MeltPerformer(TrackTimelineMixin):
             fill_gaps_from_base=fill_gaps_from_base,
             lhs_frames=lhs_frames or {},
             rhs_frames=rhs_frames or {},
+            output_mapping_to_video_ms=self._mapping_to_video_ms(base_video, lhs_frames or {}),
         )
+
+    def _mapping_to_video_ms(
+        self,
+        video_stream: VideoStreamRef,
+        frames: FramesInfo,
+    ) -> int:
+        """Return the base-stream PTS corresponding to PairMatcher timestamp zero."""
+        video_info = self._stream_info(video_stream.path, "video", video_stream.stream_index)
+        video_start_ms = self._stream_start_offset_ms(video_info)
+        mapping_start_ms = min(frames) if frames else video_start_ms
+        return video_start_ms - mapping_start_ms
 
     def _video_to_audio_timeline(
         self,
@@ -453,12 +470,9 @@ class MeltPerformer(TrackTimelineMixin):
         frames: FramesInfo,
     ) -> VideoToAudioTimeline:
         """Build the explicit mapping-video-to-selected-audio transform."""
-        video_info = self._stream_info(video_stream.path, "video", video_stream.stream_index)
-        video_start_ms = self._stream_start_offset_ms(video_info)
-        mapping_start_ms = min(frames) if frames else video_start_ms
         audio_info = self._audio_stream_info(audio_stream)
         return VideoToAudioTimeline(
-            mapping_to_video_ms=video_start_ms - mapping_start_ms,
+            mapping_to_video_ms=self._mapping_to_video_ms(video_stream, frames),
             audio_content_start_ms=self._audio_content_start_ms(audio_info),
             audio_content_end_ms=self._stream_end_offset_ms(audio_info),
         )
@@ -575,11 +589,14 @@ class MeltPerformer(TrackTimelineMixin):
             normalized_params,
             working_dir,
         )
-        timeline_start_ms = source_timeline_start_ms
+        timeline_start_ms = request.output_mapping_to_video_ms + source_timeline_start_ms
         if head_part is not None:
             assert request.base_timeline is not None
             head_start_on_base = max(0, request.base_timeline.video_to_rebased_audio_ms(0))
-            timeline_start_ms = request.base_timeline.rebased_audio_to_video_ms(head_start_on_base)
+            timeline_start_ms = (
+                request.output_mapping_to_video_ms
+                + request.base_timeline.rebased_audio_to_video_ms(head_start_on_base)
+            )
 
         self._concat_and_encode(
             [part.path for part in source_parts],
@@ -610,9 +627,9 @@ class MeltPerformer(TrackTimelineMixin):
             encoded=True,
         )
         expected_end_ms = (
-            request.output_interval.end_ms
+            request.output_mapping_to_video_ms + request.output_interval.end_ms
             if head_part is not None or tail_part is not None
-            else physical_source_interval.end_ms
+            else request.output_mapping_to_video_ms + physical_source_interval.end_ms
         )
         self._validate_audio_placement(
             timeline_start_ms,

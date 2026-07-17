@@ -1589,6 +1589,39 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(result.duration_ms, 62314)
         self.assertEqual(result.transformation, "unscaled-normalization")
 
+    def test_global_executor_places_audio_on_base_video_stream_timeline(self):
+        """A rebased mapping must be translated back to the muxed base-video PTS."""
+        performer = self._make_performer()
+        source_audio = AudioStreamRef("/tmp/source.mkv", 2, "pol")
+        request = AudioPatchRequest(
+            working_dir="/tmp/work",
+            output_path="/tmp/out.mka",
+            base_video=VideoStreamRef("/tmp/base.mkv", 0, None),
+            source_audio=source_audio,
+            base_audio=None,
+            mapping=((0, 0), (60000, 60000)),
+            target_interval=TimelineInterval(0, 60000),
+            output_interval=TimelineInterval(0, 60000),
+            base_duration_ms=60000,
+            source_timeline=VideoToAudioTimeline(0, 0),
+            base_timeline=None,
+            fill_gaps_from_base=False,
+            lhs_frames={},
+            rhs_frames={},
+            output_mapping_to_video_ms=510,
+        )
+
+        with patch.object(performer, "_decode_audio_stream_to_flac"), \
+             patch.object(performer, "_get_audio_params", return_value=(2, 48000, "s16")), \
+             patch.object(performer, "_get_audio_channel_layout", return_value="stereo"), \
+             patch.object(performer, "_concat_and_encode"), \
+             patch.object(video_utils, "get_video_duration", return_value=60000):
+            result = performer._execute_audio_patch(request, _AudioStrategy.GLOBAL_TIME_SCALE)
+
+        self.assertEqual(result.timeline_start_ms, 510)
+        self.assertEqual(result.duration_ms, 60000)
+        self.assertEqual(result.transformation, "global-time-scale")
+
     def test_unscaled_executor_preserves_early_source_end_as_a_virtual_suffix(self):
         """A source tail outside the stream is remembered as output silence."""
         performer = self._make_performer()
