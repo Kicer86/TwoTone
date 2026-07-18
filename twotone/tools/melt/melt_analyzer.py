@@ -20,6 +20,10 @@ from .melt_common import (
 )
 
 
+class UnsupportedMeltInputError(RuntimeError):
+    """Raised when an input group contains an element Melt cannot model yet."""
+
+
 class MeltAnalyzer:
     def __init__(
         self,
@@ -55,7 +59,11 @@ class MeltAnalyzer:
                 ids = {file: i + 1 for i, file in enumerate(files)}
 
                 # analysis for group
-                plan_details, issue, files_details = self._analyze_group(files, ids, title)
+                try:
+                    plan_details, issue, _ = self._analyze_group(files, ids, title)
+                except UnsupportedMeltInputError as err:
+                    plan_details = None
+                    issue = str(err)
                 if plan_details is None:
                     self._log_group_issue(title, issue or "Unknown issue.", files, ids)
                     skipped_groups.append({
@@ -184,7 +192,7 @@ class MeltAnalyzer:
             for track in details.get("tracks", []):
                 track_type = track.get("type")
                 if track_type not in ("video", "audio", "subtitle", "subtitles"):
-                    raise RuntimeError(
+                    raise UnsupportedMeltInputError(
                         f"Melt input contains track type '{track_type}', which is not supported yet: {path}"
                     )
 
@@ -194,7 +202,7 @@ class MeltAnalyzer:
                 if isinstance(content_type, str) and content_type.startswith("image/"):
                     thumbnails.append((path, file_name))
                 else:
-                    raise RuntimeError(
+                    raise UnsupportedMeltInputError(
                         f"Melt input contains attachment '{file_name}' with content type "
                         f"'{content_type}', which is not supported yet: {path}"
                     )
@@ -206,13 +214,13 @@ class MeltAnalyzer:
                 else:
                     chapter_count += 1
             if chapter_count:
-                raise RuntimeError(
+                raise UnsupportedMeltInputError(
                     f"Melt input contains chapters, which are not supported yet: {path}"
                 )
 
         if len(thumbnails) > 1:
             locations = ", ".join(f"'{name}' from {path}" for path, name in thumbnails)
-            raise RuntimeError(
+            raise UnsupportedMeltInputError(
                 f"Melt input group contains {len(thumbnails)} thumbnails, which are not supported yet; "
                 f"at most one thumbnail is supported: {locations}"
             )

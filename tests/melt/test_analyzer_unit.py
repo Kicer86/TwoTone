@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from common import TwoToneTestCase
 from twotone.tools.melt.melt import MeltAnalyzer, StaticSource
+from twotone.tools.melt.melt_analyzer import UnsupportedMeltInputError
 from twotone.tools.utils import generic_utils, video_utils
 
 
@@ -86,7 +87,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
         with patch.object(video_utils, "get_video_full_info_mkvmerge", return_value=raw_info), \
              patch.object(video_utils, "get_video_data_mkvmerge") as parse_info:
             with self.assertRaisesRegex(
-                RuntimeError,
+                UnsupportedMeltInputError,
                 f"{expected_description}.*not supported yet.*{input_path}",
             ):
                 self.analyzer._probe_inputs([input_path])
@@ -115,7 +116,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
             side_effect=[first_info, second_info],
         ), patch.object(video_utils, "get_video_data_mkvmerge") as parse_info:
             with self.assertRaisesRegex(
-                RuntimeError,
+                UnsupportedMeltInputError,
                 "2 thumbnails.*not supported yet",
             ):
                 self.analyzer._probe_inputs([first_path, second_path])
@@ -173,6 +174,69 @@ class MeltAnalyzerTest(TwoToneTestCase):
             logger=self.logger,
             _mkvmerge_info=raw_info,
         )
+
+    def test_analyze_duplicates_skips_only_group_with_unsupported_input(self):
+        unsupported_path = os.path.join(self.wd.path, "unsupported.mkv")
+        valid_path = os.path.join(self.wd.path, "valid.mkv")
+        base_plan = [{
+            "title": "Title",
+            "groups": [
+                {"files": [unsupported_path], "output_name": "unsupported"},
+                {"files": [valid_path], "output_name": "valid"},
+            ],
+        }]
+        valid_details = {"marker": "analyzed"}
+        unsupported_issue = "Buttons are not supported yet"
+
+        with patch.object(
+            self.analyzer,
+            "_prepare_duplicates_set",
+            return_value=base_plan,
+        ), patch.object(
+            self.analyzer,
+            "_analyze_group",
+            side_effect=[
+                UnsupportedMeltInputError(unsupported_issue),
+                (valid_details, None, {}),
+            ],
+        ):
+            plan = self.analyzer.analyze_duplicates({})
+
+        self.assertEqual(
+            [{
+                "title": "Title",
+                "groups": [{
+                    "files": [valid_path],
+                    "output_name": "valid",
+                    **valid_details,
+                }],
+                "skipped_groups": [{
+                    "files": [unsupported_path],
+                    "output_name": "unsupported",
+                    "issue": unsupported_issue,
+                }],
+            }],
+            plan,
+        )
+
+    def test_analyze_duplicates_propagates_unrelated_runtime_error(self):
+        input_path = os.path.join(self.wd.path, "input.mkv")
+        base_plan = [{
+            "title": "Title",
+            "groups": [{"files": [input_path], "output_name": "input"}],
+        }]
+
+        with patch.object(
+            self.analyzer,
+            "_prepare_duplicates_set",
+            return_value=base_plan,
+        ), patch.object(
+            self.analyzer,
+            "_analyze_group",
+            side_effect=RuntimeError("ffprobe failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "ffprobe failed"):
+                self.analyzer.analyze_duplicates({})
 
 
 if __name__ == "__main__":
