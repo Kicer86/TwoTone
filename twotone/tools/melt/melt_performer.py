@@ -867,47 +867,57 @@ class MeltPerformer(TrackTimelineMixin):
         *,
         label: str,
     ) -> _AudioPart:
-        if source_per_base <= 0:
-            raise RuntimeError("Audio mapping has no positive source duration.")
-        expected_duration_ms = round(source_part.duration_ms / source_per_base)
-        if not self._needs_fps_scaling(source_per_base):
-            self._validate_audio_duration(
-                source_part.duration_ms,
-                expected_duration_ms,
-                label,
-                sample_rate=sample_rate,
+        if source_per_base > 0:
+            target_duration_ms = round(source_part.duration_ms / source_per_base)
+            no_filter_tolerance_ms = self._audio_duration_tolerance_ms(sample_rate)
+            duration_deviation_ms = abs(source_part.duration_ms - target_duration_ms)
+            needs_time_scale = (
+                strategy != _AudioStrategy.UNSCALED
+                and duration_deviation_ms > no_filter_tolerance_ms
             )
-            return source_part
-
-        if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
-            filter_arg = f"asetrate={sample_rate * source_per_base:.12g},aresample={sample_rate}"
         else:
-            # The factor must retain enough precision for a film-length segment;
-            # three decimal places can accumulate hundreds of milliseconds of drift.
-            filter_arg = f"atempo={source_per_base:.12g}"
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", [
-                "-y", "-i", source_part.path,
-                "-filter:a", filter_arg,
-                "-sample_fmt", "s32", "-c:a", "flac",
-                output_path,
-            ], logger=self.logger)
-        )
-        actual_duration_ms = video_utils.get_video_duration(output_path, logger=self.logger)
-        if actual_duration_ms is None:
-            raise RuntimeError(f"Could not determine duration for {label}.")
-        self._validate_audio_duration(
-            actual_duration_ms,
-            expected_duration_ms,
-            label,
-            sample_rate=sample_rate,
-            filter_tail_samples=(
-                self._ATEMPO_TAIL_SAMPLES
-                if strategy == _AudioStrategy.SUBSEGMENT
-                else 0
-            ),
-        )
-        return _AudioPart(output_path, actual_duration_ms, source_part.source_window)
+            raise RuntimeError("Audio mapping has no positive source duration.")
+
+        if needs_time_scale:
+            if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
+                filter_arg = f"asetrate={sample_rate * source_per_base:.12g},aresample={sample_rate}"
+            else:
+                # The factor must retain enough precision for a film-length segment;
+                # three decimal places can accumulate hundreds of milliseconds of drift.
+                filter_arg = f"atempo={source_per_base:.12g}"
+            process_utils.raise_on_error(
+                process_utils.start_process("ffmpeg", [
+                    "-y", "-i", source_part.path,
+                    "-filter:a", filter_arg,
+                    "-sample_fmt", "s32", "-c:a", "flac",
+                    output_path,
+                ], logger=self.logger)
+            )
+            actual_duration_ms = video_utils.get_video_duration(output_path, logger=self.logger)
+            if actual_duration_ms is not None:
+                self._validate_audio_duration(
+                    actual_duration_ms,
+                    target_duration_ms,
+                    label,
+                    sample_rate=sample_rate,
+                    filter_tail_samples=(
+                        self._ATEMPO_TAIL_SAMPLES
+                        if strategy == _AudioStrategy.SUBSEGMENT
+                        else 0
+                    ),
+                )
+                scaled_part = _AudioPart(output_path, actual_duration_ms, source_part.source_window)
+            else:
+                raise RuntimeError(f"Could not determine duration for {label}.")
+        else:
+            # Strategy selection may deliberately classify a near-unity global
+            # relation as unscaled.  That coarse classification must not leak
+            # into the physical transform: when no filter runs, the only valid
+            # expected duration is the unmodified source part's duration.  The
+            # duration-deviation comparison above is the per-part acceptance
+            # check for this no-op; final placement validates its aggregate.
+            scaled_part = source_part
+        return scaled_part
 
     def _source_patch_start_ms(
         self,
@@ -1244,8 +1254,17 @@ class MeltPerformer(TrackTimelineMixin):
 
     @staticmethod
     def _needs_fps_scaling(ratio: float) -> bool:
-        """Return True when *ratio* deviates enough from 1.0 to need asetrate scaling."""
-        return abs(ratio - 1.0) >= MeltPerformer._FPS_RATIO_TOLERANCE
+        """Classify a global span as a real playback-speed change.
+
+        This is a strategy-selection policy, not a decision to skip a
+        physical transform for an individual audio part.  Per-part scaling is
+        instead determined by the sample-derived duration budget in
+        :meth:`_scale_audio_part`.
+        """
+        return (
+            ratio >= 1.0 + MeltPerformer._FPS_RATIO_TOLERANCE
+            or ratio <= 1.0 - MeltPerformer._FPS_RATIO_TOLERANCE
+        )
 
     @staticmethod
     def _audio_duration_tolerance_ms(

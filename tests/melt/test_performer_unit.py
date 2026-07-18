@@ -619,6 +619,23 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertIn("asetrate=49200", filter_arg)
         self.assertIn("aresample=48000", filter_arg)
 
+    @parameterized.expand([
+        ("below_positive", 1.000999, False),
+        ("at_positive", 1.001, True),
+        ("above_positive", 1.001001, True),
+        ("below_negative", 0.999001, False),
+        ("at_negative", 0.999, True),
+        ("above_negative", 0.998999, True),
+    ])
+    def test_global_speed_classification_has_a_stable_ratio_threshold(
+        self,
+        _name: str,
+        source_per_base: float,
+        expected: bool,
+    ):
+        """The strategy-classification threshold must not depend on float artifacts."""
+        self.assertEqual(MeltPerformer._needs_fps_scaling(source_per_base), expected)
+
     def test_patch_audio_constant_offset_head_and_tail_extraction(self):
         """Head and tail segments should be extracted from base audio."""
         performer = self._make_performer()
@@ -1922,6 +1939,258 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(result.timeline_start_ms, 510)
         self.assertEqual(result.duration_ms, 60000)
         self.assertEqual(result.transformation, "global-time-scale")
+
+    @parameterized.expand([
+        ("below", 1.000999),
+        ("at", 1.001),
+        ("above", 1.001001),
+        ("below_inverse", 0.999001),
+        ("at_inverse", 0.999),
+        ("above_inverse", 0.998999),
+    ])
+    def test_global_executor_scales_material_durations_around_strategy_threshold(
+        self,
+        _name: str,
+        source_per_base: float,
+    ):
+        """Executor precision, unlike strategy selection, is not a coarse ratio threshold."""
+        performer = self._make_performer()
+        source_audio = AudioStreamRef("/tmp/source.mkv", 2, 2, "pol")
+        target_duration_ms = 1000000
+        source_duration_ms = round(target_duration_ms * source_per_base)
+        request = AudioPatchRequest(
+            working_dir="/tmp/work",
+            output_path="/tmp/out.mka",
+            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
+            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
+            source_audio=source_audio,
+            base_audio=None,
+            mapping=((0, 0), (target_duration_ms, source_duration_ms)),
+            target_interval=TimelineInterval(0, target_duration_ms),
+            output_interval=TimelineInterval(0, target_duration_ms),
+            base_duration_ms=target_duration_ms,
+            source_timeline=VideoToAudioTimeline(0, 0),
+            base_timeline=None,
+            fill_gaps_from_base=False,
+            lhs_frames={},
+            rhs_frames={},
+        )
+        calls: list[tuple[str, list[str]]] = []
+
+        def fake_start_process(tool, args, **_kwargs):
+            calls.append((tool, list(args)))
+            return _FAKE_PROCESS_OK
+
+        def fake_duration(path, **_kwargs):
+            if "source_trimmed" in path:
+                return source_duration_ms
+            if "source_scaled" in path or path.endswith("out.mka"):
+                return target_duration_ms
+            raise AssertionError(f"Unexpected duration probe for {path}")
+
+        with patch.object(performer, "_decode_audio_stream_to_flac"), \
+             patch.object(performer, "_get_audio_params", return_value=(2, 48000, "s16")), \
+             patch.object(performer, "_get_audio_channel_layout", return_value="stereo"), \
+             patch.object(performer, "_concat_and_encode"), \
+             patch.object(process_utils, "start_process", side_effect=fake_start_process), \
+             patch.object(process_utils, "raise_on_error"), \
+             patch.object(video_utils, "get_video_duration", side_effect=fake_duration):
+            result = performer._execute_audio_patch(request, _AudioStrategy.GLOBAL_TIME_SCALE)
+
+        filters = [
+            args[args.index("-filter:a") + 1]
+            for tool, args in calls
+            if tool == "ffmpeg" and "-filter:a" in args
+        ]
+        self.assertEqual(filters, [
+            f"asetrate={48000 * source_per_base:.12g},aresample=48000",
+        ])
+        self.assertEqual(result.timeline_start_ms, 0)
+        self.assertEqual(result.duration_ms, target_duration_ms)
+
+    def test_subsegment_executor_scales_a_60_second_near_unity_source_part(self):
+        """A physical 60-second part uses atempo when its target differs by 30 ms."""
+        performer = self._make_performer()
+        source_audio = AudioStreamRef("/tmp/source.mkv", 2, 2, "pol")
+        request = AudioPatchRequest(
+            working_dir="/tmp/work",
+            output_path="/tmp/out.mka",
+            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
+            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
+            source_audio=source_audio,
+            base_audio=None,
+            mapping=((0, 0), (60000, 60030)),
+            target_interval=TimelineInterval(0, 60000),
+            output_interval=TimelineInterval(0, 60000),
+            base_duration_ms=60000,
+            source_timeline=VideoToAudioTimeline(0, 0, 60000),
+            base_timeline=None,
+            fill_gaps_from_base=False,
+            lhs_frames={},
+            rhs_frames={},
+        )
+        calls: list[tuple[str, list[str]]] = []
+
+        def fake_start_process(tool, args, **_kwargs):
+            calls.append((tool, list(args)))
+            return _FAKE_PROCESS_OK
+
+        def fake_duration(path, **_kwargs):
+            if "source_segment_0_scaled" in path or path.endswith("out.mka"):
+                return 59970
+            if "source_segment_0" in path:
+                return 60000
+            raise AssertionError(f"Unexpected duration probe for {path}")
+
+        with patch.object(performer, "_decode_audio_stream_to_flac"), \
+             patch.object(performer, "_get_audio_params", return_value=(2, 48000, "s16")), \
+             patch.object(performer, "_get_audio_channel_layout", return_value="stereo"), \
+             patch.object(performer, "_concat_and_encode"), \
+             patch.object(process_utils, "start_process", side_effect=fake_start_process), \
+             patch.object(process_utils, "raise_on_error"), \
+             patch.object(video_utils, "get_video_duration", side_effect=fake_duration):
+            result = performer._execute_audio_patch(
+                request,
+                _AudioStrategy.SUBSEGMENT,
+                segment_count=1,
+            )
+
+        filters = [
+            args[args.index("-filter:a") + 1]
+            for tool, args in calls
+            if tool == "ffmpeg" and "-filter:a" in args
+        ]
+        self.assertEqual(filters, ["atempo=1.0005"])
+        self.assertEqual(result.timeline_start_ms, 0)
+        self.assertEqual(result.duration_ms, 59970)
+
+    def test_subsegment_executor_tolerates_a_nonzero_ratio_within_sample_budget(self):
+        """A no-op remains valid only when its physical duration fits the budget."""
+        performer = self._make_performer()
+        source_audio = AudioStreamRef("/tmp/source.mkv", 2, 2, "pol")
+        request = AudioPatchRequest(
+            working_dir="/tmp/work",
+            output_path="/tmp/out.mka",
+            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
+            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
+            source_audio=source_audio,
+            base_audio=None,
+            mapping=((0, 0), (60000, 60001)),
+            target_interval=TimelineInterval(0, 60000),
+            output_interval=TimelineInterval(0, 60000),
+            base_duration_ms=60000,
+            source_timeline=VideoToAudioTimeline(0, 0),
+            base_timeline=None,
+            fill_gaps_from_base=False,
+            lhs_frames={},
+            rhs_frames={},
+        )
+        calls: list[tuple[str, list[str]]] = []
+
+        def fake_start_process(tool, args, **_kwargs):
+            calls.append((tool, list(args)))
+            return _FAKE_PROCESS_OK
+
+        def fake_duration(path, **_kwargs):
+            if "source_segment_0" in path or path.endswith("out.mka"):
+                return 60001
+            raise AssertionError(f"Unexpected duration probe for {path}")
+
+        with patch.object(performer, "_decode_audio_stream_to_flac"), \
+             patch.object(performer, "_get_audio_params", return_value=(2, 48000, "s16")), \
+             patch.object(performer, "_get_audio_channel_layout", return_value="stereo"), \
+             patch.object(performer, "_concat_and_encode"), \
+             patch.object(process_utils, "start_process", side_effect=fake_start_process), \
+             patch.object(process_utils, "raise_on_error"), \
+             patch.object(video_utils, "get_video_duration", side_effect=fake_duration):
+            result = performer._execute_audio_patch(
+                request,
+                _AudioStrategy.SUBSEGMENT,
+                segment_count=1,
+            )
+
+        filters = [
+            args[args.index("-filter:a") + 1]
+            for tool, args in calls
+            if tool == "ffmpeg" and "-filter:a" in args
+        ]
+        self.assertEqual(filters, [])
+        self.assertEqual(result.timeline_start_ms + result.duration_ms, 60001)
+
+    def test_subsegment_executor_scales_one_frame_local_duration_differences(self):
+        """Each near-unity segment is fitted before their final placement is checked."""
+        performer = self._make_performer()
+        source_audio = AudioStreamRef("/tmp/source.mkv", 2, 2, "pol")
+        target_segment_duration_ms = 60000
+        one_24fps_frame_ms = 42
+        request = AudioPatchRequest(
+            working_dir="/tmp/work",
+            output_path="/tmp/out.mka",
+            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
+            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
+            source_audio=source_audio,
+            base_audio=None,
+            mapping=(
+                (0, 0),
+                (target_segment_duration_ms, target_segment_duration_ms + one_24fps_frame_ms),
+                (2 * target_segment_duration_ms, 2 * target_segment_duration_ms),
+            ),
+            target_interval=TimelineInterval(0, 2 * target_segment_duration_ms),
+            output_interval=TimelineInterval(0, 2 * target_segment_duration_ms),
+            base_duration_ms=2 * target_segment_duration_ms,
+            source_timeline=VideoToAudioTimeline(0, 0),
+            base_timeline=None,
+            fill_gaps_from_base=False,
+            lhs_frames={},
+            rhs_frames={},
+        )
+        source_durations = [
+            target_segment_duration_ms + one_24fps_frame_ms,
+            target_segment_duration_ms - one_24fps_frame_ms,
+        ]
+        calls: list[tuple[str, list[str]]] = []
+
+        def fake_start_process(tool, args, **_kwargs):
+            calls.append((tool, list(args)))
+            return _FAKE_PROCESS_OK
+
+        def fake_duration(path, **_kwargs):
+            if "source_segment_0_scaled" in path or "source_segment_1_scaled" in path:
+                return target_segment_duration_ms
+            if "source_segment_0" in path:
+                return source_durations[0]
+            if "source_segment_1" in path:
+                return source_durations[1]
+            if path.endswith("out.mka"):
+                return 2 * target_segment_duration_ms
+            raise AssertionError(f"Unexpected duration probe for {path}")
+
+        with patch.object(performer, "_decode_audio_stream_to_flac"), \
+             patch.object(performer, "_get_audio_params", return_value=(2, 48000, "s16")), \
+             patch.object(performer, "_get_audio_channel_layout", return_value="stereo"), \
+             patch.object(performer, "_concat_and_encode"), \
+             patch.object(process_utils, "start_process", side_effect=fake_start_process), \
+             patch.object(process_utils, "raise_on_error"), \
+             patch.object(video_utils, "get_video_duration", side_effect=fake_duration):
+            result = performer._execute_audio_patch(
+                request,
+                _AudioStrategy.SUBSEGMENT,
+                segment_count=2,
+            )
+
+        expected_factors = [
+            source_durations[0] / target_segment_duration_ms,
+            source_durations[1] / target_segment_duration_ms,
+        ]
+        filters = [
+            args[args.index("-filter:a") + 1]
+            for tool, args in calls
+            if tool == "ffmpeg" and "-filter:a" in args
+        ]
+        self.assertEqual(filters, [f"atempo={factor:.12g}" for factor in expected_factors])
+        self.assertEqual(result.timeline_start_ms, 0)
+        self.assertEqual(result.duration_ms, 2 * target_segment_duration_ms)
+        self.assertEqual(result.timeline_start_ms + result.duration_ms, 2 * target_segment_duration_ms)
 
     def test_unscaled_executor_preserves_early_source_end_as_a_virtual_suffix(self):
         """A source tail outside the stream is remembered as output silence."""
