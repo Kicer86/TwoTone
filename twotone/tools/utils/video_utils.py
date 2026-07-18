@@ -915,6 +915,8 @@ def get_video_data_mkvmerge(
     path: str,
     enrich: bool = False,
     logger: logging.Logger | None = None,
+    *,
+    _mkvmerge_info: dict[str, Any] | None = None,
 ) -> dict:
     """
         Return stream information parsed from ``mkvmerge -J`` output.
@@ -922,6 +924,8 @@ def get_video_data_mkvmerge(
         Set 'enrich' to True to enrich mkvmerge's output with data from ffprobe.
         In enriched results, ``tid`` remains the mkvmerge track ID while
         ``ffprobe_stream_index`` is the absolute ffprobe/ffmpeg stream index.
+        A caller that already ran ``mkvmerge -J`` may provide its result via
+        ``_mkvmerge_info`` to avoid probing the same file twice.
     """
     logger = logger or DEFAULT_LOGGER
 
@@ -1074,7 +1078,11 @@ def get_video_data_mkvmerge(
 
         return output
 
-    info = get_video_full_info_mkvmerge(path, logger=logger)
+    info = (
+        _mkvmerge_info
+        if _mkvmerge_info is not None
+        else get_video_full_info_mkvmerge(path, logger=logger)
+    )
 
     # process streams/tracks
     streams = defaultdict(list)

@@ -176,8 +176,63 @@ class MeltAnalyzer:
             file_id = ids[path]
             self.logger.debug(f"Attachment ID #{tid} from file #{file_id}")
 
+    @staticmethod
+    def _validate_supported_elements(raw_details: dict[str, dict[str, Any]]) -> None:
+        thumbnails: list[tuple[str, str]] = []
+
+        for path, details in raw_details.items():
+            for track in details.get("tracks", []):
+                track_type = track.get("type")
+                if track_type not in ("video", "audio", "subtitle", "subtitles"):
+                    raise RuntimeError(
+                        f"Melt input contains track type '{track_type}', which is not supported yet: {path}"
+                    )
+
+            for attachment in details.get("attachments", []):
+                file_name = attachment.get("file_name", f"attachment #{attachment.get('id', '?')}")
+                content_type = attachment.get("content_type")
+                if isinstance(content_type, str) and content_type.startswith("image/"):
+                    thumbnails.append((path, file_name))
+                else:
+                    raise RuntimeError(
+                        f"Melt input contains attachment '{file_name}' with content type "
+                        f"'{content_type}', which is not supported yet: {path}"
+                    )
+
+            chapter_count = 0
+            for chapter in details.get("chapters", []):
+                if isinstance(chapter, dict) and isinstance(chapter.get("num_entries"), int):
+                    chapter_count += chapter["num_entries"]
+                else:
+                    chapter_count += 1
+            if chapter_count:
+                raise RuntimeError(
+                    f"Melt input contains chapters, which are not supported yet: {path}"
+                )
+
+        if len(thumbnails) > 1:
+            locations = ", ".join(f"'{name}' from {path}" for path, name in thumbnails)
+            raise RuntimeError(
+                f"Melt input group contains {len(thumbnails)} thumbnails, which are not supported yet; "
+                f"at most one thumbnail is supported: {locations}"
+            )
+
     def _probe_inputs(self, files: Sequence[str]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-        details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True, logger=self.logger) for file in files}
+        raw_details = {
+            file: video_utils.get_video_full_info_mkvmerge(file, logger=self.logger)
+            for file in files
+        }
+        self._validate_supported_elements(raw_details)
+
+        details_full = {
+            file: video_utils.get_video_data_mkvmerge(
+                file,
+                enrich=True,
+                logger=self.logger,
+                _mkvmerge_info=raw_details[file],
+            )
+            for file in files
+        }
         attachments = {file: info["attachments"] for file, info in details_full.items()}
         tracks = {file: info["tracks"] for file, info in details_full.items()}
         return details_full, attachments, tracks

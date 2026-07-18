@@ -10,6 +10,21 @@ from common import TwoToneTestCase, generate_subtitles, get_video, remove_key, r
 
 
 class UtilsTests(TwoToneTestCase):
+    def test_mkvmerge_parser_reuses_supplied_identification(self):
+        mkvmerge_info = {
+            "tracks": [],
+            "attachments": [],
+        }
+
+        with patch.object(video_utils, "get_video_full_info_mkvmerge") as identify:
+            parsed = video_utils.get_video_data_mkvmerge(
+                "already-identified.mkv",
+                _mkvmerge_info=mkvmerge_info,
+            )
+
+        self.assertEqual({"attachments": [], "tracks": {}}, parsed)
+        identify.assert_not_called()
+
     def test_mkvmerge_enrichment_preserves_cyclic_native_track_mapping(self):
         mkvmerge_info = {
             "tracks": [
