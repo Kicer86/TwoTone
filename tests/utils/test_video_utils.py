@@ -10,6 +10,52 @@ from common import TwoToneTestCase, generate_subtitles, get_video, remove_key, r
 
 
 class UtilsTests(TwoToneTestCase):
+    def test_mkvmerge_enrichment_preserves_cyclic_native_track_mapping(self):
+        mkvmerge_info = {
+            "tracks": [
+                {"id": 0, "type": "audio", "properties": {"number": 0x13}},
+                {"id": 1, "type": "audio", "properties": {"number": 0x11}},
+                {"id": 2, "type": "audio", "properties": {"number": 0x12}},
+            ],
+        }
+        probe_info = {
+            "streams": [
+                {"index": 0, "id": "0x11", "codec_type": "audio"},
+                {"index": 1, "id": "0x12", "codec_type": "audio"},
+                {"index": 2, "id": "0x13", "codec_type": "audio"},
+            ],
+        }
+        parsed_audio = [
+            {"tid": 0, "channels": 1, "sample_rate": 44100, "language": "eng"},
+            {"tid": 1, "channels": 2, "sample_rate": 48000, "language": "pol"},
+            {"tid": 2, "channels": 6, "sample_rate": 96000, "language": "deu"},
+        ]
+        original_parsed_audio = [stream.copy() for stream in parsed_audio]
+
+        with patch.object(video_utils, "get_video_full_info_mkvmerge", return_value=mkvmerge_info), \
+             patch.object(video_utils, "get_video_full_info", return_value=probe_info), \
+             patch.object(video_utils, "get_video_data", return_value={"audio": parsed_audio}):
+            enriched = video_utils.get_video_data_mkvmerge("cyclic.mka", enrich=True)
+
+        self.assertEqual(
+            [
+                (
+                    stream["tid"],
+                    stream["ffprobe_stream_index"],
+                    stream["channels"],
+                    stream["sample_rate"],
+                    stream["language"],
+                )
+                for stream in enriched["tracks"]["audio"]
+            ],
+            [
+                (0, 2, 6, 96000, "deu"),
+                (1, 0, 1, 44100, "eng"),
+                (2, 1, 2, 48000, "pol"),
+            ],
+        )
+        self.assertEqual(parsed_audio, original_parsed_audio)
+
     def test_mkvmerge_enrichment_rejects_unmappable_track_counts(self):
         mkvmerge_info = {
             "tracks": [

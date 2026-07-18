@@ -1024,28 +1024,41 @@ def get_video_data_mkvmerge(
 
         return mapping
 
+    def build_ffprobe_stream_lookup(ffprobe_info: dict | None) -> dict[int, dict] | None:
+        if ffprobe_info is not None:
+            streams_by_index: dict[int, dict] = {}
+            for typed_streams in ffprobe_info.values():
+                for stream in typed_streams:
+                    stream_index = stream.get("tid")
+                    if not isinstance(stream_index, int):
+                        raise RuntimeError("ffprobe returned a stream without an integer index.")
+                    if stream_index in streams_by_index:
+                        raise RuntimeError(f"ffprobe returned duplicate stream index #{stream_index}.")
+                    streams_by_index[stream_index] = stream
+            return streams_by_index
+        else:
+            return None
+
     def find_ffprobe_track(
         track: dict,
-        ffprobe_info: dict | None,
+        ffprobe_streams_by_index: Mapping[int, dict] | None,
         track_mapping: dict[int, int],
     ) -> dict:
-        if ffprobe_info is None:
-            return {}
-        track_type = normalized_track_type(track.get("type"))
-        probe_index = track_mapping.get(int(track["id"]))
-        for stream in ffprobe_info.get(track_type or "", []):
-            if stream.get("tid") == probe_index:
+        if ffprobe_streams_by_index is not None:
+            track_type = normalized_track_type(track.get("type"))
+            probe_index = track_mapping[int(track["id"])]
+            stream = ffprobe_streams_by_index.get(probe_index)
+            if stream is not None:
                 return stream
-        raise RuntimeError(
-            f"Mapped ffprobe {track_type} stream #{probe_index} was not found "
-            f"for mkvmerge track #{track.get('id')}."
-        )
+            raise RuntimeError(
+                f"Mapped ffprobe {track_type} stream #{probe_index} was not found "
+                f"for mkvmerge track #{track.get('id')}."
+            )
+        else:
+            return {}
 
     def merge_properties(initial: dict | None, update: dict) -> dict:
-        if initial is None:
-            return update
-
-        output = initial
+        output = initial.copy() if initial is not None else {}
         for key, value in update.items():
             base_value = output.get(key, None)
 
@@ -1071,6 +1084,7 @@ def get_video_data_mkvmerge(
         if probe_info is not None
         else None
     )
+    ffprobe_streams_by_index = build_ffprobe_stream_lookup(ffprobe_info)
     track_mapping = build_track_mapping(info.get("tracks", []), probe_info) if probe_info is not None else {}
 
     for track in info.get("tracks", []):
@@ -1093,7 +1107,7 @@ def get_video_data_mkvmerge(
         except Exception:
             language = None
 
-        track_initial_data = find_ffprobe_track(track, ffprobe_info, track_mapping)
+        track_initial_data = find_ffprobe_track(track, ffprobe_streams_by_index, track_mapping)
 
         # Prepare common data for all stream types first
         stream_data = {
