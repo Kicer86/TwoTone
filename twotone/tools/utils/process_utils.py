@@ -63,6 +63,7 @@ def start_process(
 
     sub_process = subprocess.Popen(command, **popen_kwargs)
 
+    captured_stderr: list[str] = []
     if show_progress:
         if process == "ffmpeg":
             index_of_i = args.index("-i")
@@ -75,6 +76,7 @@ def start_process(
                     last_frame = 0
                     for line in sub_process.stderr:
                         line = line.strip()
+                        captured_stderr.append(line)
                         if "frame=" in line:
                             match = progress_pattern.search(line)
                             if match:
@@ -112,6 +114,9 @@ def start_process(
                 pbar.update(1)
 
     stdout, stderr = sub_process.communicate()
+
+    if captured_stderr:
+        stderr = "\n".join(captured_stderr) + (f"\n{stderr}" if stderr else "")
 
     logger.debug(f"Process finished with {sub_process.returncode}")
 
