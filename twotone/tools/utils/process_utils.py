@@ -32,6 +32,7 @@ def start_process(
     process: str,
     args: list[str],
     show_progress: bool = False,
+    progress_description: str | None = None,
     logger: logging.Logger | None = None,
     cwd: str | None = None
 ) -> ProcessResult:
@@ -68,11 +69,13 @@ def start_process(
         if process == "ffmpeg":
             index_of_i = args.index("-i")
             input_file = args[index_of_i + 1]
+            description = progress_description or "Processing video"
+            logger.info("%s: started.", description)
 
             if video_utils.is_video(input_file) and sub_process.stderr:
                 progress_pattern = re.compile(r"frame= *(\d+)")
                 frames = video_utils.get_video_frames_count(input_file, logger=logger)
-                with tqdm(desc="Processing video", unit="frame", total=frames, **generic_utils.get_tqdm_defaults()) as pbar:
+                with tqdm(desc=description, unit="frame", total=frames, **generic_utils.get_tqdm_defaults()) as pbar:
                     last_frame = 0
                     for line in sub_process.stderr:
                         line = line.strip()
