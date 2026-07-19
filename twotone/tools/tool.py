@@ -3,7 +3,7 @@ import argparse
 import logging
 
 from abc import ABC, abstractmethod
-from typing import Protocol, runtime_checkable
+from typing import Iterable, Protocol, runtime_checkable
 
 from twotone.tools.utils import files_utils, requirements_utils
 
@@ -16,6 +16,10 @@ class Plan(Protocol):
     def render(self, logger: logging.Logger) -> None:
         ...
 
+    def input_files(self) -> Iterable[str]:
+        """Return the source files this analyzed plan will read."""
+        ...
+
 
 class EmptyPlan:
     def is_empty(self) -> bool:
@@ -23,6 +27,9 @@ class EmptyPlan:
 
     def render(self, logger: logging.Logger) -> None:
         return None
+
+    def input_files(self) -> Iterable[str]:
+        return ()
 
 
 class Tool(ABC):

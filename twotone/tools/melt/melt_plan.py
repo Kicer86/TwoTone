@@ -17,6 +17,14 @@ class MeltPlan:
     def is_empty(self) -> bool:
         return not any(item.get("groups") for item in self.items)
 
+    def input_files(self) -> set[str]:
+        return {
+            path
+            for item in self.items
+            for group in item.get("groups", [])
+            for path in group.get("files", [])
+        }
+
     def render(self, logger: logging.Logger) -> None:
         if not self.items:
             logger.info("No titles to melt.")

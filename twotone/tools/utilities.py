@@ -99,6 +99,9 @@ class ScenesPlan:
     def is_empty(self) -> bool:
         return False
 
+    def input_files(self) -> set[str]:
+        return {self.video_path}
+
     def render(self, logger: logging.Logger) -> None:
         logger.info("Planned scene extraction:")
         logger.info(f"  video: {self.video_path}")
