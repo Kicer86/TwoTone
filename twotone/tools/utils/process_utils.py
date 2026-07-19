@@ -94,6 +94,22 @@ def start_process(
                         delta = current_progress - last_progress
                         pbar.update(delta)
                         last_progress = current_progress
+        elif process == "ffprobe":
+            # ffprobe does not expose a numerical progress protocol.  Keep an
+            # indeterminate progress indicator alive while it reads large or
+            # remote containers so the caller still has visible feedback.
+            description = progress_description or "Probing media"
+            logger.info("%s: started.", description)
+            with tqdm(desc=description, unit="file", total=None, **generic_utils.get_tqdm_defaults()) as pbar:
+                next_status_log = time.monotonic() + 15
+                while sub_process.poll() is None:
+                    time.sleep(0.1)
+                    pbar.refresh()
+                    if time.monotonic() >= next_status_log:
+                        logger.info("%s: still reading the container.", description)
+                        next_status_log = time.monotonic() + 15
+                stdout, stderr = sub_process.communicate()
+                pbar.update(1)
 
     stdout, stderr = sub_process.communicate()
 
