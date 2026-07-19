@@ -5,6 +5,7 @@ import platform
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from tqdm import tqdm
 from typing import Any
@@ -106,13 +107,9 @@ def start_process(
             description = progress_description or "Probing media"
             logger.info("%s: started.", description)
             with tqdm(desc=description, unit="file", total=None, **generic_utils.get_tqdm_defaults()) as pbar:
-                next_status_log = time.monotonic() + 15
                 while sub_process.poll() is None:
                     time.sleep(0.1)
                     pbar.refresh()
-                    if time.monotonic() >= next_status_log:
-                        logger.info("%s: still reading the container.", description)
-                        next_status_log = time.monotonic() + 15
                 stdout, stderr = sub_process.communicate()
                 pbar.update(1)
 
