@@ -81,17 +81,20 @@ class MeltAnalyzerTest(TwoToneTestCase):
         raw_overrides,
         expected_description,
     ):
-        input_path = os.path.join(self.wd.path, "input.mkv")
+        # Exercise the Windows path that previously broke regex-based assertions,
+        # even when this test runs on another platform.
+        input_path = r"C:\Users\runneradmin\AppData\Local\Temp\input.mkv"
         raw_info = self._mkvmerge_info(**raw_overrides)
 
         with patch.object(video_utils, "get_video_full_info_mkvmerge", return_value=raw_info), \
              patch.object(video_utils, "get_video_data_mkvmerge") as parse_info:
-            with self.assertRaisesRegex(
-                UnsupportedMeltInputError,
-                f"{expected_description}.*not supported yet.*{input_path}",
-            ):
+            with self.assertRaises(UnsupportedMeltInputError) as raised:
                 self.analyzer._probe_inputs([input_path])
 
+        message = str(raised.exception)
+        self.assertIn(expected_description, message)
+        self.assertIn("not supported yet", message)
+        self.assertIn(input_path, message)
         parse_info.assert_not_called()
 
     def test_probe_inputs_rejects_multiple_thumbnails_across_group(self):
