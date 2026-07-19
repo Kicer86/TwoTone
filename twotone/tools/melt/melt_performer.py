@@ -6,6 +6,7 @@ import statistics
 
 from collections import Counter
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 from tqdm import tqdm
 
@@ -880,7 +881,11 @@ class MeltPerformer(TrackTimelineMixin):
 
         if needs_time_scale:
             if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
-                filter_arg = f"asetrate={sample_rate * source_per_base:.12g},aresample={sample_rate}"
+                filter_arg = self._global_time_scale_filter(
+                    source_part.duration_ms,
+                    target_duration_ms,
+                    sample_rate,
+                )
             else:
                 # The factor must retain enough precision for a film-length segment;
                 # three decimal places can accumulate hundreds of milliseconds of drift.
@@ -918,6 +923,99 @@ class MeltPerformer(TrackTimelineMixin):
             # check for this no-op; final placement validates its aggregate.
             scaled_part = source_part
         return scaled_part
+
+    @classmethod
+    def _global_time_scale_filter(
+        cls,
+        source_duration_ms: int,
+        target_duration_ms: int,
+        sample_rate: int,
+    ) -> str:
+        """Build a global scale that fits this part's sample-duration budget.
+
+        FFmpeg rounds ``asetrate`` to an integer sample rate.  Supplying one
+        rounded virtual rate therefore accumulates drift on film-length audio.
+        Represent the requested part duration ratio as a bounded rational,
+        resample between both integer rates, then relabel the result with the
+        source sample rate.  Retain the simple direct integer-rate transform
+        when it already fits this part's physical duration budget; otherwise
+        increase rational precision until it does.  This keeps the intended
+        pitch/tempo transform without an ``atempo`` tail buffer or destructive
+        duration trim.
+        """
+        if source_duration_ms > 0 and target_duration_ms > 0:
+            requested_ratio = Fraction(source_duration_ms, target_duration_ms)
+        else:
+            raise ValueError("Global audio scaling requires positive source and target durations.")
+
+        if 0 < sample_rate <= cls._MAX_RATIONAL_SCALE_RATE:
+            source_samples = round(Fraction(source_duration_ms * sample_rate, 1000))
+            target_samples = round(Fraction(target_duration_ms * sample_rate, 1000))
+            duration_tolerance_ms = cls._audio_duration_tolerance_ms(sample_rate)
+        else:
+            raise ValueError(
+                "Global rational audio scaling supports sample rates from 1 to "
+                f"{cls._MAX_RATIONAL_SCALE_RATE} Hz."
+            )
+
+        selected_rates: tuple[int, int] | None = None
+        direct_virtual_sample_rate = round(Fraction(
+            source_duration_ms * sample_rate,
+            target_duration_ms,
+        ))
+        if 0 < direct_virtual_sample_rate <= cls._MAX_RATIONAL_SCALE_RATE:
+            direct_scaled_samples = round(Fraction(
+                source_samples * sample_rate,
+                direct_virtual_sample_rate,
+            ))
+            direct_sample_error = abs(direct_scaled_samples - target_samples)
+            if direct_sample_error * 1000 <= duration_tolerance_ms * sample_rate:
+                selected_rates = (direct_virtual_sample_rate, sample_rate)
+
+        rate_limit = max(sample_rate, cls._PREFERRED_RATIONAL_SCALE_RATE)
+        while rate_limit <= cls._MAX_RATIONAL_SCALE_RATE and selected_rates is None:
+            ratio = requested_ratio.limit_denominator(rate_limit)
+            largest_ratio_component = max(ratio.numerator, ratio.denominator)
+            maximum_multiplier = cls._MAX_RATIONAL_SCALE_RATE // largest_ratio_component
+            if maximum_multiplier > 0:
+                preferred_multiplier = max(1, round(sample_rate / ratio.denominator))
+                rate_multiplier = min(preferred_multiplier, maximum_multiplier)
+                virtual_sample_rate = ratio.numerator * rate_multiplier
+                resample_rate = ratio.denominator * rate_multiplier
+                if (
+                    0 < virtual_sample_rate <= cls._MAX_RATIONAL_SCALE_RATE
+                    and 0 < resample_rate <= cls._MAX_RATIONAL_SCALE_RATE
+                ):
+                    scaled_samples = round(Fraction(
+                        source_samples * resample_rate,
+                        virtual_sample_rate,
+                    ))
+                    sample_error = abs(scaled_samples - target_samples)
+                    if sample_error * 1000 <= duration_tolerance_ms * sample_rate:
+                        selected_rates = (virtual_sample_rate, resample_rate)
+
+            if selected_rates is None and rate_limit < cls._MAX_RATIONAL_SCALE_RATE:
+                rate_limit = min(cls._MAX_RATIONAL_SCALE_RATE, rate_limit * 2)
+            else:
+                break
+
+        if selected_rates is not None:
+            virtual_sample_rate, resample_rate = selected_rates
+            filters = [
+                f"asetrate={virtual_sample_rate}",
+                f"aresample={resample_rate}",
+            ]
+            if resample_rate != sample_rate:
+                filters.append(f"asetrate={sample_rate}")
+            filter_arg = ",".join(filters)
+        else:
+            raise RuntimeError(
+                "Cannot represent global audio scaling from "
+                f"{source_duration_ms} ms to {target_duration_ms} ms within the "
+                f"{duration_tolerance_ms} ms duration budget using FFmpeg rates up to "
+                f"{cls._MAX_RATIONAL_SCALE_RATE} Hz."
+            )
+        return filter_arg
 
     def _source_patch_start_ms(
         self,
@@ -1251,6 +1349,13 @@ class MeltPerformer(TrackTimelineMixin):
     # at EOF.  Its duration check must account for that bounded filter tail,
     # while final placement validation still catches accumulated error.
     _ATEMPO_TAIL_SAMPLES = 1024
+    # Start global rational resampling at a conventional high-resolution rate.
+    # The selector doubles this only when its per-part sample calculation
+    # proves the approximation is too coarse.
+    _PREFERRED_RATIONAL_SCALE_RATE = 192000
+    # FFmpeg's asetrate accepts integer rates from 1 through INT_MAX.  Apply
+    # that same hard bound to every generated asetrate/aresample value.
+    _MAX_RATIONAL_SCALE_RATE = 2147483647
 
     @staticmethod
     def _needs_fps_scaling(ratio: float) -> bool:

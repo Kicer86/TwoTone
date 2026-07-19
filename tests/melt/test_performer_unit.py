@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 
+from array import array
 from parameterized import parameterized
 from unittest.mock import Mock, patch
 
@@ -616,8 +617,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         filter_arg = next(a for a in filter_calls[0][1] if "asetrate" in str(a))
         # adjusted_rate = 48000 * 4100 / 4000 = 49200
-        self.assertIn("asetrate=49200", filter_arg)
-        self.assertIn("aresample=48000", filter_arg)
+        self.assertEqual(filter_arg, "asetrate=49200,aresample=48000")
 
     @parameterized.expand([
         ("below_positive", 1.000999, False),
@@ -1940,6 +1940,219 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(result.duration_ms, 60000)
         self.assertEqual(result.transformation, "global-time-scale")
 
+    def test_global_time_scale_uses_a_precise_rational_resample_ratio(self):
+        """A fractional virtual rate remains precise without lossy tail trimming."""
+        source_duration_ms = 4852640
+        target_duration_ms = 5056084
+        sample_rate = 48000
+
+        filter_arg = MeltPerformer._global_time_scale_filter(
+            source_duration_ms,
+            target_duration_ms,
+            sample_rate,
+        )
+
+        self.assertEqual(
+            filter_arg,
+            "asetrate=184141,"
+            "aresample=191861,"
+            "asetrate=48000",
+        )
+        self.assertNotIn("atempo", filter_arg)
+        self.assertNotIn("apad", filter_arg)
+        self.assertNotIn("atrim", filter_arg)
+
+        source_samples = source_duration_ms * sample_rate // 1000
+        scaled_samples = round(source_samples * 191861 / 184141)
+        target_samples = target_duration_ms * sample_rate // 1000
+        self.assertEqual(scaled_samples, target_samples)
+
+    def test_global_time_scale_does_not_collapse_long_near_simple_ratio(self):
+        """A tiny offset from 11/10 must not accumulate past the sample budget."""
+        source_duration_ms = 7200000
+        target_duration_ms = 6545460
+        sample_rate = 48000
+
+        filter_arg = MeltPerformer._global_time_scale_filter(
+            source_duration_ms,
+            target_duration_ms,
+            sample_rate,
+        )
+
+        self.assertEqual(
+            filter_arg,
+            "asetrate=120000,aresample=109091,asetrate=48000",
+        )
+        source_samples = source_duration_ms * sample_rate // 1000
+        scaled_samples = round(source_samples * 109091 / 120000)
+        target_samples = target_duration_ms * sample_rate // 1000
+        self.assertEqual(scaled_samples, target_samples)
+
+    def test_global_time_scale_refines_long_near_six_sevenths_ratio(self):
+        """A film-length ratio near 6/7 must not collapse to that simple fraction."""
+        source_duration_ms = 12178055
+        target_duration_ms = 14207737
+        sample_rate = 48000
+
+        filter_arg = MeltPerformer._global_time_scale_filter(
+            source_duration_ms,
+            target_duration_ms,
+            sample_rate,
+        )
+
+        self.assertEqual(
+            filter_arg,
+            "asetrate=329135,aresample=383991,asetrate=48000",
+        )
+        rates = [int(item.split("=", maxsplit=1)[1]) for item in filter_arg.split(",")]
+        self.assertTrue(all(0 < rate <= MeltPerformer._MAX_RATIONAL_SCALE_RATE for rate in rates))
+
+        source_samples = source_duration_ms * sample_rate // 1000
+        target_samples = target_duration_ms * sample_rate // 1000
+        scaled_samples = round(source_samples * rates[1] / rates[0])
+        duration_tolerance_ms = MeltPerformer._audio_duration_tolerance_ms(sample_rate)
+        self.assertLessEqual(
+            abs(scaled_samples - target_samples) * 1000,
+            duration_tolerance_ms * sample_rate,
+        )
+
+    def test_global_time_scale_rejects_an_over_budget_ratio_at_the_rate_cap(self):
+        """A bounded rate must fail clearly rather than emit a bad approximation."""
+        with patch.object(MeltPerformer, "_MAX_RATIONAL_SCALE_RATE", 192000):
+            with self.assertRaisesRegex(RuntimeError, "Cannot represent global audio scaling"):
+                MeltPerformer._global_time_scale_filter(12178055, 14207737, 48000)
+
+    def test_global_time_scale_rejects_unsupported_values(self):
+        """FFmpeg rate values and requested durations must be positive and bounded."""
+        invalid_values = [
+            (0, 1000, 48000),
+            (1000, 0, 48000),
+            (1000, 1000, 0),
+            (1000, 1000, MeltPerformer._MAX_RATIONAL_SCALE_RATE + 1),
+        ]
+
+        for source_duration_ms, target_duration_ms, sample_rate in invalid_values:
+            with self.assertRaises(ValueError):
+                MeltPerformer._global_time_scale_filter(
+                    source_duration_ms,
+                    target_duration_ms,
+                    sample_rate,
+                )
+
+    def test_global_time_scale_preserves_the_last_source_sample(self):
+        """The duration correction must not replace the real source tail with silence."""
+        source_duration_ms = 600000
+        source_per_base = 4852640 / 5056084
+        target_duration_ms = round(source_duration_ms / source_per_base)
+        sample_rate = 48000
+        last_source_sample = source_duration_ms * sample_rate // 1000 - 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_path = os.path.join(tmpdir, "source.flac")
+            scaled_path = os.path.join(tmpdir, "scaled.flac")
+            tail_path = os.path.join(tmpdir, "tail.pcm")
+            run_ffmpeg([
+                "-y",
+                "-f", "lavfi",
+                "-i", (
+                    f"aevalsrc=if(eq(n\\,{last_source_sample})\\,0.9\\,0):"
+                    f"s={sample_rate}:d={source_duration_ms / 1000:g}"
+                ),
+                "-c:a", "flac",
+                source_path,
+            ], expected_path=source_path)
+            performer = self._make_performer()
+            scaled_part = performer._scale_audio_part(
+                _AudioPart(source_path, source_duration_ms),
+                source_per_base,
+                scaled_path,
+                sample_rate,
+                _AudioStrategy.GLOBAL_TIME_SCALE,
+                label="fractional-rate regression audio",
+            )
+            run_ffmpeg([
+                "-y",
+                "-sseof", "-0.020",
+                "-i", scaled_path,
+                "-map", "0:a:0",
+                "-c:a", "pcm_s16le",
+                "-f", "s16le",
+                tail_path,
+            ], expected_path=tail_path)
+
+            samples = array("h")
+            with open(tail_path, "rb") as pcm_file:
+                samples.frombytes(pcm_file.read())
+
+        self.assertLessEqual(
+            abs(scaled_part.duration_ms - target_duration_ms),
+            performer._audio_duration_tolerance_ms(sample_rate),
+        )
+        self.assertGreaterEqual(len(samples), 900)
+        self.assertTrue(any(samples[-sample_rate // 1000:]))
+
+    def test_global_time_scale_refined_near_six_sevenths_preserves_the_last_source_sample(self):
+        """The high-precision 6/7-adjacent filter must retain the real audio tail."""
+        ratio_source_duration_ms = 12178055
+        ratio_target_duration_ms = 14207737
+        source_duration_ms = 10000
+        target_duration_ms = round(
+            source_duration_ms * ratio_target_duration_ms / ratio_source_duration_ms
+        )
+        sample_rate = 48000
+        last_source_sample = source_duration_ms * sample_rate // 1000 - 1
+        filter_arg = MeltPerformer._global_time_scale_filter(
+            ratio_source_duration_ms,
+            ratio_target_duration_ms,
+            sample_rate,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_path = os.path.join(tmpdir, "source.flac")
+            scaled_path = os.path.join(tmpdir, "scaled.flac")
+            tail_path = os.path.join(tmpdir, "tail.pcm")
+            run_ffmpeg([
+                "-y",
+                "-f", "lavfi",
+                "-i", (
+                    f"aevalsrc=if(eq(n\\,{last_source_sample})\\,0.9\\,0):"
+                    f"s={sample_rate}:d={source_duration_ms / 1000:g}"
+                ),
+                "-c:a", "flac",
+                source_path,
+            ], expected_path=source_path)
+            run_ffmpeg([
+                "-y",
+                "-i", source_path,
+                "-filter:a", filter_arg,
+                "-sample_fmt", "s32", "-c:a", "flac",
+                scaled_path,
+            ], expected_path=scaled_path)
+            run_ffmpeg([
+                "-y",
+                "-sseof", "-0.020",
+                "-i", scaled_path,
+                "-map", "0:a:0",
+                "-c:a", "pcm_s16le",
+                "-f", "s16le",
+                tail_path,
+            ], expected_path=tail_path)
+
+            samples = array("h")
+            with open(tail_path, "rb") as pcm_file:
+                samples.frombytes(pcm_file.read())
+            actual_duration_ms = video_utils.get_video_duration(scaled_path)
+
+        if actual_duration_ms is not None:
+            self.assertLessEqual(
+                abs(actual_duration_ms - target_duration_ms),
+                MeltPerformer._audio_duration_tolerance_ms(sample_rate),
+            )
+        else:
+            self.fail("Could not determine the scaled regression audio duration.")
+        self.assertGreaterEqual(len(samples), 900)
+        self.assertTrue(any(samples[-sample_rate // 1000:]))
+
     @parameterized.expand([
         ("below", 1.000999),
         ("at", 1.001),
@@ -2002,9 +2215,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
             for tool, args in calls
             if tool == "ffmpeg" and "-filter:a" in args
         ]
-        self.assertEqual(filters, [
-            f"asetrate={48000 * source_per_base:.12g},aresample=48000",
-        ])
+        self.assertEqual(filters, [performer._global_time_scale_filter(
+            source_duration_ms,
+            target_duration_ms,
+            48000,
+        )])
         self.assertEqual(result.timeline_start_ms, 0)
         self.assertEqual(result.duration_ms, target_duration_ms)
 
@@ -2573,10 +2788,17 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(len(filter_calls), 1, "asetrate should be used exactly once")
         filter_arg = next(a for a in filter_calls[0][1] if "asetrate" in str(a))
         # fps_ratio = source_dur / target_dur ≈ 0.959035
-        # adjusted_rate = 48000 × fps_ratio ≈ 46033.69
-        expected_rate = 48000 * source_dur / target_dur
-        self.assertIn(f"asetrate={expected_rate:.12g}", filter_arg)
-        self.assertIn("aresample=48000", filter_arg)
+        source_per_base = source_dur / target_dur
+        self.assertEqual(
+            filter_arg,
+            performer._global_time_scale_filter(
+                actual_trimmed_dur,
+                round(actual_trimmed_dur / source_per_base),
+                48000,
+            ),
+        )
+        self.assertNotIn("atempo", filter_arg)
+        self.assertNotIn("atrim", filter_arg)
 
         # --- Trim timestamps use the decoded, rebased audio timeline ---
         ffmpeg_args = [c[1] for c in calls if c[0] == "ffmpeg"]
