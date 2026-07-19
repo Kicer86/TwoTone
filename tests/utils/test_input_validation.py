@@ -1,0 +1,102 @@
+import logging
+import os
+import tempfile
+import unittest
+
+from unittest.mock import patch
+
+from twotone.tools.utils import input_validation, process_utils
+
+
+class InputValidatorTest(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.path = os.path.join(self.temp_dir.name, "input.mkv")
+        with open(self.path, "wb") as file:
+            file.write(b"media")
+        self.logger = logging.getLogger("InputValidatorTest")
+
+    def test_full_validation_decodes_audio_and_video(self):
+        validator = input_validation.InputValidator(
+            input_validation.ValidationMode.FULL,
+            self.logger,
+            self.temp_dir.name,
+        )
+        probe_success = process_utils.ProcessResult(0, '{"streams": [{"codec_type": "audio", "codec_name": "ac3"}]}', "")
+        decode_success = process_utils.ProcessResult(0, "", "")
+
+        with patch.object(process_utils, "start_process", side_effect=[probe_success, decode_success]) as start_process:
+            report = validator.validate([self.path])
+
+        self.assertTrue(report.is_valid)
+        self.assertEqual(report.checked_count, 1)
+        self.assertEqual(report.cached_count, 0)
+        self.assertEqual([call.args[0] for call in start_process.call_args_list], ["ffprobe", "ffmpeg"])
+        self.assertTrue(start_process.call_args_list[0].kwargs["show_progress"])
+        self.assertIn("-xerror", start_process.call_args_list[1].args[1])
+
+    def test_cached_failure_is_reported_without_running_media_tools_again(self):
+        validator = input_validation.InputValidator(
+            input_validation.ValidationMode.FULL,
+            self.logger,
+            self.temp_dir.name,
+        )
+        probe_success = process_utils.ProcessResult(
+            0,
+            '{"streams": [{"index": 1, "codec_type": "audio", "codec_name": "ac3", "sample_rate": "48000", "channels": 2}]}',
+            "",
+        )
+        decode_failure = process_utils.ProcessResult(
+            1,
+            "",
+            "[ac3] incomplete frame\nError submitting packet to decoder: Invalid data found when processing input\nNothing was written into output file\n",
+        )
+
+        with patch.object(process_utils, "start_process", side_effect=[probe_success, decode_failure]):
+            first = validator.validate([self.path])
+        with patch.object(process_utils, "start_process") as start_process:
+            second = validator.validate([self.path])
+
+        self.assertFalse(first.is_valid)
+        self.assertIn("audio #1: ac3 48000 Hz 2 channels", first.issues[0].message)
+        self.assertIn("[ac3] incomplete frame", first.issues[0].message)
+        self.assertIn("Invalid data found", first.issues[0].message)
+        self.assertIn("+genpts+discardcorrupt", first.issues[0].repair_suggestion or "")
+        self.assertIn("aresample=async=1:first_pts=0", first.issues[0].repair_suggestion or "")
+        self.assertIn("-c:a ac3", first.issues[0].repair_suggestion or "")
+        self.assertFalse(second.is_valid)
+        self.assertEqual(second.checked_count, 0)
+        self.assertEqual(second.cached_count, 1)
+        start_process.assert_not_called()
+
+    def test_fast_validation_does_not_decode_payload(self):
+        validator = input_validation.InputValidator(
+            input_validation.ValidationMode.FAST,
+            self.logger,
+            self.temp_dir.name,
+        )
+        success = process_utils.ProcessResult(0, '{"streams": []}', "")
+
+        with patch.object(process_utils, "start_process", return_value=success) as start_process:
+            report = validator.validate([self.path])
+
+        self.assertTrue(report.is_valid)
+        start_process.assert_called_once()
+        self.assertEqual(start_process.call_args.args[0], "ffprobe")
+
+    def test_validation_logs_progress_and_summary(self):
+        validator = input_validation.InputValidator(
+            input_validation.ValidationMode.FAST,
+            self.logger,
+            self.temp_dir.name,
+        )
+        success = process_utils.ProcessResult(0, '{"streams": []}', "")
+
+        with patch.object(process_utils, "start_process", return_value=success), \
+             self.assertLogs(self.logger, "INFO") as logs:
+            validator.validate([self.path])
+
+        self.assertIn("Validating 1 input file(s) with fast validation.", logs.output[0])
+        self.assertIn("Input validation 1/1: checking", logs.output[1])
+        self.assertIn("Input validation complete: 1 checked, 0 cached, 0 issue(s).", logs.output[2])
