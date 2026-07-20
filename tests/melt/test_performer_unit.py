@@ -2016,6 +2016,28 @@ class MeltPerformerUnitTest(unittest.TestCase):
             duration_tolerance_ms * sample_rate,
         )
 
+    def test_global_time_scale_keeps_a_direct_rate_that_fits_the_sample_budget(self):
+        """Short parts retain a simple integer rate when it is already precise enough."""
+        source_duration_ms = 62291
+        target_duration_ms = 63562
+        sample_rate = 48000
+
+        filter_arg = MeltPerformer._global_time_scale_filter(
+            source_duration_ms,
+            target_duration_ms,
+            sample_rate,
+        )
+
+        self.assertEqual(filter_arg, "asetrate=47040,aresample=48000")
+        source_samples = source_duration_ms * sample_rate // 1000
+        target_samples = target_duration_ms * sample_rate // 1000
+        scaled_samples = round(source_samples * sample_rate / 47040)
+        duration_tolerance_ms = MeltPerformer._audio_duration_tolerance_ms(sample_rate)
+        self.assertLessEqual(
+            abs(scaled_samples - target_samples) * 1000,
+            duration_tolerance_ms * sample_rate,
+        )
+
     def test_global_time_scale_rejects_an_over_budget_ratio_at_the_rate_cap(self):
         """A bounded rate must fail clearly rather than emit a bad approximation."""
         with patch.object(MeltPerformer, "_MAX_RATIONAL_SCALE_RATE", 192000):

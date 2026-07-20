@@ -959,6 +959,10 @@ class MeltPerformer(TrackTimelineMixin):
             )
 
         selected_rates: tuple[int, int] | None = None
+        # This is the original one-rate transform expressed as a rational
+        # virtual/real rate pair.  Avoid needlessly changing resampler phase
+        # behavior for a short part when its accumulated sample error is
+        # already physically unobservable.
         direct_virtual_sample_rate = round(Fraction(
             source_duration_ms * sample_rate,
             target_duration_ms,
