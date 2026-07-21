@@ -6,6 +6,7 @@ from typing import Any, Generator
 
 from ..utils import generic_utils, language_utils
 from .duplicates_source import DuplicatesSource
+from .melt_common import AudioStreamRef, SubtitleStreamRef, VideoStreamRef
 
 
 _UNDEFINED_LANGUAGE = "undefined"
@@ -16,7 +17,11 @@ class StreamsPicker:
         self.duplicates_source = duplicates_source
         self.wd = wd
 
-    def pick_streams(self, files_details: dict, ids: dict[str, int]):
+    def pick_streams(
+        self,
+        files_details: dict,
+        ids: dict[str, int],
+    ) -> tuple[list[VideoStreamRef], list[AudioStreamRef], list[SubtitleStreamRef]]:
         #collect video streams (path and tid) which are attached_pics so we can drop them later as not handled now
         attached_pics = [
             (file_path, vd.get("tid"))
@@ -71,7 +76,11 @@ class StreamsPicker:
         )
 
         # results
-        return video_streams, audio_streams, subtitle_streams
+        return (
+            [VideoStreamRef(*stream) for stream in video_streams],
+            [AudioStreamRef(*stream) for stream in audio_streams],
+            [SubtitleStreamRef(*stream) for stream in subtitle_streams],
+        )
 
     @staticmethod
     def _metadata_flag_is_enabled(value: object) -> bool:
@@ -151,7 +160,7 @@ class StreamsPicker:
         unique_keys: list[str],
         preference,
         get_language
-    ) -> list[tuple[str, int, str | None]]:
+    ) -> list[tuple[str, int, int, str | None]]:
         """Pick best streams of ``stream_type`` from ``files_details``.
 
         ``unique_keys`` determines the grouping for uniqueness. ``preference`` is
@@ -242,14 +251,19 @@ class StreamsPicker:
                 picked_streams.append((key, stream))
 
         # Flatten result
-        result: list[tuple[str, int, str | None]] = []
+        result: list[tuple[str, int, int, str | None]] = []
         for unique_key, entry in picked_streams:
             tid = entry["tid"]
             path = entry["file"]
             language = entry["details"].get("language")
+            ffprobe_stream_index = entry["details"].get("ffprobe_stream_index")
+            if not isinstance(ffprobe_stream_index, int):
+                raise RuntimeError(
+                    f"Missing ffprobe stream identity for {stream_type} track #{tid} in {path}."
+                )
             if language == _UNDEFINED_LANGUAGE:
                 language = None
-            result.append((path, tid, language))
+            result.append((path, tid, ffprobe_stream_index, language))
 
         return result
 

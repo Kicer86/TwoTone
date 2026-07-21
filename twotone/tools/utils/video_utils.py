@@ -7,9 +7,9 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from tqdm import tqdm
 
@@ -20,6 +20,11 @@ from .subtitles_utils import SubtitleFile
 DEFAULT_LOGGER = logging.getLogger("TwoTone.utils.video_utils")
 _SHOWINFO_PTS_TIME_RE = re.compile(r"pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))")
 _SHOWINFO_FRAME_RE = re.compile(r"n: *(\d+).*pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))")
+_MEDIA_STREAM_TYPES = ("video", "audio", "subtitle")
+_OUTPUT_DURATION_TOLERANCE_MS = 1000
+_OUTPUT_END_PACKET_TOLERANCE_MS = 250
+_OUTPUT_TAIL_PROBE_LOOKBACK_MS = 30_000
+_OUTPUT_TAIL_PROBE_DURATION_SECONDS = 60
 
 
 def _start_ffmpeg_streaming(
@@ -649,7 +654,153 @@ def get_video_full_info(path: str, logger: logging.Logger | None = None) -> dict
     return output_json
 
 
-def get_video_data(path: str, logger: logging.Logger | None = None) -> dict:
+def _seconds_to_ms(value: Any) -> int | None:
+    try:
+        return round(float(value) * 1000)
+    except (TypeError, ValueError):
+        return None
+
+
+def _stream_duration_ms(stream: Mapping[str, Any]) -> int | None:
+    duration_ms = _seconds_to_ms(stream.get("duration"))
+    if duration_ms is not None:
+        return duration_ms
+
+    tag_duration = stream.get("tags", {}).get("DURATION")
+    if tag_duration is None:
+        return None
+    try:
+        return time_to_ms(tag_duration)
+    except (TypeError, ValueError):
+        return None
+
+
+def _last_content_packet_timestamp_ms(
+    path: str,
+    stream_index: int,
+    expected_end_ms: int,
+    logger: logging.Logger,
+) -> int | None:
+    """Return the end timestamp of the last packet in a bounded tail probe."""
+    probe_start_ms = max(0, expected_end_ms - _OUTPUT_TAIL_PROBE_LOOKBACK_MS)
+    result = process_utils.start_process(
+        "ffprobe",
+        [
+            "-v", "error",
+            "-select_streams", str(stream_index),
+            "-read_intervals", f"{probe_start_ms / 1000:.6f}%+{_OUTPUT_TAIL_PROBE_DURATION_SECONDS}",
+            "-show_entries", "packet=pts_time,dts_time,duration_time",
+            "-of", "json",
+            path,
+        ],
+        logger=logger,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe could not read generated output packets:\n{result.stderr}")
+
+    try:
+        packets = json.loads(result.stdout).get("packets", [])
+    except json.JSONDecodeError as error:
+        raise RuntimeError("ffprobe returned invalid packet data for generated output") from error
+
+    packet_ends: list[int] = []
+    for packet in packets:
+        timestamp_ms = _seconds_to_ms(packet.get("pts_time"))
+        if timestamp_ms is None:
+            timestamp_ms = _seconds_to_ms(packet.get("dts_time"))
+        if timestamp_ms is None:
+            continue
+        duration_ms = _seconds_to_ms(packet.get("duration_time")) or 0
+        packet_ends.append(timestamp_ms + duration_ms)
+    return max(packet_ends, default=None)
+
+
+def validate_media_output(
+    path: str,
+    logger: logging.Logger | None = None,
+    *,
+    expected_stream_counts: Mapping[str, int] | None = None,
+    expected_duration_ms: int | None = None,
+) -> None:
+    """Verify a generated media file before it may replace its destination.
+
+    Header probing alone is insufficient because a truncated Matroska file can
+    retain valid stream and duration metadata.  In addition to the declared
+    layout and duration, this check reads packet metadata from one fixed-size
+    window near the expected end.  Runtime is therefore bounded independently
+    of the input film's duration and no media samples are decoded.
+    """
+    logger = logger or DEFAULT_LOGGER
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        raise RuntimeError(f"Generated output is missing or empty: {path}")
+
+    info = get_video_full_info(path, logger=logger)
+    media_format = info.get("format")
+    streams = info.get("streams")
+    if not media_format or not streams:
+        raise RuntimeError(f"Generated output is not a valid media file: {path}")
+
+    content_streams = [
+        stream for stream in streams
+        if stream.get("codec_type") in _MEDIA_STREAM_TYPES
+        and not stream.get("disposition", {}).get("attached_pic", 0)
+    ]
+    actual_stream_counts = Counter(stream.get("codec_type") for stream in content_streams)
+    if expected_stream_counts is not None:
+        expected_counts = Counter({
+            stream_type: count
+            for stream_type, count in expected_stream_counts.items()
+            if stream_type in _MEDIA_STREAM_TYPES and count
+        })
+        if actual_stream_counts != expected_counts:
+            raise RuntimeError(
+                "Generated output stream layout does not match the mux plan: "
+                f"expected {dict(expected_counts)}, got {dict(actual_stream_counts)}"
+            )
+
+    packet_stream = next(
+        (stream for stream_type in ("video", "audio")
+         for stream in content_streams if stream.get("codec_type") == stream_type),
+        None,
+    )
+    if packet_stream is None or packet_stream.get("index") is None:
+        raise RuntimeError(f"Generated output has no packet-bearing media stream: {path}")
+
+    actual_duration_ms = _seconds_to_ms(media_format.get("duration"))
+    if actual_duration_ms is None:
+        actual_duration_ms = _stream_duration_ms(packet_stream)
+    if actual_duration_ms is None or actual_duration_ms <= 0:
+        raise RuntimeError(f"Generated output has no valid duration: {path}")
+    if expected_duration_ms is not None \
+            and actual_duration_ms + _OUTPUT_DURATION_TOLERANCE_MS < expected_duration_ms:
+        raise RuntimeError(
+            f"Generated output is too short: {actual_duration_ms} ms, "
+            f"expected at least {expected_duration_ms} ms"
+        )
+
+    content_end_ms = expected_duration_ms
+    if content_end_ms is None:
+        content_end_ms = _stream_duration_ms(packet_stream) or actual_duration_ms
+    last_packet_ms = _last_content_packet_timestamp_ms(
+        path,
+        packet_stream["index"],
+        content_end_ms,
+        logger,
+    )
+    if last_packet_ms is None \
+            or last_packet_ms + _OUTPUT_END_PACKET_TOLERANCE_MS < content_end_ms:
+        raise RuntimeError(
+            "Generated output has no media packets near its expected end: "
+            f"last packet ends at {last_packet_ms} ms, expected {content_end_ms} ms"
+        )
+
+
+def get_video_data(
+    path: str,
+    logger: logging.Logger | None = None,
+    *,
+    _probe_info: dict[str, Any] | None = None,
+) -> dict:
     logger = logger or DEFAULT_LOGGER
 
     def get_length(stream) -> int | None:
@@ -684,7 +835,7 @@ def get_video_data(path: str, logger: logging.Logger | None = None) -> dict:
 
         return language
 
-    output_json = get_video_full_info(path, logger=logger)
+    output_json = _probe_info if _probe_info is not None else get_video_full_info(path, logger=logger)
 
     streams = defaultdict(list)
     for stream in output_json["streams"]:
@@ -764,27 +915,154 @@ def get_video_data_mkvmerge(
     path: str,
     enrich: bool = False,
     logger: logging.Logger | None = None,
+    *,
+    _mkvmerge_info: dict[str, Any] | None = None,
 ) -> dict:
     """
         Return stream information parsed from ``mkvmerge -J`` output.
         For non mkv files, mkvmerge does not provide as much information as ffprobe.
-        Set 'enrich' to True to enrich mkvmerge's outpput with data from ffprobe.
+        Set 'enrich' to True to enrich mkvmerge's output with data from ffprobe.
+        In enriched results, ``tid`` remains the mkvmerge track ID while
+        ``ffprobe_stream_index`` is the absolute ffprobe/ffmpeg stream index.
+        A caller that already ran ``mkvmerge -J`` may provide its result via
+        ``_mkvmerge_info`` to avoid probing the same file twice.
     """
     logger = logger or DEFAULT_LOGGER
 
-    def find_ffprobe_track(track_id: int, ffprobe_info: dict | None) -> dict:
-        for streams in (ffprobe_info or {}).values():
-            for stream in streams:
-                if stream.get("tid", None) == track_id:
-                    return stream
+    def normalized_track_type(track_type: str | None) -> str | None:
+        if track_type in ("subtitle", "subtitles"):
+            return "subtitle"
+        if track_type in ("video", "audio"):
+            return track_type
+        return None
 
-        return {}
+    def native_track_id(value: object) -> int | None:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value, 0)
+            except ValueError:
+                return None
+        return None
+
+    def build_track_mapping(mkv_tracks: list[dict], probe_info: dict) -> dict[int, int]:
+        """Map mkvmerge track IDs to absolute ffprobe stream indexes.
+
+        The two tools use independent namespaces.  A container-native track
+        number is used when both tools expose it; Matroska commonly does not
+        expose one through ffprobe, so remaining tracks are correlated by
+        order within their already-validated media type.
+        """
+        mapping: dict[int, int] = {}
+        for stream_type in ("video", "audio", "subtitle"):
+            typed_tracks = [
+                track for track in mkv_tracks
+                if normalized_track_type(track.get("type")) == stream_type
+            ]
+            typed_streams = [
+                stream for stream in probe_info.get("streams", [])
+                if stream.get("codec_type") == stream_type
+                and not stream.get("disposition", {}).get("attached_pic", 0)
+            ]
+            if len(typed_tracks) != len(typed_streams):
+                raise RuntimeError(
+                    f"Cannot map {stream_type} tracks between mkvmerge and ffprobe: "
+                    f"mkvmerge reported {len(typed_tracks)}, ffprobe reported {len(typed_streams)}."
+                )
+
+            unmatched_tracks: list[dict] = []
+            used_probe_indexes: set[int] = set()
+            for track in typed_tracks:
+                track_number = native_track_id(track.get("properties", {}).get("number"))
+                native_matches = [
+                    stream for stream in typed_streams
+                    if stream["index"] not in used_probe_indexes
+                    and native_track_id(stream.get("id")) == track_number
+                    and track_number is not None
+                ]
+                if len(native_matches) == 1:
+                    probe_index = int(native_matches[0]["index"])
+                    mapping[int(track["id"])] = probe_index
+                    used_probe_indexes.add(probe_index)
+                else:
+                    unmatched_tracks.append(track)
+
+            unmatched_streams = [
+                stream for stream in typed_streams
+                if int(stream["index"]) not in used_probe_indexes
+            ]
+            if len(unmatched_tracks) != len(unmatched_streams):
+                raise RuntimeError(
+                    f"Cannot build a one-to-one {stream_type} track mapping "
+                    "between mkvmerge and ffprobe."
+                )
+            for track, stream in zip(unmatched_tracks, unmatched_streams):
+                track_id = int(track["id"])
+                probe_index = int(stream["index"])
+                if track_id in mapping or probe_index in used_probe_indexes:
+                    raise RuntimeError(
+                        f"Ambiguous {stream_type} track mapping between mkvmerge and ffprobe."
+                    )
+                mapping[track_id] = probe_index
+                used_probe_indexes.add(probe_index)
+
+        supported_track_ids = [
+            int(track["id"])
+            for track in mkv_tracks
+            if normalized_track_type(track.get("type")) is not None
+        ]
+        supported_probe_indexes = [
+            int(stream["index"])
+            for stream in probe_info.get("streams", [])
+            if normalized_track_type(stream.get("codec_type")) is not None
+            and not stream.get("disposition", {}).get("attached_pic", 0)
+        ]
+        if (
+            set(mapping) != set(supported_track_ids)
+            or len(mapping) != len(supported_track_ids)
+            or set(mapping.values()) != set(supported_probe_indexes)
+            or len(mapping) != len(supported_probe_indexes)
+        ):
+            raise RuntimeError("Cannot build a one-to-one track mapping between mkvmerge and ffprobe.")
+
+        return mapping
+
+    def build_ffprobe_stream_lookup(ffprobe_info: dict | None) -> dict[int, dict] | None:
+        if ffprobe_info is not None:
+            streams_by_index: dict[int, dict] = {}
+            for typed_streams in ffprobe_info.values():
+                for stream in typed_streams:
+                    stream_index = stream.get("tid")
+                    if not isinstance(stream_index, int):
+                        raise RuntimeError("ffprobe returned a stream without an integer index.")
+                    if stream_index in streams_by_index:
+                        raise RuntimeError(f"ffprobe returned duplicate stream index #{stream_index}.")
+                    streams_by_index[stream_index] = stream
+            return streams_by_index
+        else:
+            return None
+
+    def find_ffprobe_track(
+        track: dict,
+        ffprobe_streams_by_index: Mapping[int, dict] | None,
+        track_mapping: dict[int, int],
+    ) -> dict:
+        if ffprobe_streams_by_index is not None:
+            track_type = normalized_track_type(track.get("type"))
+            probe_index = track_mapping[int(track["id"])]
+            stream = ffprobe_streams_by_index.get(probe_index)
+            if stream is not None:
+                return stream
+            raise RuntimeError(
+                f"Mapped ffprobe {track_type} stream #{probe_index} was not found "
+                f"for mkvmerge track #{track.get('id')}."
+            )
+        else:
+            return {}
 
     def merge_properties(initial: dict | None, update: dict) -> dict:
-        if initial is None:
-            return update
-
-        output = initial
+        output = initial.copy() if initial is not None else {}
         for key, value in update.items():
             base_value = output.get(key, None)
 
@@ -800,11 +1078,22 @@ def get_video_data_mkvmerge(
 
         return output
 
-    info = get_video_full_info_mkvmerge(path, logger=logger)
+    info = (
+        _mkvmerge_info
+        if _mkvmerge_info is not None
+        else get_video_full_info_mkvmerge(path, logger=logger)
+    )
 
     # process streams/tracks
     streams = defaultdict(list)
-    ffprobe_info = get_video_data(path, logger=logger) if enrich else None
+    probe_info = get_video_full_info(path, logger=logger) if enrich else None
+    ffprobe_info = (
+        get_video_data(path, logger=logger, _probe_info=probe_info)
+        if probe_info is not None
+        else None
+    )
+    ffprobe_streams_by_index = build_ffprobe_stream_lookup(ffprobe_info)
+    track_mapping = build_track_mapping(info.get("tracks", []), probe_info) if probe_info is not None else {}
 
     for track in info.get("tracks", []):
         track_type = track.get("type")
@@ -826,7 +1115,7 @@ def get_video_data_mkvmerge(
         except Exception:
             language = None
 
-        track_initial_data = find_ffprobe_track(tid, ffprobe_info)
+        track_initial_data = find_ffprobe_track(track, ffprobe_streams_by_index, track_mapping)
 
         # Prepare common data for all stream types first
         stream_data = {
@@ -839,6 +1128,8 @@ def get_video_data_mkvmerge(
             "enabled": props.get("enabled_track", track_initial_data.get("enabled", True)),
             "forced": props.get("forced_track", track_initial_data.get("forced", False)),
         }
+        if enrich:
+            stream_data["ffprobe_stream_index"] = track_mapping[int(tid)]
 
         if track_type == "video":
             dims = props.get("pixel_dimensions") or props.get("display_dimensions")
@@ -1097,6 +1388,4 @@ def generate_mkv(
             os.remove(output_path)
         raise RuntimeError(f"{cmd} exited with unexpected error:\n{result.stderr}\n\nAnd output: {result.stdout}")
 
-    if not os.path.exists(output_path):
-        logger.error("Output file was not created")
-        raise RuntimeError(f"{cmd} did not create output file")
+    validate_media_output(output_path, logger=logger)

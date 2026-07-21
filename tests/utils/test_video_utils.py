@@ -6,10 +6,201 @@ from unittest.mock import patch
 
 from twotone.tools.utils import process_utils
 from twotone.tools.utils import subtitles_utils, video_utils
-from common import TwoToneTestCase, get_video, remove_key, write_subtitle, generate_subtitles
+from common import TwoToneTestCase, generate_subtitles, get_video, remove_key, run_ffmpeg, write_subtitle
 
 
 class UtilsTests(TwoToneTestCase):
+    def test_mkvmerge_parser_reuses_supplied_identification(self):
+        mkvmerge_info = {
+            "tracks": [],
+            "attachments": [],
+        }
+
+        with patch.object(video_utils, "get_video_full_info_mkvmerge") as identify:
+            parsed = video_utils.get_video_data_mkvmerge(
+                "already-identified.mkv",
+                _mkvmerge_info=mkvmerge_info,
+            )
+
+        self.assertEqual({"attachments": [], "tracks": {}}, parsed)
+        identify.assert_not_called()
+
+    def test_mkvmerge_enrichment_preserves_cyclic_native_track_mapping(self):
+        mkvmerge_info = {
+            "tracks": [
+                {"id": 0, "type": "audio", "properties": {"number": 0x13}},
+                {"id": 1, "type": "audio", "properties": {"number": 0x11}},
+                {"id": 2, "type": "audio", "properties": {"number": 0x12}},
+            ],
+        }
+        probe_info = {
+            "streams": [
+                {"index": 0, "id": "0x11", "codec_type": "audio"},
+                {"index": 1, "id": "0x12", "codec_type": "audio"},
+                {"index": 2, "id": "0x13", "codec_type": "audio"},
+            ],
+        }
+        parsed_audio = [
+            {"tid": 0, "channels": 1, "sample_rate": 44100, "language": "eng"},
+            {"tid": 1, "channels": 2, "sample_rate": 48000, "language": "pol"},
+            {"tid": 2, "channels": 6, "sample_rate": 96000, "language": "deu"},
+        ]
+        original_parsed_audio = [stream.copy() for stream in parsed_audio]
+
+        with patch.object(video_utils, "get_video_full_info_mkvmerge", return_value=mkvmerge_info), \
+             patch.object(video_utils, "get_video_full_info", return_value=probe_info), \
+             patch.object(video_utils, "get_video_data", return_value={"audio": parsed_audio}):
+            enriched = video_utils.get_video_data_mkvmerge("cyclic.mka", enrich=True)
+
+        self.assertEqual(
+            [
+                (
+                    stream["tid"],
+                    stream["ffprobe_stream_index"],
+                    stream["channels"],
+                    stream["sample_rate"],
+                    stream["language"],
+                )
+                for stream in enriched["tracks"]["audio"]
+            ],
+            [
+                (0, 2, 6, 96000, "deu"),
+                (1, 0, 1, 44100, "eng"),
+                (2, 1, 2, 48000, "pol"),
+            ],
+        )
+        self.assertEqual(parsed_audio, original_parsed_audio)
+
+    def test_mkvmerge_enrichment_rejects_unmappable_track_counts(self):
+        mkvmerge_info = {
+            "tracks": [
+                {"id": 0, "type": "audio", "properties": {}},
+            ],
+        }
+        ffprobe_info = {"streams": []}
+
+        with patch.object(video_utils, "get_video_full_info_mkvmerge", return_value=mkvmerge_info), \
+             patch.object(video_utils, "get_video_full_info", return_value=ffprobe_info):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Cannot map audio tracks between mkvmerge and ffprobe",
+            ):
+                video_utils.get_video_data_mkvmerge("unmappable.mkv", enrich=True)
+
+    def test_mkvmerge_enrichment_maps_track_id_with_intervening_mov_data_stream(self):
+        ordered_path = os.path.join(self.wd.path, "video-data-audio.mov")
+        source_path = os.path.join(self.wd.path, "source.mov")
+        run_ffmpeg([
+            "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=24:duration=2",
+            "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=2",
+            "-map", "0:v", "-map", "1:a",
+            "-c:v", "mpeg4", "-c:a", "pcm_s16le",
+            "-timecode", "00:00:00:00",
+            source_path,
+        ], expected_path=source_path)
+        run_ffmpeg([
+            "-y", "-i", source_path,
+            "-map", "0:v", "-map", "0:d", "-map", "0:a",
+            "-c", "copy",
+            ordered_path,
+        ], expected_path=ordered_path)
+
+        full_info = video_utils.get_video_full_info(ordered_path, logger=self.logger)
+        self.assertEqual(
+            [(stream["index"], stream["codec_type"]) for stream in full_info["streams"]],
+            [(0, "video"), (1, "data"), (2, "audio")],
+        )
+
+        enriched = video_utils.get_video_data_mkvmerge(ordered_path, enrich=True, logger=self.logger)
+        self.assertEqual(enriched["tracks"]["video"][0]["tid"], 0)
+        self.assertEqual(enriched["tracks"]["video"][0]["ffprobe_stream_index"], 0)
+        self.assertEqual(enriched["tracks"]["audio"][0]["tid"], 1)
+        self.assertEqual(enriched["tracks"]["audio"][0]["ffprobe_stream_index"], 2)
+
+    def test_validate_media_output_rejects_empty_file(self):
+        output_path = os.path.join(self.wd.path, "empty.mkv")
+        with open(output_path, "wb"):
+            pass
+
+        with self.assertRaisesRegex(RuntimeError, "missing or empty"):
+            video_utils.validate_media_output(output_path, logger=self.logger)
+
+    def test_validate_media_output_rejects_file_without_streams(self):
+        output_path = os.path.join(self.wd.path, "invalid.mkv")
+        with open(output_path, "wb") as output_file:
+            output_file.write(b"not empty")
+
+        with patch.object(video_utils, "get_video_full_info", return_value={"format": {}, "streams": []}):
+            with self.assertRaisesRegex(RuntimeError, "not a valid media file"):
+                video_utils.validate_media_output(output_path, logger=self.logger)
+
+    def test_validate_media_output_accepts_probed_container_with_streams(self):
+        output_path = os.path.join(self.wd.path, "valid.mkv")
+        with open(output_path, "wb") as output_file:
+            output_file.write(b"media")
+
+        info = {
+            "format": {"format_name": "matroska", "duration": "2.000"},
+            "streams": [{"index": 0, "codec_type": "video", "duration": "2.000"}],
+        }
+        with patch.object(video_utils, "get_video_full_info", return_value=info), \
+             patch.object(video_utils, "_last_content_packet_timestamp_ms", return_value=1990):
+            video_utils.validate_media_output(
+                output_path,
+                expected_stream_counts={"video": 1},
+                expected_duration_ms=2000,
+                logger=self.logger,
+            )
+
+    def test_validate_media_output_rejects_unexpected_stream_count(self):
+        output_path = os.path.join(self.wd.path, "wrong-streams.mkv")
+        with open(output_path, "wb") as output_file:
+            output_file.write(b"media")
+
+        info = {
+            "format": {"duration": "2.000"},
+            "streams": [
+                {"index": 0, "codec_type": "video", "duration": "2.000"},
+                {"index": 1, "codec_type": "audio", "duration": "2.000"},
+            ],
+        }
+        with patch.object(video_utils, "get_video_full_info", return_value=info):
+            with self.assertRaisesRegex(RuntimeError, "stream layout"):
+                video_utils.validate_media_output(
+                    output_path,
+                    expected_stream_counts={"video": 1, "audio": 2},
+                    expected_duration_ms=2000,
+                    logger=self.logger,
+                )
+
+    def test_validate_media_output_rejects_probeable_truncated_mkv(self):
+        valid_path = os.path.join(self.wd.path, "valid.mkv")
+        truncated_path = os.path.join(self.wd.path, "truncated.mkv")
+        run_ffmpeg([
+            "-y",
+            "-f", "lavfi",
+            "-i", "testsrc=size=64x64:rate=24:duration=2",
+            "-c:v", "ffv1",
+            valid_path,
+        ], expected_path=valid_path)
+        with open(valid_path, "rb") as valid_file, open(truncated_path, "wb") as truncated_file:
+            truncated_file.write(valid_file.read(4096))
+
+        # The reproduction is intentionally stronger than an arbitrary broken
+        # file: its Matroska header and stream metadata remain ffprobe-readable.
+        truncated_info = video_utils.get_video_full_info(truncated_path, logger=self.logger)
+        self.assertEqual(truncated_info["format"]["duration"], "2.000000")
+        self.assertEqual(len(truncated_info["streams"]), 1)
+
+        with self.assertRaisesRegex(RuntimeError, "packets near its expected end"):
+            video_utils.validate_media_output(
+                truncated_path,
+                expected_stream_counts={"video": 1},
+                expected_duration_ms=2000,
+                logger=self.logger,
+            )
+
     def _test_content(self, ext: str, content: str, valid: bool):
         subtitle_path = os.path.join(self.wd.path, f"subtitle.{ext}")
 
@@ -390,6 +581,7 @@ class UtilsTests(TwoToneTestCase):
         file_info = video_utils.get_video_data_mkvmerge(input_file_name, enrich = True)
 
         file_info = remove_key(file_info, "uid")
+        file_info = remove_key(file_info, "ffprobe_stream_index")
         expected_streams = remove_key(expected_streams, "uid")
 
         self.assertEqual(expected_streams, file_info)

@@ -9,7 +9,19 @@ from ..utils import files_utils, generic_utils, language_utils, video_utils
 from .attachments_picker import AttachmentsPicker
 from .duplicates_source import DuplicatesSource
 from .streams_picker import StreamsPicker
-from .melt_common import StreamType, _is_length_mismatch, stream_short_details
+from .melt_common import (
+    AttachmentRef,
+    AudioStreamRef,
+    StreamType,
+    SubtitleStreamRef,
+    VideoStreamRef,
+    _is_length_mismatch,
+    stream_short_details,
+)
+
+
+class UnsupportedMeltInputError(RuntimeError):
+    """Raised when an input group contains an element Melt cannot model yet."""
 
 
 class MeltAnalyzer:
@@ -47,7 +59,11 @@ class MeltAnalyzer:
                 ids = {file: i + 1 for i, file in enumerate(files)}
 
                 # analysis for group
-                plan_details, issue, files_details = self._analyze_group(files, ids, title)
+                try:
+                    plan_details, issue, _ = self._analyze_group(files, ids, title)
+                except UnsupportedMeltInputError as err:
+                    plan_details = None
+                    issue = str(err)
                 if plan_details is None:
                     self._log_group_issue(title, issue or "Unknown issue.", files, ids)
                     skipped_groups.append({
@@ -137,14 +153,16 @@ class MeltAnalyzer:
     def _print_streams_details(
         self,
         ids: dict[str, int],
-        all_streams: Iterable[tuple[StreamType, Iterable[tuple[str, int, str | None]]]],
+        all_streams: Iterable[
+            tuple[StreamType, Iterable[VideoStreamRef | AudioStreamRef | SubtitleStreamRef]]
+        ],
         tracks: dict[str, dict],
     ) -> None:
         for stype, type_stream in all_streams:
             for stream in type_stream:
-                path = stream[0]
-                tid = stream[1]
-                language = language_utils.language_name(stream[2])
+                path = stream.path
+                tid = stream.mkvmerge_track_id
+                language = language_utils.language_name(stream.language)
 
                 stream_details = None
                 track_infos = tracks.get(path, {}).get(stype, [])
@@ -158,16 +176,71 @@ class MeltAnalyzer:
                 file_id = ids[path]
                 self.logger.debug(f"{stype} track #{tid}: {language} from file #{file_id}{extra}")
 
-    def _print_attachments_details(self, ids: dict[str, int], all_attachments: Iterable[tuple[str, int]]) -> None:
+    def _print_attachments_details(self, ids: dict[str, int], all_attachments: Iterable[AttachmentRef]) -> None:
         for stream in all_attachments:
-            path = stream[0]
-            tid = stream[1]
+            path = stream.path
+            tid = stream.mkvmerge_attachment_id
 
             file_id = ids[path]
             self.logger.debug(f"Attachment ID #{tid} from file #{file_id}")
 
+    @staticmethod
+    def _validate_supported_elements(raw_details: dict[str, dict[str, Any]]) -> None:
+        thumbnails: list[tuple[str, str]] = []
+
+        for path, details in raw_details.items():
+            for track in details.get("tracks", []):
+                track_type = track.get("type")
+                if track_type not in ("video", "audio", "subtitle", "subtitles"):
+                    raise UnsupportedMeltInputError(
+                        f"Melt input contains track type '{track_type}', which is not supported yet: {path}"
+                    )
+
+            for attachment in details.get("attachments", []):
+                file_name = attachment.get("file_name", f"attachment #{attachment.get('id', '?')}")
+                content_type = attachment.get("content_type")
+                if isinstance(content_type, str) and content_type.startswith("image/"):
+                    thumbnails.append((path, file_name))
+                else:
+                    raise UnsupportedMeltInputError(
+                        f"Melt input contains attachment '{file_name}' with content type "
+                        f"'{content_type}', which is not supported yet: {path}"
+                    )
+
+            chapter_count = 0
+            for chapter in details.get("chapters", []):
+                if isinstance(chapter, dict) and isinstance(chapter.get("num_entries"), int):
+                    chapter_count += chapter["num_entries"]
+                else:
+                    chapter_count += 1
+            if chapter_count:
+                raise UnsupportedMeltInputError(
+                    f"Melt input contains chapters, which are not supported yet: {path}"
+                )
+
+        if len(thumbnails) > 1:
+            locations = ", ".join(f"'{name}' from {path}" for path, name in thumbnails)
+            raise UnsupportedMeltInputError(
+                f"Melt input group contains {len(thumbnails)} thumbnails, which are not supported yet; "
+                f"at most one thumbnail is supported: {locations}"
+            )
+
     def _probe_inputs(self, files: Sequence[str]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-        details_full = {file: video_utils.get_video_data_mkvmerge(file, enrich=True, logger=self.logger) for file in files}
+        raw_details = {
+            file: video_utils.get_video_full_info_mkvmerge(file, logger=self.logger)
+            for file in files
+        }
+        self._validate_supported_elements(raw_details)
+
+        details_full = {
+            file: video_utils.get_video_data_mkvmerge(
+                file,
+                enrich=True,
+                logger=self.logger,
+                _mkvmerge_info=raw_details[file],
+            )
+            for file in files
+        }
         attachments = {file: info["attachments"] for file, info in details_full.items()}
         tracks = {file: info["tracks"] for file, info in details_full.items()}
         return details_full, attachments, tracks
@@ -239,7 +312,7 @@ class MeltAnalyzer:
         self,
         tracks: dict[str, Any],
         ids: dict[str, int],
-    ) -> tuple[list[tuple[str, int, str | None]], list[tuple[str, int, str | None]], list[tuple[str, int, str | None]]]:
+    ) -> tuple[list[VideoStreamRef], list[AudioStreamRef], list[SubtitleStreamRef]]:
         picker_wd = self.workspace.unique_dir("stream_picker")
         streams_picker = StreamsPicker(
             self.logger,
@@ -252,20 +325,23 @@ class MeltAnalyzer:
         self,
         tracks: dict[str, Any],
         ids: dict[str, int],
-        video_streams: list[tuple[str, int, str | None]],
-        audio_streams: list[tuple[str, int, str | None]],
-        subtitle_streams: list[tuple[str, int, str | None]],
+        video_streams: list[VideoStreamRef],
+        audio_streams: list[AudioStreamRef],
+        subtitle_streams: list[SubtitleStreamRef],
     ) -> str | None:
         # Validate lengths across used files
 
         # Base length for detailed checks
-        v_path, v_tid, _ = video_streams[0]
+        base_video = video_streams[0]
+        v_path = base_video.path
+        v_tid = base_video.mkvmerge_track_id
         base_file_id = ids[v_path]
         base_track = self._pick_track_by_tid(tracks[v_path]["video"], v_tid)
         base_length = base_track["length"]
 
         # Subtitle mismatch (unsupported)
-        for path, _, _ in subtitle_streams:
+        for subtitle_stream in subtitle_streams:
+            path = subtitle_stream.path
             file_id = ids[path]
             length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
             if _is_length_mismatch(base_length, length):
@@ -280,7 +356,8 @@ class MeltAnalyzer:
                 )
 
         # Audio lengths validation
-        for path, tid, _ in audio_streams:
+        for audio_stream in audio_streams:
+            path = audio_stream.path
             file_id = ids[path]
             length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
             if _is_length_mismatch(base_length, length):
@@ -369,7 +446,9 @@ class MeltAnalyzer:
             return None, "No video streams found.", details_full
 
         # If all streams come from a single file, length mismatches are irrelevant.
-        stream_paths = {path for path, _, _ in (video_streams + audio_streams + subtitle_streams)}
+        stream_paths = {
+            stream.path for stream in (video_streams + audio_streams + subtitle_streams)
+        }
         if len(stream_paths) > 1:
             # Only validate lengths for files from which streams are actually used
             used_tracks = {path: info for path, info in tracks.items() if path in stream_paths}
@@ -384,7 +463,7 @@ class MeltAnalyzer:
 
         # Attachments picking
         picked_attachments = AttachmentsPicker(self.logger).pick_attachments(attachments)
-        audio_prod_lang = self.duplicates_source.get_metadata_for(video_streams[0][0]).get("audio_prod_lang")
+        audio_prod_lang = self.duplicates_source.get_metadata_for(video_streams[0].path).get("audio_prod_lang")
 
         # Present proposed output
         self.logger.debug("Streams used to create output video file:")

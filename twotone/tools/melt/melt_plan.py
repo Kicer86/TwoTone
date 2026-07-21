@@ -73,7 +73,7 @@ class MeltPlan:
         }
         streams = group.get("streams", {})
         for stype in ("video", "audio", "subtitle"):
-            for path, tid, lang in streams.get(stype, []):
+            for path, tid, _ffprobe_stream_index, lang in streams.get(stype, []):
                 selected[stype][path].add(tid)
                 if lang is not None:
                     lang_overrides[stype][(path, tid)] = lang
@@ -151,4 +151,3 @@ class MeltPlan:
                     used = tid in selected_ids
                     flag = "used" if used else "skip"
                     logger.info("%s      #%s (%s): %s", prefix, tid, flag, name)
-

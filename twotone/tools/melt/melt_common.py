@@ -1,6 +1,6 @@
 import re
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NamedTuple, TypedDict
 
 from ..utils import generic_utils
 
@@ -17,6 +17,32 @@ class FrameInfo(TypedDict):
 
 FramesInfo = dict[int, FrameInfo]
 StreamType = Literal["video", "audio", "subtitle"]
+
+
+class VideoStreamRef(NamedTuple):
+    path: str
+    mkvmerge_track_id: int
+    ffprobe_stream_index: int
+    language: str | None
+
+
+class AudioStreamRef(NamedTuple):
+    path: str
+    mkvmerge_track_id: int
+    ffprobe_stream_index: int
+    language: str | None
+
+
+class SubtitleStreamRef(NamedTuple):
+    path: str
+    mkvmerge_track_id: int
+    ffprobe_stream_index: int
+    language: str | None
+
+
+class AttachmentRef(NamedTuple):
+    path: str
+    mkvmerge_attachment_id: int
 
 
 def _fmt_fps(value: str) -> str | None:

@@ -34,6 +34,7 @@ import os
 from typing import Any
 
 from ..utils import files_utils, generic_utils, process_utils, video_utils
+from .melt_common import AudioStreamRef
 
 
 class TrackTimelineMixin:
@@ -44,6 +45,8 @@ class TrackTimelineMixin:
 
     workspace: files_utils.Workspace
     logger: logging.Logger
+    _media_info_cache: dict[str, dict[str, Any]]
+    _stream_info_cache: dict[tuple[str, str, int], dict[str, Any] | None]
 
     _aac_priming_exposed_cache: bool | None = None
 
@@ -52,9 +55,19 @@ class TrackTimelineMixin:
 
     # --- plain stream-timeline probing -----------------------------------
 
-    @staticmethod
-    def _stream_info(path: str, stream_type: str, stream_index: int) -> dict[str, Any] | None:
-        info = video_utils.get_video_full_info(path)
+    def _media_info(self, path: str) -> dict[str, Any]:
+        info = self._media_info_cache.get(path)
+        if info is None:
+            info = video_utils.get_video_full_info(path, logger=self.logger)
+            self._media_info_cache[path] = info
+        return info
+
+    def _stream_info(self, path: str, stream_type: str, ffprobe_stream_index: int) -> dict[str, Any] | None:
+        cache_key = (path, stream_type, ffprobe_stream_index)
+        if cache_key in self._stream_info_cache:
+            return self._stream_info_cache[cache_key]
+
+        info = self._media_info(path)
         for stream in info.get("streams", []):
             if stream.get("codec_type") != stream_type:
                 continue
@@ -62,13 +75,14 @@ class TrackTimelineMixin:
                 probed_index = int(stream.get("index", -1))
             except (TypeError, ValueError):
                 continue
-            if probed_index == stream_index:
+            if probed_index == ffprobe_stream_index:
+                self._stream_info_cache[cache_key] = stream
                 return stream
+        self._stream_info_cache[cache_key] = None
         return None
 
-    @staticmethod
-    def _audio_stream_info(path: str, stream_index: int) -> dict[str, Any] | None:
-        return TrackTimelineMixin._stream_info(path, "audio", stream_index)
+    def _audio_stream_info(self, stream: AudioStreamRef) -> dict[str, Any] | None:
+        return self._stream_info(stream.path, "audio", stream.ffprobe_stream_index)
 
     @staticmethod
     def _stream_start_offset_ms(stream: dict[str, Any] | None) -> int:
@@ -98,59 +112,59 @@ class TrackTimelineMixin:
 
         return None
 
-    def _source_stream_start_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int:
-        return self._stream_start_offset_ms(self._stream_info(path, stream_type, stream_index))
+    def _source_stream_start_offset_ms(self, path: str, stream_type: str, ffprobe_stream_index: int) -> int:
+        return self._stream_start_offset_ms(self._stream_info(path, stream_type, ffprobe_stream_index))
 
-    def _source_stream_end_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int | None:
-        return self._stream_end_offset_ms(self._stream_info(path, stream_type, stream_index))
+    def _source_stream_end_offset_ms(self, path: str, stream_type: str, ffprobe_stream_index: int) -> int | None:
+        return self._stream_end_offset_ms(self._stream_info(path, stream_type, ffprobe_stream_index))
 
-    def _mkvmerge_input_start_offset_ms(self, path: str, stream_type: str, stream_index: int) -> int:
+    def _mkvmerge_input_start_offset_ms(
+        self,
+        path: str,
+        stream_type: str,
+        ffprobe_stream_index: int,
+    ) -> int:
         extension = os.path.splitext(path)[1].lower()
         if extension in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
-            return self._source_stream_start_offset_ms(path, stream_type, stream_index)
+            return self._source_stream_start_offset_ms(path, stream_type, ffprobe_stream_index)
         return 0
 
     def _track_sync_offset_ms(
         self,
         path: str,
         stream_type: str,
-        stream_index: int,
+        ffprobe_stream_index: int,
         desired_start_ms: int | None,
     ) -> int | None:
         if desired_start_ms is None:
             return None
-        input_start_ms = self._mkvmerge_input_start_offset_ms(path, stream_type, stream_index)
+        input_start_ms = self._mkvmerge_input_start_offset_ms(path, stream_type, ffprobe_stream_index)
         sync_offset_ms = desired_start_ms - input_start_ms
         return sync_offset_ms if sync_offset_ms else None
 
     # --- AAC encoder-delay (priming) handling ----------------------------
 
-    @classmethod
     def _source_audio_priming(
-        cls,
+        self,
         video_path: str,
         logger: logging.Logger | None = None,
         *,
-        audio_stream_index: int | None = None,
+        audio_ffprobe_stream_index: int | None = None,
     ) -> tuple[str | None, int, int, dict[str, Any]]:
         """Return (codec_name, initial_padding_samples, sample_rate, stream).
 
         ``initial_padding`` is the lossy-codec encoder-delay (priming) sample count the
         container signals via Matroska *CodecDelay*; it is 0 for MP4/MOV (where the same
         delay is carried by an edit list that every ffmpeg build honours on decode).
-        ``audio_stream_index`` selects a specific stream by its absolute container
+        ``audio_ffprobe_stream_index`` selects a specific stream by its absolute container
         index; when omitted the first audio stream is used.
         """
-        info = video_utils.get_video_full_info(video_path, logger=logger)
-        streams = info.get("streams", [])
         stream: dict[str, Any]
-        if audio_stream_index is not None:
-            stream = next(
-                (s for s in streams
-                 if s.get("codec_type") == "audio" and s.get("index") == audio_stream_index),
-                {},
-            )
+        if audio_ffprobe_stream_index is not None:
+            stream = self._stream_info(video_path, "audio", audio_ffprobe_stream_index) or {}
         else:
+            info = video_utils.get_video_full_info(video_path, logger=logger)
+            streams = info.get("streams", [])
             stream = next((s for s in streams if s.get("codec_type") == "audio"), {})
         codec = stream.get("codec_name")
         try:
@@ -207,7 +221,7 @@ class TrackTimelineMixin:
         unaffected; only positive (asO) offsets carry the leaked frame.
         """
         base = self._stream_start_offset_ms(stream)
-        if not stream or stream.get("codec_name") != "aac" or not self._aac_priming_exposed():
+        if not stream or stream.get("codec_name") != "aac":
             return base
         try:
             pad = int(stream.get("initial_padding") or 0)
@@ -216,6 +230,8 @@ class TrackTimelineMixin:
         except (TypeError, ValueError):
             return base
         if pad <= 0 or sample_rate <= 0:
+            return base
+        if not self._aac_priming_exposed():
             return base
         return max(0, round((raw_start + pad / sample_rate) * 1000))
 
@@ -227,7 +243,9 @@ class TrackTimelineMixin:
         sample_fmt: str = "s32",
         trim_start_ms: int | None = None,
         trim_end_ms: int | None = None,
-        audio_stream_index: int | None = None,
+        audio_ffprobe_stream_index: int | None = None,
+        output_channels: int | None = None,
+        output_sample_rate: int | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         """Decode the first audio stream of *source_video* to FLAC with the lossy-codec
@@ -238,19 +256,29 @@ class TrackTimelineMixin:
         the now-always-present priming, and trim exactly ``initial_padding`` samples
         ourselves — identical output on exposing and absorbing builds.
 
-        ``trim_start_ms`` / ``trim_end_ms`` select a window of the *priming-free*
-        stream, matching what a priming-honouring decoder would have produced.  These
-        bounds are expressed on the source's content timeline.  When the priming strip
-        drops the container timestamps, re-anchor the window to the priming-independent
-        content start so exposing and absorbing ffmpeg builds select identical samples.
+        ``trim_start_ms`` / ``trim_end_ms`` select a window on the source stream's
+        timeline.  Callers that start from video-frame timestamps must first transform
+        those timestamps into this timeline.  When the priming strip drops container
+        timestamps, the window is re-anchored to the priming-independent content start
+        so exposing and absorbing ffmpeg builds select identical samples.  The emitted
+        FLAC is always rebased to its first selected sample.
         """
         codec, init_pad, sample_rate, stream = self._source_audio_priming(
-            source_video, logger=logger, audio_stream_index=audio_stream_index,
+            source_video,
+            logger=logger,
+            audio_ffprobe_stream_index=audio_ffprobe_stream_index,
         )
-        source_map = f"0:{audio_stream_index}" if audio_stream_index is not None else "0:a:0"
+        source_map = (
+            f"0:{audio_ffprobe_stream_index}"
+            if audio_ffprobe_stream_index is not None
+            else "0:a:0"
+        )
 
         prime_offset_s = 0.0
-        window_anchor_ms = 0
+        # Keep the public trim arguments on the source-stream timeline, then
+        # move them into the decoded-content timeline here.  This must apply
+        # to every codec, not only the AAC-to-ADTS priming path below.
+        window_anchor_ms = self._audio_content_start_ms(stream)
         input_path = source_video
         input_map = source_map
         adts_path: str | None = None
@@ -266,12 +294,16 @@ class TrackTimelineMixin:
             input_map = "0:a:0"  # the remuxed ADTS file carries only the selected stream
             prime_offset_s = init_pad / sample_rate
             # ADTS carries no container timestamps, so the decoded frames start at 0
-            # instead of the source's content start.  The raw start_time on builds
-            # exposing AAC priming is one encoder-delay frame too early, so use the
-            # same priming-independent content start as final track placement.
-            window_anchor_ms = self._audio_content_start_ms(stream)
+            # instead of the source's content start.  ``window_anchor_ms`` above
+            # already uses that same priming-independent content start for every
+            # decode path.
 
-        filters: list[str] = []
+        # Containers such as MP4/MOV can preserve a positive audio-frame PTS
+        # even though the trim window above is relative to content.  Rebase
+        # before cutting so ``atrim`` always sees that same zero-based content
+        # timeline.  Rebase again afterwards because a selected window must
+        # itself start at zero for downstream patching.
+        filters = ["asetpts=PTS-STARTPTS"]
         if prime_offset_s or trim_start_ms is not None or trim_end_ms is not None:
             start_s = prime_offset_s + max(0, (trim_start_ms or 0) - window_anchor_ms) / 1000
             atrim = f"atrim=start={start_s:.6f}"
@@ -282,8 +314,11 @@ class TrackTimelineMixin:
             filters.append("asetpts=PTS-STARTPTS")
 
         args = ["-y", "-i", input_path, "-map", input_map]
-        if filters:
-            args += ["-filter:a", ",".join(filters)]
+        args += ["-filter:a", ",".join(filters)]
+        if output_channels is not None:
+            args += ["-ac", str(output_channels)]
+        if output_sample_rate is not None:
+            args += ["-ar", str(output_sample_rate)]
         args += ["-sample_fmt", sample_fmt, "-c:a", "flac", output_path]
         try:
             process_utils.raise_on_error(process_utils.start_process("ffmpeg", args, logger=logger))
@@ -294,7 +329,43 @@ class TrackTimelineMixin:
     def _extract_audio_to_flac(self, video_path: str, output_path: str, logger: logging.Logger | None = None) -> None:
         self._decode_source_audio_to_flac(video_path, output_path, sample_fmt="s32", logger=logger)
 
-    def _audio_needs_mkvmerge_normalization(self, path: str, stream_index: int) -> bool:
+    def _decode_audio_stream_to_flac(
+        self,
+        stream: AudioStreamRef,
+        output_path: str,
+        *,
+        sample_fmt: str = "s32",
+        trim_start_ms: int | None = None,
+        trim_end_ms: int | None = None,
+        normalize_to: tuple[int, int, str] | None = None,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        """Decode one explicitly selected audio stream to priming-free FLAC."""
+        output_channels: int | None = None
+        output_sample_rate: int | None = None
+        if normalize_to is not None:
+            output_channels, output_sample_rate, sample_fmt = normalize_to
+        self._decode_source_audio_to_flac(
+            stream.path,
+            output_path,
+            sample_fmt=sample_fmt,
+            trim_start_ms=trim_start_ms,
+            trim_end_ms=trim_end_ms,
+            audio_ffprobe_stream_index=stream.ffprobe_stream_index,
+            output_channels=output_channels,
+            output_sample_rate=output_sample_rate,
+            logger=logger,
+        )
+
+    def _extract_selected_audio_to_flac(
+        self,
+        stream: AudioStreamRef,
+        output_path: str,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self._decode_audio_stream_to_flac(stream, output_path, sample_fmt="s32", logger=logger)
+
+    def _audio_needs_mkvmerge_normalization(self, stream_ref: AudioStreamRef) -> bool:
         """Return True when direct mkvmerge remux can shift decoded AAC timing.
 
         Non-Matroska AAC always needs a priming-free remux: mkvmerge would otherwise
@@ -306,10 +377,10 @@ class TrackTimelineMixin:
         Route those through the FLAC-domain flow too so the priming is removed
         deterministically, exactly as for non-Matroska inputs.
         """
-        stream = self._audio_stream_info(path, stream_index)
+        stream = self._audio_stream_info(stream_ref)
         if stream is None or stream.get("codec_name") != "aac":
             return False
-        extension = os.path.splitext(path)[1].lower()
+        extension = os.path.splitext(stream_ref.path)[1].lower()
         if extension not in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
             return True
         try:
