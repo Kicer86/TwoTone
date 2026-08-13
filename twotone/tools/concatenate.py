@@ -5,6 +5,8 @@ import os
 import re
 from dataclasses import dataclass
 from collections import defaultdict
+from pathlib import Path
+from typing import Any
 from overrides import override
 from tqdm import tqdm
 
@@ -117,6 +119,88 @@ class Concatenate(generic_utils.InterruptibleProcess):
 
         return {output: [(path, part_number) for part_number, path in enumerate(input_files, start=1)]}
 
+    @staticmethod
+    def _is_mkv_concatenation(input_files: list[str], output: str) -> bool:
+        return Path(output).suffix.lower() == ".mkv" and all(Path(path).suffix.lower() == ".mkv" for path in input_files)
+
+    def _validate_mkv_tracks(self, input_files: list[str]) -> bool:
+        reference_path = input_files[0]
+        reference_tracks = video_utils.get_video_full_info_mkvmerge(reference_path, logger=self.logger).get("tracks", [])
+        reference_by_id = {track.get("id"): track for track in reference_tracks}
+
+        for path in input_files[1:]:
+            tracks = video_utils.get_video_full_info_mkvmerge(path, logger=self.logger).get("tracks", [])
+            tracks_by_id = {track.get("id"): track for track in tracks}
+            if reference_by_id.keys() != tracks_by_id.keys():
+                self.logger.error("MKV files have different track IDs: %s", path)
+                return False
+
+            for track_id, reference_track in reference_by_id.items():
+                track = tracks_by_id[track_id]
+                if self._mkv_track_signature(reference_track) != self._mkv_track_signature(track):
+                    self.logger.error("MKV files have incompatible track %s: %s", track_id, path)
+                    return False
+
+        return True
+
+    @staticmethod
+    def _mkv_track_signature(track: dict[str, Any]) -> tuple[Any, Any]:
+        return track.get("type"), track.get("codec")
+
+    def _perform_mkv_concatenation(self, input_files: list[str], output: str) -> bool:
+        if not self._validate_mkv_tracks(input_files):
+            self.logger.error("Skipping MKV concatenation because input track layouts differ: %s", output)
+            return False
+
+        mkvmerge_args = ["-o", output, input_files[0]]
+        for input_file in input_files[1:]:
+            mkvmerge_args.extend(["+", input_file])
+
+        self.logger.info("Concatenating MKV files into %s", output)
+        status = process_utils.start_process("mkvmerge", mkvmerge_args, logger=self.logger)
+        if status.returncode in (0, 1) and os.path.exists(output):
+            return True
+
+        self.logger.error("Problems with MKV concatenation, skipping file %s", output)
+        self.logger.debug(status.stdout)
+        self.logger.debug(status.stderr)
+        if os.path.exists(output):
+            os.remove(output)
+        return False
+
+    def _perform_non_mkv_concatenation(self, input_files: list[str], output: str) -> bool:
+        audio_codec = "copy"
+        for input_file in input_files:
+            file_details = video_utils.get_video_data(input_file, logger=self.logger)
+            audio_streams = file_details.get("audio", [])
+            for audio_stream in audio_streams:
+                codec = audio_stream.get("codec")
+                if codec and codec.lower() == "cook":
+                    audio_codec = "aac"
+                    break
+
+        def escape_path(path: str) -> str:
+            return path.replace("'", "'\\''")
+
+        # The concat demuxer resolves relative paths against this temporary
+        # list file, which lives in the working directory rather than the
+        # caller's current directory.
+        input_file_content = [f"file '{escape_path(os.path.abspath(input_file))}'" for input_file in input_files]
+        with self.workspace.text_file("\n".join(input_file_content), "txt") as input_file:
+            ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c:v", "copy", "-c:a", audio_codec, output]
+
+            self.logger.info(f"Concatenating files into {output} file")
+            status = process_utils.start_process("ffmpeg", ffmpeg_args, logger=self.logger)
+            if status.returncode == 0:
+                return True
+
+        self.logger.error(f"Problems with concatenation, skipping file {output}")
+        self.logger.debug(status.stdout)
+        self.logger.debug(status.stderr)
+        if os.path.exists(output):
+            os.remove(output)
+        return False
+
     def perform(self, sorted_videos: dict[str, list[tuple[str, int]]]) -> None:
         self.logger.info("Starting concatenation")
         for output, details in tqdm(sorted_videos.items(), desc="Concatenating", unit="movie", **generic_utils.get_tqdm_defaults()):
@@ -124,37 +208,14 @@ class Concatenate(generic_utils.InterruptibleProcess):
 
             input_files = [video for video, _ in details]
 
-            audio_codec = "copy"
-            for input_file in input_files:
-                file_details = video_utils.get_video_data(input_file, logger=self.logger)
-                audio_streams = file_details.get("audio", [])
-                for audio_stream in audio_streams:
-                    codec = audio_stream.get("codec")
-                    if codec and codec.lower() == "cook":
-                        audio_codec = "aac"
-                        break
+            if self._is_mkv_concatenation(input_files, output):
+                succeeded = self._perform_mkv_concatenation(input_files, output)
+            else:
+                succeeded = self._perform_non_mkv_concatenation(input_files, output)
 
-            def escape_path(path: str) -> str:
-                return path.replace("'", "'\\''")
-
-            # The concat demuxer resolves relative paths against this temporary
-            # list file, which lives in the working directory rather than the
-            # caller's current directory.
-            input_file_content = [f"file '{escape_path(os.path.abspath(input_file))}'" for input_file in input_files]
-            with self.workspace.text_file("\n".join(input_file_content), "txt") as input_file:
-                ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c:v", "copy", "-c:a", audio_codec, output]
-
-                self.logger.info(f"Concatenating files into {output} file")
-                status = process_utils.start_process("ffmpeg", ffmpeg_args, logger=self.logger)
-                if status.returncode == 0:
-                    for input_file in input_files:
-                        os.remove(input_file)
-                else:
-                    self.logger.error(f"Problems with concatenation, skipping file {output}")
-                    self.logger.debug(status.stdout)
-                    self.logger.debug(status.stderr)
-                    if os.path.exists(output):
-                        os.remove(output)
+            if succeeded:
+                for input_file in input_files:
+                    os.remove(input_file)
 
 
 class ConcatenateTool(Tool):
@@ -212,6 +273,12 @@ class ConcatenateTool(Tool):
             analysis = concatenator.analyze_files(files, args.output)
         if analysis is None:
             return EmptyPlan()
+
+        for output, details in analysis.items():
+            input_files = [path for path, _ in details]
+            if concatenator._is_mkv_concatenation(input_files, output) and not concatenator._validate_mkv_tracks(input_files):
+                logger.error("MKV concatenation requires matching track IDs, types, and codecs")
+                return EmptyPlan()
         return ConcatenatePlan(items=analysis)
 
     @override

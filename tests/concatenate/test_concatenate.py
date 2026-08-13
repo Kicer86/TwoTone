@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from twotone.tools.utils.files_utils import split_path
+from twotone.tools.utils import process_utils, video_utils
 from common import TwoToneTestCase, add_test_media, list_files, run_twotone
 
 
@@ -104,6 +105,48 @@ class ConcatenateTests(TwoToneTestCase):
         self.assertTrue(os.path.exists(os.path.join(self.wd.path, "combined.mkv")))
         self.assertFalse(os.path.exists(first_file))
         self.assertFalse(os.path.exists(second_file))
+
+
+    def test_mkv_concatenation_preserves_chapters_and_attachments(self):
+        media_file = add_test_media("Frog.*mp4", self.wd.path)[0]
+        first_part = os.path.join(self.wd.path, "first.mkv")
+        second_part = os.path.join(self.wd.path, "second.mkv")
+        output = os.path.join(self.wd.path, "combined.mkv")
+        first_attachment = os.path.join(self.wd.path, "first-font.txt")
+        second_attachment = os.path.join(self.wd.path, "second-font.txt")
+        with open(first_attachment, "w") as file:
+            file.write("attachment")
+        with open(second_attachment, "w") as file:
+            file.write("attachment")
+
+        self._create_mkv_part(media_file, first_part, "First part", first_attachment)
+        self._create_mkv_part(media_file, second_part, "Second part", second_attachment)
+
+        run_twotone("concatenate", [first_part, second_part, "--output", output], ["-r"])
+
+        output_info = video_utils.get_video_full_info_mkvmerge(output, logger=self.logger)
+        self.assertEqual(sum(chapter["num_entries"] for chapter in output_info["chapters"]), 2)
+        self.assertEqual(len(output_info["attachments"]), 2)
+
+        chapters_path = os.path.join(self.wd.path, "chapters.txt")
+        status = process_utils.start_process("mkvextract", [output, "chapters", "--simple", chapters_path], logger=self.logger)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        with open(chapters_path) as file:
+            chapters = file.read()
+        self.assertIn("CHAPTER01NAME=First part", chapters)
+        self.assertIn("CHAPTER02NAME=Second part", chapters)
+
+    def _create_mkv_part(self, media_file: str, output: str, chapter_name: str, attachment: str | None = None):
+        chapters_path = f"{output}.chapters.txt"
+        with open(chapters_path, "w") as file:
+            file.write(f"CHAPTER01=00:00:00.000\nCHAPTER01NAME={chapter_name}\n")
+
+        args = ["-o", output, "--chapters", chapters_path]
+        if attachment:
+            args.extend(["--attach-file", attachment])
+        args.append(media_file)
+        status = process_utils.start_process("mkvmerge", args, logger=self.logger)
+        self.assertIn(status.returncode, (0, 1), status.stderr)
 
 
     def test_invalid_scenarios(self):
