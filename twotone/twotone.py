@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import shutil
+import time
 
 from importlib import metadata
 
@@ -23,13 +24,13 @@ from .tools import          \
 from .tools.utils import files_utils, generic_utils, input_validation, process_utils
 
 TOOLS = {
-    "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file"),
-    "language_fix": (language_fixer.LanguageFixerTool(), "Detect missing track languages and update MKV metadata."),
-    "melt": (melt.MeltTool(), "Find same video files and combine them into one containg best of all copies."),
-    "merge": (merge.MergeTool(), "Merge video files with corresponding subtitles into one MKV file"),
-    "subtitles_fix": (subtitles_fixer.FixerTool(), "Fixes some specific issues with subtitles. Do not use until you are sure it will help for your problems."),
-    "transcode": (transcode.TranscodeTool(), "Transcode videos from provided directory preserving quality."),
-    "utilities": (utilities.UtilitiesTool(), "Various smaller tools"),
+    "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file", True),
+    "language_fix": (language_fixer.LanguageFixerTool(), "Detect missing track languages and update MKV metadata.", True),
+    "melt": (melt.MeltTool(), "Find same video files and combine them into one containg best of all copies.", False),
+    "merge": (merge.MergeTool(), "Merge video files with corresponding subtitles into one MKV file", True),
+    "subtitles_fix": (subtitles_fixer.FixerTool(), "Fixes some specific issues with subtitles. Do not use until you are sure it will help for your problems.", False),
+    "transcode": (transcode.TranscodeTool(), "Transcode videos from provided directory preserving quality.", True),
+    "utilities": (utilities.UtilitiesTool(), "Various smaller tools", False),
 }
 
 
@@ -97,6 +98,18 @@ def _plan_item_count(plan: object) -> int | None:
         return None
 
 
+def _warn_before_deleting_inputs(destructive: bool, logger: logging.Logger) -> None:
+    if not destructive:
+        return
+
+    logger.warning(
+        "Successful operation will delete input files. Press Ctrl+C now to stop and make a backup."
+    )
+    for seconds_left in range(10, 0, -1):
+        logger.warning("Starting in %d second(s)...", seconds_left)
+        time.sleep(1)
+
+
 class CustomParserFormatter(argparse.HelpFormatter):
     @override
     def _split_lines(self, text: str, width: int) -> list[str]:
@@ -135,6 +148,11 @@ def execute(argv: list[str]) -> None:
     parser.add_argument("--interactive", "-i",
                         action="store_true",
                         help="Show analysis report and ask whether to perform.")
+    parser.add_argument(
+        "--skip-delete-warning",
+        action="store_true",
+        help="Skip the warning and five-second delay before tools that delete input files.",
+    )
     parser.add_argument(
         "--working-dir",
         "-w",
@@ -176,7 +194,7 @@ def execute(argv: list[str]) -> None:
     )
     subparsers = parser.add_subparsers(dest="tool", help="Available tools:")
 
-    for tool_name, (tool, desc) in TOOLS.items():
+    for tool_name, (tool, desc, _) in TOOLS.items():
         tool_parser = subparsers.add_parser(
             tool_name,
             help=desc,
@@ -212,7 +230,10 @@ def execute(argv: list[str]) -> None:
         logger.setLevel(logging.CRITICAL)
 
     if args.tool in TOOLS:
-        tool, _ = TOOLS[args.tool]
+        tool, _, destructive = TOOLS[args.tool]
+
+        if (args.no_dry_run or args.interactive) and not args.skip_delete_warning:
+            _warn_before_deleting_inputs(destructive, logger.getChild(args.tool))
 
         with logging_redirect_tqdm(), \
              files_utils.open_workspace(

@@ -2,10 +2,12 @@ import io
 import os
 import sys
 import unittest
+import logging
 
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from twotone import twotone
 from twotone.tools.tool import Tool
@@ -109,6 +111,45 @@ class RuntimeVersionTest(unittest.TestCase):
                 validator.assert_called_once()
                 validator.return_value.validate.assert_called_once_with({input_path})
                 self.assertTrue(tool.performed)
+
+
+class DeleteWarningTest(unittest.TestCase):
+    def test_destructive_tool_warns_and_waits_ten_seconds(self):
+        logger = Mock(spec=logging.Logger)
+
+        with patch.object(twotone.time, "sleep") as sleep:
+            twotone._warn_before_deleting_inputs(True, logger)
+
+        self.assertEqual(sleep.call_count, 10)
+        sleep.assert_called_with(1)
+        self.assertEqual(logger.warning.call_count, 11)
+
+    def test_non_destructive_tool_does_not_warn_or_wait(self):
+        logger = Mock(spec=logging.Logger)
+
+        with patch.object(twotone.time, "sleep") as sleep:
+            twotone._warn_before_deleting_inputs(False, logger)
+
+        logger.warning.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_live_run_warns_before_analyzing(self):
+        tool = Mock()
+        tool.required_tools.return_value = set()
+        plan = Mock()
+        plan.is_empty.return_value = True
+        tool.analyze.return_value = plan
+        events = []
+
+        with patch.dict(twotone.TOOLS, {"test": (tool, "test tool", True)}, clear=True), \
+             patch.object(twotone.files_utils, "open_workspace") as open_workspace, \
+             patch.object(twotone, "_warn_before_deleting_inputs", side_effect=lambda *_: events.append("warning")):
+            open_workspace.return_value.__enter__.return_value = Mock()
+            tool.analyze.side_effect = lambda *_, **__: events.append("analyze") or plan
+            twotone.execute(["--no-dry-run", "test"])
+
+        tool.analyze.assert_called_once()
+        self.assertEqual(events, ["warning", "analyze"])
 
 
 if __name__ == "__main__":
