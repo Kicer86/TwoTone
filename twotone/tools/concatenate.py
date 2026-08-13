@@ -72,6 +72,11 @@ class Concatenate(generic_utils.InterruptibleProcess):
             sorted_videos[common_name] = details
             group_has_warning = False
 
+            if os.path.lexists(common_name):
+                self.logger.error("Output file already exists, skipping group: %s", common_name)
+                warnings = True
+                group_has_warning = True
+
             # collect all part numbers
             parts = []
             for _, partNo in details:
@@ -112,8 +117,11 @@ class Concatenate(generic_utils.InterruptibleProcess):
                 self.logger.error("Not a video file: %s", path)
             return None
 
-        absolute_output = os.path.abspath(output)
-        if absolute_output in {os.path.abspath(path) for path in input_files}:
+        resolved_output = os.path.normcase(os.path.realpath(os.path.abspath(output)))
+        if os.path.lexists(output):
+            self.logger.error("Output file already exists: %s", output)
+            return None
+        if resolved_output in {os.path.normcase(os.path.realpath(os.path.abspath(path))) for path in input_files}:
             self.logger.error("Output file must not be one of the input files: %s", output)
             return None
 
@@ -164,8 +172,6 @@ class Concatenate(generic_utils.InterruptibleProcess):
         self.logger.error("Problems with MKV concatenation, skipping file %s", output)
         self.logger.debug(status.stdout)
         self.logger.debug(status.stderr)
-        if os.path.exists(output):
-            os.remove(output)
         return False
 
     def _perform_non_mkv_concatenation(self, input_files: list[str], output: str) -> bool:
@@ -197,8 +203,6 @@ class Concatenate(generic_utils.InterruptibleProcess):
         self.logger.error(f"Problems with concatenation, skipping file {output}")
         self.logger.debug(status.stdout)
         self.logger.debug(status.stderr)
-        if os.path.exists(output):
-            os.remove(output)
         return False
 
     def perform(self, sorted_videos: dict[str, list[tuple[str, int]]]) -> None:
@@ -208,14 +212,22 @@ class Concatenate(generic_utils.InterruptibleProcess):
 
             input_files = [video for video, _ in details]
 
-            if self._is_mkv_concatenation(input_files, output):
-                succeeded = self._perform_mkv_concatenation(input_files, output)
-            else:
-                succeeded = self._perform_non_mkv_concatenation(input_files, output)
+            with self.workspace.staging_for(output) as staged_output:
+                if self._is_mkv_concatenation(input_files, output):
+                    succeeded = self._perform_mkv_concatenation(input_files, staged_output.path)
+                else:
+                    succeeded = self._perform_non_mkv_concatenation(input_files, staged_output.path)
+
+                if succeeded:
+                    video_utils.validate_media_output(staged_output.path, logger=self.logger)
+                    staged_output.commit()
 
             if succeeded:
                 for input_file in input_files:
-                    os.remove(input_file)
+                    try:
+                        os.remove(input_file)
+                    except OSError as error:
+                        self.logger.warning("Concatenated output was saved, but could not remove input %s: %s", input_file, error)
 
 
 class ConcatenateTool(Tool):

@@ -179,6 +179,9 @@ class Merge(generic_utils.InterruptibleProcess):
         video_dir, video_name, _ = files_utils.split_path(input_video)
         output_video = video_dir + "/" + video_name + "." + "mkv"
 
+        if os.path.abspath(input_video) != os.path.abspath(output_video) and os.path.lexists(output_video):
+            raise RuntimeError(f"Refusing to replace existing output file: {output_video}")
+
         # collect details about input file
         input_file_details = video_utils.get_video_data(input_video, logger=self.logger)
 
@@ -240,14 +243,19 @@ class Merge(generic_utils.InterruptibleProcess):
                 logger=self.logger,
             )
 
-            # Remove all inputs first: the input video may occupy the very
-            # path the output is about to take.
-            for input in input_files:
-                if os.path.exists(input):
-                    os.remove(input)
-
-            # rename final file to a proper one
+            # Publish the validated result before touching any source.  For an
+            # MKV input this atomically replaces the input at the same path.
             staging.commit()
+
+        output_path = os.path.abspath(output_video)
+        for input_path in input_files:
+            if os.path.abspath(input_path) == output_path:
+                continue
+            try:
+                if os.path.exists(input_path):
+                    os.remove(input_path)
+            except OSError as error:
+                self.logger.warning("Merged output was saved, but could not remove input %s: %s", input_path, error)
 
         self.logger.debug("\tDone")
 

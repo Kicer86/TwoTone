@@ -137,6 +137,15 @@ class ConcatenateAnalyzeUnitTest(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_explicit_files_reject_existing_output(self):
+        input_file = self._make_file("part.mp4")
+        other_file = self._make_file("other.mp4")
+        output = self._make_file("combined.mkv")
+
+        result = self.concatenator.analyze_files([input_file, other_file], output)
+
+        self.assertIsNone(result)
+
     def _make_file(self, name):
         stem, extension = name.rsplit(".", maxsplit=1)
         path = self.workspace.unique_file(stem, extension)
