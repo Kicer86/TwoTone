@@ -12,7 +12,8 @@ class ConcatenateAnalyzeUnitTest(unittest.TestCase):
     def setUp(self):
         self.logger = logging.getLogger("test")
         self.logger.setLevel(logging.CRITICAL)
-        self.concatenator = Concatenate(self.logger, workspace=files_utils.Workspace.temporary())
+        self.workspace = files_utils.Workspace.temporary()
+        self.concatenator = Concatenate(self.logger, workspace=self.workspace)
 
     def _analyze(self, file_paths, **kwargs):
         with patch("twotone.tools.concatenate.video_utils.collect_video_files", return_value=file_paths):
@@ -115,6 +116,37 @@ class ConcatenateAnalyzeUnitTest(unittest.TestCase):
         self.assertEqual(len(result), 1)
         key = next(iter(result))
         self.assertIn("a", key)
+
+    def test_explicit_files_preserve_input_order(self):
+        files = [self._make_file("second.mp4"), self._make_file("first.mp4")]
+
+        result = self.concatenator.analyze_files(files, self._output_path("combined.mkv"))
+
+        self.assertEqual(list(result.values()), [[(files[0], 1), (files[1], 2)]])
+
+    def test_explicit_files_require_at_least_two_files(self):
+        result = self.concatenator.analyze_files([self._make_file("only.mp4")], self._output_path("combined.mkv"))
+
+        self.assertIsNone(result)
+
+    def test_explicit_files_reject_output_that_is_an_input(self):
+        input_file = self._make_file("part.mp4")
+        other_file = self._make_file("other.mp4")
+
+        result = self.concatenator.analyze_files([input_file, other_file], input_file)
+
+        self.assertIsNone(result)
+
+    def _make_file(self, name):
+        stem, extension = name.rsplit(".", maxsplit=1)
+        path = self.workspace.unique_file(stem, extension)
+        with open(path, "w"):
+            pass
+        return path
+
+    def _output_path(self, name):
+        stem, extension = name.rsplit(".", maxsplit=1)
+        return self.workspace.unique_file(stem, extension)
 
 
 if __name__ == "__main__":

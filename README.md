@@ -92,7 +92,11 @@ twotone transcode --help
 
 #### Movies concatenation
 
-The concatenate tool looks for movie files which seem to be split into a few files (like CD1, CD2 etc) and glues them into one file.
+The concatenate tool accepts either a directory or an explicit list of video files. For a directory, it recursively finds movie files which seem to be split into a few files (like CD1, CD2 etc) and glues each group into one file. For explicit files, it preserves their argument order; provide the output path with `--output`.
+
+```bash
+twotone concatenate part-1.mkv part-2.mkv --output movie.mkv
+```
 
 ```bash
 twotone concatenate --help

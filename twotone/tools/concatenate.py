@@ -99,6 +99,24 @@ class Concatenate(generic_utils.InterruptibleProcess):
             return valid_videos
         return sorted_videos
 
+    def analyze_files(self, input_files: list[str], output: str) -> dict[str, list[tuple[str, int]]] | None:
+        if len(input_files) < 2:
+            self.logger.error("At least two video files are required for concatenation")
+            return None
+
+        invalid_files = [path for path in input_files if not os.path.isfile(path) or not video_utils.is_video(path)]
+        if invalid_files:
+            for path in invalid_files:
+                self.logger.error("Not a video file: %s", path)
+            return None
+
+        absolute_output = os.path.abspath(output)
+        if absolute_output in {os.path.abspath(path) for path in input_files}:
+            self.logger.error("Output file must not be one of the input files: %s", output)
+            return None
+
+        return {output: [(path, part_number) for part_number, path in enumerate(input_files, start=1)]}
+
     def perform(self, sorted_videos: dict[str, list[tuple[str, int]]]) -> None:
         self.logger.info("Starting concatenation")
         for output, details in tqdm(sorted_videos.items(), desc="Concatenating", unit="movie", **generic_utils.get_tqdm_defaults()):
@@ -119,7 +137,10 @@ class Concatenate(generic_utils.InterruptibleProcess):
             def escape_path(path: str) -> str:
                 return path.replace("'", "'\\''")
 
-            input_file_content = [f"file '{escape_path(input_file)}'" for input_file in input_files]
+            # The concat demuxer resolves relative paths against this temporary
+            # list file, which lives in the working directory rather than the
+            # caller's current directory.
+            input_file_content = [f"file '{escape_path(os.path.abspath(input_file))}'" for input_file in input_files]
             with self.workspace.text_file("\n".join(input_file_content), "txt") as input_file:
                 ffmpeg_args = ["-f", "concat", "-safe", "0", "-i", input_file, "-c:v", "copy", "-c:a", audio_codec, output]
 
@@ -150,9 +171,11 @@ class ConcatenateTool(Tool):
             "to merge video files with corresponding subtitle files.\n"
             "Otherwise you will end up with one video file and two subtitle files for cd1 and cd2 which will be useless now"
         )
-        parser.add_argument('videos_path',
-                            nargs=1,
-                            help='Path with videos to concatenate.')
+        parser.add_argument('inputs',
+                            nargs='+',
+                            help='One directory to scan recursively, or video files to concatenate in this order.')
+        parser.add_argument('--output', '-o',
+                            help='Output path when concatenating explicitly provided video files.')
         parser.add_argument('--ignore-warnings',
                             action='store_true',
                             help='Skip videos with warnings and continue with valid groups.')
@@ -160,7 +183,33 @@ class ConcatenateTool(Tool):
     @override
     def analyze(self, args, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
         concatenator = Concatenate(logger, workspace=workspace)
-        analysis = concatenator.analyze(args.videos_path[0], ignore_warnings=args.ignore_warnings)
+        inputs = args.inputs
+        directories = [path for path in inputs if os.path.isdir(path)]
+        files = [path for path in inputs if os.path.isfile(path)]
+        invalid_inputs = [path for path in inputs if path not in directories and path not in files]
+
+        if invalid_inputs:
+            for path in invalid_inputs:
+                logger.error("Input path does not exist: %s", path)
+            return EmptyPlan()
+
+        if directories and files:
+            logger.error("Provide either one directory or a list of video files, not both")
+            return EmptyPlan()
+
+        if directories:
+            if len(directories) != 1:
+                logger.error("Provide exactly one directory to scan")
+                return EmptyPlan()
+            if args.output:
+                logger.error("--output is only supported when concatenating explicitly provided files")
+                return EmptyPlan()
+            analysis = concatenator.analyze(directories[0], ignore_warnings=args.ignore_warnings)
+        else:
+            if not args.output:
+                logger.error("--output is required when concatenating explicitly provided files")
+                return EmptyPlan()
+            analysis = concatenator.analyze_files(files, args.output)
         if analysis is None:
             return EmptyPlan()
         return ConcatenatePlan(items=analysis)

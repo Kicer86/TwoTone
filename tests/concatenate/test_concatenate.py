@@ -87,6 +87,25 @@ class ConcatenateTests(TwoToneTestCase):
         self.assertEqual(short_paths, ['0/Frog - 113403.mp4', '1/Frog - 113403.mp4', '2/Frog - 113403.mp4', '3/Frog - 113403.mp4', '4/Frog - 113403.mp4', '5/5.mp4', "6/''v''.mp4", 'Frog - 113403.mp4'])
 
 
+    def test_explicit_relative_files(self):
+        media_file = add_test_media("Frog.*mp4", self.wd.path)[0]
+        os.makedirs(os.path.join(self.wd.path, "first"))
+        os.makedirs(os.path.join(self.wd.path, "second"))
+        first_file = os.path.join(self.wd.path, "first", "part.mkv")
+        second_file = os.path.join(self.wd.path, "second", "part.mkv")
+        shutil.copy2(media_file, first_file)
+        shutil.copy2(media_file, second_file)
+
+        previous_cwd = os.getcwd()
+        os.chdir(self.wd.path)
+        self.addCleanup(os.chdir, previous_cwd)
+        run_twotone("concatenate", ["first/part.mkv", "second/part.mkv", "--output", "combined.mkv"], ["-r"])
+
+        self.assertTrue(os.path.exists(os.path.join(self.wd.path, "combined.mkv")))
+        self.assertFalse(os.path.exists(first_file))
+        self.assertFalse(os.path.exists(second_file))
+
+
     def test_invalid_scenarios(self):
         cases = self._setup_invalid_media(self.wd.path)
         files_before = list_files(self.wd.path)
