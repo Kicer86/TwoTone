@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import re
-import shlex
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,7 +26,6 @@ class ValidationMode(enum.Enum):
 class ValidationIssue:
     path: str
     message: str
-    repair_suggestion: str | None = None
 
 
 @dataclass(frozen=True)
@@ -43,8 +41,6 @@ class ValidationReport:
     def render(self, logger: logging.Logger) -> None:
         for issue in self.issues:
             logger.error("Input validation failed for %s: %s", issue.path, issue.message)
-            if issue.repair_suggestion:
-                logger.error("Suggested repair: %s", issue.repair_suggestion)
 
 
 class InputValidator:
@@ -81,13 +77,13 @@ class InputValidator:
                 cached_count += 1
                 self.logger.info("Input validation %d/%d: using cached result for %s.", index, len(unique_paths), path)
                 if cached["issue"]:
-                    issues.append(ValidationIssue(path, cached["issue"], cached.get("repair_suggestion")))
+                    issues.append(ValidationIssue(path, cached["issue"]))
                 continue
 
             checked_count += 1
             self.logger.info("Input validation %d/%d: checking %s.", index, len(unique_paths), path)
             issue = self._validate_file(path)
-            cache[key] = {"issue": issue.message if issue else None, "repair_suggestion": issue.repair_suggestion if issue else None}
+            cache[key] = {"issue": issue.message if issue else None}
             changed = True
             if issue:
                 issues.append(issue)
@@ -139,7 +135,6 @@ class InputValidator:
                         probe_data,
                         "\n".join(decode_errors) if decode_errors else decode_output,
                     ),
-                    self._repair_suggestion(path, probe_data),
                 )
         return None
 
@@ -150,19 +145,6 @@ class InputValidator:
             for line in output.splitlines()
             if line.strip() and not re.match(r"^(?:frame|size)=\s*", line.strip())
         ]
-
-    @staticmethod
-    def _repair_suggestion(path: str, probe_data: dict) -> str:
-        audio_streams = [stream for stream in probe_data.get("streams", []) if stream.get("codec_type") == "audio"]
-        codec = audio_streams[0].get("codec_name", "aac") if audio_streams else "aac"
-        repaired_path = f"{os.path.splitext(path)[0]}.repaired.mkv"
-        return (
-            "ffmpeg -fflags +genpts+discardcorrupt -err_detect ignore_err "
-            f"-i {shlex.quote(path)} "
-            "-map 0:v:0 -c:v copy "
-            f"-map 0:a:0 -af aresample=async=1:first_pts=0 -c:a {codec} "
-            f"-avoid_negative_ts make_zero {shlex.quote(repaired_path)}"
-        )
 
     @staticmethod
     def _summarize_error(output: str) -> str:

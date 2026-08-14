@@ -66,9 +66,9 @@ class InputValidatorTest(unittest.TestCase):
         self.assertIn("audio #1: ac3 48000 Hz 2 channels", first.issues[0].message)
         self.assertIn("[ac3] incomplete frame", first.issues[0].message)
         self.assertIn("Invalid data found", first.issues[0].message)
-        self.assertIn("+genpts+discardcorrupt", first.issues[0].repair_suggestion or "")
-        self.assertIn("aresample=async=1:first_pts=0", first.issues[0].repair_suggestion or "")
-        self.assertIn("-c:a ac3", first.issues[0].repair_suggestion or "")
+        with self.assertLogs(self.logger, "ERROR") as logs:
+            first.render(self.logger)
+        self.assertNotIn("Suggested repair", "\n".join(logs.output))
         self.assertFalse(second.is_valid)
         self.assertEqual(second.checked_count, 0)
         self.assertEqual(second.cached_count, 1)
