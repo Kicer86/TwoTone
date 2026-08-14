@@ -13,7 +13,7 @@ from typing import Iterable
 from . import generic_utils, process_utils
 
 
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2
 
 
 class ValidationMode(enum.Enum):
