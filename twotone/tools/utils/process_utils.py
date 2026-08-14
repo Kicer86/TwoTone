@@ -5,7 +5,6 @@ import platform
 import re
 import shutil
 import subprocess
-import time
 from dataclasses import dataclass
 from tqdm import tqdm
 from typing import Any
@@ -66,6 +65,8 @@ def start_process(
     sub_process = subprocess.Popen(command, **popen_kwargs)
 
     captured_stderr: list[str] = []
+    stdout: str | None = None
+    stderr: str | None = None
     if show_progress:
         if process == "ffmpeg":
             index_of_i = args.index("-i")
@@ -107,13 +108,15 @@ def start_process(
             description = progress_description or "Probing media"
             logger.info("%s: started.", description)
             with tqdm(desc=description, unit="file", total=None, **generic_utils.get_tqdm_defaults()) as pbar:
-                while sub_process.poll() is None:
-                    time.sleep(0.1)
-                    pbar.refresh()
-                stdout, stderr = sub_process.communicate()
-                pbar.update(1)
+                while stdout is None or stderr is None:
+                    try:
+                        stdout, stderr = sub_process.communicate(timeout=0.1)
+                        pbar.update(1)
+                    except subprocess.TimeoutExpired:
+                        pbar.refresh()
 
-    stdout, stderr = sub_process.communicate()
+    if stdout is None or stderr is None:
+        stdout, stderr = sub_process.communicate()
 
     if captured_stderr:
         stderr = "\n".join(captured_stderr) + (f"\n{stderr}" if stderr else "")
