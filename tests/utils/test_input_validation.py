@@ -24,7 +24,11 @@ class InputValidatorTest(unittest.TestCase):
             self.temp_dir.name,
         )
         probe_success = process_utils.ProcessResult(0, '{"streams": [{"codec_type": "audio", "codec_name": "ac3"}]}', "")
-        decode_success = process_utils.ProcessResult(0, "", "")
+        decode_success = process_utils.ProcessResult(
+            0,
+            "",
+            "frame=10 fps=0.0 q=-0.0 Lsize=N/A time=00:00:01.00 bitrate=N/A",
+        )
 
         with patch.object(process_utils, "start_process", side_effect=[probe_success, decode_success]) as start_process:
             report = validator.validate([self.path])
@@ -69,6 +73,29 @@ class InputValidatorTest(unittest.TestCase):
         self.assertEqual(second.checked_count, 0)
         self.assertEqual(second.cached_count, 1)
         start_process.assert_not_called()
+
+    def test_full_validation_reports_ffmpeg_error_even_when_process_succeeds(self):
+        validator = input_validation.InputValidator(
+            input_validation.ValidationMode.FULL,
+            self.logger,
+            self.temp_dir.name,
+        )
+        probe_success = process_utils.ProcessResult(
+            0,
+            '{"streams": [{"codec_type": "video", "codec_name": "h264"}]}',
+            "",
+        )
+        decode_with_error = process_utils.ProcessResult(
+            0,
+            "",
+            "[in#0/matroska,webm] File ended prematurely\nframe=10 fps=0.0",
+        )
+
+        with patch.object(process_utils, "start_process", side_effect=[probe_success, decode_with_error]):
+            report = validator.validate([self.path])
+
+        self.assertFalse(report.is_valid)
+        self.assertIn("File ended prematurely", report.issues[0].message)
 
     def test_fast_validation_does_not_decode_payload(self):
         validator = input_validation.InputValidator(

@@ -130,13 +130,26 @@ class InputValidator:
                 progress_description="Decoding media for validation",
                 logger=self.logger,
             )
-            if decode.returncode != 0:
+            decode_output = decode.stderr or decode.stdout
+            decode_errors = self._ffmpeg_error_lines(decode_output)
+            if decode.returncode != 0 or decode_errors:
                 return ValidationIssue(
                     path,
-                    self._describe_decode_failure(probe_data, decode.stderr or decode.stdout),
+                    self._describe_decode_failure(
+                        probe_data,
+                        "\n".join(decode_errors) if decode_errors else decode_output,
+                    ),
                     self._repair_suggestion(path, probe_data),
                 )
         return None
+
+    @staticmethod
+    def _ffmpeg_error_lines(output: str) -> list[str]:
+        return [
+            line.strip()
+            for line in output.splitlines()
+            if line.strip() and not re.match(r"^(?:frame|size)=\s*", line.strip())
+        ]
 
     @staticmethod
     def _repair_suggestion(path: str, probe_data: dict) -> str:
@@ -160,7 +173,7 @@ class InputValidator:
             line
             for line in lines
             if re.search(
-                r"invalid data|corrupt|incomplete|error submitting|error processing|decode error|non[- ]monoton",
+                r"invalid data|corrupt|incomplete|ended prematurely|error submitting|error processing|decode error|non[- ]monoton",
                 line,
                 re.IGNORECASE,
             )
