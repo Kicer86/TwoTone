@@ -493,6 +493,11 @@ def run_twotone(tool: str, tool_options: list[str] | None = None, global_options
     wd = tempfile.mkdtemp(prefix="twotone_test_wd_")
 
     global_options.extend(["--quiet", "--working-dir", wd])
+    if not any(
+        option == "--validate-inputs" or option.startswith("--validate-inputs=")
+        for option in global_options
+    ):
+        global_options.extend(["--validate-inputs", "off"])
 
     try:
         twotone.twotone.execute([*global_options, tool, *tool_options])
