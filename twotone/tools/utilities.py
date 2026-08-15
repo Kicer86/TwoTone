@@ -38,7 +38,7 @@ def extract_scenes(video_path, output_dir, format: str, scale: float, workspace:
         args = [
             "-i", video_path,
             "-frame_pts", "true",
-            "-vsync", "0",
+            "-fps_mode", "passthrough",
             "-q:v", "2",
             "-vf", f"showinfo,scale=iw/{ascale}:ih/{ascale}",
             output_pattern

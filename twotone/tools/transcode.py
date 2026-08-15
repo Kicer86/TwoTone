@@ -130,7 +130,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         args = [
             "-i", video_file,
             "-vf", "select='gt(scene,0.4)',showinfo",
-            "-vsync", "vfr", "-f", "null", "/dev/null"
+            "-fps_mode", "vfr", "-f", "null", "/dev/null"
         ]
 
         result = process_utils.start_process("ffmpeg", args, logger=self.logger)
@@ -215,7 +215,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         basename = os.path.basename(segment_file)
         transcoded_segment_output = os.path.join(wd_dir, basename)
 
-        self._transcode_video(segment_file, transcoded_segment_output, crf, "veryfast", output_params = ["-vsync", "vfr"])
+        self._transcode_video(segment_file, transcoded_segment_output, crf, "veryfast", output_params = ["-fps_mode", "vfr"])
 
         quality = self._calculate_quality(segment_file, transcoded_segment_output)
         return quality
@@ -254,7 +254,7 @@ class Transcoder(generic_utils.InterruptibleProcess):
         # is an atomic same-filesystem rename.
         with self.workspace.staging_for(target_file) as staging:
             temp_file = staging.path
-            self._transcode_video(input_file, temp_file, crf, "veryslow", audio_codec = audio_codec, output_params = ["-vsync", "passthrough"], show_progress=True)
+            self._transcode_video(input_file, temp_file, crf, "veryslow", audio_codec = audio_codec, output_params = ["-fps_mode", "passthrough"], show_progress=True)
 
             original_size = os.path.getsize(input_file)
             final_size = os.path.getsize(temp_file)
