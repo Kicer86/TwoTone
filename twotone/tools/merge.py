@@ -343,6 +343,13 @@ class MergePlan:
     def is_empty(self) -> bool:
         return not self.items
 
+    def input_files(self) -> set[str]:
+        return {
+            path
+            for video, subtitles in self.items.items()
+            for path in [video, *(subtitle.path for subtitle in subtitles if subtitle.path)]
+        }
+
     def render(self, logger: logging.Logger) -> None:
         if not self.items:
             logger.info("No videos with subtitles to merge.")

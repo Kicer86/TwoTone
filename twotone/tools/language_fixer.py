@@ -47,6 +47,9 @@ class LanguageFixPlan:
     def is_empty(self) -> bool:
         return len(self.items) == 0
 
+    def input_files(self) -> set[str]:
+        return {item.path for item in self.items}
+
     def render(self, logger: logging.Logger) -> None:
         if not self.items:
             logger.info("No missing track languages found.")

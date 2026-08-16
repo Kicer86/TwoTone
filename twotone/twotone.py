@@ -20,7 +20,7 @@ from .tools import          \
     transcode,              \
     utilities
 
-from .tools.utils import files_utils, generic_utils, process_utils
+from .tools.utils import files_utils, generic_utils, input_validation, process_utils
 
 TOOLS = {
     "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file"),
@@ -149,6 +149,17 @@ def execute(argv: list[str]) -> None:
         help="Keep the working directory and its intermediate files for inspection.",
     )
     parser.add_argument(
+        "--validate-inputs",
+        choices=[mode.value for mode in input_validation.ValidationMode],
+        default=input_validation.ValidationMode.FULL.value,
+        help="Validate every analyzed input file before execution. Full validation decodes audio and video once per unchanged file.",
+    )
+    parser.add_argument(
+        "--validation-cache-dir",
+        default=None,
+        help="Directory used to cache input-validation results.",
+    )
+    parser.add_argument(
         "--version",
         action="store_true",
         help="Show version and runtime source details, then exit.",
@@ -219,6 +230,23 @@ def execute(argv: list[str]) -> None:
                 logger=tool_logger,
                 workspace=workspace,
             )
+
+            validation_mode = input_validation.ValidationMode(args.validate_inputs)
+            if validation_mode != input_validation.ValidationMode.OFF:
+                validation_tools = ["ffprobe"]
+                if validation_mode == input_validation.ValidationMode.FULL:
+                    validation_tools.append("ffmpeg")
+                process_utils.ensure_tools_exist(validation_tools, tool_logger)
+            validation = input_validation.InputValidator(
+                validation_mode,
+                tool_logger,
+                args.validation_cache_dir,
+            ).validate(plan.input_files())
+            if not validation.is_valid:
+                plan.render(tool_logger)
+                validation.render(tool_logger)
+                tool_logger.error("Input validation failed. Skipping perform.")
+                return
 
             if args.no_dry_run:
                 plan.render(tool_logger)

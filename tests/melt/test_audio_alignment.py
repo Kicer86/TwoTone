@@ -1,5 +1,6 @@
 
 import numpy as np
+import math
 import os
 import wave
 import unittest
@@ -148,7 +149,9 @@ class AudioAlignmentTest(TwoToneTestCase):
 
     AUDIO_ALIGNMENT_TOLERANCE_SECONDS = 0.0071
     EXPECTED_POSITION_TOLERANCE_SECONDS = 0.013
-    OUTPUT_DURATION_TOLERANCE_MS = 42
+    # One 24 fps frame (41.667 ms) plus independent millisecond rounding of
+    # expected and probed durations may differ by 43 ms across FFmpeg builds.
+    OUTPUT_DURATION_TOLERANCE_MS = math.ceil(1000 / FPS) + 1
 
     source_video: ClassVar[str]
     source_duration_seconds: ClassVar[float]

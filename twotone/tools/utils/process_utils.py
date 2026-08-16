@@ -32,6 +32,7 @@ def start_process(
     process: str,
     args: list[str],
     show_progress: bool = False,
+    progress_description: str | None = None,
     logger: logging.Logger | None = None,
     cwd: str | None = None
 ) -> ProcessResult:
@@ -63,18 +64,24 @@ def start_process(
 
     sub_process = subprocess.Popen(command, **popen_kwargs)
 
+    captured_stderr: list[str] = []
+    stdout: str | None = None
+    stderr: str | None = None
     if show_progress:
         if process == "ffmpeg":
             index_of_i = args.index("-i")
             input_file = args[index_of_i + 1]
+            description = progress_description or "Processing video"
+            logger.info("%s: started.", description)
 
             if video_utils.is_video(input_file) and sub_process.stderr:
                 progress_pattern = re.compile(r"frame= *(\d+)")
                 frames = video_utils.get_video_frames_count(input_file, logger=logger)
-                with tqdm(desc="Processing video", unit="frame", total=frames, **generic_utils.get_tqdm_defaults()) as pbar:
+                with tqdm(desc=description, unit="frame", total=frames, **generic_utils.get_tqdm_defaults()) as pbar:
                     last_frame = 0
                     for line in sub_process.stderr:
                         line = line.strip()
+                        captured_stderr.append(line)
                         if "frame=" in line:
                             match = progress_pattern.search(line)
                             if match:
@@ -94,8 +101,25 @@ def start_process(
                         delta = current_progress - last_progress
                         pbar.update(delta)
                         last_progress = current_progress
+        elif process == "ffprobe":
+            # ffprobe does not expose a numerical progress protocol.  Keep an
+            # indeterminate progress indicator alive while it reads large or
+            # remote containers so the caller still has visible feedback.
+            description = progress_description or "Probing media"
+            logger.info("%s: started.", description)
+            with tqdm(desc=description, unit="file", total=None, **generic_utils.get_tqdm_defaults()) as pbar:
+                while stdout is None or stderr is None:
+                    try:
+                        stdout, stderr = sub_process.communicate(timeout=0.1)
+                        pbar.update(1)
+                    except subprocess.TimeoutExpired:
+                        pbar.refresh()
 
-    stdout, stderr = sub_process.communicate()
+    if stdout is None or stderr is None:
+        stdout, stderr = sub_process.communicate()
+
+    if captured_stderr:
+        stderr = "\n".join(captured_stderr) + (f"\n{stderr}" if stderr else "")
 
     logger.debug(f"Process finished with {sub_process.returncode}")
 
