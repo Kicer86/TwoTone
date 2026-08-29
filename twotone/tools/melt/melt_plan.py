@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..utils import language_utils
-from .melt_common import StreamType, stream_short_details
+from .melt_common import MeltInputFiles, StreamType, stream_short_details
 
 
 @dataclass
@@ -111,17 +111,18 @@ class MeltPlan:
 
                 files = group.get("files", [])
                 if files:
-                    logger.info("%sInputs:", prefix)
-                    for file_idx, path in enumerate(files, start=1):
-                        logger.info("%s  #%d: %s", prefix, file_idx, path)
+                    input_files = MeltInputFiles(files)
+                    references = ", ".join(f"#{input_files.id_for(path)}" for path in files)
+                    logger.info("%sInputs: %s", prefix, references)
 
-                self._render_group_streams(logger, group, files, prefix)
+                self._render_group_streams(logger, group, files, input_files if files else None, prefix)
 
     def _render_group_streams(
         self,
         logger: logging.Logger,
         group: dict[str, Any],
         files: list[str],
+        input_files: MeltInputFiles | None,
         prefix: str
     ) -> None:
         files_details = group.get("files_details", {})
@@ -130,11 +131,13 @@ class MeltPlan:
 
         logger.info("%sStreams:", prefix)
         selected, selected_attachments, lang_overrides = self._collect_selected(group)
-        for file_idx, path in enumerate(files, start=1):
+        for path in files:
             details = files_details.get(path)
             if not details:
                 continue
-            logger.info("%s  File #%d:", prefix, file_idx)
+            if input_files is None:
+                continue
+            logger.info("%s  File #%d:", prefix, input_files.id_for(path))
             tracks = details.get("tracks", {})
             for stype in ("video", "audio", "subtitle"):
                 streams = tracks.get(stype, [])

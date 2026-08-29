@@ -18,6 +18,7 @@ from .melt_common import (
     AttachmentRef,
     AudioStreamRef,
     FramesInfo,
+    MeltInputFiles,
     StreamType,
     SubtitleStreamRef,
     VideoStreamRef,
@@ -219,9 +220,8 @@ class MeltPerformer(TrackTimelineMixin):
 
                 output_name = group["output_name"]
                 files = group.get("files", [])
-                file_ids = {f: i + 1 for i, f in enumerate(files)}
-                for f, fid in file_ids.items():
-                    self.logger.info("  #%d: %s", fid, f)
+                input_files = MeltInputFiles(files)
+                file_ids = input_files.ids
 
                 # Use analysis results
                 streams_info = group.get("streams", {})
