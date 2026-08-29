@@ -250,17 +250,22 @@ class MeltAnalyzerTest(TwoToneTestCase):
 
 
 class MeltInputFilesTest(unittest.TestCase):
-    def test_assigns_stable_one_based_ids_and_formats_paths(self):
+    def test_assigns_stable_one_based_ids_and_formats_paths_from_inputs(self):
         files = MeltInputFiles(
-            ["/media/first.mkv", "/media/nested/second.mkv"],
-            base_path="/media",
+            ["/media/first.mkv", "/media/input/nested/second.mkv", "/net/library/third.mkv"],
+            input_paths=["/media/input"],
         )
 
         self.assertEqual(files.id_for("/media/first.mkv"), 1)
-        self.assertEqual(files.id_for("/media/nested/second.mkv"), 2)
-        self.assertEqual(files.reference("/media/nested/second.mkv"), "file #2")
-        self.assertEqual(files.display_path("/media/nested/second.mkv"), "nested/second.mkv")
-        self.assertEqual(files.ids, {"/media/first.mkv": 1, "/media/nested/second.mkv": 2})
+        self.assertEqual(files.id_for("/media/input/nested/second.mkv"), 2)
+        self.assertEqual(files.reference("/media/input/nested/second.mkv"), "file #2")
+        self.assertEqual(files.display_path("/media/input/nested/second.mkv"), "nested/second.mkv")
+        self.assertEqual(files.display_path("/net/library/third.mkv"), "/net/library/third.mkv")
+        self.assertEqual(files.ids, {
+            "/media/first.mkv": 1,
+            "/media/input/nested/second.mkv": 2,
+            "/net/library/third.mkv": 3,
+        })
 
 
 if __name__ == "__main__":

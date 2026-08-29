@@ -37,7 +37,7 @@ class MeltAnalyzer:
         self.duplicates_source = duplicates_source
         self.workspace = workspace
         self.allow_length_mismatch = allow_length_mismatch
-        self.base_path: str | None = None
+        self.input_paths: tuple[str, ...] = ()
 
     def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
         base_plan = self._prepare_duplicates_set(duplicates)
@@ -57,7 +57,7 @@ class MeltAnalyzer:
                 files = group["files"]
                 output_name = group["output_name"]
 
-                input_files = MeltInputFiles(files, self.base_path)
+                input_files = MeltInputFiles(files, self.input_paths)
                 self._log_group_inputs(title, input_files)
 
                 # analysis for group

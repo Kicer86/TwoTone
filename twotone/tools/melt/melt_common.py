@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 
 from dataclasses import dataclass
@@ -26,11 +27,11 @@ class MeltInputFiles:
     """Stable, one-based references to the files in one Melt input group."""
 
     paths: tuple[str, ...]
-    base_path: str | None = None
+    input_paths: tuple[str, ...] = ()
 
-    def __init__(self, paths: list[str] | tuple[str, ...], base_path: str | None = None) -> None:
+    def __init__(self, paths: list[str] | tuple[str, ...], input_paths: list[str] | tuple[str, ...] = ()) -> None:
         object.__setattr__(self, "paths", tuple(paths))
-        object.__setattr__(self, "base_path", base_path)
+        object.__setattr__(self, "input_paths", tuple(input_paths))
 
     def id_for(self, path: str) -> int:
         return self.paths.index(path) + 1
@@ -43,7 +44,20 @@ class MeltInputFiles:
         return f"file #{self.id_for(path)}"
 
     def display_path(self, path: str) -> str:
-        return files_utils.format_path(path, self.base_path)
+        path_abs = os.path.abspath(path)
+        containing_inputs = []
+        for input_path in self.input_paths:
+            input_abs = os.path.abspath(input_path)
+            try:
+                if os.path.commonpath([input_abs, path_abs]) == input_abs:
+                    containing_inputs.append(input_path)
+            except ValueError:
+                continue
+
+        if containing_inputs:
+            closest_input = max(containing_inputs, key=lambda candidate: len(os.path.abspath(candidate)))
+            return files_utils.format_path(path, closest_input)
+        return path
 
     def render(self, logger: logging.Logger, prefix: str = "") -> None:
         for path in self.paths:
