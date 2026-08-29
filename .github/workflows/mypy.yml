@@ -34,7 +34,6 @@ jobs:
       with:
         submodules: true
         lfs: true
-        fetch-depth: 0
 
     - name: Set up Python environment
       uses: ./.github/actions/setup-python-project
@@ -42,65 +41,5 @@ jobs:
         python-version: '3.12'
         extra-packages: mypy scipy-stubs types-requests types-tqdm
 
-    - name: Save PR mypy errors
-      run: |
-        python -m mypy twotone tests > pr_mypy.txt || true
-
-    - name: Save master mypy errors
-      run: |
-        git checkout origin/master
-        python -m mypy twotone tests > master_mypy.txt || true
-
-    - name: Checkout PR branch again
-      run: git checkout -
-
-    - name: Compare mypy error counts
-      run: |
-        echo "==> Mypy output on PR branch"
-        cat pr_mypy.txt
-
-        PR_SUMMARY=$(tail -n 1 pr_mypy.txt)
-        MASTER_SUMMARY=$(tail -n 1 master_mypy.txt)
-
-        echo "PR summary:     $PR_SUMMARY"
-        echo "Master summary: $MASTER_SUMMARY"
-
-        PR_COUNT=$(echo "$PR_SUMMARY" | grep -oE 'Found [0-9]+' | awk '{print $2}' || true)
-        MASTER_COUNT=$(echo "$MASTER_SUMMARY" | grep -oE 'Found [0-9]+' | awk '{print $2}' || true)
-
-        if [ -z "$PR_COUNT" ]; then PR_COUNT=0; fi
-        if [ -z "$MASTER_COUNT" ]; then MASTER_COUNT=0; fi
-
-        echo "PR error count: $PR_COUNT"
-        echo "Master error count: $MASTER_COUNT"
-
-        grep -Ev '^(Found [0-9]+ errors? in |Success: )' pr_mypy.txt \
-          | sed '/^[[:space:]]*$/d' \
-          | sort > pr_mypy_errors.txt
-        grep -Ev '^(Found [0-9]+ errors? in |Success: )' master_mypy.txt \
-          | sed '/^[[:space:]]*$/d' \
-          | sort > master_mypy_errors.txt
-
-        comm -13 master_mypy_errors.txt pr_mypy_errors.txt > new_mypy_errors.txt || true
-        comm -23 master_mypy_errors.txt pr_mypy_errors.txt > resolved_mypy_errors.txt || true
-
-        echo "==> New mypy errors introduced"
-        if [ -s new_mypy_errors.txt ]; then
-          sed 's/^/  + /' new_mypy_errors.txt
-        else
-          echo "  (none)"
-        fi
-
-        echo "==> Mypy errors resolved"
-        if [ -s resolved_mypy_errors.txt ]; then
-          sed 's/^/  - /' resolved_mypy_errors.txt
-        else
-          echo "  (none)"
-        fi
-
-        if [ "$PR_COUNT" -gt "$MASTER_COUNT" ]; then
-          echo "::error::PR increases number of mypy errors ($PR_COUNT > $MASTER_COUNT)"
-          exit 1
-        else
-          echo "✅ Mypy error count not increased."
-        fi
+    - name: Run mypy
+      run: python -m mypy twotone tests
