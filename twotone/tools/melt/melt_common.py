@@ -1,8 +1,9 @@
 import re
 
+from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple, TypedDict
 
-from ..utils import generic_utils
+from ..utils import files_utils, generic_utils
 
 
 class FrameInfo(TypedDict):
@@ -17,6 +18,27 @@ class FrameInfo(TypedDict):
 
 FramesInfo = dict[int, FrameInfo]
 StreamType = Literal["video", "audio", "subtitle"]
+
+
+@dataclass(frozen=True)
+class MeltInputFiles:
+    """Stable, one-based references to the files in one Melt input group."""
+
+    paths: tuple[str, ...]
+    base_path: str | None = None
+
+    def __init__(self, paths: list[str] | tuple[str, ...], base_path: str | None = None) -> None:
+        object.__setattr__(self, "paths", tuple(paths))
+        object.__setattr__(self, "base_path", base_path)
+
+    def id_for(self, path: str) -> int:
+        return self.paths.index(path) + 1
+
+    def reference(self, path: str) -> str:
+        return f"file #{self.id_for(path)}"
+
+    def display_path(self, path: str) -> str:
+        return files_utils.format_path(path, self.base_path)
 
 
 class VideoStreamRef(NamedTuple):

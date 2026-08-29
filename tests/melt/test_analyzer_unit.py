@@ -7,6 +7,7 @@ from unittest.mock import patch
 from common import TwoToneTestCase
 from twotone.tools.melt.melt import MeltAnalyzer, StaticSource
 from twotone.tools.melt.melt_analyzer import UnsupportedMeltInputError
+from twotone.tools.melt.melt_common import MeltInputFiles
 from twotone.tools.utils import generic_utils, video_utils
 
 
@@ -21,6 +22,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
             self.workspace,
             allow_length_mismatch=False,
         )
+
 
     @staticmethod
     def _mkvmerge_info(**overrides):
@@ -240,6 +242,19 @@ class MeltAnalyzerTest(TwoToneTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "ffprobe failed"):
                 self.analyzer.analyze_duplicates({})
+
+
+class MeltInputFilesTest(unittest.TestCase):
+    def test_assigns_stable_one_based_ids_and_formats_paths(self):
+        files = MeltInputFiles(
+            ["/media/first.mkv", "/media/nested/second.mkv"],
+            base_path="/media",
+        )
+
+        self.assertEqual(files.id_for("/media/first.mkv"), 1)
+        self.assertEqual(files.id_for("/media/nested/second.mkv"), 2)
+        self.assertEqual(files.reference("/media/nested/second.mkv"), "file #2")
+        self.assertEqual(files.display_path("/media/nested/second.mkv"), "nested/second.mkv")
 
 
 if __name__ == "__main__":
