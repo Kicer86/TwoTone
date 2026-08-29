@@ -67,7 +67,7 @@ class MeltAnalyzer:
                     plan_details = None
                     issue = str(err)
                 if plan_details is None:
-                    self._log_group_issue(title, issue or "Unknown issue.")
+                    self._log_group_issue(issue or "Unknown issue.")
                     skipped_groups.append({
                         "files": files,
                         "output_name": output_name,
@@ -195,7 +195,7 @@ class MeltAnalyzer:
                 track_type = track.get("type")
                 if track_type not in ("video", "audio", "subtitle", "subtitles"):
                     raise UnsupportedMeltInputError(
-                        f"Melt input file #{ids[path]} contains track type '{track_type}', which is not supported yet."
+                        f"File #{ids[path]} contains unsupported track type '{track_type}' (not supported yet)."
                     )
 
             for attachment in details.get("attachments", []):
@@ -205,8 +205,8 @@ class MeltAnalyzer:
                     thumbnails.append((path, file_name))
                 else:
                     raise UnsupportedMeltInputError(
-                        f"Melt input contains attachment '{file_name}' with content type "
-                        f"'{content_type}' in file #{ids[path]}, which is not supported yet."
+                        f"File #{ids[path]} contains unsupported attachment '{file_name}' "
+                        f"with content type '{content_type}' (not supported yet)."
                     )
 
             chapter_count = 0
@@ -217,7 +217,7 @@ class MeltAnalyzer:
                     chapter_count += 1
             if chapter_count:
                 raise UnsupportedMeltInputError(
-                    f"Melt input file #{ids[path]} contains chapters, which are not supported yet."
+                    f"File #{ids[path]} contains chapters, which are not supported yet."
                 )
 
         if len(thumbnails) > 1:
@@ -387,8 +387,8 @@ class MeltAnalyzer:
         self.logger.info("Title %s: input files:", title)
         input_files.render(self.logger, prefix="  ")
 
-    def _log_group_issue(self, title: str, issue: str) -> None:
-        self.logger.warning("Title %s: %s", title, issue)
+    def _log_group_issue(self, issue: str) -> None:
+        self.logger.warning("%s", issue)
 
     def _validate_group_lengths(
         self,

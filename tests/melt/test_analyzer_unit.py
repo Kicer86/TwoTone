@@ -94,9 +94,11 @@ class MeltAnalyzerTest(TwoToneTestCase):
                 self.analyzer._probe_inputs([input_path], {input_path: 1})
 
         message = str(raised.exception)
+        self.assertTrue(message.startswith("File #1"))
         self.assertIn(expected_description, message)
         self.assertIn("not supported yet", message)
-        self.assertIn("file #1", message)
+        self.assertIn("File #1", message)
+        self.assertNotIn("Melt input", message)
         parse_info.assert_not_called()
 
     def test_probe_inputs_rejects_multiple_thumbnails_across_group(self):
@@ -211,6 +213,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
         first_input = next(index for index, message in enumerate(logged.output) if f"#1: {unsupported_path}" in message)
         issue = next(index for index, message in enumerate(logged.output) if unsupported_issue in message)
         self.assertLess(first_input, issue)
+        self.assertNotIn("Title Title: Buttons are not supported yet", logged.output[issue])
 
         self.assertEqual(
             [{
