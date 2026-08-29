@@ -1,3 +1,4 @@
+import logging
 import re
 
 from dataclasses import dataclass
@@ -34,11 +35,19 @@ class MeltInputFiles:
     def id_for(self, path: str) -> int:
         return self.paths.index(path) + 1
 
+    @property
+    def ids(self) -> dict[str, int]:
+        return {path: index for index, path in enumerate(self.paths, start=1)}
+
     def reference(self, path: str) -> str:
         return f"file #{self.id_for(path)}"
 
     def display_path(self, path: str) -> str:
         return files_utils.format_path(path, self.base_path)
+
+    def render(self, logger: logging.Logger, prefix: str = "") -> None:
+        for path in self.paths:
+            logger.info("%s#%d: %s", prefix, self.id_for(path), self.display_path(path))
 
 
 class VideoStreamRef(NamedTuple):
