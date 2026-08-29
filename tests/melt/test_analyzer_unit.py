@@ -248,6 +248,22 @@ class MeltAnalyzerTest(TwoToneTestCase):
             with self.assertRaisesRegex(RuntimeError, "ffprobe failed"):
                 self.analyzer.analyze_duplicates({})
 
+    def test_analyze_duplicates_displays_paths_relative_to_input(self):
+        input_dir = os.path.join(self.wd.path, "input")
+        input_path = os.path.join(input_dir, "nested", "input.mkv")
+        self.analyzer.input_paths = (input_dir,)
+        base_plan = [{
+            "title": "Title",
+            "groups": [{"files": [input_path], "output_name": "input"}],
+        }]
+
+        with self.assertLogs(self.logger, level="INFO") as logged, \
+             patch.object(self.analyzer, "_prepare_duplicates_set", return_value=base_plan), \
+             patch.object(self.analyzer, "_analyze_group", return_value=({}, None, {})):
+            self.analyzer.analyze_duplicates({})
+
+        self.assertTrue(any("#1: nested/input.mkv" in message for message in logged.output))
+
 
 class MeltInputFilesTest(unittest.TestCase):
     def test_assigns_stable_one_based_ids_and_formats_paths_from_inputs(self):
