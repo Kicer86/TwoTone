@@ -350,7 +350,7 @@ class MeltAnalyzer:
                 base_fmt = generic_utils.ms_to_time(base_length) if base_length else "?"
                 other_fmt = generic_utils.ms_to_time(length) if length else "?"
                 self.logger.debug(
-                    f"Subtitles stream from file #{file_id} has length different than length of video stream from file {v_path}. "
+                    f"Subtitles stream from file #{file_id} has length different than length of video stream from file #{base_file_id}. "
                     "This is not supported yet"
                 )
                 return (

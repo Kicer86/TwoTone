@@ -1227,8 +1227,6 @@ class MeltPerformer(TrackTimelineMixin):
 
     def _log_coverage(
         self,
-        lhs_path: str,
-        rhs_path: str,
         mappings: list[tuple[int, int]],
         lhs_duration_ms: int,
         rhs_duration_ms: int,
@@ -1254,16 +1252,14 @@ class MeltPerformer(TrackTimelineMixin):
             lhs_fps=lhs_fps,
             rhs_fps=rhs_fps,
         )
-        lhs_name = os.path.basename(lhs_path)
-        rhs_name = os.path.basename(rhs_path)
         ratio = summary["ratio"]
         same_speed = abs(ratio - 1.0) < 0.001
         same_length = lhs_duration_ms == rhs_duration_ms
 
         if same_length and same_speed and summary["full_coverage"]:
             self.logger.info(
-                "Files are 100%% visually identical: %s ↔ %s",
-                lhs_name, rhs_name,
+                "Files are 100%% visually identical: #%d ↔ #%d",
+                lhs_id, rhs_id,
             )
             return
 
@@ -1275,13 +1271,13 @@ class MeltPerformer(TrackTimelineMixin):
             self.logger.info(
                 "Files share all content but play at different speeds "
                 "(same frames, different frame rate; speed ratio %.5f): "
-                "#%d (%s, %s) ↔ #%d (%s, %s)",
-                ratio, lhs_id, lhs_name, lhs_len, rhs_id, rhs_name, rhs_len,
+                "#%d (%s) ↔ #%d (%s)",
+                ratio, lhs_id, lhs_len, rhs_id, rhs_len,
             )
         else:
             self.logger.info(
-                "Files are NOT fully identical: #%d (%s, %s) ↔ #%d (%s, %s)",
-                lhs_id, lhs_name, lhs_len, rhs_id, rhs_name, rhs_len,
+                "Files are NOT fully identical: #%d (%s) ↔ #%d (%s)",
+                lhs_id, lhs_len, rhs_id, rhs_len,
             )
             if not same_speed:
                 self.logger.info("  speed ratio: %.5f", ratio)
@@ -1622,8 +1618,6 @@ class MeltPerformer(TrackTimelineMixin):
             # strategy — report it right after the matcher, once per pair.
             if first_match and matching.mapping:
                 self._log_coverage(
-                    video_path_base,
-                    audio_path,
                     matching.mapping,
                     base_duration,
                     duration,
