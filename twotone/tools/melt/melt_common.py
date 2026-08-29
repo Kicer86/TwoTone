@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple, TypedDict
 
-from ..utils import files_utils, generic_utils
+from ..utils import generic_utils
 
 
 class FrameInfo(TypedDict):
@@ -56,7 +56,9 @@ class MeltInputFiles:
 
         if containing_inputs:
             closest_input = max(containing_inputs, key=lambda candidate: len(os.path.abspath(candidate)))
-            return files_utils.format_path(path, closest_input)
+            relative_path = os.path.relpath(path_abs, os.path.abspath(closest_input))
+            if relative_path != ".":
+                return relative_path
         return path
 
     def render(self, logger: logging.Logger, prefix: str = "") -> None:

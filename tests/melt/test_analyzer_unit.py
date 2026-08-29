@@ -272,12 +272,13 @@ class MeltInputFilesTest(unittest.TestCase):
     def test_assigns_stable_one_based_ids_and_formats_paths_from_inputs(self):
         files = MeltInputFiles(
             ["/media/first.mkv", "/media/input/nested/second.mkv", "/net/library/third.mkv"],
-            input_paths=["/media/input"],
+            input_paths=["/media/first.mkv", "/media/input"],
         )
 
         self.assertEqual(files.id_for("/media/first.mkv"), 1)
         self.assertEqual(files.id_for("/media/input/nested/second.mkv"), 2)
         self.assertEqual(files.reference("/media/input/nested/second.mkv"), "file #2")
+        self.assertEqual(files.display_path("/media/first.mkv"), "/media/first.mkv")
         self.assertEqual(files.display_path("/media/input/nested/second.mkv"), "nested/second.mkv")
         self.assertEqual(files.display_path("/net/library/third.mkv"), "/net/library/third.mkv")
         self.assertEqual(files.ids, {
