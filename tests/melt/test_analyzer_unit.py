@@ -7,6 +7,7 @@ from unittest.mock import patch
 from common import TwoToneTestCase
 from twotone.tools.melt.melt import MeltAnalyzer, StaticSource
 from twotone.tools.melt.melt_analyzer import UnsupportedMeltInputError
+from twotone.tools.melt.melt_common import MeltInputFiles
 from twotone.tools.utils import generic_utils, video_utils
 
 
@@ -21,6 +22,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
             self.workspace,
             allow_length_mismatch=False,
         )
+
 
     @staticmethod
     def _mkvmerge_info(**overrides):
@@ -89,12 +91,14 @@ class MeltAnalyzerTest(TwoToneTestCase):
         with patch.object(video_utils, "get_video_full_info_mkvmerge", return_value=raw_info), \
              patch.object(video_utils, "get_video_data_mkvmerge") as parse_info:
             with self.assertRaises(UnsupportedMeltInputError) as raised:
-                self.analyzer._probe_inputs([input_path])
+                self.analyzer._probe_inputs([input_path], {input_path: 1})
 
         message = str(raised.exception)
+        self.assertTrue(message.startswith("File #1"))
         self.assertIn(expected_description, message)
         self.assertIn("not supported yet", message)
-        self.assertIn(input_path, message)
+        self.assertIn("File #1", message)
+        self.assertNotIn("Melt input", message)
         parse_info.assert_not_called()
 
     def test_probe_inputs_rejects_multiple_thumbnails_across_group(self):
@@ -122,7 +126,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
                 UnsupportedMeltInputError,
                 "2 thumbnails.*not supported yet",
             ):
-                self.analyzer._probe_inputs([first_path, second_path])
+                self.analyzer._probe_inputs([first_path, second_path], {first_path: 1, second_path: 2})
 
         parse_info.assert_not_called()
 
@@ -165,7 +169,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
             "get_video_data_mkvmerge",
             return_value=parsed_info,
         ) as parse_info:
-            details, attachments, tracks = self.analyzer._probe_inputs([input_path])
+            details, attachments, tracks = self.analyzer._probe_inputs([input_path], {input_path: 1})
 
         self.assertEqual({input_path: parsed_info}, details)
         self.assertEqual({input_path: parsed_info["attachments"]}, attachments)
@@ -191,19 +195,25 @@ class MeltAnalyzerTest(TwoToneTestCase):
         valid_details = {"marker": "analyzed"}
         unsupported_issue = "Buttons are not supported yet"
 
-        with patch.object(
-            self.analyzer,
-            "_prepare_duplicates_set",
-            return_value=base_plan,
-        ), patch.object(
-            self.analyzer,
-            "_analyze_group",
-            side_effect=[
-                UnsupportedMeltInputError(unsupported_issue),
-                (valid_details, None, {}),
-            ],
-        ):
+        with self.assertLogs(self.logger, level="INFO") as logged, \
+             patch.object(
+                 self.analyzer,
+                 "_prepare_duplicates_set",
+                 return_value=base_plan,
+             ), patch.object(
+                 self.analyzer,
+                 "_analyze_group",
+                 side_effect=[
+                     UnsupportedMeltInputError(unsupported_issue),
+                     (valid_details, None, {}),
+                 ],
+             ):
             plan = self.analyzer.analyze_duplicates({})
+
+        first_input = next(index for index, message in enumerate(logged.output) if f"#1: {unsupported_path}" in message)
+        issue = next(index for index, message in enumerate(logged.output) if unsupported_issue in message)
+        self.assertLess(first_input, issue)
+        self.assertNotIn("Title Title: Buttons are not supported yet", logged.output[issue])
 
         self.assertEqual(
             [{
@@ -240,6 +250,46 @@ class MeltAnalyzerTest(TwoToneTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "ffprobe failed"):
                 self.analyzer.analyze_duplicates({})
+
+    def test_analyze_duplicates_displays_paths_relative_to_input(self):
+        input_dir = os.path.join(self.wd.path, "input")
+        input_path = os.path.join(input_dir, "nested", "input.mkv")
+        self.analyzer.input_paths = (input_dir,)
+        base_plan = [{
+            "title": "Title",
+            "groups": [{"files": [input_path], "output_name": "input"}],
+        }]
+
+        with self.assertLogs(self.logger, level="INFO") as logged, \
+             patch.object(self.analyzer, "_prepare_duplicates_set", return_value=base_plan), \
+             patch.object(self.analyzer, "_analyze_group", return_value=({}, None, {})):
+            self.analyzer.analyze_duplicates({})
+
+        relative_path = os.path.join("nested", "input.mkv")
+        self.assertTrue(any(f"#1: {relative_path}" in message for message in logged.output))
+
+
+class MeltInputFilesTest(unittest.TestCase):
+    def test_assigns_stable_one_based_ids_and_formats_paths_from_inputs(self):
+        files = MeltInputFiles(
+            ["/media/first.mkv", "/media/input/nested/second.mkv", "/net/library/third.mkv"],
+            input_paths=["/media/first.mkv", "/media/input"],
+        )
+
+        self.assertEqual(files.id_for("/media/first.mkv"), 1)
+        self.assertEqual(files.id_for("/media/input/nested/second.mkv"), 2)
+        self.assertEqual(files.reference("/media/input/nested/second.mkv"), "file #2")
+        self.assertEqual(files.display_path("/media/first.mkv"), "/media/first.mkv")
+        self.assertEqual(
+            files.display_path("/media/input/nested/second.mkv"),
+            os.path.join("nested", "second.mkv"),
+        )
+        self.assertEqual(files.display_path("/net/library/third.mkv"), "/net/library/third.mkv")
+        self.assertEqual(files.ids, {
+            "/media/first.mkv": 1,
+            "/media/input/nested/second.mkv": 2,
+            "/net/library/third.mkv": 3,
+        })
 
 
 if __name__ == "__main__":

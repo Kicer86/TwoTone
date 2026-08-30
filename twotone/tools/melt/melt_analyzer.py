@@ -12,6 +12,7 @@ from .streams_picker import StreamsPicker
 from .melt_common import (
     AttachmentRef,
     AudioStreamRef,
+    MeltInputFiles,
     StreamType,
     SubtitleStreamRef,
     VideoStreamRef,
@@ -36,7 +37,7 @@ class MeltAnalyzer:
         self.duplicates_source = duplicates_source
         self.workspace = workspace
         self.allow_length_mismatch = allow_length_mismatch
-        self.base_path: str | None = None
+        self.input_paths: tuple[str, ...] = ()
 
     def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
         base_plan = self._prepare_duplicates_set(duplicates)
@@ -56,16 +57,17 @@ class MeltAnalyzer:
                 files = group["files"]
                 output_name = group["output_name"]
 
-                ids = {file: i + 1 for i, file in enumerate(files)}
+                input_files = MeltInputFiles(files, self.input_paths)
+                self._log_group_inputs(title, input_files)
 
                 # analysis for group
                 try:
-                    plan_details, issue, _ = self._analyze_group(files, ids, title)
+                    plan_details, issue, _ = self._analyze_group(files, input_files.ids, title)
                 except UnsupportedMeltInputError as err:
                     plan_details = None
                     issue = str(err)
                 if plan_details is None:
-                    self._log_group_issue(title, issue or "Unknown issue.", files, ids)
+                    self._log_group_issue(issue or "Unknown issue.")
                     skipped_groups.append({
                         "files": files,
                         "output_name": output_name,
@@ -185,7 +187,7 @@ class MeltAnalyzer:
             self.logger.debug(f"Attachment ID #{tid} from file #{file_id}")
 
     @staticmethod
-    def _validate_supported_elements(raw_details: dict[str, dict[str, Any]]) -> None:
+    def _validate_supported_elements(raw_details: dict[str, dict[str, Any]], ids: dict[str, int]) -> None:
         thumbnails: list[tuple[str, str]] = []
 
         for path, details in raw_details.items():
@@ -193,7 +195,7 @@ class MeltAnalyzer:
                 track_type = track.get("type")
                 if track_type not in ("video", "audio", "subtitle", "subtitles"):
                     raise UnsupportedMeltInputError(
-                        f"Melt input contains track type '{track_type}', which is not supported yet: {path}"
+                        f"File #{ids[path]} contains unsupported track type '{track_type}' (not supported yet)."
                     )
 
             for attachment in details.get("attachments", []):
@@ -203,8 +205,8 @@ class MeltAnalyzer:
                     thumbnails.append((path, file_name))
                 else:
                     raise UnsupportedMeltInputError(
-                        f"Melt input contains attachment '{file_name}' with content type "
-                        f"'{content_type}', which is not supported yet: {path}"
+                        f"File #{ids[path]} contains unsupported attachment '{file_name}' "
+                        f"with content type '{content_type}' (not supported yet)."
                     )
 
             chapter_count = 0
@@ -215,22 +217,22 @@ class MeltAnalyzer:
                     chapter_count += 1
             if chapter_count:
                 raise UnsupportedMeltInputError(
-                    f"Melt input contains chapters, which are not supported yet: {path}"
+                    f"File #{ids[path]} contains chapters, which are not supported yet."
                 )
 
         if len(thumbnails) > 1:
-            locations = ", ".join(f"'{name}' from {path}" for path, name in thumbnails)
+            locations = ", ".join(f"'{name}' from file #{ids[path]}" for path, name in thumbnails)
             raise UnsupportedMeltInputError(
                 f"Melt input group contains {len(thumbnails)} thumbnails, which are not supported yet; "
                 f"at most one thumbnail is supported: {locations}"
             )
 
-    def _probe_inputs(self, files: Sequence[str]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    def _probe_inputs(self, files: Sequence[str], ids: dict[str, int]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         raw_details = {
             file: video_utils.get_video_full_info_mkvmerge(file, logger=self.logger)
             for file in files
         }
-        self._validate_supported_elements(raw_details)
+        self._validate_supported_elements(raw_details, ids)
 
         details_full = {
             file: video_utils.get_video_data_mkvmerge(
@@ -348,7 +350,7 @@ class MeltAnalyzer:
                 base_fmt = generic_utils.ms_to_time(base_length) if base_length else "?"
                 other_fmt = generic_utils.ms_to_time(length) if length else "?"
                 self.logger.debug(
-                    f"Subtitles stream from file #{file_id} has length different than length of video stream from file {v_path}. "
+                    f"Subtitles stream from file #{file_id} has length different than length of video stream from file #{base_file_id}. "
                     "This is not supported yet"
                 )
                 return (
@@ -381,13 +383,12 @@ class MeltAnalyzer:
 
         return None
 
-    def _log_group_issue(self, title: str, issue: str, files: Sequence[str], ids: dict[str, int]) -> None:
-        self.logger.warning("Title %s: %s", title, issue)
-        for path in files:
-            self.logger.warning("  #%d: %s", ids[path], self._format_group_path(path))
+    def _log_group_inputs(self, title: str, input_files: MeltInputFiles) -> None:
+        self.logger.info("Title %s: input files:", title)
+        input_files.render(self.logger, prefix="  ")
 
-    def _format_group_path(self, path: str) -> str:
-        return files_utils.format_path(path, self.base_path)
+    def _log_group_issue(self, issue: str) -> None:
+        self.logger.warning("%s", issue)
 
     def _validate_group_lengths(
         self,
@@ -430,7 +431,7 @@ class MeltAnalyzer:
         title: str,
     ) -> tuple[dict[str, Any] | None, str | None, dict[str, Any]]:
         # Probe inputs and print details
-        details_full, attachments, tracks = self._probe_inputs(files)
+        details_full, attachments, tracks = self._probe_inputs(files, ids)
         for file, file_details in details_full.items():
             self._print_file_details(file, file_details, ids)
 

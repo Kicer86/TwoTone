@@ -128,3 +128,5 @@ class MeltPlanRenderOverrideTest(unittest.TestCase):
         all_lines = "\n".join(messages)
         self.assertIn("Polish", all_lines,
                        f"Expected 'Polish' in rendered plan output but got:\n{all_lines}")
+        self.assertIn("Inputs: #1, #2", all_lines)
+        self.assertNotIn("Inputs:\n", all_lines)

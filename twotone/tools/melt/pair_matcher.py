@@ -932,9 +932,6 @@ class PairMatcher:
         is_constant_offset: bool,
     ) -> None:
         """Log the detected global linear relation (the fit, not the boundaries)."""
-        lhs_ref = f"{self.lhs_label} ({os.path.basename(self.lhs_path)})"
-        rhs_ref = f"{self.rhs_label} ({os.path.basename(self.rhs_path)})"
-
         if is_constant_offset:
             k = int(round(-intercept))  # lhs_frame - rhs_frame
             if k > 0:
@@ -955,7 +952,7 @@ class PairMatcher:
         if abs(time_scale - 1.0) > 0.005:
             relation_text += f", audio time-scaled by {time_scale:.5f}"
 
-        self.logger.info("Files %s and %s share content with %s.", lhs_ref, rhs_ref, relation_text)
+        self.logger.info("Files %s and %s share content with %s.", self.lhs_label, self.rhs_label, relation_text)
 
     def _extrapolate_and_verify_global_linear(
         self,

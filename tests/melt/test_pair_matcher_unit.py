@@ -358,7 +358,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         ))
         self.assertFalse(any("median=" in message for message in info_messages))
         self.assertTrue(any(
-            "Files #1 (lhs.mp4) and #2 (rhs.mp4) share content with" in message
+            "Files #1 and #2 share content with" in message
             for message in info_messages
         ))
         self.assertTrue(any(

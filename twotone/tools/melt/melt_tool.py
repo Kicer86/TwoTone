@@ -140,6 +140,7 @@ class MeltTool(Tool):
     def analyze(self, args, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
         interruption = generic_utils.InterruptibleProcess(logger)
         data_source: DuplicatesSource | None = None
+        input_paths: tuple[str, ...] = ()
         parser = self.parser
         if parser is None:
             raise RuntimeError("Parser not initialized. Call setup_parser before analyze.")
@@ -163,6 +164,7 @@ class MeltTool(Tool):
         elif args.input_entries:
             title = args.title
             input_entries = args.input_entries
+            input_paths = tuple(entry['path'] for entry in input_entries)
 
             if not title:
                 parser.error("Missing required option: --title")
@@ -210,14 +212,7 @@ class MeltTool(Tool):
             workspace,
             args.allow_length_mismatch,
         )
-        all_entries = [path for entries in duplicates.values() for path in entries]
-        if path_fix:
-            analyzer.base_path = path_fix[1]
-        elif all_entries:
-            try:
-                analyzer.base_path = os.path.commonpath(all_entries)
-            except ValueError:
-                analyzer.base_path = None
+        analyzer.input_paths = input_paths
         analysis = analyzer.analyze_duplicates(duplicates)
         return MeltPlan(
             items=analysis,

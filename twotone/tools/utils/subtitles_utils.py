@@ -187,7 +187,14 @@ def _strip_microdvd_header(subs: pysubs2.SSAFile | None, fps: float | None = Non
         return
 
     first = subs[0]
-    if first.start != 0 or first.end != 0:
+    legacy_header = first.start == 0 and first.end == 0
+    one_frame_time = pysubs2.make_time(frames=1, fps=fps) if fps is not None else None
+    one_frame_header = (
+        one_frame_time is not None
+        and first.start == one_frame_time
+        and first.end == one_frame_time
+    )
+    if not legacy_header and not one_frame_header:
         return
 
     try:
