@@ -99,12 +99,14 @@ class ConcatenateTests(TwoToneTestCase):
 
         previous_cwd = os.getcwd()
         os.chdir(self.wd.path)
-        self.addCleanup(os.chdir, previous_cwd)
-        run_twotone("concatenate", ["first/part.mkv", "second/part.mkv", "--output", "combined.mkv"], ["-r"])
+        try:
+            run_twotone("concatenate", ["first/part.mkv", "second/part.mkv", "--output", "combined.mkv"], ["-r"])
 
-        self.assertTrue(os.path.exists(os.path.join(self.wd.path, "combined.mkv")))
-        self.assertFalse(os.path.exists(first_file))
-        self.assertFalse(os.path.exists(second_file))
+            self.assertTrue(os.path.exists(os.path.join(self.wd.path, "combined.mkv")))
+            self.assertFalse(os.path.exists(first_file))
+            self.assertFalse(os.path.exists(second_file))
+        finally:
+            os.chdir(previous_cwd)
 
 
     def test_mkv_concatenation_preserves_chapters_and_attachments(self):
