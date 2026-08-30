@@ -98,7 +98,7 @@ class RuntimeVersionTest(unittest.TestCase):
                 work_dir = os.path.join(temp_dir, "work")
                 cache_dir = os.path.join(temp_dir, "cache")
 
-                with patch.dict(twotone.TOOLS, {"test": (tool, "test tool")}, clear=True), \
+                with patch.dict(twotone.TOOLS, {"test": (tool, "test tool", False)}, clear=True), \
                      patch.object(twotone.process_utils, "ensure_tools_exist"), \
                      patch.object(twotone.input_validation, "InputValidator") as validator:
                     validator.return_value.validate.return_value = report
@@ -138,6 +138,7 @@ class DeleteWarningTest(unittest.TestCase):
         tool.required_tools.return_value = set()
         plan = Mock()
         plan.is_empty.return_value = True
+        plan.input_files.return_value = ()
         tool.analyze.return_value = plan
         events = []
 
