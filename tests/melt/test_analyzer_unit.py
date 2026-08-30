@@ -265,7 +265,8 @@ class MeltAnalyzerTest(TwoToneTestCase):
              patch.object(self.analyzer, "_analyze_group", return_value=({}, None, {})):
             self.analyzer.analyze_duplicates({})
 
-        self.assertTrue(any("#1: nested/input.mkv" in message for message in logged.output))
+        relative_path = os.path.join("nested", "input.mkv")
+        self.assertTrue(any(f"#1: {relative_path}" in message for message in logged.output))
 
 
 class MeltInputFilesTest(unittest.TestCase):
@@ -279,7 +280,10 @@ class MeltInputFilesTest(unittest.TestCase):
         self.assertEqual(files.id_for("/media/input/nested/second.mkv"), 2)
         self.assertEqual(files.reference("/media/input/nested/second.mkv"), "file #2")
         self.assertEqual(files.display_path("/media/first.mkv"), "/media/first.mkv")
-        self.assertEqual(files.display_path("/media/input/nested/second.mkv"), "nested/second.mkv")
+        self.assertEqual(
+            files.display_path("/media/input/nested/second.mkv"),
+            os.path.join("nested", "second.mkv"),
+        )
         self.assertEqual(files.display_path("/net/library/third.mkv"), "/net/library/third.mkv")
         self.assertEqual(files.ids, {
             "/media/first.mkv": 1,
