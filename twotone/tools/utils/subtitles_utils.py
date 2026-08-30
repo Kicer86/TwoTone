@@ -108,9 +108,7 @@ def file_encoding(file: str) -> str:
                 break
         detector.close()
 
-    encoding = detector.result["encoding"]
-
-    return encoding
+    return detector.result["encoding"] or "utf-8"
 
 
 def open_subtitle_file(
