@@ -209,17 +209,6 @@ class MeltAnalyzer:
                         f"with content type '{content_type}' (not supported yet)."
                     )
 
-            chapter_count = 0
-            for chapter in details.get("chapters", []):
-                if isinstance(chapter, dict) and isinstance(chapter.get("num_entries"), int):
-                    chapter_count += chapter["num_entries"]
-                else:
-                    chapter_count += 1
-            if chapter_count:
-                raise UnsupportedMeltInputError(
-                    f"File #{ids[path]} contains chapters, which are not supported yet."
-                )
-
         if len(thumbnails) > 1:
             locations = ", ".join(f"'{name}' from file #{ids[path]}" for path, name in thumbnails)
             raise UnsupportedMeltInputError(
@@ -243,6 +232,8 @@ class MeltAnalyzer:
             )
             for file in files
         }
+        for file, details in details_full.items():
+            details["chapters"] = raw_details[file].get("chapters", [])
         attachments = {file: info["attachments"] for file, info in details_full.items()}
         tracks = {file: info["tracks"] for file, info in details_full.items()}
         return details_full, attachments, tracks
@@ -322,6 +313,43 @@ class MeltAnalyzer:
             picker_wd,
         )
         return streams_picker.pick_streams(tracks, ids)
+
+    @staticmethod
+    def _has_chapters(details: dict[str, Any]) -> bool:
+        return bool(details.get("chapters", []))
+
+    def _pick_chapter_source(
+        self,
+        files_details: dict[str, dict[str, Any]],
+        tracks: dict[str, Any],
+        video_streams: Sequence[VideoStreamRef],
+        ids: dict[str, int],
+    ) -> str | None:
+        """Pick chapters only when their source timeline already matches base video."""
+        base_video = video_streams[0]
+        base_path = base_video.path
+        if self._has_chapters(files_details[base_path]):
+            return base_path
+
+        base_track = self._pick_track_by_tid(
+            tracks[base_path]["video"], base_video.mkvmerge_track_id,
+        )
+        base_length = base_track.get("length")
+        for path, details in files_details.items():
+            if path == base_path or not self._has_chapters(details):
+                continue
+
+            file_id = ids[path]
+            source_track = self._pick_primary_video_track(tracks[path]["video"], file_id)
+            if source_track.get("length") == base_length:
+                return path
+
+            self.logger.debug(
+                "Not copying chapters from file #%d because its video length differs from the base video.",
+                file_id,
+            )
+
+        return None
 
     def _validate_input_files(
         self,
@@ -462,6 +490,8 @@ class MeltAnalyzer:
         if issue:
             return None, issue, details_full
 
+        chapter_source = self._pick_chapter_source(details_full, tracks, video_streams, ids)
+
         # Attachments picking
         picked_attachments = AttachmentsPicker(self.logger).pick_attachments(attachments)
         audio_prod_lang = self.duplicates_source.get_metadata_for(video_streams[0].path).get("audio_prod_lang")
@@ -487,6 +517,7 @@ class MeltAnalyzer:
                 "subtitle": subtitle_streams,
             },
             "attachments": picked_attachments,
+            "chapter_source": chapter_source,
             "audio_prod_lang": audio_prod_lang,
             "files_details": details_full,
         }, None, details_full

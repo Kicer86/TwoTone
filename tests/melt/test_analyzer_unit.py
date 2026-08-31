@@ -7,7 +7,7 @@ from unittest.mock import patch
 from common import TwoToneTestCase
 from twotone.tools.melt.melt import MeltAnalyzer, StaticSource
 from twotone.tools.melt.melt_analyzer import UnsupportedMeltInputError
-from twotone.tools.melt.melt_common import MeltInputFiles
+from twotone.tools.melt.melt_common import MeltInputFiles, VideoStreamRef
 from twotone.tools.utils import generic_utils, video_utils
 
 
@@ -70,11 +70,6 @@ class MeltAnalyzerTest(TwoToneTestCase):
                 }],
             },
             "attachment 'payload.bin'",
-        ),
-        (
-            "chapters",
-            {"chapters": [{"num_entries": 2}]},
-            "chapters",
         ),
     ])
     def test_probe_inputs_rejects_unsupported_elements(
@@ -171,7 +166,10 @@ class MeltAnalyzerTest(TwoToneTestCase):
         ) as parse_info:
             details, attachments, tracks = self.analyzer._probe_inputs([input_path], {input_path: 1})
 
-        self.assertEqual({input_path: parsed_info}, details)
+        self.assertEqual(
+            {input_path: {**parsed_info, "chapters": []}},
+            details,
+        )
         self.assertEqual({input_path: parsed_info["attachments"]}, attachments)
         self.assertEqual({input_path: parsed_info["tracks"]}, tracks)
         raw_probe.assert_called_once_with(input_path, logger=self.logger)
@@ -181,6 +179,69 @@ class MeltAnalyzerTest(TwoToneTestCase):
             logger=self.logger,
             _mkvmerge_info=raw_info,
         )
+
+    def test_pick_chapter_source_prefers_base_video(self):
+        base_path = os.path.join(self.wd.path, "base.mkv")
+        other_path = os.path.join(self.wd.path, "other.mkv")
+        details = {
+            base_path: {"chapters": [{"num_entries": 2}]},
+            other_path: {"chapters": [{"num_entries": 3}]},
+        }
+        tracks = {
+            base_path: {"video": [{"tid": 0, "length": 1000}]},
+            other_path: {"video": [{"tid": 0, "length": 2000}]},
+        }
+
+        source = self.analyzer._pick_chapter_source(
+            details,
+            tracks,
+            [VideoStreamRef(base_path, 0, 0, None)],
+            {base_path: 1, other_path: 2},
+        )
+
+        self.assertEqual(source, base_path)
+
+    def test_pick_chapter_source_accepts_same_length_non_base_video(self):
+        base_path = os.path.join(self.wd.path, "base.mkv")
+        other_path = os.path.join(self.wd.path, "other.mkv")
+        details = {
+            base_path: {"chapters": []},
+            other_path: {"chapters": [{"num_entries": 2}]},
+        }
+        tracks = {
+            base_path: {"video": [{"tid": 0, "length": 1000}]},
+            other_path: {"video": [{"tid": 0, "length": 1000}]},
+        }
+
+        source = self.analyzer._pick_chapter_source(
+            details,
+            tracks,
+            [VideoStreamRef(base_path, 0, 0, None)],
+            {base_path: 1, other_path: 2},
+        )
+
+        self.assertEqual(source, other_path)
+
+    def test_pick_chapter_source_skips_different_length_non_base_video(self):
+        base_path = os.path.join(self.wd.path, "base.mkv")
+        other_path = os.path.join(self.wd.path, "other.mkv")
+        details = {
+            base_path: {"chapters": []},
+            other_path: {"chapters": [{"num_entries": 2}]},
+        }
+        tracks = {
+            base_path: {"video": [{"tid": 0, "length": 1000}]},
+            other_path: {"video": [{"tid": 0, "length": 1001}]},
+        }
+
+        source = self.analyzer._pick_chapter_source(
+            details,
+            tracks,
+            [VideoStreamRef(base_path, 0, 0, None)],
+            {base_path: 1, other_path: 2},
+        )
+
+        self.assertIsNone(source)
 
     def test_analyze_duplicates_skips_only_group_with_unsupported_input(self):
         unsupported_path = os.path.join(self.wd.path, "unsupported.mkv")

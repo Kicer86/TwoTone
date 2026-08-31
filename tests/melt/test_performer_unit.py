@@ -140,6 +140,43 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(args[args.index("--language") + 1], "1:pol")
         self.assertEqual(args[args.index("--sync") + 1], "1:125")
 
+    def test_process_duplicates_extracts_selected_chapters(self):
+        performer = self._make_performer()
+        source_path = "/library/Movie.mkv"
+        plan = [{
+            "title": "Title",
+            "groups": [{
+                "output_name": "Movie",
+                "files": [source_path],
+                "chapter_source": source_path,
+                "streams": {"video": [(source_path, 0, 0, None)]},
+            }],
+        }]
+        prepared = Mock(
+            entries=[_StreamEntry("video", 0, source_path, None)],
+            input_files={source_path},
+        )
+        captured_mkvmerge_args: list[str] = []
+
+        def run_process(tool, args, **_kwargs):
+            if tool == "mkvextract":
+                with open(args[-1], "w") as chapters_file:
+                    chapters_file.write("<Chapters />")
+            else:
+                captured_mkvmerge_args.extend(args)
+                with open(args[1], "wb") as output_file:
+                    output_file.write(b"muxed")
+            return _FAKE_PROCESS_OK
+
+        with patch.object(performer, "_prepare_stream_entries", return_value=prepared), \
+             patch.object(process_utils, "start_process", side_effect=run_process), \
+             patch.object(video_utils, "validate_media_output"):
+            performer.process_duplicates(plan)
+
+        self.assertEqual(captured_mkvmerge_args[2], "--no-chapters")
+        chapter_index = captured_mkvmerge_args.index("--chapters")
+        self.assertTrue(captured_mkvmerge_args[chapter_index + 1].endswith(".xml"))
+
     def test_process_duplicates_failed_mux_preserves_existing_output(self):
         performer = self._make_performer()
         input_a = os.path.join(performer.output_dir, "a.mkv")
@@ -280,6 +317,20 @@ class MeltPerformerUnitTest(unittest.TestCase):
         track_order_idx = args.index("--track-order")
         track_order = args[track_order_idx + 1]
         self.assertEqual(track_order, "0:0,0:1,0:3,0:4,0:5")
+
+    def test_build_mkvmerge_args_uses_only_explicit_chapter_file(self):
+        performer = self._make_performer()
+
+        args = performer.build_mkvmerge_args(
+            "/tmp/out.mkv",
+            [_StreamEntry("video", 0, "/tmp/input.mkv", None)],
+            attachments=[],
+            preferred_audio=None,
+            required_input_files=["/tmp/input.mkv"],
+            chapters_file="/tmp/chapters.xml",
+        )
+
+        self.assertEqual(args[:5], ["-o", "/tmp/out.mkv", "--no-chapters", "--chapters", "/tmp/chapters.xml"])
 
     def test_strict_audio_mapping_collapses_ambiguous_boundary_matches(self):
         mapping = [
