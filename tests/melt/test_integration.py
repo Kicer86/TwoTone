@@ -10,6 +10,7 @@ from common import (
     build_test_video,
     hashes,
     list_files,
+    run_ffmpeg,
     run_twotone,
 )
 from melt.helpers import (
@@ -20,6 +21,67 @@ from melt.helpers import (
 
 
 class MeltIntegrationTest(MeltTestBase):
+
+    def test_same_length_unrelated_videos_are_not_melted(self):
+        """Equal durations alone must not make two unrelated videos mergeable."""
+        def create_video(name, color, frequency):
+            path = os.path.join(self.wd.path, name)
+            run_ffmpeg([
+                "-f", "lavfi", "-i", f"color=c={color}:s=640x480:r=25:d=6",
+                "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=44100:d=6",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-shortest", path,
+            ], expected_path=path)
+            return path
+
+        file1 = create_video("red.mkv", "red", 440)
+        file2 = create_video("blue.mkv", "blue", 880)
+        self.assertEqual(video_utils.get_video_duration(file1), video_utils.get_video_duration(file2))
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Unrelated", file1)
+        duplicates.add_entry("Unrelated", file2)
+        duplicates.add_metadata(file1, "audio_lang", "eng")
+        duplicates.add_metadata(file2, "audio_lang", "pol")
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        plan = analyze_duplicates_helper(self.logger.getChild("Melter"), duplicates, self.workspace)
+        process_duplicates_helper(self.logger.getChild("Melter"), interruption, self.workspace, output_dir, plan)
+
+        self.assertEqual(hashes(output_dir), {})
+
+    def test_same_length_intro_outro_offset_requires_allow_length_mismatch(self):
+        """Equal total duration may still hide divergent intro and outro content."""
+        file1 = add_to_test_dir(self.wd.path, self.edge_fixtures["diff_intro_same"][0])
+        file2 = add_to_test_dir(self.wd.path, self.edge_fixtures["diff_outro"][0])
+        self.assertEqual(video_utils.get_video_duration(file1), video_utils.get_video_duration(file2))
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Offset", file1)
+        duplicates.add_entry("Offset", file2)
+        duplicates.add_metadata(file1, "audio_lang", "eng")
+        duplicates.add_metadata(file2, "audio_lang", "pol")
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+
+        logger = self.logger.getChild("Melter")
+        plan = analyze_duplicates_helper(logger, duplicates, self.workspace)
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
+        self.assertEqual(hashes(output_dir), {})
+
+        plan = analyze_duplicates_helper(
+            logger,
+            duplicates,
+            self.workspace,
+            allow_length_mismatch=True,
+        )
+        process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
+        self.assertEqual(len(hashes(output_dir)), 1)
 
     def test_simple_duplicate_detection(self):
         def dicts_equal_skip_key(d1, d2, skip_keys):
