@@ -658,6 +658,14 @@ class LanguageFixerTool(Tool):
         base, _ = os.path.splitext(video_path)
         final_path = f"{base}.mkv" if not is_mkv else video_path
 
+        if not is_mkv and os.path.lexists(final_path):
+            self.logger.error(
+                "Refusing to replace existing MKV output for %s: %s",
+                files_utils.format_path(video_path, self._base_path),
+                files_utils.format_path(final_path, self._base_path),
+            )
+            return False
+
         assert self.workspace is not None
         with self.workspace.staging_for(final_path) as staging:
             args = ["-o", staging.path]
@@ -681,8 +689,15 @@ class LanguageFixerTool(Tool):
                 return False
 
             if not is_mkv:
-                os.remove(video_path)
                 staging.commit()
+                try:
+                    os.remove(video_path)
+                except OSError as error:
+                    self.logger.warning(
+                        "Converted MKV was saved, but could not remove input %s: %s",
+                        files_utils.format_path(video_path, self._base_path),
+                        error,
+                    )
                 self.logger.info(f"Converted to MKV: {files_utils.format_path(final_path, self._base_path)}")
             else:
                 staging.commit()

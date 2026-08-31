@@ -249,6 +249,8 @@ class Transcoder(generic_utils.InterruptibleProcess):
             target_file = input_file
         else:
             target_file = os.path.join(os.path.dirname(input_file), f"{basename}.{ext}")
+            if os.path.lexists(target_file):
+                raise RuntimeError(f"Refusing to replace existing output file: {target_file}")
 
         # The staged encode lives next to the target so that the final commit
         # is an atomic same-filesystem rename.
