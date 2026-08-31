@@ -164,8 +164,9 @@ class AudioAlignmentTest(TwoToneTestCase):
     CACHE_VERSION = "1"
     FRAME_DRIFT_CACHE_VERSION = "1"
     CONSTANT_OFFSET_CACHE_VERSION = "2"
-    SPARSE_PTS_CACHE_VERSION = "2"
-    SPARSE_OUTRO_PTS_CACHE_VERSION = "1"
+    SPARSE_PTS_CACHE_VERSION = "4"
+    SPARSE_OUTRO_PTS_CACHE_VERSION = "3"
+    SPARSE_PTS_REFERENCE_CACHE_VERSION = "1"
     CONSTANT_OFFSET_FRAMES = 5
     BLACK_INTRO_SECONDS = 0.5
     BLACK_OUTRO_SECONDS = 0.5
@@ -190,6 +191,7 @@ class AudioAlignmentTest(TwoToneTestCase):
     frame_reference_variant_paths: ClassVar[dict[str, str]]
     frame_drift_variant_paths: ClassVar[dict[str, str]]
     constant_offset_variant_paths: ClassVar[dict[str, str]]
+    sparse_pts_reference_path: ClassVar[str]
     sparse_pts_variant_paths: ClassVar[dict[str, str]]
     sparse_outro_pts_variant_paths: ClassVar[dict[str, str]]
     melt_cache: ClassVar[MeltCache | None]
@@ -259,6 +261,13 @@ class AudioAlignmentTest(TwoToneTestCase):
             ))
             for name, width in (("small", 1278), ("large", 1282))
         }
+
+        cls.sparse_pts_reference_path = str(file_cache.get_or_generate(
+            "audio_align_sparse_pts_reference",
+            cls.SPARSE_PTS_REFERENCE_CACHE_VERSION,
+            "avi",
+            cls._generate_sparse_pts_reference,
+        ))
 
         cls.sparse_pts_variant_paths = {
             name: str(file_cache.get_or_generate(
@@ -490,14 +499,22 @@ class AudioAlignmentTest(TwoToneTestCase):
         )
 
     @classmethod
-    def _generate_sparse_pts_variant(cls, spec: VariantSpec, out_path: Path) -> None:
-        first_frame_after_intro = round(cls.BLACK_INTRO_SECONDS * cls.FPS)
-        reference_path = cls.variant_paths["v00_asR_vsR_aeR_veR"]
-        filter_complex = (
-            f"[0:v]select='eq(n\\,0)+gte(n\\,{first_frame_after_intro})',"
+    def _sparse_pts_video_filter(cls, select_expr: str, spec: VariantSpec) -> str:
+        return (
+            f"[0:v]select='{select_expr}',"
             f"scale={spec.width}:{spec.height}[v]"
         )
 
+    @classmethod
+    def _generate_sparse_pts_reference(cls, out_path: Path) -> None:
+        cls._generate_avi_variant(
+            "[0:v]scale=1280:720[v]",
+            out_path,
+        )
+
+    @classmethod
+    def _generate_avi_variant(cls, filter_complex: str, out_path: Path) -> None:
+        reference_path = cls.variant_paths["v00_asR_vsR_aeR_veR"]
         run_ffmpeg(
             [
                 "-y",
@@ -505,21 +522,27 @@ class AudioAlignmentTest(TwoToneTestCase):
                 "-filter_complex", filter_complex,
                 "-map", "[v]",
                 "-map", "0:a:0",
-                # Preserve the selected frames' original timestamps.  The AVI
-                # muxer represents the missing black frames as empty frame
-                # slots, so playback holds frame zero until the real picture
-                # begins while decoding yields only one frame for that span.
                 "-fps_mode", "passthrough",
                 "-c:v", "mpeg4",
                 "-q:v", "3",
                 "-pix_fmt", "yuv420p",
-                # Copy the reference AAC bitstream so encoder priming cannot
-                # masquerade as an alignment failure in this video-only case.
+                # Identical copied audio makes these strictly video-only
+                # variants and avoids encoder-priming differences.
                 "-c:a", "copy",
                 str(out_path),
             ],
             expected_path=str(out_path),
         )
+
+    @classmethod
+    def _generate_sparse_pts_variant(cls, spec: VariantSpec, out_path: Path) -> None:
+        first_frame_after_intro = round(cls.BLACK_INTRO_SECONDS * cls.FPS)
+        filter_complex = cls._sparse_pts_video_filter(
+            f"eq(n\\,0)+gte(n\\,{first_frame_after_intro})", spec,
+        )
+        # The AVI muxer represents the omitted black frames as empty frame
+        # slots, so playback holds frame zero until the real picture begins.
+        cls._generate_avi_variant(filter_complex, out_path)
 
     @classmethod
     def _generate_sparse_outro_pts_variant(cls, spec: VariantSpec, out_path: Path) -> None:
@@ -531,30 +554,13 @@ class AudioAlignmentTest(TwoToneTestCase):
         if frame_count is None:
             raise RuntimeError(f"Could not count frames in {reference_path}")
         last_frame = frame_count - 1
-        filter_complex = (
-            f"[0:v]select='lte(n\\,{first_outro_frame})+eq(n\\,{last_frame})',"
-            f"scale={spec.width}:{spec.height}[v]"
+        filter_complex = cls._sparse_pts_video_filter(
+            f"lte(n\\,{first_outro_frame})+eq(n\\,{last_frame})", spec,
         )
 
-        run_ffmpeg(
-            [
-                "-y",
-                "-i", reference_path,
-                "-filter_complex", filter_complex,
-                "-map", "[v]",
-                "-map", "0:a:0",
-                # Keeping the last frame forces AVI to retain the original
-                # video-stream duration.  The omitted intermediate black
-                # frames become empty slots rather than a shortened track.
-                "-fps_mode", "passthrough",
-                "-c:v", "mpeg4",
-                "-q:v", "3",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "copy",
-                str(out_path),
-            ],
-            expected_path=str(out_path),
-        )
+        # Keeping the last frame forces AVI to retain the original video-stream
+        # duration.  The omitted intermediate black frames become empty slots.
+        cls._generate_avi_variant(filter_complex, out_path)
 
     @staticmethod
     def _pick_expected_base(lhs: VariantSpec, rhs: VariantSpec) -> VariantSpec:
@@ -900,7 +906,7 @@ class AudioAlignmentTest(TwoToneTestCase):
         self._assert_melt_pair_alignment(
             reference,
             sparse,
-            self.variant_paths[reference.name],
+            self.sparse_pts_reference_path,
             self.sparse_pts_variant_paths[sparse_variant],
         )
 
@@ -927,7 +933,7 @@ class AudioAlignmentTest(TwoToneTestCase):
         self._assert_melt_pair_alignment(
             reference,
             sparse,
-            self.variant_paths[reference.name],
+            self.sparse_pts_reference_path,
             self.sparse_outro_pts_variant_paths[sparse_variant],
         )
 

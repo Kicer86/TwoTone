@@ -43,6 +43,17 @@ class PairMatcherUnitTest(unittest.TestCase):
         """Build a synthetic FramesInfo dict with dummy paths."""
         return {ts: {"path": f"/{prefix}/{ts}.png", "frame_id": i} for i, ts in enumerate(timestamps)}
 
+    @classmethod
+    def _make_frames_at_fps(
+        cls, frame_count: int, fps: float, prefix: str = "fake",
+    ) -> dict[int, dict]:
+        timestamps = [round(frame_id * 1000 / fps) for frame_id in range(frame_count)]
+        return cls._make_frames(timestamps, prefix)
+
+    @staticmethod
+    def _timestamp_for_frame(frame_id: int, fps: float) -> int:
+        return round(frame_id * 1000 / fps)
+
     # ---- _extrapolate_through_low_entropy ----
 
     def test_extrapolate_pure_low_entropy_lhs_extends(self):
@@ -409,6 +420,24 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(fit.intercept, 0.0)
         self.assertAlmostEqual(fit.time_scale, 1.0, places=6)
 
+    def test_global_linear_uses_presentation_slots_across_empty_frame_gap(self):
+        """Empty decoder slots must not look like a permanent frame offset."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        lhs_frames = self._make_frames(list(range(0, 20040, 40)), prefix="lhs")
+        # The rhs decoder exposes frame zero and then resumes at 480 ms.  Its
+        # decode ordinals are shifted by 11, but presentation slots still line
+        # up exactly with lhs.
+        rhs_frames = self._make_frames([0, *range(480, 20040, 40)], prefix="rhs")
+        matching_pairs = [(2000, 2000), (8000, 8000), (14000, 14000), (20000, 20000)]
+
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(fit)
+        self.assertTrue(fit.is_constant_offset)
+        self.assertEqual(fit.slope, 1.0)
+        self.assertEqual(fit.intercept, 0.0)
+        self.assertAlmostEqual(fit.time_scale, 1.0, places=6)
+
     def test_constant_offset_rejected_high_std(self):
         """When frame-number offsets vary too much (std > 1), returns None."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
@@ -450,12 +479,15 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         # RHS has 23 frames for each 24 LHS frames while preserving playback
         # time: rhs_frame = 23/24 * lhs_frame + 1.
-        lhs_frames = self._make_frames(list(range(0, 10001 * 40, 40)), prefix="lhs")
-        rhs_frames = self._make_frames(list(range(0, 9590 * 40, 40)), prefix="rhs")
+        lhs_frames = self._make_frames_at_fps(10001, 24.0, prefix="lhs")
+        rhs_frames = self._make_frames_at_fps(9590, 23.0, prefix="rhs")
 
         matching_frame_ids = [1000, 4000, 7000, 9000]
         matching_pairs = [
-            (lhs_id * 40, int(round((23 / 24) * lhs_id + 1)) * 40)
+            (
+                self._timestamp_for_frame(lhs_id, 24.0),
+                self._timestamp_for_frame(int(round((23 / 24) * lhs_id + 1)), 23.0),
+            )
             for lhs_id in matching_frame_ids
         ]
 
@@ -471,12 +503,15 @@ class PairMatcherUnitTest(unittest.TestCase):
         """A near-identity frame slope with an FPS speed change yields time_scale != 1."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=26.5)
 
-        lhs_frames = self._make_frames(list(range(0, 10001 * 40, 40)), prefix="lhs")
-        rhs_frames = self._make_frames(list(range(0, 10291 * 40, 40)), prefix="rhs")
+        lhs_frames = self._make_frames_at_fps(10001, 25.0, prefix="lhs")
+        rhs_frames = self._make_frames_at_fps(10291, 26.5, prefix="rhs")
 
         matching_frame_ids = [1000, 4000, 7000, 9000]
         matching_pairs = [
-            (lhs_id * 40, int(round(1.028 * lhs_id)) * 40)
+            (
+                self._timestamp_for_frame(lhs_id, 25.0),
+                self._timestamp_for_frame(int(round(1.028 * lhs_id)), 26.5),
+            )
             for lhs_id in matching_frame_ids
         ]
 
@@ -493,12 +528,15 @@ class PairMatcherUnitTest(unittest.TestCase):
         """Extreme frame-count conversion is not a near-identity drift → None."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
 
-        lhs_frames = self._make_frames(list(range(0, 10001 * 40, 40)), prefix="lhs")
-        rhs_frames = self._make_frames(list(range(0, 11001 * 40, 40)), prefix="rhs")
+        lhs_frames = self._make_frames_at_fps(10001, 25.0, prefix="lhs")
+        rhs_frames = self._make_frames_at_fps(11001, 25.0, prefix="rhs")
 
         matching_frame_ids = [1000, 4000, 7000, 9000]
         matching_pairs = [
-            (lhs_id * 40, int(round(1.08 * lhs_id + 1)) * 40)
+            (
+                self._timestamp_for_frame(lhs_id, 25.0),
+                self._timestamp_for_frame(int(round(1.08 * lhs_id + 1)), 25.0),
+            )
             for lhs_id in matching_frame_ids
         ]
 
@@ -523,11 +561,11 @@ class PairMatcherUnitTest(unittest.TestCase):
         """Two distant pairs can prove the constant frame offset seen on Ubuntu CI."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
 
-        lhs_frames = self._make_frames(list(range(480, 60441, 40)), prefix="lhs")
+        lhs_frames = self._make_frames(list(range(0, 60441, 40)), prefix="lhs")
         rhs_frames = self._make_frames(list(range(0, 60441, 40)), prefix="rhs")
         matching_pairs = [
-            (10480, 10480),
-            (50480, 50480),
+            (10480, 10000),
+            (50480, 50000),
         ]
 
         fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
@@ -535,10 +573,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertIsNotNone(fit)
         self.assertTrue(fit.is_constant_offset)
         self.assertEqual(fit.slope, 1.0)
-        # lhs key list starts at 480ms (frame_id 0) while rhs starts at 0ms
-        # (frame_id 0), so at a shared timestamp the lhs frame_id trails the rhs
-        # frame_id by 12 (480/40): offset lhs-rhs = -12 → intercept +12.
-        self.assertEqual(fit.intercept, 12.0)
+        self.assertEqual(fit.intercept, -12.0)
 
     def test_constant_offset_slight_jitter_within_tolerance(self):
         """Small jitter (< 1 frame) in frame-number offsets is still a constant offset."""
@@ -685,6 +720,26 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(result[0], (0, 0))
         self.assertEqual(result[-1], (10000, 10000))
 
+    def test_verified_extrapolation_preserves_sparse_outro_timeline(self):
+        """A held black outro uses its timeline edge, not its decode ordinal."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        pm.lhs_all_frames = self._make_frames(list(range(0, 10040, 40)), prefix="lhs")
+        pm.rhs_all_frames = self._make_frames(
+            [*range(0, 9640, 40), 10000], prefix="rhs",
+        )
+        matching_pairs = [(4000, 4000), (6000, 6000), (9000, 9000)]
+        fit = GlobalLinearFit(
+            slope=1.0, intercept=0.0, is_constant_offset=True, time_scale=1.0,
+        )
+
+        with self._patch_verify_ctx(), \
+             patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
+            result = pm._extrapolate_and_verify_global_linear(
+                fit, matching_pairs, pm.lhs_all_frames, pm.rhs_all_frames,
+            )
+
+        self.assertEqual(result[-1], (10000, 10000))
+
     def test_verified_extrapolation_stops_at_outermost_match_when_divergent(self):
         """When the extrapolated boundary frames do NOT verify, the boundary stays put."""
         pm = self._make_pm_with_frames(list(range(0, 10040, 40)), list(range(0, 10040, 40)))
@@ -742,7 +797,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         ctx = self._make_verify_ctx({}, cutoff=16,
                                     lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
         with self._patch_entropy({"/l.png": 0.5, "/r.png": 0.5}):
-            self.assertTrue(pm._boundary_content_matches(ctx, 0, 0, 0, 0))
+            self.assertTrue(pm._boundary_content_matches(ctx, 0, 0))
 
     def test_boundary_content_matches_rejects_black_vs_content(self):
         """A decisively black frame vs a rich frame never verifies (one lead-in is black)."""
@@ -750,7 +805,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         ctx = self._make_verify_ctx({}, cutoff=16,
                                     lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
         with self._patch_entropy({"/l.png": 0.5, "/r.png": 5.0}):
-            self.assertFalse(pm._boundary_content_matches(ctx, 0, 0, 0, 0))
+            self.assertFalse(pm._boundary_content_matches(ctx, 0, 0))
 
     def test_boundary_content_matches_flat_vs_rich_falls_through_to_phash(self):
         """A flat-but-lit frame (title card, sky) vs a rich one is not a
@@ -764,7 +819,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         ctx = self._make_verify_ctx({"/l.png": 0, "/r.png": 12}, cutoff=16,
                                     lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
         with self._patch_entropy({"/l.png": 3.2, "/r.png": 5.0}):
-            self.assertTrue(pm._boundary_content_matches(ctx, 0, 0, 0, 0))
+            self.assertTrue(pm._boundary_content_matches(ctx, 0, 0))
 
     def test_boundary_content_matches_accepts_within_cutoff(self):
         """A distance within the pair-calibrated cutoff verifies as the same frame."""
@@ -772,7 +827,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         ctx = self._make_verify_ctx({"/l.png": 0, "/r.png": 12}, cutoff=16,
                                     lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
         with self._patch_entropy({"/l.png": 5.0, "/r.png": 5.0}):
-            self.assertTrue(pm._boundary_content_matches(ctx, 0, 0, 0, 0))
+            self.assertTrue(pm._boundary_content_matches(ctx, 0, 0))
 
     def test_boundary_content_matches_rejects_beyond_cutoff(self):
         """Divergent content (e.g. grass vs atoms intros) lands far above the
@@ -782,14 +837,14 @@ class PairMatcherUnitTest(unittest.TestCase):
         ctx = self._make_verify_ctx({"/l.png": 0, "/r.png": 124}, cutoff=16,
                                     lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
         with self._patch_entropy({"/l.png": 5.0, "/r.png": 5.0}):
-            self.assertFalse(pm._boundary_content_matches(ctx, 0, 0, 0, 0))
+            self.assertFalse(pm._boundary_content_matches(ctx, 0, 0))
 
     def test_boundary_content_matches_rejects_missing_comparison_image(self):
         """A frame whose comparison image cannot be produced never verifies."""
         pm = self._make_pm_with_frames([0, 40], [0, 40])
         ctx = self._make_verify_ctx({}, cutoff=16,
                                     lhs_images={0: None}, rhs_images={0: "/r.png"})
-        self.assertFalse(pm._boundary_content_matches(ctx, 0, 0, 0, 0))
+        self.assertFalse(pm._boundary_content_matches(ctx, 0, 0))
 
     # ---- _look_for_boundaries: look_ahead robustness ----
 
