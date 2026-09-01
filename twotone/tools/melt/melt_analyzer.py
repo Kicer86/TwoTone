@@ -1,6 +1,7 @@
 import logging
 import os
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 from tqdm import tqdm
@@ -19,10 +20,17 @@ from .melt_common import (
     _is_length_mismatch,
     stream_short_details,
 )
+from .pair_matcher import PairMatcher
 
 
 class UnsupportedMeltInputError(RuntimeError):
     """Raised when an input group contains an element Melt cannot model yet."""
+
+
+@dataclass(frozen=True)
+class AlignmentRequirement:
+    path: str
+    issue: str
 
 
 class MeltAnalyzer:
@@ -359,7 +367,7 @@ class MeltAnalyzer:
         audio_streams: list[AudioStreamRef],
         subtitle_streams: list[SubtitleStreamRef],
     ) -> str | None:
-        # Validate lengths across used files
+        # Validate subtitle lengths against the selected base video.
 
         # Base length for detailed checks
         base_video = video_streams[0]
@@ -374,6 +382,7 @@ class MeltAnalyzer:
             path = subtitle_stream.path
             file_id = ids[path]
             length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
+
             if _is_length_mismatch(base_length, length):
                 base_fmt = generic_utils.ms_to_time(base_length) if base_length else "?"
                 other_fmt = generic_utils.ms_to_time(length) if length else "?"
@@ -381,33 +390,8 @@ class MeltAnalyzer:
                     f"Subtitles stream from file #{file_id} has length different than length of video stream from file #{base_file_id}. "
                     "This is not supported yet"
                 )
-                return (
-                    f"Subtitle length mismatch between #{file_id} ({other_fmt}) and #{base_file_id} ({base_fmt}) (unsupported)."
-                )
 
-        # Audio lengths validation
-        for audio_stream in audio_streams:
-            path = audio_stream.path
-            file_id = ids[path]
-            length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
-            if _is_length_mismatch(base_length, length):
-                base_file_id = ids[v_path]
-                base_fmt = generic_utils.ms_to_time(base_length) if base_length else "?"
-                other_fmt = generic_utils.ms_to_time(length) if length else "?"
-                self.logger.debug(
-                    f"Audio stream from file #{file_id} ({other_fmt}) has length different than "
-                    f"video stream from file #{base_file_id} ({base_fmt}). "
-                    "Check for --allow-length-mismatch option to allow this."
-                )
-
-                if self.allow_length_mismatch:
-                    self.logger.debug("Audio length mismatch detected; audio will be time-adjusted during processing.")
-
-                else:
-                    return (
-                        f"Audio length mismatch between #{file_id} ({other_fmt}) and #{base_file_id} ({base_fmt}) "
-                        f"(use --allow-length-mismatch)."
-                    )
+                return (f"Subtitle length mismatch between #{file_id} ({other_fmt}) and #{base_file_id} ({base_fmt}) (unsupported).")
 
         return None
 
@@ -418,39 +402,46 @@ class MeltAnalyzer:
     def _log_group_issue(self, issue: str) -> None:
         self.logger.warning("%s", issue)
 
-    def _validate_group_lengths(
+    def _find_alignment_requirements(
         self,
         tracks: dict[str, Any],
         ids: dict[str, int],
-        title: str,
-        files: Sequence[str],
-    ) -> str | None:
-        base_length = None
-        base_file_id = None
+        video_streams: list[VideoStreamRef],
+        audio_streams: list[AudioStreamRef],
+        subtitle_streams: list[SubtitleStreamRef],
+    ) -> list[AlignmentRequirement]:
+        stream_paths = {stream.path for stream in (video_streams + audio_streams + subtitle_streams)}
 
-        for path, info in tracks.items():
-            try:
-                track = self._pick_primary_video_track(info["video"], ids[path])
-            except Exception:
-                continue
+        if len(stream_paths) <= 1:
+            return []
 
-            length = track.get("length")
-            if length is None:
-                continue
+        base_path = video_streams[0].path
+        base_file_id = ids[base_path]
+        base_length = self._pick_primary_video_track(tracks[base_path]["video"], base_file_id).get("length")
+        requirements: list[AlignmentRequirement] = []
 
-            if base_length is None:
-                base_length = length
-                base_file_id = ids[path]
-                continue
+        for path in sorted(stream_paths - {base_path}, key=ids.__getitem__):
+            file_id = ids[path]
+            length = self._pick_primary_video_track(tracks[path]["video"], file_id).get("length")
 
             if _is_length_mismatch(base_length, length):
-                issue = f"Video length mismatch between #{ids[path]} and #{base_file_id} (use --allow-length-mismatch)."
-                if self.allow_length_mismatch:
-                    self.logger.debug(f"{issue} Continuing due to allow-length-mismatch.")
-                    continue
-                return issue
+                issue = f"Video length mismatch between #{file_id} and #{base_file_id} (use --allow-length-mismatch)."
+            elif base_length is None or length is None:
+                continue
+            else:
+                with self.workspace.scoped_dir("equal_length_content") as matching_wd:
+                    matcher = PairMatcher(
+                        self.duplicates_source.interruption, matching_wd, base_path, path,
+                        self.logger.getChild("PairMatcher"), lhs_label=f"#{base_file_id}", rhs_label=f"#{file_id}",
+                    )
+                    if matcher.has_identical_timeline_content():
+                        continue
 
-        return None
+                issue = f"Video content mismatch between #{file_id} and #{base_file_id} (use --allow-length-mismatch)."
+
+            requirements.append(AlignmentRequirement(path, issue))
+
+        return requirements
 
     def _analyze_group(
         self,
@@ -474,16 +465,18 @@ class MeltAnalyzer:
             self.logger.debug("No video streams found.")
             return None, "No video streams found.", details_full
 
-        # If all streams come from a single file, length mismatches are irrelevant.
-        stream_paths = {
-            stream.path for stream in (video_streams + audio_streams + subtitle_streams)
-        }
-        if len(stream_paths) > 1:
-            # Only validate lengths for files from which streams are actually used
-            used_tracks = {path: info for path, info in tracks.items() if path in stream_paths}
-            length_issue = self._validate_group_lengths(used_tracks, ids, title, files)
-            if length_issue:
-                return None, length_issue, details_full
+        requirements = self._find_alignment_requirements(
+            tracks, ids, video_streams, audio_streams, subtitle_streams,
+        )
+        if requirements:
+            if self.allow_length_mismatch:
+                for requirement in requirements:
+                    self.logger.debug(
+                        "%s Continuing due to allow-length-mismatch; full content matching runs during processing.",
+                        requirement.issue,
+                    )
+            else:
+                return None, "\n".join(requirement.issue for requirement in requirements), details_full
 
         # Validate and compute audio patch requirements
         issue = self._validate_input_files(tracks, ids, video_streams, audio_streams, subtitle_streams)
@@ -520,4 +513,5 @@ class MeltAnalyzer:
             "chapter_source": chapter_source,
             "audio_prod_lang": audio_prod_lang,
             "files_details": details_full,
+            "alignment_paths": sorted({requirement.path for requirement in requirements}),
         }, None, details_full
