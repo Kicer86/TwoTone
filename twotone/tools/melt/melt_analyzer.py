@@ -422,6 +422,7 @@ class MeltAnalyzer:
 
         for path in sorted(stream_paths - {base_path}, key=ids.__getitem__):
             file_id = ids[path]
+            self.logger.info("Checking video alignment: #%d ↔ #%d", base_file_id, file_id)
             length = self._pick_primary_video_track(tracks[path]["video"], file_id).get("length")
 
             if _is_length_mismatch(base_length, length):
