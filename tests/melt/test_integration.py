@@ -24,18 +24,18 @@ class MeltIntegrationTest(MeltTestBase):
 
     def test_same_length_unrelated_videos_are_not_melted(self):
         """Equal durations alone must not make two unrelated videos mergeable."""
-        def create_video(name, color, frequency):
+        def create_video(name, video_filter, frequency):
             path = os.path.join(self.wd.path, name)
             run_ffmpeg([
-                "-f", "lavfi", "-i", f"color=c={color}:s=640x480:r=25:d=6",
+                "-f", "lavfi", "-i", video_filter,
                 "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=44100:d=6",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
                 "-shortest", path,
             ], expected_path=path)
             return path
 
-        file1 = create_video("red.mkv", "red", 440)
-        file2 = create_video("blue.mkv", "blue", 880)
+        file1 = create_video("testsrc.mkv", "testsrc2=s=640x480:r=25:d=6", 440)
+        file2 = create_video("bars.mkv", "smptebars=s=640x480:r=25:d=6", 880)
         self.assertEqual(video_utils.get_video_duration(file1), video_utils.get_video_duration(file2))
 
         interruption = generic_utils.InterruptibleProcess()
