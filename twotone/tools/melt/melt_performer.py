@@ -22,7 +22,6 @@ from .melt_common import (
     StreamType,
     SubtitleStreamRef,
     VideoStreamRef,
-    _is_length_mismatch,
 )
 from .track_timeline import TrackTimelineMixin
 
@@ -257,6 +256,7 @@ class MeltPerformer(TrackTimelineMixin):
                         attachment_refs,
                         file_ids,
                         files_details,
+                        alignment_paths=set(group.get("alignment_paths", [])),
                     )
 
                     # Sort streams by language alphabetically, unknown languages last
@@ -1731,7 +1731,6 @@ class MeltPerformer(TrackTimelineMixin):
             self.logger.info("  Desired audio start: %d ms", result.timeline_start_ms)
             return result
 
-
     def _choose_audio_strategy(
         self,
         video_path_base: str,
@@ -2200,6 +2199,7 @@ class MeltPerformer(TrackTimelineMixin):
         attachments: Sequence[AttachmentRef],
         file_ids: dict[str, int],
         files_details: dict[str, Any] | None = None,
+        alignment_paths: set[str] | None = None,
     ) -> _PreparedStreams:
         video_streams = [VideoStreamRef(*stream) for stream in video_streams]
         audio_streams = [AudioStreamRef(*stream) for stream in audio_streams]
@@ -2210,6 +2210,7 @@ class MeltPerformer(TrackTimelineMixin):
         video_path_base = base_video.path
         base_audio = next((stream for stream in audio_streams if stream.path == video_path_base), None)
         details = files_details or {}
+        alignment_paths = alignment_paths or set()
         base_duration = self._video_track_duration(video_path_base, details, logger=self.logger)
         base_output_end_ms = self._base_output_end_ms(video_path_base, video_streams, audio_streams)
         base_audio_end_ms = self._base_audio_end_ms(video_path_base, audio_streams)
@@ -2238,9 +2239,8 @@ class MeltPerformer(TrackTimelineMixin):
             audio_desired_start_ms: int | None = self._audio_content_start_ms(
                 self._audio_stream_info(audio_stream)
             )
-            duration = self._video_track_duration(path, details, logger=self.logger)
-            if _is_length_mismatch(base_duration, duration):
-                assert base_duration is not None  # guaranteed by _is_length_mismatch
+            if path in alignment_paths:
+                assert base_duration is not None
                 source_video = self._primary_video_ref(path, details)
                 patched = self._patch_mismatched_audio(
                     base_video,
@@ -2254,7 +2254,7 @@ class MeltPerformer(TrackTimelineMixin):
                 output_stream = patched.stream
                 audio_desired_start_ms = patched.timeline_start_ms
             else:
-                # Length-matching audio is direct-passthrough by default: keep
+                # Aligned audio is direct-passthrough by default: keep
                 # the original file/stream and let final mkvmerge mux it.  Use
                 # the FLAC-domain normalization flow only when direct mkvmerge
                 # would change timing semantics or the track must be trimmed to
