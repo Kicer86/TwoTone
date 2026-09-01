@@ -359,42 +359,6 @@ class MeltAnalyzer:
 
         return None
 
-    def _validate_input_files(
-        self,
-        tracks: dict[str, Any],
-        ids: dict[str, int],
-        video_streams: list[VideoStreamRef],
-        audio_streams: list[AudioStreamRef],
-        subtitle_streams: list[SubtitleStreamRef],
-    ) -> str | None:
-        # Validate subtitle lengths against the selected base video.
-
-        # Base length for detailed checks
-        base_video = video_streams[0]
-        v_path = base_video.path
-        v_tid = base_video.mkvmerge_track_id
-        base_file_id = ids[v_path]
-        base_track = self._pick_track_by_tid(tracks[v_path]["video"], v_tid)
-        base_length = base_track["length"]
-
-        # Subtitle mismatch (unsupported)
-        for subtitle_stream in subtitle_streams:
-            path = subtitle_stream.path
-            file_id = ids[path]
-            length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
-
-            if _is_length_mismatch(base_length, length):
-                base_fmt = generic_utils.ms_to_time(base_length) if base_length else "?"
-                other_fmt = generic_utils.ms_to_time(length) if length else "?"
-                self.logger.debug(
-                    f"Subtitles stream from file #{file_id} has length different than length of video stream from file #{base_file_id}. "
-                    "This is not supported yet"
-                )
-
-                return (f"Subtitle length mismatch between #{file_id} ({other_fmt}) and #{base_file_id} ({base_fmt}) (unsupported).")
-
-        return None
-
     def _log_group_inputs(self, title: str, input_files: MeltInputFiles) -> None:
         self.logger.info("Title %s: input files:", title)
         input_files.render(self.logger, prefix="  ")
@@ -466,9 +430,16 @@ class MeltAnalyzer:
             self.logger.debug("No video streams found.")
             return None, "No video streams found.", details_full
 
-        requirements = self._find_alignment_requirements(
-            tracks, ids, video_streams, audio_streams, subtitle_streams,
-        )
+        requirements = self._find_alignment_requirements(tracks, ids, video_streams, audio_streams, subtitle_streams)
+        alignment_paths = {requirement.path for requirement in requirements}
+        subtitle_paths_requiring_alignment = {stream.path for stream in subtitle_streams if stream.path in alignment_paths}
+
+        if subtitle_paths_requiring_alignment:
+            file_ids = ", ".join(f"#{ids[path]}" for path in sorted(subtitle_paths_requiring_alignment, key=ids.__getitem__))
+            return None, (
+                f"Subtitle streams from {file_ids} require video timeline alignment, which is not supported yet."
+            ), details_full
+
         if requirements:
             if self.allow_video_timeline_mismatch:
                 for requirement in requirements:
@@ -478,11 +449,6 @@ class MeltAnalyzer:
                     )
             else:
                 return None, "\n".join(requirement.issue for requirement in requirements), details_full
-
-        # Validate and compute audio patch requirements
-        issue = self._validate_input_files(tracks, ids, video_streams, audio_streams, subtitle_streams)
-        if issue:
-            return None, issue, details_full
 
         chapter_source = self._pick_chapter_source(details_full, tracks, video_streams, ids)
 
@@ -514,5 +480,5 @@ class MeltAnalyzer:
             "chapter_source": chapter_source,
             "audio_prod_lang": audio_prod_lang,
             "files_details": details_full,
-            "alignment_paths": sorted({requirement.path for requirement in requirements}),
+            "alignment_paths": sorted(alignment_paths),
         }, None, details_full
