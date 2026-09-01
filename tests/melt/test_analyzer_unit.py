@@ -330,13 +330,16 @@ class MeltAnalyzerTest(TwoToneTestCase):
         self.assertTrue(any(f"#1: {relative_path}" in message for message in logged.output))
 
     @parameterized.expand([
-        ("content_mismatch", "Video content mismatch"),
-        ("length_mismatch", "Video length mismatch"),
+        ("content_mismatch_without_flag", "Video content mismatch", False),
+        ("content_mismatch_with_flag", "Video content mismatch", True),
+        ("length_mismatch_without_flag", "Video length mismatch", False),
+        ("length_mismatch_with_flag", "Video length mismatch", True),
     ])
     def test_analyze_group_rejects_subtitles_when_source_requires_timeline_alignment(
         self,
         _name,
         requirement_issue,
+        allow_video_timeline_mismatch,
     ):
         base_path = os.path.join(self.wd.path, "base.mkv")
         subtitle_path = os.path.join(self.wd.path, "subtitle-source.mkv")
@@ -345,6 +348,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
             subtitle_path: {"video": [{"tid": 0, "length": 6000}], "audio": [], "subtitle": []},
         }
         details = {path: {"tracks": value, "attachments": []} for path, value in tracks.items()}
+        self.analyzer.allow_video_timeline_mismatch = allow_video_timeline_mismatch
 
         with patch.object(self.analyzer, "_probe_inputs", return_value=(details, {base_path: [], subtitle_path: []}, tracks)), \
              patch.object(
