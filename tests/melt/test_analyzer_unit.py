@@ -20,7 +20,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
             self.logger,
             duplicates,
             self.workspace,
-            allow_length_mismatch=False,
+            allow_video_timeline_mismatch=False,
         )
 
 

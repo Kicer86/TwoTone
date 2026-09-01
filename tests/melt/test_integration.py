@@ -53,7 +53,7 @@ class MeltIntegrationTest(MeltTestBase):
 
         self.assertEqual(hashes(output_dir), {})
 
-    def test_same_length_intro_outro_offset_requires_allow_length_mismatch(self):
+    def test_same_length_intro_outro_offset_requires_video_timeline_mismatch(self):
         """Equal total duration may still hide divergent intro and outro content."""
         file1 = add_to_test_dir(self.wd.path, self.edge_fixtures["diff_intro_same"][0])
         file2 = add_to_test_dir(self.wd.path, self.edge_fixtures["diff_outro"][0])
@@ -78,7 +78,7 @@ class MeltIntegrationTest(MeltTestBase):
             logger,
             duplicates,
             self.workspace,
-            allow_length_mismatch=True,
+            allow_video_timeline_mismatch=True,
         )
         process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
         self.assertEqual(len(hashes(output_dir)), 1)
@@ -196,7 +196,7 @@ class MeltIntegrationTest(MeltTestBase):
         output_file_hash = hashes(output_dir)
         self.assertEqual(len(output_file_hash), 0)
 
-    def test_allow_length_mismatch(self):
+    def test_allow_video_timeline_mismatch(self):
         file1 = add_to_test_dir(self.wd.path, str(self.sample_video_file))
         file2 = add_to_test_dir(self.wd.path, str(self.sample_vhs_video_file))
 
@@ -215,7 +215,7 @@ class MeltIntegrationTest(MeltTestBase):
             logger,
             duplicates,
             self.workspace,
-            allow_length_mismatch=True,
+            allow_video_timeline_mismatch=True,
         )
         process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 
@@ -342,7 +342,7 @@ class MeltIntegrationTest(MeltTestBase):
             logger,
             duplicates,
             self.workspace,
-            allow_length_mismatch=True,
+            allow_video_timeline_mismatch=True,
         )
         process_duplicates_helper(logger, interruption, self.workspace, output_dir, plan)
 

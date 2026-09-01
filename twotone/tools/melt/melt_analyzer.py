@@ -39,12 +39,12 @@ class MeltAnalyzer:
         logger: logging.Logger,
         duplicates_source: DuplicatesSource,
         workspace: files_utils.Workspace,
-        allow_length_mismatch: bool,
+        allow_video_timeline_mismatch: bool,
     ) -> None:
         self.logger = logger
         self.duplicates_source = duplicates_source
         self.workspace = workspace
-        self.allow_length_mismatch = allow_length_mismatch
+        self.allow_video_timeline_mismatch = allow_video_timeline_mismatch
         self.input_paths: tuple[str, ...] = ()
 
     def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
@@ -426,7 +426,7 @@ class MeltAnalyzer:
             length = self._pick_primary_video_track(tracks[path]["video"], file_id).get("length")
 
             if _is_length_mismatch(base_length, length):
-                issue = f"Video length mismatch between #{file_id} and #{base_file_id} (use --allow-length-mismatch)."
+                issue = f"Video length mismatch between #{file_id} and #{base_file_id} (use --allow-video-timeline-mismatch)."
             elif base_length is None or length is None:
                 continue
             else:
@@ -438,7 +438,7 @@ class MeltAnalyzer:
                     if matcher.has_identical_timeline_content():
                         continue
 
-                issue = f"Video content mismatch between #{file_id} and #{base_file_id} (use --allow-length-mismatch)."
+                issue = f"Video content mismatch between #{file_id} and #{base_file_id} (use --allow-video-timeline-mismatch)."
 
             requirements.append(AlignmentRequirement(path, issue))
 
@@ -470,10 +470,10 @@ class MeltAnalyzer:
             tracks, ids, video_streams, audio_streams, subtitle_streams,
         )
         if requirements:
-            if self.allow_length_mismatch:
+            if self.allow_video_timeline_mismatch:
                 for requirement in requirements:
                     self.logger.debug(
-                        "%s Continuing due to allow-length-mismatch; full content matching runs during processing.",
+                        "%s Continuing due to allow-video-timeline-mismatch; full content matching runs during processing.",
                         requirement.issue,
                     )
             else:

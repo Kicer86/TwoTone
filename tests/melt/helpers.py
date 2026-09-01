@@ -45,7 +45,7 @@ def analyze_duplicates_helper(
     logger: logging.Logger,
     duplicates_source: StaticSource,
     workspace: Workspace,
-    allow_length_mismatch: bool = False,
+    allow_video_timeline_mismatch: bool = False,
 ):
     duplicates_raw = duplicates_source.collect_duplicates()
     duplicates = {title: list(files) for title, files in duplicates_raw.items()}
@@ -53,7 +53,7 @@ def analyze_duplicates_helper(
         logger,
         duplicates_source,
         workspace,
-        allow_length_mismatch,
+        allow_video_timeline_mismatch,
     )
     return analyzer.analyze_duplicates(duplicates)
 
