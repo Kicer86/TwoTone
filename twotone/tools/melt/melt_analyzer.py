@@ -97,13 +97,6 @@ class MeltAnalyzer:
         return analysis_plan
 
     @staticmethod
-    def _pick_track_by_tid(streams: Sequence[dict[str, Any]], tid: int) -> dict[str, Any]:
-        track = next((item for item in streams if item.get("tid") == tid), None)
-        if track is None:
-            raise RuntimeError(f"Track #{tid} not found.")
-        return track
-
-    @staticmethod
     def _pick_primary_video_track(streams: Sequence[dict[str, Any]], file_id: int) -> dict[str, Any]:
         for track in streams:
             if not track.get("attached_pic", False):
