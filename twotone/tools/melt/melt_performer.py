@@ -230,6 +230,7 @@ class MeltPerformer(TrackTimelineMixin):
                 audio_streams = [AudioStreamRef(*stream) for stream in streams_info.get("audio", [])]
                 subtitle_streams = [SubtitleStreamRef(*stream) for stream in streams_info.get("subtitle", [])]
                 attachment_refs = [AttachmentRef(*attachment) for attachment in attachments]
+                chapter_source = group.get("chapter_source")
                 required_input_files = self._collect_required_input_files(
                     video_streams,
                     audio_streams,
@@ -279,6 +280,7 @@ class MeltPerformer(TrackTimelineMixin):
                         attachment_refs,
                         preferred_audio,
                         prepared_streams.input_files,
+                        self._extract_chapters(chapter_source) if chapter_source else None,
                     )
 
                     self.logger.info("Generating file: %s", self._display_path(output))
@@ -335,8 +337,11 @@ class MeltPerformer(TrackTimelineMixin):
         attachments: Sequence[AttachmentRef],
         preferred_audio: _StreamEntry | None,
         required_input_files: Iterable[str],
+        chapters_file: str | None = None,
     ) -> list[str]:
         generation_args: list[str] = ["-o", output_path]
+        if chapters_file:
+            generation_args.extend(["--chapters", chapters_file])
         files_opts: dict[str, dict[str, Any]] = {
             path: {
                 "video": [],
@@ -393,12 +398,25 @@ class MeltPerformer(TrackTimelineMixin):
             for tid, offset_ms in fo["sync_offsets"].items():
                 generation_args.extend(["--sync", f"{tid}:{offset_ms}"])
 
+            generation_args.append("--no-chapters")
             generation_args.append(file_path)
 
         if track_order:
             generation_args.extend(["--track-order", ",".join(track_order)])
 
         return generation_args
+
+    def _extract_chapters(self, source_path: str) -> str:
+        chapters_file = self.workspace.unique_file("chapters", "xml")
+        self.logger.info("Copying chapters from: %s", self._display_path(source_path))
+        process_utils.raise_on_error(
+            process_utils.start_process(
+                "mkvextract",
+                [source_path, "chapters", chapters_file],
+                logger=self.logger,
+            )
+        )
+        return chapters_file
 
     def patch_audio_constant_offset(
         self,

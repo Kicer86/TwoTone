@@ -6,7 +6,6 @@ import logging
 
 from contextlib import redirect_stdout
 from dataclasses import dataclass
-from unittest.mock import patch
 from unittest.mock import Mock, patch
 
 from twotone import twotone

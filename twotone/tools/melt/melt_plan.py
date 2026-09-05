@@ -116,6 +116,13 @@ class MeltPlan:
                     logger.info("%sInputs: %s", prefix, references)
 
                 self._render_group_streams(logger, group, files, input_files if files else None, prefix)
+                chapter_source = group.get("chapter_source")
+                if chapter_source and input_files is not None:
+                    logger.info(
+                        "%sChapters: used from file #%d",
+                        prefix,
+                        input_files.id_for(chapter_source),
+                    )
 
     def _render_group_streams(
         self,
