@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from overrides import override
 from tqdm import tqdm
 
-from .tool import Plan, Tool
+from .tool import Plan, Tool, ToolRuntimeContext
 from twotone.tools.utils import files_utils, generic_utils, language_utils, process_utils, subtitles_utils, video_utils
 
 
@@ -155,10 +155,10 @@ class LanguageFixerTool(Tool):
         )
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:
         self._include_audio = args.audio
         self._base_path = os.path.abspath(args.videos_path[0])
-        self._set_context(logger, workspace)
+        self._set_context(logger, context)
         tools = ["mkvmerge", "mkvextract", "ffprobe"]
         if args.audio:
             tools.append("ffmpeg")
@@ -233,8 +233,8 @@ class LanguageFixerTool(Tool):
         return LanguageFixPlan(items=plan_items, include_audio=self._include_audio, base_path=self._base_path)
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
-        self._set_context(logger, workspace)
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, context: ToolRuntimeContext, plan: Plan) -> None:
+        self._set_context(logger, context)
 
         if not isinstance(plan, LanguageFixPlan):
             raise TypeError(f"Expected LanguageFixPlan, got {type(plan).__name__}")
@@ -326,10 +326,10 @@ class LanguageFixerTool(Tool):
 
         return results
 
-    def _set_context(self, logger: logging.Logger, workspace: files_utils.Workspace) -> None:
+    def _set_context(self, logger: logging.Logger, context: ToolRuntimeContext) -> None:
         self.logger = logger
-        self.workspace = workspace
-        self._interruption = generic_utils.InterruptibleProcess(logger)
+        self.workspace = context.workspace
+        self._interruption = context.interruption
 
     def check_for_stop(self) -> None:
         if self._interruption is not None:

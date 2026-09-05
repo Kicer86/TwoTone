@@ -21,7 +21,8 @@ from .tools import          \
     transcode,              \
     utilities
 
-from .tools.utils import files_utils, generic_utils, input_validation, process_utils
+from .tools.tool import ToolRuntimeContext
+from .tools.utils import files_utils, generic_utils, input_validation, media_analysis, process_utils
 
 TOOLS = {
     "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file", True),
@@ -241,28 +242,50 @@ def execute(argv: list[str]) -> None:
                  generic_utils.get_twotone_working_dir(),
                  keep=args.keep_wd,
                  logger=logger,
-             ) as workspace:
+            ) as workspace:
             tool_logger = logger.getChild(args.tool)
-            required_tools = sorted(tool.required_tools())
+            validation_mode = input_validation.ValidationMode(args.validate_inputs)
+            interruption = generic_utils.InterruptibleProcess(tool_logger)
+            context = ToolRuntimeContext(
+                workspace=workspace,
+                interruption=interruption,
+                media_analysis=media_analysis.MediaAnalysisSession(
+                    workspace,
+                    interruption,
+                    tool_logger.getChild("MediaAnalysis"),
+                    validate_all_streams=validation_mode == input_validation.ValidationMode.FULL,
+                ),
+            )
+            required_tools = set(tool.required_tools())
+            if validation_mode != input_validation.ValidationMode.OFF:
+                required_tools.add("ffprobe")
+                if validation_mode == input_validation.ValidationMode.FULL:
+                    required_tools.add("ffmpeg")
+
             if required_tools:
-                process_utils.ensure_tools_exist(required_tools, tool_logger)
+                process_utils.ensure_tools_exist(sorted(required_tools), tool_logger)
             plan = tool.analyze(
                 args,
                 logger=tool_logger,
-                workspace=workspace,
+                context=context,
             )
 
-            validation_mode = input_validation.ValidationMode(args.validate_inputs)
-            if validation_mode != input_validation.ValidationMode.OFF:
-                validation_tools = ["ffprobe"]
-                if validation_mode == input_validation.ValidationMode.FULL:
-                    validation_tools.append("ffmpeg")
-                process_utils.ensure_tools_exist(validation_tools, tool_logger)
+            media_analysis_requests = tuple(tool.media_analysis_requests(plan))
+            if media_analysis_requests and "ffmpeg" not in required_tools:
+                process_utils.ensure_tools_exist(["ffmpeg"], tool_logger)
+
+            for request in media_analysis_requests:
+                context.media_analysis.fulfill(request)
+
             validation = input_validation.InputValidator(
                 validation_mode,
                 tool_logger,
                 args.validation_cache_dir,
-            ).validate(plan.input_files())
+                media_analysis_session=context.media_analysis,
+            ).validate(
+                plan.input_files(),
+            )
+
             if not validation.is_valid:
                 plan.render(tool_logger)
                 validation.render(tool_logger)
@@ -277,11 +300,12 @@ def execute(argv: list[str]) -> None:
                     tool.perform(
                         args,
                         logger=tool_logger,
-                        workspace=workspace,
+                        context=context,
                         plan=plan,
                     )
             elif args.interactive:
                 plan.render(tool_logger)
+
                 if plan.is_empty():
                     tool_logger.info("Analysis complete: nothing to do.")
                     tool_logger.info("Skipping perform.")
@@ -300,7 +324,7 @@ def execute(argv: list[str]) -> None:
                         tool.perform(
                             args,
                             logger=tool_logger,
-                            workspace=workspace,
+                            context=context,
                             plan=plan,
                         )
                     else:
@@ -315,6 +339,7 @@ def execute(argv: list[str]) -> None:
                         tool_logger.info("Dry run mode: analyze completed, skipping perform.")
                 elif args.no_dry_run:
                     plan_count = _plan_item_count(plan)
+
                     if plan_count is None:
                         tool_logger.info("Analysis complete: starting perform.")
                     else:
@@ -325,7 +350,7 @@ def execute(argv: list[str]) -> None:
                     tool.perform(
                         args,
                         logger=tool_logger,
-                        workspace=workspace,
+                        context=context,
                         plan=plan,
                     )
                 else:

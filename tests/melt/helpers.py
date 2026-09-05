@@ -9,7 +9,7 @@ from functools import partial
 from itertools import permutations
 from pathlib import Path
 
-from twotone.tools.utils import generic_utils, video_utils
+from twotone.tools.utils import generic_utils, media_analysis, video_utils
 from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
 from twotone.tools.utils.files_utils import Workspace
 from common import (
@@ -65,11 +65,23 @@ def process_duplicates_helper(
     output_dir: str,
     plan,
 ):
+    media_analysis_session = media_analysis.MediaAnalysisSession(
+        workspace,
+        interruption,
+        logger.getChild("MediaAnalysis"),
+        validate_all_streams=False,
+    )
+    for item in plan:
+        for group in item.get("groups", []):
+            for request in group.get("media_analysis_requests", []):
+                media_analysis_session.fulfill(request)
+
     performer = MeltPerformer(
         logger,
         interruption,
         workspace,
         output_dir,
+        media_analysis_session=media_analysis_session,
     )
     performer.process_duplicates(plan)
 

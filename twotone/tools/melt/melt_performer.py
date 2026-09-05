@@ -10,7 +10,7 @@ from fractions import Fraction
 from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 from tqdm import tqdm
 
-from ..utils import files_utils, generic_utils, language_utils, process_utils, video_utils
+from ..utils import files_utils, generic_utils, language_utils, media_analysis, process_utils, video_utils
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
 from .pair_matcher import CoverageSummary, MappingRelation, PairMatcher, SegmentsMappingResult
@@ -194,6 +194,7 @@ class MeltPerformer(TrackTimelineMixin):
         output_dir: str,
         cache: MeltCache | None = None,
         fill_audio_gaps: bool = False,
+        media_analysis_session: media_analysis.MediaAnalysisSession | None = None,
     ) -> None:
         self.logger = logger
         self.interruption = interruption
@@ -204,6 +205,7 @@ class MeltPerformer(TrackTimelineMixin):
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
         self._media_info_cache: dict[str, dict[str, Any]] = {}
         self._stream_info_cache: dict[tuple[str, str, int], dict[str, Any] | None] = {}
+        self.media_analysis = media_analysis_session
         self.workspace = workspace
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
@@ -1595,6 +1597,7 @@ class MeltPerformer(TrackTimelineMixin):
                 self.logger.getChild("PairMatcher"),
                 lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
                 cache=self.cache,
+                media_analysis_session=self.media_analysis,
             )
             match_result = _PairMatchResult(
                 matching=matcher.create_segments_mapping(),

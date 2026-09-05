@@ -13,7 +13,7 @@ from typing import ClassVar
 
 from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
 from twotone.tools.melt.melt_cache import MeltCache
-from twotone.tools.utils import generic_utils, video_utils
+from twotone.tools.utils import generic_utils, media_analysis, video_utils
 
 from common import (
     TwoToneTestCase,
@@ -736,12 +736,28 @@ class AudioAlignmentTest(TwoToneTestCase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        analyzer = MeltAnalyzer(logger, duplicates, self.workspace, True)
+        media_analysis_session = media_analysis.MediaAnalysisSession(
+            self.workspace,
+            interruption,
+            logger.getChild("MediaAnalysis"),
+            validate_all_streams=False,
+        )
+        analyzer = MeltAnalyzer(
+            logger,
+            duplicates,
+            self.workspace,
+            True,
+            media_analysis_session,
+        )
         duplicates_raw = duplicates.collect_duplicates()
         plan = analyzer.analyze_duplicates({
             title: list(files)
             for title, files in duplicates_raw.items()
         })
+        for item in plan:
+            for group in item.get("groups", []):
+                for request in group.get("media_analysis_requests", []):
+                    media_analysis_session.fulfill(request)
 
         performer = MeltPerformer(
             logger,
@@ -749,6 +765,7 @@ class AudioAlignmentTest(TwoToneTestCase):
             self.workspace,
             output_dir,
             cache=self.melt_cache,
+            media_analysis_session=media_analysis_session,
         )
         performer.process_duplicates(plan)
 
