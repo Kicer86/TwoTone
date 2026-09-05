@@ -173,7 +173,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
              patch.object(video_utils, "validate_media_output"):
             performer.process_duplicates(plan)
 
-        self.assertEqual(captured_mkvmerge_args[2], "--no-chapters")
+        self.assertEqual(captured_mkvmerge_args[captured_mkvmerge_args.index(source_path) - 1], "--no-chapters")
         chapter_index = captured_mkvmerge_args.index("--chapters")
         self.assertTrue(captured_mkvmerge_args[chapter_index + 1].endswith(".xml"))
 
@@ -320,17 +320,24 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
     def test_build_mkvmerge_args_uses_only_explicit_chapter_file(self):
         performer = self._make_performer()
+        first_file = "/tmp/first.mkv"
+        second_file = "/tmp/second.mkv"
 
         args = performer.build_mkvmerge_args(
             "/tmp/out.mkv",
-            [_StreamEntry("video", 0, "/tmp/input.mkv", None)],
+            [
+                _StreamEntry("video", 0, first_file, None),
+                _StreamEntry("audio", 1, second_file, "eng"),
+            ],
             attachments=[],
             preferred_audio=None,
-            required_input_files=["/tmp/input.mkv"],
+            required_input_files=[first_file, second_file],
             chapters_file="/tmp/chapters.xml",
         )
 
-        self.assertEqual(args[:5], ["-o", "/tmp/out.mkv", "--no-chapters", "--chapters", "/tmp/chapters.xml"])
+        self.assertEqual(args[:4], ["-o", "/tmp/out.mkv", "--chapters", "/tmp/chapters.xml"])
+        for file_path in (first_file, second_file):
+            self.assertEqual(args[args.index(file_path) - 1], "--no-chapters")
 
     def test_strict_audio_mapping_collapses_ambiguous_boundary_matches(self):
         mapping = [

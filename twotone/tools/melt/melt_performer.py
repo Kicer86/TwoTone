@@ -339,7 +339,7 @@ class MeltPerformer(TrackTimelineMixin):
         required_input_files: Iterable[str],
         chapters_file: str | None = None,
     ) -> list[str]:
-        generation_args: list[str] = ["-o", output_path, "--no-chapters"]
+        generation_args: list[str] = ["-o", output_path]
         if chapters_file:
             generation_args.extend(["--chapters", chapters_file])
         files_opts: dict[str, dict[str, Any]] = {
@@ -398,6 +398,7 @@ class MeltPerformer(TrackTimelineMixin):
             for tid, offset_ms in fo["sync_offsets"].items():
                 generation_args.extend(["--sync", f"{tid}:{offset_ms}"])
 
+            generation_args.append("--no-chapters")
             generation_args.append(file_path)
 
         if track_order:
