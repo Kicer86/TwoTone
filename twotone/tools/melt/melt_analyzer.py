@@ -1,6 +1,7 @@
 import logging
 import os
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 from tqdm import tqdm
@@ -19,10 +20,17 @@ from .melt_common import (
     _is_length_mismatch,
     stream_short_details,
 )
+from .pair_matcher import PairMatcher
 
 
 class UnsupportedMeltInputError(RuntimeError):
     """Raised when an input group contains an element Melt cannot model yet."""
+
+
+@dataclass(frozen=True)
+class AlignmentRequirement:
+    path: str
+    issue: str
 
 
 class MeltAnalyzer:
@@ -31,12 +39,12 @@ class MeltAnalyzer:
         logger: logging.Logger,
         duplicates_source: DuplicatesSource,
         workspace: files_utils.Workspace,
-        allow_length_mismatch: bool,
+        allow_video_timeline_mismatch: bool,
     ) -> None:
         self.logger = logger
         self.duplicates_source = duplicates_source
         self.workspace = workspace
-        self.allow_length_mismatch = allow_length_mismatch
+        self.allow_video_timeline_mismatch = allow_video_timeline_mismatch
         self.input_paths: tuple[str, ...] = ()
 
     def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
@@ -87,13 +95,6 @@ class MeltAnalyzer:
             })
 
         return analysis_plan
-
-    @staticmethod
-    def _pick_track_by_tid(streams: Sequence[dict[str, Any]], tid: int) -> dict[str, Any]:
-        track = next((item for item in streams if item.get("tid") == tid), None)
-        if track is None:
-            raise RuntimeError(f"Track #{tid} not found.")
-        return track
 
     @staticmethod
     def _pick_primary_video_track(streams: Sequence[dict[str, Any]], file_id: int) -> dict[str, Any]:
@@ -351,66 +352,6 @@ class MeltAnalyzer:
 
         return None
 
-    def _validate_input_files(
-        self,
-        tracks: dict[str, Any],
-        ids: dict[str, int],
-        video_streams: list[VideoStreamRef],
-        audio_streams: list[AudioStreamRef],
-        subtitle_streams: list[SubtitleStreamRef],
-    ) -> str | None:
-        # Validate lengths across used files
-
-        # Base length for detailed checks
-        base_video = video_streams[0]
-        v_path = base_video.path
-        v_tid = base_video.mkvmerge_track_id
-        base_file_id = ids[v_path]
-        base_track = self._pick_track_by_tid(tracks[v_path]["video"], v_tid)
-        base_length = base_track["length"]
-
-        # Subtitle mismatch (unsupported)
-        for subtitle_stream in subtitle_streams:
-            path = subtitle_stream.path
-            file_id = ids[path]
-            length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
-            if _is_length_mismatch(base_length, length):
-                base_fmt = generic_utils.ms_to_time(base_length) if base_length else "?"
-                other_fmt = generic_utils.ms_to_time(length) if length else "?"
-                self.logger.debug(
-                    f"Subtitles stream from file #{file_id} has length different than length of video stream from file #{base_file_id}. "
-                    "This is not supported yet"
-                )
-                return (
-                    f"Subtitle length mismatch between #{file_id} ({other_fmt}) and #{base_file_id} ({base_fmt}) (unsupported)."
-                )
-
-        # Audio lengths validation
-        for audio_stream in audio_streams:
-            path = audio_stream.path
-            file_id = ids[path]
-            length = self._pick_primary_video_track(tracks[path]["video"], file_id)["length"]
-            if _is_length_mismatch(base_length, length):
-                base_file_id = ids[v_path]
-                base_fmt = generic_utils.ms_to_time(base_length) if base_length else "?"
-                other_fmt = generic_utils.ms_to_time(length) if length else "?"
-                self.logger.debug(
-                    f"Audio stream from file #{file_id} ({other_fmt}) has length different than "
-                    f"video stream from file #{base_file_id} ({base_fmt}). "
-                    "Check for --allow-length-mismatch option to allow this."
-                )
-
-                if self.allow_length_mismatch:
-                    self.logger.debug("Audio length mismatch detected; audio will be time-adjusted during processing.")
-
-                else:
-                    return (
-                        f"Audio length mismatch between #{file_id} ({other_fmt}) and #{base_file_id} ({base_fmt}) "
-                        f"(use --allow-length-mismatch)."
-                    )
-
-        return None
-
     def _log_group_inputs(self, title: str, input_files: MeltInputFiles) -> None:
         self.logger.info("Title %s: input files:", title)
         input_files.render(self.logger, prefix="  ")
@@ -418,39 +359,47 @@ class MeltAnalyzer:
     def _log_group_issue(self, issue: str) -> None:
         self.logger.warning("%s", issue)
 
-    def _validate_group_lengths(
+    def _find_alignment_requirements(
         self,
         tracks: dict[str, Any],
         ids: dict[str, int],
-        title: str,
-        files: Sequence[str],
-    ) -> str | None:
-        base_length = None
-        base_file_id = None
+        video_streams: list[VideoStreamRef],
+        audio_streams: list[AudioStreamRef],
+        subtitle_streams: list[SubtitleStreamRef],
+    ) -> list[AlignmentRequirement]:
+        stream_paths = {stream.path for stream in (video_streams + audio_streams + subtitle_streams)}
 
-        for path, info in tracks.items():
-            try:
-                track = self._pick_primary_video_track(info["video"], ids[path])
-            except Exception:
-                continue
+        if len(stream_paths) <= 1:
+            return []
 
-            length = track.get("length")
-            if length is None:
-                continue
+        base_path = video_streams[0].path
+        base_file_id = ids[base_path]
+        base_length = self._pick_primary_video_track(tracks[base_path]["video"], base_file_id).get("length")
+        requirements: list[AlignmentRequirement] = []
 
-            if base_length is None:
-                base_length = length
-                base_file_id = ids[path]
-                continue
+        for path in sorted(stream_paths - {base_path}, key=ids.__getitem__):
+            file_id = ids[path]
+            self.logger.info("Checking video alignment: #%d ↔ #%d", base_file_id, file_id)
+            length = self._pick_primary_video_track(tracks[path]["video"], file_id).get("length")
 
             if _is_length_mismatch(base_length, length):
-                issue = f"Video length mismatch between #{ids[path]} and #{base_file_id} (use --allow-length-mismatch)."
-                if self.allow_length_mismatch:
-                    self.logger.debug(f"{issue} Continuing due to allow-length-mismatch.")
-                    continue
-                return issue
+                issue = f"Video length mismatch between #{file_id} and #{base_file_id} (use --allow-video-timeline-mismatch)."
+            elif base_length is None or length is None:
+                continue
+            else:
+                with self.workspace.scoped_dir("equal_length_content") as matching_wd:
+                    matcher = PairMatcher(
+                        self.duplicates_source.interruption, matching_wd, base_path, path,
+                        self.logger.getChild("PairMatcher"), lhs_label=f"#{base_file_id}", rhs_label=f"#{file_id}",
+                    )
+                    if matcher.has_identical_timeline_content():
+                        continue
 
-        return None
+                issue = f"Video content mismatch between #{file_id} and #{base_file_id} (use --allow-video-timeline-mismatch)."
+
+            requirements.append(AlignmentRequirement(path, issue))
+
+        return requirements
 
     def _analyze_group(
         self,
@@ -474,21 +423,25 @@ class MeltAnalyzer:
             self.logger.debug("No video streams found.")
             return None, "No video streams found.", details_full
 
-        # If all streams come from a single file, length mismatches are irrelevant.
-        stream_paths = {
-            stream.path for stream in (video_streams + audio_streams + subtitle_streams)
-        }
-        if len(stream_paths) > 1:
-            # Only validate lengths for files from which streams are actually used
-            used_tracks = {path: info for path, info in tracks.items() if path in stream_paths}
-            length_issue = self._validate_group_lengths(used_tracks, ids, title, files)
-            if length_issue:
-                return None, length_issue, details_full
+        requirements = self._find_alignment_requirements(tracks, ids, video_streams, audio_streams, subtitle_streams)
+        alignment_paths = {requirement.path for requirement in requirements}
+        subtitle_paths_requiring_alignment = {stream.path for stream in subtitle_streams if stream.path in alignment_paths}
 
-        # Validate and compute audio patch requirements
-        issue = self._validate_input_files(tracks, ids, video_streams, audio_streams, subtitle_streams)
-        if issue:
-            return None, issue, details_full
+        if subtitle_paths_requiring_alignment:
+            file_ids = ", ".join(f"#{ids[path]}" for path in sorted(subtitle_paths_requiring_alignment, key=ids.__getitem__))
+            return None, (
+                f"Subtitle streams from {file_ids} require video timeline alignment, which is not supported yet."
+            ), details_full
+
+        if requirements:
+            if self.allow_video_timeline_mismatch:
+                for requirement in requirements:
+                    self.logger.debug(
+                        "%s Continuing due to allow-video-timeline-mismatch; full content matching runs during processing.",
+                        requirement.issue,
+                    )
+            else:
+                return None, "\n".join(requirement.issue for requirement in requirements), details_full
 
         chapter_source = self._pick_chapter_source(details_full, tracks, video_streams, ids)
 
@@ -520,4 +473,5 @@ class MeltAnalyzer:
             "chapter_source": chapter_source,
             "audio_prod_lang": audio_prod_lang,
             "files_details": details_full,
+            "alignment_paths": sorted(alignment_paths),
         }, None, details_full
