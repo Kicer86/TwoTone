@@ -1285,10 +1285,7 @@ class PairMatcher:
         if not beyond or (lhs_ts, rhs_ts) == anchor:
             return
 
-        anchor_info = self.lhs_all_frames.get(anchor[0])
-        if anchor_info is None:
-            return
-        anchor_lhs_frame = int(anchor_info["frame_id"])
+        anchor_lhs_frame = self._timeline_frame_id(anchor[0], self.lhs_fps)
 
         verified = self._walk_shared_boundary(
             slope, intercept, anchor_lhs_frame, lhs_frame, rhs_frame, lhs_by_frame, rhs_by_frame, verify_ctx,

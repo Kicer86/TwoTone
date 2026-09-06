@@ -740,6 +740,33 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertEqual(result[-1], (10000, 10000))
 
+    def test_verified_extrapolation_checks_sparse_intro_before_black_edge(self):
+        """A black edge must not hide divergent content after empty AVI slots."""
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        pm.lhs_all_frames = self._make_frames(
+            [0, *range(960, 10040, 40)], prefix="lhs",
+        )
+        pm.rhs_all_frames = self._make_frames(
+            list(range(0, 10040, 40)), prefix="rhs",
+        )
+        matching_pairs = [(1000, 1000), (4000, 4000), (8000, 8000)]
+        fit = GlobalLinearFit(
+            slope=1.0, intercept=0.0, is_constant_offset=True, time_scale=1.0,
+        )
+
+        def content_matches(_ctx, lhs_ts, rhs_ts):
+            # The shared body and the isolated black edge match, but the intro
+            # between them differs and must stop boundary extension.
+            return lhs_ts == rhs_ts and (lhs_ts == 0 or lhs_ts >= 1000)
+
+        with self._patch_verify_ctx(), \
+             patch.object(PairMatcher, '_boundary_content_matches', side_effect=content_matches):
+            result = pm._extrapolate_and_verify_global_linear(
+                fit, matching_pairs, pm.lhs_all_frames, pm.rhs_all_frames,
+            )
+
+        self.assertEqual(result[0], (1000, 1000))
+
     def test_verified_extrapolation_stops_at_outermost_match_when_divergent(self):
         """When the extrapolated boundary frames do NOT verify, the boundary stays put."""
         pm = self._make_pm_with_frames(list(range(0, 10040, 40)), list(range(0, 10040, 40)))
