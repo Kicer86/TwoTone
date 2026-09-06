@@ -317,9 +317,35 @@ class PairMatcher:
         return float(median_ratio)
 
     @staticmethod
-    def _timeline_frame_id(timestamp_ms: int, fps: float) -> int:
-        """Return the nominal presentation slot for a frame timestamp."""
-        return round(timestamp_ms * fps / 1000)
+    def _timeline_frame_ids(frames: FramesInfo, fps: float) -> dict[int, int]:
+        """Map timestamps to decode ordinals augmented with empty timeline slots.
+
+        A nominal FPS can be slightly inaccurate, so using ``timestamp * fps``
+        as an absolute coordinate accumulates a false drift across long videos.
+        Instead, retain decoder ordinals and use FPS only to identify local PTS
+        jumps that span more than one frame.  This preserves empty AVI slots
+        without letting metadata override the relation observed by frame pairs.
+        """
+        timestamps = sorted(frames)
+        if not timestamps:
+            return {}
+
+        first_timestamp = timestamps[0]
+        coordinate = int(frames[first_timestamp]["frame_id"])
+        result = {first_timestamp: coordinate}
+        previous_timestamp = first_timestamp
+        previous_decode_id = coordinate
+
+        for timestamp in timestamps[1:]:
+            decode_id = int(frames[timestamp]["frame_id"])
+            decode_advance = max(1, decode_id - previous_decode_id)
+            timeline_advance = max(1, round((timestamp - previous_timestamp) * fps / 1000))
+            coordinate += max(decode_advance, timeline_advance)
+            result[timestamp] = coordinate
+            previous_timestamp = timestamp
+            previous_decode_id = decode_id
+
+        return result
 
     # Maximum relative deviation between an observed pair ratio and the
     # expected one before a match is considered inconsistent.
@@ -849,11 +875,13 @@ class PairMatcher:
             return None
 
         try:
+            lhs_frame_ids_by_timestamp = self._timeline_frame_ids(lhs_all_frames, self.lhs_fps)
+            rhs_frame_ids_by_timestamp = self._timeline_frame_ids(rhs_all_frames, self.rhs_fps)
             lhs_frame_ids = np.array(
-                [self._timeline_frame_id(l, self.lhs_fps) for l, _ in matching_pairs], dtype=float
+                [lhs_frame_ids_by_timestamp[l] for l, _ in matching_pairs], dtype=float
             )
             rhs_frame_ids = np.array(
-                [self._timeline_frame_id(r, self.rhs_fps) for _, r in matching_pairs], dtype=float
+                [rhs_frame_ids_by_timestamp[r] for _, r in matching_pairs], dtype=float
             )
         except KeyError:
             return None
@@ -1084,14 +1112,10 @@ class PairMatcher:
             matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
         )
 
-        lhs_by_frame = {
-            self._timeline_frame_id(ts, self.lhs_fps): ts
-            for ts in self.lhs_all_frames
-        }
-        rhs_by_frame = {
-            self._timeline_frame_id(ts, self.rhs_fps): ts
-            for ts in self.rhs_all_frames
-        }
+        lhs_frame_ids = self._timeline_frame_ids(self.lhs_all_frames, self.lhs_fps)
+        rhs_frame_ids = self._timeline_frame_ids(self.rhs_all_frames, self.rhs_fps)
+        lhs_by_frame = {frame_id: ts for ts, frame_id in lhs_frame_ids.items()}
+        rhs_by_frame = {frame_id: ts for ts, frame_id in rhs_frame_ids.items()}
         lhs_min_frame, lhs_max_frame = min(lhs_by_frame), max(lhs_by_frame)
         rhs_min_frame, rhs_max_frame = min(rhs_by_frame), max(rhs_by_frame)
 
@@ -1117,7 +1141,8 @@ class PairMatcher:
             first_rhs_frame = rhs_min_frame
         first_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, first_rhs_frame))
         self._maybe_insert_verified_boundary(
-            result, "start", slope, intercept, first_lhs_frame, first_rhs_frame, lhs_by_frame, rhs_by_frame, verify_ctx,
+            result, "start", slope, intercept, first_lhs_frame, first_rhs_frame,
+            lhs_frame_ids, lhs_by_frame, rhs_by_frame, verify_ctx,
         )
 
         last_lhs_frame = min(lhs_max_frame, int(np.floor((rhs_max_frame - intercept) / slope + eps)))
@@ -1130,7 +1155,8 @@ class PairMatcher:
             last_rhs_frame = rhs_max_frame
         last_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, last_rhs_frame))
         self._maybe_insert_verified_boundary(
-            result, "end", slope, intercept, last_lhs_frame, last_rhs_frame, lhs_by_frame, rhs_by_frame, verify_ctx,
+            result, "end", slope, intercept, last_lhs_frame, last_rhs_frame,
+            lhs_frame_ids, lhs_by_frame, rhs_by_frame, verify_ctx,
         )
 
         return result
@@ -1259,6 +1285,7 @@ class PairMatcher:
         intercept: float,
         lhs_frame: int,
         rhs_frame: int,
+        lhs_frame_ids: dict[int, int],
         lhs_by_frame: dict[int, int],
         rhs_by_frame: dict[int, int],
         verify_ctx: _BoundaryVerifyContext,
@@ -1285,7 +1312,9 @@ class PairMatcher:
         if not beyond or (lhs_ts, rhs_ts) == anchor:
             return
 
-        anchor_lhs_frame = self._timeline_frame_id(anchor[0], self.lhs_fps)
+        anchor_lhs_frame = lhs_frame_ids.get(anchor[0])
+        if anchor_lhs_frame is None:
+            return
 
         verified = self._walk_shared_boundary(
             slope, intercept, anchor_lhs_frame, lhs_frame, rhs_frame, lhs_by_frame, rhs_by_frame, verify_ctx,
@@ -1660,12 +1689,14 @@ class PairMatcher:
             return
 
         try:
+            lhs_frame_ids_by_timestamp = self._timeline_frame_ids(self.lhs_all_frames, self.lhs_fps)
+            rhs_frame_ids_by_timestamp = self._timeline_frame_ids(self.rhs_all_frames, self.rhs_fps)
             lhs_frame_ids = np.array(
-                [self._timeline_frame_id(l, self.lhs_fps) for l, _ in matching_pairs],
+                [lhs_frame_ids_by_timestamp[l] for l, _ in matching_pairs],
                 dtype=float,
             )
             rhs_frame_ids = np.array(
-                [self._timeline_frame_id(r, self.rhs_fps) for _, r in matching_pairs],
+                [rhs_frame_ids_by_timestamp[r] for _, r in matching_pairs],
                 dtype=float,
             )
         except KeyError:

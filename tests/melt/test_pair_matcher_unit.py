@@ -438,6 +438,29 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(fit.intercept, 0.0)
         self.assertAlmostEqual(fit.time_scale, 1.0, places=6)
 
+    def test_global_linear_does_not_accumulate_approximate_fps_error(self):
+        """Nominal FPS may classify local slots but must not create long-term drift."""
+        reported_rhs_fps = 73 / 3
+        actual_rhs_fps = 24 * 1.015
+        pm = self._make_pair_matcher(lhs_fps=24.0, rhs_fps=reported_rhs_fps)
+        lhs_frames = self._make_frames_at_fps(10001, 24.0, prefix="lhs")
+        rhs_frames = self._make_frames_at_fps(10001, actual_rhs_fps, prefix="rhs")
+        matching_frame_ids = [1000, 4000, 7000, 9000]
+        matching_pairs = [
+            (
+                self._timestamp_for_frame(frame_id, 24.0),
+                self._timestamp_for_frame(frame_id, actual_rhs_fps),
+            )
+            for frame_id in matching_frame_ids
+        ]
+
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(fit)
+        self.assertTrue(fit.is_constant_offset)
+        self.assertEqual(fit.slope, 1.0)
+        self.assertEqual(fit.intercept, 0.0)
+
     def test_constant_offset_rejected_high_std(self):
         """When frame-number offsets vary too much (std > 1), returns None."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
@@ -561,11 +584,11 @@ class PairMatcherUnitTest(unittest.TestCase):
         """Two distant pairs can prove the constant frame offset seen on Ubuntu CI."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
 
-        lhs_frames = self._make_frames(list(range(0, 60441, 40)), prefix="lhs")
+        lhs_frames = self._make_frames(list(range(480, 60441, 40)), prefix="lhs")
         rhs_frames = self._make_frames(list(range(0, 60441, 40)), prefix="rhs")
         matching_pairs = [
-            (10480, 10000),
-            (50480, 50000),
+            (10480, 10480),
+            (50480, 50480),
         ]
 
         fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
@@ -573,7 +596,9 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertIsNotNone(fit)
         self.assertTrue(fit.is_constant_offset)
         self.assertEqual(fit.slope, 1.0)
-        self.assertEqual(fit.intercept, -12.0)
+        # The lhs stream starts 12 presentation frames later, but its first
+        # decoded frame still has ordinal zero.
+        self.assertEqual(fit.intercept, 12.0)
 
     def test_constant_offset_slight_jitter_within_tolerance(self):
         """Small jitter (< 1 frame) in frame-number offsets is still a constant offset."""
