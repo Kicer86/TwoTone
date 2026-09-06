@@ -164,9 +164,9 @@ class AudioAlignmentTest(TwoToneTestCase):
     CACHE_VERSION = "1"
     FRAME_DRIFT_CACHE_VERSION = "1"
     CONSTANT_OFFSET_CACHE_VERSION = "2"
-    SPARSE_PTS_CACHE_VERSION = "4"
-    SPARSE_OUTRO_PTS_CACHE_VERSION = "3"
-    SPARSE_PTS_REFERENCE_CACHE_VERSION = "1"
+    SPARSE_PTS_CACHE_VERSION = "5"
+    SPARSE_OUTRO_PTS_CACHE_VERSION = "4"
+    SPARSE_PTS_REFERENCE_CACHE_VERSION = "2"
     CONSTANT_OFFSET_FRAMES = 5
     BLACK_INTRO_SECONDS = 0.5
     BLACK_OUTRO_SECONDS = 0.5
@@ -499,16 +499,22 @@ class AudioAlignmentTest(TwoToneTestCase):
         )
 
     @classmethod
-    def _sparse_pts_video_filter(cls, select_expr: str, spec: VariantSpec) -> str:
-        return (
-            f"[0:v]select='{select_expr}',"
-            f"scale={spec.width}:{spec.height}[v]"
-        )
+    def _avi_video_filter(
+        cls,
+        width: int,
+        height: int,
+        select_expr: str | None = None,
+    ) -> str:
+        filters = [f"settb=expr=1/{cls.FPS}", "setpts=N"]
+        if select_expr is not None:
+            filters.append(f"select='{select_expr}'")
+        filters.append(f"scale={width}:{height}")
+        return f"[0:v]{','.join(filters)}[v]"
 
     @classmethod
     def _generate_sparse_pts_reference(cls, out_path: Path) -> None:
         cls._generate_avi_variant(
-            "[0:v]scale=1280:720[v]",
+            cls._avi_video_filter(1280, 720),
             out_path,
         )
 
@@ -537,8 +543,10 @@ class AudioAlignmentTest(TwoToneTestCase):
     @classmethod
     def _generate_sparse_pts_variant(cls, spec: VariantSpec, out_path: Path) -> None:
         first_frame_after_intro = round(cls.BLACK_INTRO_SECONDS * cls.FPS)
-        filter_complex = cls._sparse_pts_video_filter(
-            f"eq(n\\,0)+gte(n\\,{first_frame_after_intro})", spec,
+        filter_complex = cls._avi_video_filter(
+            spec.width,
+            spec.height,
+            f"eq(n\\,0)+gte(n\\,{first_frame_after_intro})",
         )
         # The AVI muxer represents the omitted black frames as empty frame
         # slots, so playback holds frame zero until the real picture begins.
@@ -554,8 +562,10 @@ class AudioAlignmentTest(TwoToneTestCase):
         if frame_count is None:
             raise RuntimeError(f"Could not count frames in {reference_path}")
         last_frame = frame_count - 1
-        filter_complex = cls._sparse_pts_video_filter(
-            f"lte(n\\,{first_outro_frame})+eq(n\\,{last_frame})", spec,
+        filter_complex = cls._avi_video_filter(
+            spec.width,
+            spec.height,
+            f"lte(n\\,{first_outro_frame})+eq(n\\,{last_frame})",
         )
 
         # Keeping the last frame forces AVI to retain the original video-stream
