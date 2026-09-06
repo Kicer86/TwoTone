@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 from common import TwoToneTestCase
 from twotone.tools.melt.melt import MeltAnalyzer, StaticSource
-from twotone.tools.melt.melt_analyzer import UnsupportedMeltInputError
-from twotone.tools.melt.melt_common import MeltInputFiles, VideoStreamRef
+from twotone.tools.melt.melt_analyzer import AlignmentRequirement, UnsupportedMeltInputError
+from twotone.tools.melt.melt_common import AudioStreamRef, MeltInputFiles, SubtitleStreamRef, VideoStreamRef
 from twotone.tools.utils import generic_utils, video_utils
 
 
@@ -20,7 +20,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
             self.logger,
             duplicates,
             self.workspace,
-            allow_length_mismatch=False,
+            allow_video_timeline_mismatch=False,
         )
 
 
@@ -328,6 +328,51 @@ class MeltAnalyzerTest(TwoToneTestCase):
 
         relative_path = os.path.join("nested", "input.mkv")
         self.assertTrue(any(f"#1: {relative_path}" in message for message in logged.output))
+
+    @parameterized.expand([
+        ("content_mismatch_without_flag", "Video content mismatch", False),
+        ("content_mismatch_with_flag", "Video content mismatch", True),
+        ("length_mismatch_without_flag", "Video length mismatch", False),
+        ("length_mismatch_with_flag", "Video length mismatch", True),
+    ])
+    def test_analyze_group_rejects_subtitles_when_source_requires_timeline_alignment(
+        self,
+        _name,
+        requirement_issue,
+        allow_video_timeline_mismatch,
+    ):
+        base_path = os.path.join(self.wd.path, "base.mkv")
+        subtitle_path = os.path.join(self.wd.path, "subtitle-source.mkv")
+        tracks = {
+            base_path: {"video": [{"tid": 0, "length": 6000}], "audio": [], "subtitle": []},
+            subtitle_path: {"video": [{"tid": 0, "length": 6000}], "audio": [], "subtitle": []},
+        }
+        details = {path: {"tracks": value, "attachments": []} for path, value in tracks.items()}
+        self.analyzer.allow_video_timeline_mismatch = allow_video_timeline_mismatch
+
+        with patch.object(self.analyzer, "_probe_inputs", return_value=(details, {base_path: [], subtitle_path: []}, tracks)), \
+             patch.object(
+                 self.analyzer,
+                 "_pick_streams",
+                 return_value=(
+                     [VideoStreamRef(base_path, 0, 0, None)],
+                     [AudioStreamRef(base_path, 1, 1, "eng")],
+                     [SubtitleStreamRef(subtitle_path, 2, 2, "pol")],
+                 ),
+             ), patch.object(
+                 self.analyzer,
+                 "_find_alignment_requirements",
+                 return_value=[AlignmentRequirement(subtitle_path, requirement_issue)],
+             ):
+            plan, issue, _ = self.analyzer._analyze_group(
+                [base_path, subtitle_path], {base_path: 1, subtitle_path: 2}, "Title",
+            )
+
+        self.assertIsNone(plan)
+        self.assertEqual(
+            issue,
+            "Subtitle streams from #2 require video timeline alignment, which is not supported yet.",
+        )
 
 
 class MeltInputFilesTest(unittest.TestCase):

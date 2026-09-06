@@ -122,8 +122,10 @@ class MeltTool(Tool):
                             help="Directory for output files",
                             required = True)
 
-        parser.add_argument('--allow-length-mismatch', action='store_true',
-                            help='[EXPERIMENTAL] Continue processing even if input video lengths differ.\n'
+        parser.add_argument('--allow-video-timeline-mismatch', '--allow-length-mismatch',
+                            dest='allow_video_timeline_mismatch', action='store_true',
+                            help='[EXPERIMENTAL] Allow matching video sources whose common content has different '\
+                                 'timeline placement, duration, or playback speed.\n'
                                  'This may require additional processing that can consume significant time and disk space.')
 
         parser.add_argument('--fill-audio-gaps', action='store_true',
@@ -210,7 +212,7 @@ class MeltTool(Tool):
             logger,
             data_source,
             workspace,
-            args.allow_length_mismatch,
+            args.allow_video_timeline_mismatch,
         )
         analyzer.input_paths = input_paths
         analysis = analyzer.analyze_duplicates(duplicates)

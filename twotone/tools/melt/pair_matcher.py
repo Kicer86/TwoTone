@@ -161,6 +161,97 @@ class PairMatcher:
     # log so the quoted limits never drift from the real ones.
     _MAX_CONSTANT_OFFSET_STD = 1.0
     _MAX_DRIFT_SLOPE_DELTA = 0.05
+    _IDENTITY_SAMPLE_COUNT = 7
+
+    def has_identical_timeline_content(self) -> bool:
+        """Quickly certify that both videos show the same content in-place.
+
+        This is deliberately a conservative fast path.  It samples both
+        boundaries and evenly-spaced interior frames at identical timestamps;
+        a failed sample merely asks callers to use :meth:`create_segments_mapping`
+        for the authoritative answer.  It never declares different-looking
+        transfers incompatible by itself.
+        """
+        if self.lhs_duration_ms is None or self.rhs_duration_ms is None:
+            return False
+        if self.lhs_duration_ms != self.rhs_duration_ms:
+            return False
+
+        duration = self.lhs_duration_ms
+        if duration <= 0:
+            return False
+        last_timestamp = max(0, duration - max(1, round(1000 / self.lhs_fps)))
+        timestamps = sorted({
+            round(last_timestamp * index / (self._IDENTITY_SAMPLE_COUNT - 1))
+            for index in range(self._IDENTITY_SAMPLE_COUNT)
+        })
+        self._probe_frames()
+        lhs_timestamps = [self._nearest_frame_timestamp(self.lhs_all_frames, timestamp) for timestamp in timestamps]
+        rhs_timestamps = [self._nearest_frame_timestamp(self.rhs_all_frames, timestamp) for timestamp in timestamps]
+        identity_wd = os.path.join(self.debug_wd, "identity")
+        lhs_frames = self._extract_identity_samples(
+            self.lhs_path, self.lhs_all_frames, lhs_timestamps, os.path.join(identity_wd, "lhs"), self.lhs_label,
+        )
+        rhs_frames = self._extract_identity_samples(
+            self.rhs_path, self.rhs_all_frames, rhs_timestamps, os.path.join(identity_wd, "rhs"), self.rhs_label,
+        )
+        if lhs_frames is None or rhs_frames is None:
+            return False
+
+        for timestamp, lhs_timestamp, rhs_timestamp in zip(timestamps, lhs_timestamps, rhs_timestamps):
+            distance = abs(
+                self.phash.get(self._extracted_path(lhs_frames[lhs_timestamp]))
+                - self.phash.get(self._extracted_path(rhs_frames[rhs_timestamp]))
+            )
+            if distance > self._MIN_PHASH_CUTOFF:
+                self.logger.debug(
+                    "Equal-length identity check failed at %d ms (pHash distance %d).",
+                    timestamp, distance,
+                )
+                return False
+
+        self.logger.debug("Equal-length identity check passed (%d samples).", len(timestamps))
+        return True
+
+    @staticmethod
+    def _nearest_frame_timestamp(frames: FramesInfo, timestamp: int) -> int:
+        return min(frames, key=lambda candidate: abs(candidate - timestamp))
+
+    def _extract_identity_samples(
+        self,
+        video_path: str,
+        all_frames: FramesInfo,
+        timestamps: list[int],
+        identity_wd: str,
+        label: str,
+    ) -> FramesInfo | None:
+        sample_frames = {timestamp: all_frames[timestamp] for timestamp in set(timestamps)}
+        frame_ranges = [
+            (int(info["frame_id"]), int(info["frame_id"]))
+            for info in sample_frames.values()
+        ]
+        os.makedirs(identity_wd, exist_ok=True)
+        video_utils.extract_frames_at_ranges(
+            video_path,
+            identity_wd,
+            frame_ranges,
+            sample_frames,
+            scale=(960, -2),
+            format="png",
+            interruption=self.interruption,
+            desc=f"Identity samples: {label}",
+            logger=self.logger,
+        )
+        if any(info.get("path") is None for info in sample_frames.values()):
+            self.logger.debug("Could not extract all identity-check frames from %s.", video_path)
+            return None
+        normalized_wd = os.path.join(identity_wd, "normalized")
+        os.makedirs(normalized_wd, exist_ok=True)
+        return self._normalize_frames(
+            sample_frames,
+            normalized_wd,
+            desc=f"Normalizing identity samples: {label}",
+        )
 
     def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2", cache: MeltCache | None = None) -> None:
         self.interruption = interruption
@@ -2377,8 +2468,10 @@ class PairMatcher:
 
     def _probe_frames(self) -> None:
         """Phase 2: Probe all frame timestamps (fast — no images written)."""
-        self.lhs_all_frames = self._probe_frames_for(self.lhs_path, self.lhs_label)
-        self.rhs_all_frames = self._probe_frames_for(self.rhs_path, self.rhs_label)
+        if not self.lhs_all_frames:
+            self.lhs_all_frames = self._probe_frames_for(self.lhs_path, self.lhs_label)
+        if not self.rhs_all_frames:
+            self.rhs_all_frames = self._probe_frames_for(self.rhs_path, self.rhs_label)
 
     def _probe_frames_for(self, video_path: str, label: str) -> FramesInfo:
         if self.cache:
