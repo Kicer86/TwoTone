@@ -765,6 +765,74 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertEqual(result[-1], (10000, 10000))
 
+    def test_verified_extrapolation_crosses_held_frames_on_either_side(self):
+        dense = list(range(0, 10040, 40))
+        for side in ("lhs", "rhs"):
+            for sparse in ([0, *range(2000, 10040, 40)], [*range(0, 8040, 40), 10000]):
+                with self.subTest(side=side, sparse_start=sparse[1]):
+                    pm = self._make_pm_with_frames(
+                        sparse if side == "lhs" else dense,
+                        sparse if side == "rhs" else dense,
+                    )
+                    fit = GlobalLinearFit(1.0, 0.0, True, 1.0)
+                    with self._patch_verify_ctx(), \
+                         patch.object(PairMatcher, '_boundary_content_matches', return_value=True) as verify:
+                        result = pm._extrapolate_and_verify_global_linear(
+                            fit, [(4000, 4000), (6000, 6000)], pm.lhs_all_frames, pm.rhs_all_frames,
+                        )
+                    self.assertEqual(result[0], (0, 0))
+                    self.assertEqual(result[-1], (10000, 10000))
+                    # The image comes from the preceding decoded frame, not
+                    # the nearest frame (which can lie in the future).
+                    held, sample = (0, 1600) if sparse[1] == 2000 else (8000, 9840)
+                    pair = (held, sample) if side == "lhs" else (sample, held)
+                    self.assertIn((None, *pair), [call.args for call in verify.call_args_list])
+
+    def test_verified_extrapolation_keeps_sample_time_inside_held_frame(self):
+        for side in ("lhs", "rhs"):
+            with self.subTest(side=side):
+                sparse = [0, *range(2000, 10040, 40)]
+                dense = list(range(0, 10040, 40))
+                pm = self._make_pm_with_frames(
+                    sparse if side == "lhs" else dense,
+                    dense if side == "lhs" else sparse,
+                )
+                # Projected overlap starts at slot 10 (400ms) on the
+                # sparse side, while its displayed image still has PTS 0.
+                fit = GlobalLinearFit(1.0, -10.0 if side == "lhs" else 10.0, True, 1.0)
+                pairs = [(4000, 3600), (6000, 5600)] if side == "lhs" else [(3600, 4000), (5600, 6000)]
+                with self._patch_verify_ctx(), \
+                     patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
+                    result = pm._extrapolate_and_verify_global_linear(
+                        fit, pairs, pm.lhs_all_frames, pm.rhs_all_frames,
+                    )
+                self.assertEqual(result[0], (400, 0) if side == "lhs" else (0, 400))
+
+    def test_verified_extrapolation_rejects_divergent_held_tail_on_either_side(self):
+        for side in ("lhs", "rhs"):
+            with self.subTest(side=side):
+                dense = list(range(0, 10040, 40))
+                sparse = [*range(0, 6040, 40), 10000]
+                pm = self._make_pm_with_frames(
+                    sparse if side == "lhs" else dense,
+                    dense if side == "lhs" else sparse,
+                )
+
+                def matches(_ctx, lhs_ts, rhs_ts):
+                    # The held picture diverges; only the final black frame
+                    # matches again. It must not bridge the different outro.
+                    return lhs_ts == rhs_ts
+
+                with self._patch_verify_ctx(), \
+                     patch.object(PairMatcher, '_boundary_content_matches', side_effect=matches) as verify:
+                    result = pm._extrapolate_and_verify_global_linear(
+                        GlobalLinearFit(1.0, 0.0, True, 1.0), [(2000, 2000), (6000, 6000)],
+                        pm.lhs_all_frames, pm.rhs_all_frames,
+                    )
+                self.assertEqual(result[-1], (6000, 6000))
+                self.assertTrue(any(max(call.args[1:]) > 6000 for call in verify.call_args_list))
+                self.assertNotIn((None, 10000, 10000), [call.args for call in verify.call_args_list])
+
     def test_verified_extrapolation_checks_sparse_intro_before_black_edge(self):
         """A black edge must not hide divergent content after empty AVI slots."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
