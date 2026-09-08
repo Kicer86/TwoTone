@@ -10,9 +10,11 @@ from itertools import combinations, permutations, product
 from parameterized import parameterized
 from pathlib import Path
 from typing import ClassVar
+from unittest.mock import patch
 
 from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
 from twotone.tools.melt.melt_cache import MeltCache
+from twotone.tools.melt.pair_matcher import MappingRelation, PairMatcher
 from twotone.tools.utils import generic_utils, video_utils
 
 from common import (
@@ -889,14 +891,50 @@ class AudioAlignmentTest(TwoToneTestCase):
         self._assert_expected_positions(expected_centers, first_centers)
         self._assert_expected_positions(expected_centers, second_centers)
 
+    def _assert_sparse_pair_alignment(
+        self, sparse: VariantSpec, sparse_path: str, force_matching: bool,
+    ) -> None:
+        reference = VARIANT_BY_NAME["v00_asR_vsR_aeR_veR"]
+        if force_matching:
+            create_mapping = PairMatcher.create_segments_mapping
+
+            def checked_mapping(matcher):
+                result = create_mapping(matcher)
+                self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
+                for side, frames, fps in (
+                    (0, result.lhs_all_frames, result.lhs_fps),
+                    (1, result.rhs_all_frames, result.rhs_fps),
+                ):
+                    # Identical playback must cover both edges, independently
+                    # of audio beeps located inside the shared body.
+                    for actual, expected in (
+                        (result.mapping[0][side], min(frames)),
+                        (result.mapping[-1][side], max(frames)),
+                    ):
+                        self.assertAlmostEqual(actual, expected, delta=1000 / fps)
+                return result
+
+            with patch.object(PairMatcher, 'has_identical_timeline_content', return_value=False), \
+                 patch.object(PairMatcher, 'create_segments_mapping', autospec=True, side_effect=checked_mapping) as mapping, \
+                 patch.object(PairMatcher, '_extrapolate_and_verify_global_linear', autospec=True,
+                              side_effect=PairMatcher._extrapolate_and_verify_global_linear) as extend:
+                self._assert_melt_pair_alignment(reference, sparse, self.sparse_pts_reference_path, sparse_path)
+                mapping.assert_called_once()
+                extend.assert_called_once()
+        else:
+            self._assert_melt_pair_alignment(reference, sparse, self.sparse_pts_reference_path, sparse_path)
+
     @parameterized.expand([
-        ("sparse_pts_as_source", "small"),
-        ("sparse_pts_as_base", "large"),
+        ("sparse_pts_as_source", "small", False),
+        ("sparse_pts_as_base", "large", False),
+        ("sparse_pts_as_source_full_matching", "small", True),
+        ("sparse_pts_as_base_full_matching", "large", True),
     ])
     def test_audio_alignment_with_sparse_video_timestamps(
         self,
         _case_name: str,
         sparse_variant: str,
+        force_matching: bool,
     ):
         """Empty AVI frame slots in a black intro must not become a content gap.
 
@@ -905,29 +943,27 @@ class AudioAlignmentTest(TwoToneTestCase):
         black frame and retains the timestamp of the first real frame.  Players
         therefore hold that one frame for the same black-intro duration.
 
-        PairMatcher currently fits decoded frame ordinals, projects the last
-        reference intro frame onto AVI frame zero, and treats that ambiguous
-        black pair as the first shared content.  The resulting placement shifts
-        the alternate audio by almost the full intro.  Exercise both base-video
-        choices so the mapping remains correct in either direction.
+        Exercise both base-video choices, with and without the identity
+        shortcut, so full matching and boundary verification stay covered.
         """
-        reference = VARIANT_BY_NAME["v00_asR_vsR_aeR_veR"]
         sparse = SPARSE_PTS_VARIANTS[sparse_variant]
-        self._assert_melt_pair_alignment(
-            reference,
+        self._assert_sparse_pair_alignment(
             sparse,
-            self.sparse_pts_reference_path,
             self.sparse_pts_variant_paths[sparse_variant],
+            force_matching,
         )
 
     @parameterized.expand([
-        ("sparse_outro_pts_as_source", "small"),
-        ("sparse_outro_pts_as_base", "large"),
+        ("sparse_outro_pts_as_source", "small", False),
+        ("sparse_outro_pts_as_base", "large", False),
+        ("sparse_outro_pts_as_source_full_matching", "small", True),
+        ("sparse_outro_pts_as_base_full_matching", "large", True),
     ])
     def test_audio_alignment_with_sparse_outro_video_timestamps(
         self,
         _case_name: str,
         sparse_variant: str,
+        force_matching: bool,
     ):
         """Empty AVI frame slots in a black outro must not distort alignment.
 
@@ -938,13 +974,11 @@ class AudioAlignmentTest(TwoToneTestCase):
         decoded-frame ordinal range can affect either the imported audio or the
         output timeline.
         """
-        reference = VARIANT_BY_NAME["v00_asR_vsR_aeR_veR"]
         sparse = SPARSE_OUTRO_PTS_VARIANTS[sparse_variant]
-        self._assert_melt_pair_alignment(
-            reference,
+        self._assert_sparse_pair_alignment(
             sparse,
-            self.sparse_pts_reference_path,
             self.sparse_outro_pts_variant_paths[sparse_variant],
+            force_matching,
         )
 
     @parameterized.expand(FRAME_DRIFT_PAIR_CASES)
