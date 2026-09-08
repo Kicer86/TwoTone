@@ -6,6 +6,7 @@ import numpy as np
 import os
 
 from concurrent.futures import ThreadPoolExecutor
+from bisect import bisect_right
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from tqdm import tqdm
 from typing import Callable, NamedTuple, TypedDict
@@ -148,6 +149,7 @@ class PairMatcher:
     # in a row already identify it.  The boundary only ever lands on a
     # verified sample, never on a tolerated miss.
     _MAX_BOUNDARY_GAP_MISSES = 1
+    _BOUNDARY_PREDICTION_JITTER_FRAMES = 2
     # Entropy below which a boundary-gap frame counts as decisively black for
     # the black-vs-content rejection.  _RICH_FRAME_ENTROPY marks frames too
     # flat for reliable phash matching, but flat-yet-lit content (title
@@ -1250,19 +1252,14 @@ class PairMatcher:
             if norm_info is not None:
                 norm_path = norm_info["path"]
             else:
-                info = side.all_frames.get(ts)
-                if info is None:
+                raw_path = self._ensure_boundary_image(
+                    side.video_path, side.raw_dir, side.all_frames, ts,
+                )
+                if raw_path is None:
                     norm_path = None
                 else:
-                    raw_path = self._ensure_boundary_image(
-                        side.video_path, side.raw_dir, side.all_frames,
-                        int(info["frame_id"]), ts,
-                    )
-                    if raw_path is None:
-                        norm_path = None
-                    else:
-                        norm_path = os.path.join(side.comparison_dir, f"n_{ts}.png")
-                        PairMatcher._normalize_image(raw_path, norm_path)
+                    norm_path = os.path.join(side.comparison_dir, f"n_{ts}.png")
+                    PairMatcher._normalize_image(raw_path, norm_path)
 
             if norm_path is not None:
                 if side.crop_fn is None:
@@ -1276,6 +1273,32 @@ class PairMatcher:
 
         side.comparison_cache[ts] = path
         return path
+
+    @staticmethod
+    def _resolve_timeline_samples(
+        by_frame: dict[int, int], frame_ids: list[int],
+    ) -> dict[int, tuple[int, int]]:
+        """Resolve slots to (sample time, displayed image PTS), within the video.
+
+        Empty slots hold the preceding decoded image. Interpolate their sample
+        times between the surrounding observed timestamps, not from absolute
+        nominal FPS, which may drift. Exact decoded slots retain their PTS.
+        """
+        keys = sorted(by_frame)
+        samples = {}
+        for frame_id in set(frame_ids):
+            if frame_id in by_frame:
+                ts = by_frame[frame_id]
+                samples[frame_id] = (ts, ts)
+            else:
+                index = bisect_right(keys, frame_id)
+                if 0 < index < len(keys):
+                    previous, following = keys[index - 1], keys[index]
+                    image_ts = by_frame[previous]
+                    sample_ts = round(image_ts + (by_frame[following] - image_ts)
+                                      * (frame_id - previous) / (following - previous))
+                    samples[frame_id] = (sample_ts, image_ts)
+        return samples
 
     def _maybe_insert_verified_boundary(
         self,
@@ -1299,10 +1322,11 @@ class PairMatcher:
         different outro) stops at the divergence; a gap that diverges immediately
         (different intro) does not move the boundary at all.
         """
-        lhs_ts = lhs_by_frame.get(lhs_frame)
-        rhs_ts = rhs_by_frame.get(rhs_frame)
-        if lhs_ts is None or rhs_ts is None:
+        lhs_sample = self._resolve_timeline_samples(lhs_by_frame, [lhs_frame]).get(lhs_frame)
+        rhs_sample = self._resolve_timeline_samples(rhs_by_frame, [rhs_frame]).get(rhs_frame)
+        if lhs_sample is None or rhs_sample is None:
             return
+        lhs_ts, rhs_ts = lhs_sample[0], rhs_sample[0]
 
         anchor = result[0] if side == "start" else result[-1]
         if side == "start":
@@ -1353,52 +1377,51 @@ class PairMatcher:
         so a tolerated miss never becomes the boundary itself.  Returns
         ``None`` when the walk diverges before verifying anything.
         """
-        direction = 1 if boundary_lhs_frame >= anchor_lhs_frame else -1
         step = max(1, int(self.lhs_fps * 0.5))
 
         # Ordered (lhs_frame, rhs_frame) samples from just past the match to the
         # projected boundary (inclusive); the boundary uses its snapped rhs.
-        samples: list[tuple[int, int]] = []
-        f = anchor_lhs_frame + direction * step
-        while (direction == 1 and f < boundary_lhs_frame) or (direction == -1 and f > boundary_lhs_frame):
-            rhs_f = int(round(slope * f + intercept))
-            if rhs_f not in rhs_by_frame and rhs_by_frame:
-                rhs_f = min(rhs_by_frame, key=lambda k: abs(k - rhs_f))
-            samples.append((f, rhs_f))
-            f += direction * step
+        # Balance only a final interval within the rhs jitter tolerance: a
+        # sample there could retry the edge's black image instead of the gap.
+        # Keep the established sampling grid throughout the rest of the gap.
+        distance = boundary_lhs_frame - anchor_lhs_frame
+        direction = 1 if distance >= 0 else -1
+        frame_ids = list(range(anchor_lhs_frame + direction * step, boundary_lhs_frame, direction * step))
+        jitter = self._BOUNDARY_PREDICTION_JITTER_FRAMES
+        if frame_ids and abs(slope * (boundary_lhs_frame - frame_ids[-1])) <= jitter:
+            previous = frame_ids[-2] if len(frame_ids) > 1 else anchor_lhs_frame
+            frame_ids[-1] = round((previous + boundary_lhs_frame) / 2)
+        samples = [(f, round(slope * f + intercept)) for f in frame_ids]
         samples.append((boundary_lhs_frame, boundary_rhs_frame))
 
         # Bulk-extract every sampled frame up front (two ffmpeg calls),
         # including the ±2 rhs neighbours used by the prediction-jitter retry,
         # so the per-sample verification below only reads images instead of
         # spawning one-frame ffmpeg extractions.
-        lhs_sample_timestamps = [
-            lhs_by_frame[lf] for lf, _ in samples if lf in lhs_by_frame
-        ]
-        rhs_sample_timestamps = [
-            rhs_by_frame[rf + delta]
+        lhs_samples = self._resolve_timeline_samples(lhs_by_frame, [lf for lf, _ in samples])
+        rhs_samples = self._resolve_timeline_samples(rhs_by_frame, [
+            rf + delta
             for _, rf in samples
-            for delta in (-2, -1, 0, 1, 2)
-            if rf + delta in rhs_by_frame
-        ]
+            for delta in range(-jitter, jitter + 1)
+        ])
         self._prefetch_boundary_images(
             self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames,
-            lhs_sample_timestamps,
+            [image_ts for _, image_ts in lhs_samples.values()],
         )
         self._prefetch_boundary_images(
             self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames,
-            rhs_sample_timestamps,
+            [image_ts for _, image_ts in rhs_samples.values()],
         )
 
         best: tuple[int, int] | None = None
         consecutive_misses = 0
         for lhs_f, rhs_f in samples:
-            lhs_ts = lhs_by_frame.get(lhs_f)
-            rhs_ts = rhs_by_frame.get(rhs_f)
-            if lhs_ts is None or rhs_ts is None:
+            lhs_sample = lhs_samples.get(lhs_f)
+            rhs_sample = rhs_samples.get(rhs_f)
+            if lhs_sample is None or rhs_sample is None:
                 break
-            if self._shared_content_at_prediction(verify_ctx, lhs_f, rhs_f, lhs_ts, rhs_by_frame):
-                best = (lhs_ts, rhs_ts)
+            if self._shared_content_at_prediction(verify_ctx, rhs_f, lhs_sample[1], rhs_samples):
+                best = (lhs_sample[0], rhs_sample[0])
                 consecutive_misses = 0
             else:
                 consecutive_misses += 1
@@ -1409,10 +1432,9 @@ class PairMatcher:
     def _shared_content_at_prediction(
         self,
         verify_ctx: _BoundaryVerifyContext,
-        lhs_frame: int,
         rhs_frame: int,
         lhs_ts: int,
-        rhs_by_frame: dict[int, int],
+        rhs_samples: dict[int, tuple[int, int]],
     ) -> bool:
         """Content-check the predicted pair, tolerating ±2 frames of rhs jitter.
 
@@ -1425,12 +1447,13 @@ class PairMatcher:
         the returned boundary pair stays the predicted one (on the fitted
         line), keeping the boundary error within the allowed 1-2 frames.
         """
-        for delta in (0, -1, 1, -2, 2):
+        jitter = self._BOUNDARY_PREDICTION_JITTER_FRAMES
+        for delta in sorted(range(-jitter, jitter + 1), key=abs):
             candidate_frame = rhs_frame + delta
-            candidate_ts = rhs_by_frame.get(candidate_frame)
-            if candidate_ts is None:
+            candidate = rhs_samples.get(candidate_frame)
+            if candidate is None:
                 continue
-            if self._boundary_content_matches(verify_ctx, lhs_ts, candidate_ts):
+            if self._boundary_content_matches(verify_ctx, lhs_ts, candidate[1]):
                 return True
         return False
 
@@ -1499,9 +1522,9 @@ class PairMatcher:
         return distance <= ctx.cutoff
 
     def _ensure_boundary_image(
-        self, video_path: str, out_dir: str, frames: FramesInfo, frame_id: int, ts: int,
+        self, video_path: str, out_dir: str, frames: FramesInfo, ts: int,
     ) -> str | None:
-        """Return an on-disk image path for *frame_id*, extracting it on demand.
+        """Return an on-disk image path for *ts*, extracting it on demand.
 
         The frame is already probed (so its timestamp entry exists) but may lack
         an extracted image; this extracts just that single frame for boundary
@@ -1512,6 +1535,7 @@ class PairMatcher:
             return None
         if info.get("path"):
             return info["path"]
+        frame_id = int(info["frame_id"])
         try:
             video_utils.extract_frames_at_ranges(
                 video_path, out_dir, [(frame_id, frame_id)], frames,
