@@ -10,11 +10,9 @@ from itertools import combinations, permutations, product
 from parameterized import parameterized
 from pathlib import Path
 from typing import ClassVar
-from unittest.mock import patch
 
 from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
 from twotone.tools.melt.melt_cache import MeltCache
-from twotone.tools.melt.pair_matcher import MappingRelation, PairMatcher
 from twotone.tools.utils import generic_utils, video_utils
 
 from common import (
@@ -77,15 +75,14 @@ def _make_variant_specs() -> list[VariantSpec]:
     return specs
 
 
-VARIANTS = _make_variant_specs()
-VARIANT_BY_NAME = {spec.name: spec for spec in VARIANTS}
+REGULAR_VARIANTS = _make_variant_specs()
 FRAME_DRIFT_VARIANTS = [
     replace(
         spec,
         name=f"fd{index:02d}_{'_'.join(spec.name.split('_')[1:])}",
         speed=1.0,
     )
-    for index, spec in enumerate(VARIANTS)
+    for index, spec in enumerate(REGULAR_VARIANTS)
 ]
 FRAME_DRIFT_VARIANT_BY_NAME = {spec.name: spec for spec in FRAME_DRIFT_VARIANTS}
 FRAME_DRIFT_FPS_BY_NAME = {
@@ -110,6 +107,16 @@ SPARSE_OUTRO_PTS_VARIANTS = {
     name: replace(spec, name=f"sparse_outro_pts_{name}")
     for name, spec in SPARSE_PTS_VARIANTS.items()
 }
+AVI_REFERENCE = replace(
+    REGULAR_VARIANTS[0], name="sparse_pts_reference", extension="avi",
+)
+VARIANTS = [
+    *REGULAR_VARIANTS,
+    AVI_REFERENCE,
+    *SPARSE_PTS_VARIANTS.values(),
+    *SPARSE_OUTRO_PTS_VARIANTS.values(),
+]
+VARIANT_BY_NAME = {spec.name: spec for spec in VARIANTS}
 PAIR_CASES = [
     (f"{lhs.name}__{rhs.name}", lhs.name, rhs.name)
     for lhs, rhs in permutations(VARIANTS, 2)
@@ -140,8 +147,8 @@ class AudioAlignmentTest(TwoToneTestCase):
 
     The cached inputs are visually equivalent Big Buck Bunny variants with
     different stream start offsets, trailing stream trims, containers, speeds,
-    and minimally different resolutions.  The unique resolution ordering makes
-    melt's base video choice deterministic for every pair.
+    and minimally different resolutions. Different resolutions exercise both
+    base-video choices; equal-resolution variants share the same expected timeline.
 
     The frame-drift group keeps the same stream offset/trim/container/resolution
     matrix but fixes speed at 1.0 and gives one side real extra or dropped video
@@ -155,20 +162,20 @@ class AudioAlignmentTest(TwoToneTestCase):
     content sits at a constant frame offset between the pair and the alternate
     audio must be shifted by that offset in the output.
 
-    The sparse-PTS groups model AVI empty-frame slots.  At the start, one black
-    frame is held across the intro while the first real frame keeps its original
-    timestamp.  At the end, the first and last black frames retain their
-    timestamps while the intermediate black frames are empty slots.  Their
-    playback timelines are equivalent to regular black-frame sequences, even
-    though the decoder exposes fewer frame ordinals.
+    The main pair matrix also includes regular AVI and AVI empty-frame slots.
+    At the start, one black frame is held across the intro while the first real
+    frame keeps its original timestamp. At the end, the first and last black
+    frames retain their timestamps while the intermediate black frames are
+    empty slots. Their playback timelines match regular black-frame sequences,
+    even though the decoder exposes fewer frame ordinals.
     """
 
     CACHE_VERSION = "1"
     FRAME_DRIFT_CACHE_VERSION = "1"
     CONSTANT_OFFSET_CACHE_VERSION = "2"
-    SPARSE_PTS_CACHE_VERSION = "5"
-    SPARSE_OUTRO_PTS_CACHE_VERSION = "4"
-    SPARSE_PTS_REFERENCE_CACHE_VERSION = "2"
+    SPARSE_PTS_CACHE_VERSION = "6"
+    SPARSE_OUTRO_PTS_CACHE_VERSION = "5"
+    SPARSE_PTS_REFERENCE_CACHE_VERSION = "3"
     CONSTANT_OFFSET_FRAMES = 5
     BLACK_INTRO_SECONDS = 0.5
     BLACK_OUTRO_SECONDS = 0.5
@@ -193,9 +200,6 @@ class AudioAlignmentTest(TwoToneTestCase):
     frame_reference_variant_paths: ClassVar[dict[str, str]]
     frame_drift_variant_paths: ClassVar[dict[str, str]]
     constant_offset_variant_paths: ClassVar[dict[str, str]]
-    sparse_pts_reference_path: ClassVar[str]
-    sparse_pts_variant_paths: ClassVar[dict[str, str]]
-    sparse_outro_pts_variant_paths: ClassVar[dict[str, str]]
     melt_cache: ClassVar[MeltCache | None]
 
     @classmethod
@@ -229,7 +233,7 @@ class AudioAlignmentTest(TwoToneTestCase):
                 spec.extension,
                 lambda out_path, spec=spec: cls._generate_variant(spec, out_path),
             ))
-            for spec in VARIANTS
+            for spec in REGULAR_VARIANTS
         }
 
         cls.frame_reference_variant_paths = {
@@ -264,32 +268,32 @@ class AudioAlignmentTest(TwoToneTestCase):
             for name, width in (("small", 1278), ("large", 1282))
         }
 
-        cls.sparse_pts_reference_path = str(file_cache.get_or_generate(
+        cls.variant_paths[AVI_REFERENCE.name] = str(file_cache.get_or_generate(
             "audio_align_sparse_pts_reference",
             cls.SPARSE_PTS_REFERENCE_CACHE_VERSION,
             "avi",
             cls._generate_sparse_pts_reference,
         ))
 
-        cls.sparse_pts_variant_paths = {
-            name: str(file_cache.get_or_generate(
-                f"audio_align_sparse_pts_{name}",
+        cls.variant_paths.update({
+            spec.name: str(file_cache.get_or_generate(
+                f"audio_align_{spec.name}",
                 cls.SPARSE_PTS_CACHE_VERSION,
                 spec.extension,
                 lambda out_path, spec=spec: cls._generate_sparse_pts_variant(spec, out_path),
             ))
-            for name, spec in SPARSE_PTS_VARIANTS.items()
-        }
+            for spec in SPARSE_PTS_VARIANTS.values()
+        })
 
-        cls.sparse_outro_pts_variant_paths = {
-            name: str(file_cache.get_or_generate(
-                f"audio_align_sparse_outro_pts_{name}",
+        cls.variant_paths.update({
+            spec.name: str(file_cache.get_or_generate(
+                f"audio_align_{spec.name}",
                 cls.SPARSE_OUTRO_PTS_CACHE_VERSION,
                 spec.extension,
                 lambda out_path, spec=spec: cls._generate_sparse_outro_pts_variant(spec, out_path),
             ))
-            for name, spec in SPARSE_OUTRO_PTS_VARIANTS.items()
-        }
+            for spec in SPARSE_OUTRO_PTS_VARIANTS.values()
+        })
 
         cache_dir = Path(file_cache.base_dir) / "audio_alignment_melt_cache"
         cls.melt_cache = MeltCache(str(cache_dir), cls.logger.getChild("MeltCache"))
@@ -534,9 +538,11 @@ class AudioAlignmentTest(TwoToneTestCase):
                 "-c:v", "mpeg4",
                 "-q:v", "3",
                 "-pix_fmt", "yuv420p",
-                # Identical copied audio makes these strictly video-only
-                # variants and avoids encoder-priming differences.
-                "-c:a", "copy",
+                # AVI cannot preserve AAC's negative priming timestamps.
+                # Copying AAC shifts the video forward by a frame; PCM with
+                # pre-zero samples trimmed preserves the reference timeline.
+                "-af", "atrim=start=0",
+                "-c:a", "pcm_s16le",
                 str(out_path),
             ],
             expected_path=str(out_path),
@@ -890,96 +896,6 @@ class AudioAlignmentTest(TwoToneTestCase):
         expected_centers = [value + base_shift for value in self.beep_centers]
         self._assert_expected_positions(expected_centers, first_centers)
         self._assert_expected_positions(expected_centers, second_centers)
-
-    def _assert_sparse_pair_alignment(
-        self, sparse: VariantSpec, sparse_path: str, force_matching: bool,
-    ) -> None:
-        reference = VARIANT_BY_NAME["v00_asR_vsR_aeR_veR"]
-        if force_matching:
-            create_mapping = PairMatcher.create_segments_mapping
-
-            def checked_mapping(matcher):
-                result = create_mapping(matcher)
-                self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
-                for side, frames, fps in (
-                    (0, result.lhs_all_frames, result.lhs_fps),
-                    (1, result.rhs_all_frames, result.rhs_fps),
-                ):
-                    # Identical playback must cover both edges, independently
-                    # of audio beeps located inside the shared body.
-                    for actual, expected in (
-                        (result.mapping[0][side], min(frames)),
-                        (result.mapping[-1][side], max(frames)),
-                    ):
-                        self.assertAlmostEqual(actual, expected, delta=1000 / fps)
-                return result
-
-            with patch.object(PairMatcher, 'has_identical_timeline_content', return_value=False), \
-                 patch.object(PairMatcher, 'create_segments_mapping', autospec=True, side_effect=checked_mapping) as mapping, \
-                 patch.object(PairMatcher, '_extrapolate_and_verify_global_linear', autospec=True,
-                              side_effect=PairMatcher._extrapolate_and_verify_global_linear) as extend:
-                self._assert_melt_pair_alignment(reference, sparse, self.sparse_pts_reference_path, sparse_path)
-                mapping.assert_called_once()
-                extend.assert_called_once()
-        else:
-            self._assert_melt_pair_alignment(reference, sparse, self.sparse_pts_reference_path, sparse_path)
-
-    @parameterized.expand([
-        ("sparse_pts_as_source", "small", False),
-        ("sparse_pts_as_base", "large", False),
-        ("sparse_pts_as_source_full_matching", "small", True),
-        ("sparse_pts_as_base_full_matching", "large", True),
-    ])
-    def test_audio_alignment_with_sparse_video_timestamps(
-        self,
-        _case_name: str,
-        sparse_variant: str,
-        force_matching: bool,
-    ):
-        """Empty AVI frame slots in a black intro must not become a content gap.
-
-        Both inputs have the same playback timeline: the reference contains a
-        regular sequence of black frames, while the AVI contains only the first
-        black frame and retains the timestamp of the first real frame.  Players
-        therefore hold that one frame for the same black-intro duration.
-
-        Exercise both base-video choices, with and without the identity
-        shortcut, so full matching and boundary verification stay covered.
-        """
-        sparse = SPARSE_PTS_VARIANTS[sparse_variant]
-        self._assert_sparse_pair_alignment(
-            sparse,
-            self.sparse_pts_variant_paths[sparse_variant],
-            force_matching,
-        )
-
-    @parameterized.expand([
-        ("sparse_outro_pts_as_source", "small", False),
-        ("sparse_outro_pts_as_base", "large", False),
-        ("sparse_outro_pts_as_source_full_matching", "small", True),
-        ("sparse_outro_pts_as_base_full_matching", "large", True),
-    ])
-    def test_audio_alignment_with_sparse_outro_video_timestamps(
-        self,
-        _case_name: str,
-        sparse_variant: str,
-        force_matching: bool,
-    ):
-        """Empty AVI frame slots in a black outro must not distort alignment.
-
-        Both inputs have the same playback timeline.  The reference contains a
-        regular sequence of black outro frames; the AVI retains the first and
-        last black frames at their original timestamps, with empty frame slots
-        between them.  Exercise both base-video choices because a compressed
-        decoded-frame ordinal range can affect either the imported audio or the
-        output timeline.
-        """
-        sparse = SPARSE_OUTRO_PTS_VARIANTS[sparse_variant]
-        self._assert_sparse_pair_alignment(
-            sparse,
-            self.sparse_outro_pts_variant_paths[sparse_variant],
-            force_matching,
-        )
 
     @parameterized.expand(FRAME_DRIFT_PAIR_CASES)
     def test_audio_alignment_after_melt_with_frame_drift(
