@@ -788,6 +788,28 @@ class PairMatcherUnitTest(unittest.TestCase):
                     pair = (held, sample) if side == "lhs" else (sample, held)
                     self.assertIn((None, *pair), [call.args for call in verify.call_args_list])
 
+    def test_verified_extrapolation_crosses_different_held_ranges_on_both_sides(self):
+        """Each side resolves its own empty slots to its displayed frame."""
+        pm = self._make_pm_with_frames(
+            [0, *range(2000, 10040, 40)],
+            [*range(0, 8040, 40), 10000],
+        )
+
+        with self._patch_verify_ctx(), \
+             patch.object(PairMatcher, '_boundary_content_matches', return_value=True) as verify:
+            result = pm._extrapolate_and_verify_global_linear(
+                GlobalLinearFit(1.0, 0.0, True, 1.0),
+                [(4000, 4000), (6000, 6000)],
+                pm.lhs_all_frames,
+                pm.rhs_all_frames,
+            )
+
+        self.assertEqual(result[0], (0, 0))
+        self.assertEqual(result[-1], (10000, 10000))
+        calls = [call.args for call in verify.call_args_list]
+        self.assertIn((None, 0, 1600), calls)
+        self.assertIn((None, 9840, 8000), calls)
+
     def test_verified_extrapolation_keeps_sample_time_inside_held_frame(self):
         for side in ("lhs", "rhs"):
             with self.subTest(side=side):
@@ -965,6 +987,24 @@ class PairMatcherUnitTest(unittest.TestCase):
         ctx = self._make_verify_ctx({}, cutoff=16,
                                     lhs_images={0: None}, rhs_images={0: "/r.png"})
         self.assertFalse(pm._boundary_content_matches(ctx, 0, 0))
+
+    def test_boundary_image_extraction_uses_decoded_frame_id(self):
+        """A presentation timestamp must resolve to its decoder ordinal."""
+        pm = self._make_pair_matcher()
+        frames = {
+            2000: {"path": None, "frame_id": 7},
+        }
+
+        def extract(_video_path, _out_dir, ranges, probed_frames, **_kwargs):
+            self.assertEqual(ranges, [(7, 7)])
+            probed_frames[2000]["path"] = "/decoded/frame_7.png"
+
+        with patch.object(video_utils, 'extract_frames_at_ranges', side_effect=extract):
+            path = pm._ensure_boundary_image(
+                "/fake/video.avi", "/fake/boundary", frames, 2000,
+            )
+
+        self.assertEqual(path, "/decoded/frame_7.png")
 
     # ---- _look_for_boundaries: look_ahead robustness ----
 
