@@ -173,9 +173,9 @@ class AudioAlignmentTest(TwoToneTestCase):
     CACHE_VERSION = "1"
     FRAME_DRIFT_CACHE_VERSION = "1"
     CONSTANT_OFFSET_CACHE_VERSION = "2"
-    SPARSE_PTS_CACHE_VERSION = "6"
-    SPARSE_OUTRO_PTS_CACHE_VERSION = "5"
-    SPARSE_PTS_REFERENCE_CACHE_VERSION = "3"
+    SPARSE_PTS_CACHE_VERSION = "7"
+    SPARSE_OUTRO_PTS_CACHE_VERSION = "6"
+    SPARSE_PTS_REFERENCE_CACHE_VERSION = "4"
     CONSTANT_OFFSET_FRAMES = 5
     BLACK_INTRO_SECONDS = 0.5
     BLACK_OUTRO_SECONDS = 0.5
@@ -527,21 +527,28 @@ class AudioAlignmentTest(TwoToneTestCase):
     @classmethod
     def _generate_avi_variant(cls, filter_complex: str, out_path: Path) -> None:
         reference_path = cls.variant_paths["v00_asR_vsR_aeR_veR"]
+        filter_complex = (
+            f"{filter_complex};"
+            f"[1:a]atrim=start=0.000000:end={cls.total_duration_seconds:.6f},"
+            "asetpts=PTS-STARTPTS,"
+            "atempo=1.00000000,"
+            "asetpts=PTS+0.00000000/TB[a]"
+        )
         run_ffmpeg(
             [
                 "-y",
                 "-i", reference_path,
+                "-i", cls.canonical_video,
                 "-filter_complex", filter_complex,
                 "-map", "[v]",
-                "-map", "0:a:0",
+                "-map", "[a]",
                 "-fps_mode", "passthrough",
                 "-c:v", "mpeg4",
                 "-q:v", "3",
                 "-pix_fmt", "yuv420p",
-                # AVI cannot preserve AAC's negative priming timestamps.
-                # Copying AAC shifts the video forward by a frame; PCM with
-                # pre-zero samples trimmed preserves the reference timeline.
-                "-af", "atrim=start=0",
+                # Decode from the lossless canonical source, not from the AAC
+                # reference. FFmpeg versions disagree on whether filtering the
+                # latter retains its 1024 priming samples.
                 "-c:a", "pcm_s16le",
                 str(out_path),
             ],
