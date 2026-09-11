@@ -742,6 +742,9 @@ class AudioAlignmentTest(TwoToneTestCase):
             logger.getChild("MediaAnalysis"),
             validate_all_streams=False,
         )
+        if self.melt_cache is not None:
+            media_analysis_session.set_persistent_cache(self.melt_cache)
+
         analyzer = MeltAnalyzer(
             logger,
             duplicates,
