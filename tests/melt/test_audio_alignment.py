@@ -75,21 +75,48 @@ def _make_variant_specs() -> list[VariantSpec]:
     return specs
 
 
-VARIANTS = _make_variant_specs()
-VARIANT_BY_NAME = {spec.name: spec for spec in VARIANTS}
+REGULAR_VARIANTS = _make_variant_specs()
 FRAME_DRIFT_VARIANTS = [
     replace(
         spec,
         name=f"fd{index:02d}_{'_'.join(spec.name.split('_')[1:])}",
         speed=1.0,
     )
-    for index, spec in enumerate(VARIANTS)
+    for index, spec in enumerate(REGULAR_VARIANTS)
 ]
 FRAME_DRIFT_VARIANT_BY_NAME = {spec.name: spec for spec in FRAME_DRIFT_VARIANTS}
 FRAME_DRIFT_FPS_BY_NAME = {
     spec.name: 25 if index % 2 == 0 else 23
     for index, spec in enumerate(FRAME_DRIFT_VARIANTS)
 }
+SPARSE_PTS_VARIANTS = {
+    name: VariantSpec(
+        name=f"sparse_pts_{name}",
+        audio_start_offset=False,
+        video_start_offset=False,
+        audio_end_trim=False,
+        video_end_trim=False,
+        extension="avi",
+        speed=1.0,
+        width=width,
+        height=720,
+    )
+    for name, width in (("small", 1278), ("large", 1282))
+}
+SPARSE_OUTRO_PTS_VARIANTS = {
+    name: replace(spec, name=f"sparse_outro_pts_{name}")
+    for name, spec in SPARSE_PTS_VARIANTS.items()
+}
+AVI_REFERENCE = replace(
+    REGULAR_VARIANTS[0], name="sparse_pts_reference", extension="avi",
+)
+VARIANTS = [
+    *REGULAR_VARIANTS,
+    AVI_REFERENCE,
+    *SPARSE_PTS_VARIANTS.values(),
+    *SPARSE_OUTRO_PTS_VARIANTS.values(),
+]
+VARIANT_BY_NAME = {spec.name: spec for spec in VARIANTS}
 PAIR_CASES = [
     (f"{lhs.name}__{rhs.name}", lhs.name, rhs.name)
     for lhs, rhs in permutations(VARIANTS, 2)
@@ -120,8 +147,8 @@ class AudioAlignmentTest(TwoToneTestCase):
 
     The cached inputs are visually equivalent Big Buck Bunny variants with
     different stream start offsets, trailing stream trims, containers, speeds,
-    and minimally different resolutions.  The unique resolution ordering makes
-    melt's base video choice deterministic for every pair.
+    and minimally different resolutions. Different resolutions exercise both
+    base-video choices; equal-resolution variants share the same expected timeline.
 
     The frame-drift group keeps the same stream offset/trim/container/resolution
     matrix but fixes speed at 1.0 and gives one side real extra or dropped video
@@ -134,11 +161,21 @@ class AudioAlignmentTest(TwoToneTestCase):
     start offset, here the whole timeline genuinely starts early, so the shared
     content sits at a constant frame offset between the pair and the alternate
     audio must be shifted by that offset in the output.
+
+    The main pair matrix also includes regular AVI and AVI empty-frame slots.
+    At the start, one black frame is held across the intro while the first real
+    frame keeps its original timestamp. At the end, the first and last black
+    frames retain their timestamps while the intermediate black frames are
+    empty slots. Their playback timelines match regular black-frame sequences,
+    even though the decoder exposes fewer frame ordinals.
     """
 
     CACHE_VERSION = "1"
     FRAME_DRIFT_CACHE_VERSION = "1"
     CONSTANT_OFFSET_CACHE_VERSION = "2"
+    SPARSE_PTS_CACHE_VERSION = "7"
+    SPARSE_OUTRO_PTS_CACHE_VERSION = "6"
+    SPARSE_PTS_REFERENCE_CACHE_VERSION = "4"
     CONSTANT_OFFSET_FRAMES = 5
     BLACK_INTRO_SECONDS = 0.5
     BLACK_OUTRO_SECONDS = 0.5
@@ -196,7 +233,7 @@ class AudioAlignmentTest(TwoToneTestCase):
                 spec.extension,
                 lambda out_path, spec=spec: cls._generate_variant(spec, out_path),
             ))
-            for spec in VARIANTS
+            for spec in REGULAR_VARIANTS
         }
 
         cls.frame_reference_variant_paths = {
@@ -230,6 +267,33 @@ class AudioAlignmentTest(TwoToneTestCase):
             ))
             for name, width in (("small", 1278), ("large", 1282))
         }
+
+        cls.variant_paths[AVI_REFERENCE.name] = str(file_cache.get_or_generate(
+            "audio_align_sparse_pts_reference",
+            cls.SPARSE_PTS_REFERENCE_CACHE_VERSION,
+            "avi",
+            cls._generate_sparse_pts_reference,
+        ))
+
+        cls.variant_paths.update({
+            spec.name: str(file_cache.get_or_generate(
+                f"audio_align_{spec.name}",
+                cls.SPARSE_PTS_CACHE_VERSION,
+                spec.extension,
+                lambda out_path, spec=spec: cls._generate_sparse_pts_variant(spec, out_path),
+            ))
+            for spec in SPARSE_PTS_VARIANTS.values()
+        })
+
+        cls.variant_paths.update({
+            spec.name: str(file_cache.get_or_generate(
+                f"audio_align_{spec.name}",
+                cls.SPARSE_OUTRO_PTS_CACHE_VERSION,
+                spec.extension,
+                lambda out_path, spec=spec: cls._generate_sparse_outro_pts_variant(spec, out_path),
+            ))
+            for spec in SPARSE_OUTRO_PTS_VARIANTS.values()
+        })
 
         cache_dir = Path(file_cache.base_dir) / "audio_alignment_melt_cache"
         cls.melt_cache = MeltCache(str(cache_dir), cls.logger.getChild("MeltCache"))
@@ -439,6 +503,89 @@ class AudioAlignmentTest(TwoToneTestCase):
             ],
             expected_path=str(out_path),
         )
+
+    @classmethod
+    def _avi_video_filter(
+        cls,
+        width: int,
+        height: int,
+        select_expr: str | None = None,
+    ) -> str:
+        filters = [f"settb=expr=1/{cls.FPS}", "setpts=N"]
+        if select_expr is not None:
+            filters.append(f"select='{select_expr}'")
+        filters.append(f"scale={width}:{height}")
+        return f"[0:v]{','.join(filters)}[v]"
+
+    @classmethod
+    def _generate_sparse_pts_reference(cls, out_path: Path) -> None:
+        cls._generate_avi_variant(
+            cls._avi_video_filter(1280, 720),
+            out_path,
+        )
+
+    @classmethod
+    def _generate_avi_variant(cls, filter_complex: str, out_path: Path) -> None:
+        reference_path = cls.variant_paths["v00_asR_vsR_aeR_veR"]
+        filter_complex = (
+            f"{filter_complex};"
+            f"[1:a]atrim=start=0.000000:end={cls.total_duration_seconds:.6f},"
+            "asetpts=PTS-STARTPTS,"
+            "atempo=1.00000000,"
+            "asetpts=PTS+0.00000000/TB[a]"
+        )
+        run_ffmpeg(
+            [
+                "-y",
+                "-i", reference_path,
+                "-i", cls.canonical_video,
+                "-filter_complex", filter_complex,
+                "-map", "[v]",
+                "-map", "[a]",
+                "-fps_mode", "passthrough",
+                "-c:v", "mpeg4",
+                "-q:v", "3",
+                "-pix_fmt", "yuv420p",
+                # Decode from the lossless canonical source, not from the AAC
+                # reference. FFmpeg versions disagree on whether filtering the
+                # latter retains its 1024 priming samples.
+                "-c:a", "pcm_s16le",
+                str(out_path),
+            ],
+            expected_path=str(out_path),
+        )
+
+    @classmethod
+    def _generate_sparse_pts_variant(cls, spec: VariantSpec, out_path: Path) -> None:
+        first_frame_after_intro = round(cls.BLACK_INTRO_SECONDS * cls.FPS)
+        filter_complex = cls._avi_video_filter(
+            spec.width,
+            spec.height,
+            f"eq(n\\,0)+gte(n\\,{first_frame_after_intro})",
+        )
+        # The AVI muxer represents the omitted black frames as empty frame
+        # slots, so playback holds frame zero until the real picture begins.
+        cls._generate_avi_variant(filter_complex, out_path)
+
+    @classmethod
+    def _generate_sparse_outro_pts_variant(cls, spec: VariantSpec, out_path: Path) -> None:
+        reference_path = cls.variant_paths["v00_asR_vsR_aeR_veR"]
+        first_outro_frame = round(
+            (cls.total_duration_seconds - cls.BLACK_OUTRO_SECONDS) * cls.FPS
+        )
+        frame_count = video_utils.get_video_frames_count(reference_path)
+        if frame_count is None:
+            raise RuntimeError(f"Could not count frames in {reference_path}")
+        last_frame = frame_count - 1
+        filter_complex = cls._avi_video_filter(
+            spec.width,
+            spec.height,
+            f"lte(n\\,{first_outro_frame})+eq(n\\,{last_frame})",
+        )
+
+        # Keeping the last frame forces AVI to retain the original video-stream
+        # duration.  The omitted intermediate black frames become empty slots.
+        cls._generate_avi_variant(filter_complex, out_path)
 
     @staticmethod
     def _pick_expected_base(lhs: VariantSpec, rhs: VariantSpec) -> VariantSpec:

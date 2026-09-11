@@ -6,6 +6,7 @@ import numpy as np
 import os
 
 from concurrent.futures import ThreadPoolExecutor
+from bisect import bisect_right
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from tqdm import tqdm
 from typing import Callable, NamedTuple, TypedDict
@@ -148,6 +149,7 @@ class PairMatcher:
     # in a row already identify it.  The boundary only ever lands on a
     # verified sample, never on a tolerated miss.
     _MAX_BOUNDARY_GAP_MISSES = 1
+    _BOUNDARY_PREDICTION_JITTER_FRAMES = 2
     # Entropy below which a boundary-gap frame counts as decisively black for
     # the black-vs-content rejection.  _RICH_FRAME_ENTROPY marks frames too
     # flat for reliable phash matching, but flat-yet-lit content (title
@@ -315,6 +317,37 @@ class PairMatcher:
             return float("nan")
         median_ratio = np.median(ratios)
         return float(median_ratio)
+
+    @staticmethod
+    def _timeline_frame_ids(frames: FramesInfo, fps: float) -> dict[int, int]:
+        """Map timestamps to decode ordinals augmented with empty timeline slots.
+
+        A nominal FPS can be slightly inaccurate, so using ``timestamp * fps``
+        as an absolute coordinate accumulates a false drift across long videos.
+        Instead, retain decoder ordinals and use FPS only to identify local PTS
+        jumps that span more than one frame.  This preserves empty AVI slots
+        without letting metadata override the relation observed by frame pairs.
+        """
+        timestamps = sorted(frames)
+        if not timestamps:
+            return {}
+
+        first_timestamp = timestamps[0]
+        coordinate = int(frames[first_timestamp]["frame_id"])
+        result = {first_timestamp: coordinate}
+        previous_timestamp = first_timestamp
+        previous_decode_id = coordinate
+
+        for timestamp in timestamps[1:]:
+            decode_id = int(frames[timestamp]["frame_id"])
+            decode_advance = max(1, decode_id - previous_decode_id)
+            timeline_advance = max(1, round((timestamp - previous_timestamp) * fps / 1000))
+            coordinate += max(decode_advance, timeline_advance)
+            result[timestamp] = coordinate
+            previous_timestamp = timestamp
+            previous_decode_id = decode_id
+
+        return result
 
     # Maximum relative deviation between an observed pair ratio and the
     # expected one before a match is considered inconsistent.
@@ -818,12 +851,13 @@ class PairMatcher:
         """Detect a single global linear frame relationship over the matched pairs.
 
         Both files are assumed related by ``rhs_frame ~= slope*lhs_frame +
-        intercept`` (read from ``frame_id`` in *FramesInfo*).  A constant frame
-        offset is just the ``slope == 1`` special case, so it is tried first (it
-        needs only two well-separated matches); when the offset is not constant
-        the slope and intercept are fitted with RANSAC.  Either way the audio is
-        later placed with one global time-scale, so a constant offset and a
-        time-scaled drift share the same handling.
+        intercept`` in presentation-timeline frame coordinates.  Unlike decode
+        ordinals, these coordinates retain empty AVI frame slots.  A constant
+        frame offset is just the ``slope == 1`` special case, so it is tried
+        first (it needs only two well-separated matches); when the offset is not
+        constant the slope and intercept are fitted with RANSAC.  Either way the
+        audio is later placed with one global time-scale, so a constant offset
+        and a time-scaled drift share the same handling.
 
         ``time_scale = slope*lhs_fps/rhs_fps`` may differ from 1 (e.g. a 25 fps
         PAL speedup vs 24 fps); that only means the audio must be stretched.  It
@@ -843,11 +877,13 @@ class PairMatcher:
             return None
 
         try:
+            lhs_frame_ids_by_timestamp = self._timeline_frame_ids(lhs_all_frames, self.lhs_fps)
+            rhs_frame_ids_by_timestamp = self._timeline_frame_ids(rhs_all_frames, self.rhs_fps)
             lhs_frame_ids = np.array(
-                [int(lhs_all_frames[l]["frame_id"]) for l, _ in matching_pairs], dtype=float
+                [lhs_frame_ids_by_timestamp[l] for l, _ in matching_pairs], dtype=float
             )
             rhs_frame_ids = np.array(
-                [int(rhs_all_frames[r]["frame_id"]) for _, r in matching_pairs], dtype=float
+                [rhs_frame_ids_by_timestamp[r] for _, r in matching_pairs], dtype=float
             )
         except KeyError:
             return None
@@ -1078,8 +1114,10 @@ class PairMatcher:
             matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
         )
 
-        lhs_by_frame = {int(info["frame_id"]): ts for ts, info in self.lhs_all_frames.items()}
-        rhs_by_frame = {int(info["frame_id"]): ts for ts, info in self.rhs_all_frames.items()}
+        lhs_frame_ids = self._timeline_frame_ids(self.lhs_all_frames, self.lhs_fps)
+        rhs_frame_ids = self._timeline_frame_ids(self.rhs_all_frames, self.rhs_fps)
+        lhs_by_frame = {frame_id: ts for ts, frame_id in lhs_frame_ids.items()}
+        rhs_by_frame = {frame_id: ts for ts, frame_id in rhs_frame_ids.items()}
         lhs_min_frame, lhs_max_frame = min(lhs_by_frame), max(lhs_by_frame)
         rhs_min_frame, rhs_max_frame = min(rhs_by_frame), max(rhs_by_frame)
 
@@ -1105,7 +1143,8 @@ class PairMatcher:
             first_rhs_frame = rhs_min_frame
         first_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, first_rhs_frame))
         self._maybe_insert_verified_boundary(
-            result, "start", slope, intercept, first_lhs_frame, first_rhs_frame, lhs_by_frame, rhs_by_frame, verify_ctx,
+            result, "start", slope, intercept, first_lhs_frame, first_rhs_frame,
+            lhs_frame_ids, lhs_by_frame, rhs_by_frame, verify_ctx,
         )
 
         last_lhs_frame = min(lhs_max_frame, int(np.floor((rhs_max_frame - intercept) / slope + eps)))
@@ -1118,7 +1157,8 @@ class PairMatcher:
             last_rhs_frame = rhs_max_frame
         last_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, last_rhs_frame))
         self._maybe_insert_verified_boundary(
-            result, "end", slope, intercept, last_lhs_frame, last_rhs_frame, lhs_by_frame, rhs_by_frame, verify_ctx,
+            result, "end", slope, intercept, last_lhs_frame, last_rhs_frame,
+            lhs_frame_ids, lhs_by_frame, rhs_by_frame, verify_ctx,
         )
 
         return result
@@ -1194,14 +1234,14 @@ class PairMatcher:
 
         return _BoundaryVerifyContext(lhs=lhs_side, rhs=rhs_side, phash=phash, cutoff=cutoff)
 
-    def _comparison_image(self, side: _VerifySide, ts: int, frame_id: int | None = None) -> str | None:
+    def _comparison_image(self, side: _VerifySide, ts: int) -> str | None:
         """Comparison-space image for the frame at *ts*, produced lazily.
 
         Reuses the already-normalized image when the frame went through the
-        matching pipeline; otherwise extracts the raw frame on demand (given
-        *frame_id*) and normalizes it the same way.  The side's interpolated
-        crop is then applied, so gap frames are compared in exactly the
-        representation the matched pairs were calibrated in.
+        matching pipeline; otherwise resolves its decode ordinal from the
+        timestamp, extracts it on demand, and normalizes it the same way.  The
+        side's interpolated crop is then applied, so gap frames are compared in
+        exactly the representation the matched pairs were calibrated in.
         """
         if ts in side.comparison_cache:
             return side.comparison_cache[ts]
@@ -1211,11 +1251,9 @@ class PairMatcher:
             norm_info = side.normalized.get(ts)
             if norm_info is not None:
                 norm_path = norm_info["path"]
-            elif frame_id is None:
-                norm_path = None
             else:
                 raw_path = self._ensure_boundary_image(
-                    side.video_path, side.raw_dir, side.all_frames, frame_id, ts,
+                    side.video_path, side.raw_dir, side.all_frames, ts,
                 )
                 if raw_path is None:
                     norm_path = None
@@ -1236,6 +1274,32 @@ class PairMatcher:
         side.comparison_cache[ts] = path
         return path
 
+    @staticmethod
+    def _resolve_timeline_samples(
+        by_frame: dict[int, int], frame_ids: list[int],
+    ) -> dict[int, tuple[int, int]]:
+        """Resolve slots to (sample time, displayed image PTS), within the video.
+
+        Empty slots hold the preceding decoded image. Interpolate their sample
+        times between the surrounding observed timestamps, not from absolute
+        nominal FPS, which may drift. Exact decoded slots retain their PTS.
+        """
+        keys = sorted(by_frame)
+        samples = {}
+        for frame_id in set(frame_ids):
+            if frame_id in by_frame:
+                ts = by_frame[frame_id]
+                samples[frame_id] = (ts, ts)
+            else:
+                index = bisect_right(keys, frame_id)
+                if 0 < index < len(keys):
+                    previous, following = keys[index - 1], keys[index]
+                    image_ts = by_frame[previous]
+                    sample_ts = round(image_ts + (by_frame[following] - image_ts)
+                                      * (frame_id - previous) / (following - previous))
+                    samples[frame_id] = (sample_ts, image_ts)
+        return samples
+
     def _maybe_insert_verified_boundary(
         self,
         result: list[tuple[int, int]],
@@ -1244,6 +1308,7 @@ class PairMatcher:
         intercept: float,
         lhs_frame: int,
         rhs_frame: int,
+        lhs_frame_ids: dict[int, int],
         lhs_by_frame: dict[int, int],
         rhs_by_frame: dict[int, int],
         verify_ctx: _BoundaryVerifyContext,
@@ -1257,10 +1322,11 @@ class PairMatcher:
         different outro) stops at the divergence; a gap that diverges immediately
         (different intro) does not move the boundary at all.
         """
-        lhs_ts = lhs_by_frame.get(lhs_frame)
-        rhs_ts = rhs_by_frame.get(rhs_frame)
-        if lhs_ts is None or rhs_ts is None:
+        lhs_sample = self._resolve_timeline_samples(lhs_by_frame, [lhs_frame]).get(lhs_frame)
+        rhs_sample = self._resolve_timeline_samples(rhs_by_frame, [rhs_frame]).get(rhs_frame)
+        if lhs_sample is None or rhs_sample is None:
             return
+        lhs_ts, rhs_ts = lhs_sample[0], rhs_sample[0]
 
         anchor = result[0] if side == "start" else result[-1]
         if side == "start":
@@ -1270,10 +1336,9 @@ class PairMatcher:
         if not beyond or (lhs_ts, rhs_ts) == anchor:
             return
 
-        anchor_info = self.lhs_all_frames.get(anchor[0])
-        if anchor_info is None:
+        anchor_lhs_frame = lhs_frame_ids.get(anchor[0])
+        if anchor_lhs_frame is None:
             return
-        anchor_lhs_frame = int(anchor_info["frame_id"])
 
         verified = self._walk_shared_boundary(
             slope, intercept, anchor_lhs_frame, lhs_frame, rhs_frame, lhs_by_frame, rhs_by_frame, verify_ctx,
@@ -1312,38 +1377,51 @@ class PairMatcher:
         so a tolerated miss never becomes the boundary itself.  Returns
         ``None`` when the walk diverges before verifying anything.
         """
-        direction = 1 if boundary_lhs_frame >= anchor_lhs_frame else -1
         step = max(1, int(self.lhs_fps * 0.5))
 
         # Ordered (lhs_frame, rhs_frame) samples from just past the match to the
         # projected boundary (inclusive); the boundary uses its snapped rhs.
-        samples: list[tuple[int, int]] = []
-        f = anchor_lhs_frame + direction * step
-        while (direction == 1 and f < boundary_lhs_frame) or (direction == -1 and f > boundary_lhs_frame):
-            rhs_f = int(round(slope * f + intercept))
-            if rhs_f not in rhs_by_frame and rhs_by_frame:
-                rhs_f = min(rhs_by_frame, key=lambda k: abs(k - rhs_f))
-            samples.append((f, rhs_f))
-            f += direction * step
+        # Balance only a final interval within the rhs jitter tolerance: a
+        # sample there could retry the edge's black image instead of the gap.
+        # Keep the established sampling grid throughout the rest of the gap.
+        distance = boundary_lhs_frame - anchor_lhs_frame
+        direction = 1 if distance >= 0 else -1
+        frame_ids = list(range(anchor_lhs_frame + direction * step, boundary_lhs_frame, direction * step))
+        jitter = self._BOUNDARY_PREDICTION_JITTER_FRAMES
+        if frame_ids and abs(slope * (boundary_lhs_frame - frame_ids[-1])) <= jitter:
+            previous = frame_ids[-2] if len(frame_ids) > 1 else anchor_lhs_frame
+            frame_ids[-1] = round((previous + boundary_lhs_frame) / 2)
+        samples = [(f, round(slope * f + intercept)) for f in frame_ids]
         samples.append((boundary_lhs_frame, boundary_rhs_frame))
 
         # Bulk-extract every sampled frame up front (two ffmpeg calls),
         # including the ±2 rhs neighbours used by the prediction-jitter retry,
         # so the per-sample verification below only reads images instead of
         # spawning one-frame ffmpeg extractions.
-        self._prefetch_boundary_images(self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames, [lf for lf, _ in samples])
-        rhs_with_neighbours = sorted({rf + d for _, rf in samples for d in (-2, -1, 0, 1, 2)})
-        self._prefetch_boundary_images(self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames, rhs_with_neighbours)
+        lhs_samples = self._resolve_timeline_samples(lhs_by_frame, [lf for lf, _ in samples])
+        rhs_samples = self._resolve_timeline_samples(rhs_by_frame, [
+            rf + delta
+            for _, rf in samples
+            for delta in range(-jitter, jitter + 1)
+        ])
+        self._prefetch_boundary_images(
+            self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames,
+            [image_ts for _, image_ts in lhs_samples.values()],
+        )
+        self._prefetch_boundary_images(
+            self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames,
+            [image_ts for _, image_ts in rhs_samples.values()],
+        )
 
         best: tuple[int, int] | None = None
         consecutive_misses = 0
         for lhs_f, rhs_f in samples:
-            lhs_ts = lhs_by_frame.get(lhs_f)
-            rhs_ts = rhs_by_frame.get(rhs_f)
-            if lhs_ts is None or rhs_ts is None:
+            lhs_sample = lhs_samples.get(lhs_f)
+            rhs_sample = rhs_samples.get(rhs_f)
+            if lhs_sample is None or rhs_sample is None:
                 break
-            if self._shared_content_at_prediction(verify_ctx, lhs_f, rhs_f, lhs_ts, rhs_by_frame):
-                best = (lhs_ts, rhs_ts)
+            if self._shared_content_at_prediction(verify_ctx, rhs_f, lhs_sample[1], rhs_samples):
+                best = (lhs_sample[0], rhs_sample[0])
                 consecutive_misses = 0
             else:
                 consecutive_misses += 1
@@ -1354,10 +1432,9 @@ class PairMatcher:
     def _shared_content_at_prediction(
         self,
         verify_ctx: _BoundaryVerifyContext,
-        lhs_frame: int,
         rhs_frame: int,
         lhs_ts: int,
-        rhs_by_frame: dict[int, int],
+        rhs_samples: dict[int, tuple[int, int]],
     ) -> bool:
         """Content-check the predicted pair, tolerating ±2 frames of rhs jitter.
 
@@ -1370,23 +1447,24 @@ class PairMatcher:
         the returned boundary pair stays the predicted one (on the fitted
         line), keeping the boundary error within the allowed 1-2 frames.
         """
-        for delta in (0, -1, 1, -2, 2):
+        jitter = self._BOUNDARY_PREDICTION_JITTER_FRAMES
+        for delta in sorted(range(-jitter, jitter + 1), key=abs):
             candidate_frame = rhs_frame + delta
-            candidate_ts = rhs_by_frame.get(candidate_frame)
-            if candidate_ts is None:
+            candidate = rhs_samples.get(candidate_frame)
+            if candidate is None:
                 continue
-            if self._boundary_content_matches(verify_ctx, lhs_frame, candidate_frame, lhs_ts, candidate_ts):
+            if self._boundary_content_matches(verify_ctx, lhs_ts, candidate[1]):
                 return True
         return False
 
     def _prefetch_boundary_images(
-        self, video_path: str, out_dir: str, frames: FramesInfo, frame_ids: list[int],
+        self, video_path: str, out_dir: str, frames: FramesInfo, timestamps: list[int],
     ) -> None:
-        """Extract any not-yet-extracted *frame_ids* in a single ffmpeg pass."""
-        frame_id_to_ts = {int(info["frame_id"]): ts for ts, info in frames.items()}
+        """Extract any not-yet-extracted timestamps in a single ffmpeg pass."""
         missing = sorted({
-            fid for fid in frame_ids
-            if frame_id_to_ts.get(fid) is not None and not frames[frame_id_to_ts[fid]].get("path")
+            int(frames[ts]["frame_id"])
+            for ts in timestamps
+            if ts in frames and not frames[ts].get("path")
         })
         if not missing:
             return
@@ -1399,7 +1477,7 @@ class PairMatcher:
         except Exception as e:  # pragma: no cover - extraction failure is non-fatal
             self.logger.debug("Boundary gap extraction failed: %s", e)
 
-    def _boundary_content_matches(self, ctx: _BoundaryVerifyContext, lhs_frame: int, rhs_frame: int, lhs_ts: int, rhs_ts: int) -> bool:
+    def _boundary_content_matches(self, ctx: _BoundaryVerifyContext, lhs_ts: int, rhs_ts: int) -> bool:
         """Verify that the extrapolated boundary frames actually share content.
 
         True when both frames are low-entropy (a shared black lead-in/out) or
@@ -1417,8 +1495,8 @@ class PairMatcher:
         the other already shows content; a merely flat-vs-rich split is left
         to the phash comparison.
         """
-        lhs_path = self._comparison_image(ctx.lhs, lhs_ts, lhs_frame)
-        rhs_path = self._comparison_image(ctx.rhs, rhs_ts, rhs_frame)
+        lhs_path = self._comparison_image(ctx.lhs, lhs_ts)
+        rhs_path = self._comparison_image(ctx.rhs, rhs_ts)
         if lhs_path is None or rhs_path is None:
             self.logger.debug(
                 f"Boundary gap sample {lhs_ts}ms vs {rhs_ts}ms: "
@@ -1444,9 +1522,9 @@ class PairMatcher:
         return distance <= ctx.cutoff
 
     def _ensure_boundary_image(
-        self, video_path: str, out_dir: str, frames: FramesInfo, frame_id: int, ts: int,
+        self, video_path: str, out_dir: str, frames: FramesInfo, ts: int,
     ) -> str | None:
-        """Return an on-disk image path for *frame_id*, extracting it on demand.
+        """Return an on-disk image path for *ts*, extracting it on demand.
 
         The frame is already probed (so its timestamp entry exists) but may lack
         an extracted image; this extracts just that single frame for boundary
@@ -1457,6 +1535,7 @@ class PairMatcher:
             return None
         if info.get("path"):
             return info["path"]
+        frame_id = int(info["frame_id"])
         try:
             video_utils.extract_frames_at_ranges(
                 video_path, out_dir, [(frame_id, frame_id)], frames,
@@ -1634,16 +1713,18 @@ class PairMatcher:
             return
 
         try:
+            lhs_frame_ids_by_timestamp = self._timeline_frame_ids(self.lhs_all_frames, self.lhs_fps)
+            rhs_frame_ids_by_timestamp = self._timeline_frame_ids(self.rhs_all_frames, self.rhs_fps)
             lhs_frame_ids = np.array(
-                [int(self.lhs_all_frames[l]["frame_id"]) for l, _ in matching_pairs],
+                [lhs_frame_ids_by_timestamp[l] for l, _ in matching_pairs],
                 dtype=float,
             )
             rhs_frame_ids = np.array(
-                [int(self.rhs_all_frames[r]["frame_id"]) for _, r in matching_pairs],
+                [rhs_frame_ids_by_timestamp[r] for _, r in matching_pairs],
                 dtype=float,
             )
         except KeyError:
-            self.logger.debug("  matched frames lack frame_id; skipping offset/drift analysis")
+            self.logger.debug("  matched frames lack frame coordinates; skipping offset/drift analysis")
             return
 
         frame_offsets = lhs_frame_ids - rhs_frame_ids
