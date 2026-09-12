@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from twotone import twotone
 from twotone.tools.tool import Tool
-from twotone.tools.utils import process_utils
+from twotone.tools.utils import media_analysis, process_utils
 
 
 @dataclass
@@ -28,17 +28,29 @@ class _TestPlan:
 
 
 class _TestTool(Tool):
-    def __init__(self, plan: _TestPlan) -> None:
+    def __init__(
+        self,
+        plan: _TestPlan,
+        media_requests: tuple[media_analysis.MediaAnalysisRequest, ...] = (),
+    ) -> None:
         self.plan = plan
+        self.media_requests = media_requests
         self.performed = False
+        self.analyze_context = None
+        self.perform_context = None
 
     def setup_parser(self, _parser) -> None:
         return None
 
-    def analyze(self, _args, logger, workspace) -> _TestPlan:
+    def analyze(self, _args, logger, context) -> _TestPlan:
+        self.analyze_context = context
         return self.plan
 
-    def perform(self, _args, logger, workspace, plan) -> None:
+    def media_analysis_requests(self, plan):
+        return self.media_requests
+
+    def perform(self, _args, logger, context, plan) -> None:
+        self.perform_context = context
         self.performed = True
 
 
@@ -110,6 +122,48 @@ class RuntimeVersionTest(unittest.TestCase):
                 validator.assert_called_once()
                 validator.return_value.validate.assert_called_once_with({input_path})
                 self.assertTrue(tool.performed)
+                self.assertIs(tool.analyze_context, tool.perform_context)
+
+    def test_executor_shares_media_analysis_session_with_tool_and_validator(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = os.path.join(temp_dir, "input.mkv")
+            with open(input_path, "wb") as file:
+                file.write(b"media")
+            request = media_analysis.MediaAnalysisRequest(
+                path=input_path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.MATCHING,
+            )
+            tool = _TestTool(_TestPlan({input_path}), (request,))
+            report = twotone.input_validation.ValidationReport((), 1, 0)
+            media_analysis_session = Mock()
+
+            with patch.dict(twotone.TOOLS, {"test": (tool, "test tool", False)}, clear=True), \
+                 patch.object(twotone.process_utils, "ensure_tools_exist"), \
+                 patch.object(
+                     twotone.media_analysis,
+                     "MediaAnalysisSession",
+                     return_value=media_analysis_session,
+                 ), \
+                 patch.object(twotone.input_validation, "InputValidator") as validator:
+                validator.return_value.validate.return_value = report
+                twotone.execute([
+                    "--working-dir", os.path.join(temp_dir, "work"),
+                    "--validation-cache-dir", os.path.join(temp_dir, "cache"),
+                    "test",
+                ])
+
+            self.assertIs(tool.analyze_context.media_analysis, media_analysis_session)
+            self.assertIs(
+                validator.call_args.kwargs["media_analysis_session"],
+                media_analysis_session,
+            )
+            media_analysis_session.fulfill.assert_called_once_with(request)
+            validator.return_value.validate.assert_called_once_with({input_path})
 
 
 class DeleteWarningTest(unittest.TestCase):
@@ -135,6 +189,7 @@ class DeleteWarningTest(unittest.TestCase):
     def test_live_run_warns_before_analyzing(self):
         tool = Mock()
         tool.required_tools.return_value = set()
+        tool.media_analysis_requests.return_value = ()
         plan = Mock()
         plan.is_empty.return_value = True
         plan.input_files.return_value = ()

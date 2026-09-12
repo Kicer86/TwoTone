@@ -15,7 +15,7 @@ from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
 from .melt_common import FrameInfo, FramesInfo
 from .phash_cache import PhashCache
-from ..utils import files_utils, generic_utils, image_utils, video_utils
+from ..utils import files_utils, generic_utils, image_utils, media_analysis, video_utils
 
 
 class MappingRelation(enum.Enum):
@@ -163,16 +163,23 @@ class PairMatcher:
     # log so the quoted limits never drift from the real ones.
     _MAX_CONSTANT_OFFSET_STD = 1.0
     _MAX_DRIFT_SLOPE_DELTA = 0.05
-    _IDENTITY_SAMPLE_COUNT = 7
 
-    def has_identical_timeline_content(self) -> bool:
+    def has_identical_timeline_content(
+        self,
+        *,
+        additional_analysis_features: media_analysis.MediaAnalysisFeature = (
+            media_analysis.MediaAnalysisFeature.NONE
+        ),
+    ) -> bool:
         """Quickly certify that both videos show the same content in-place.
 
         This is deliberately a conservative fast path.  It samples both
         boundaries and evenly-spaced interior frames at identical timestamps;
         a failed sample merely asks callers to use :meth:`create_segments_mapping`
         for the authoritative answer.  It never declares different-looking
-        transfers incompatible by itself.
+        transfers incompatible by itself.  ``additional_analysis_features``
+        lets a caller collect data needed by that fallback during the same
+        sequential decode without running the fallback matching itself.
         """
         if self.lhs_duration_ms is None or self.rhs_duration_ms is None:
             return False
@@ -182,11 +189,25 @@ class PairMatcher:
         duration = self.lhs_duration_ms
         if duration <= 0:
             return False
-        last_timestamp = max(0, duration - max(1, round(1000 / self.lhs_fps)))
-        timestamps = sorted({
-            round(last_timestamp * index / (self._IDENTITY_SAMPLE_COUNT - 1))
-            for index in range(self._IDENTITY_SAMPLE_COUNT)
-        })
+
+        scan_features = (
+            media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
+            | additional_analysis_features
+        )
+        lhs_scan = self._analysis_result_for(
+            self.lhs_path,
+            self.lhs_label,
+            scan_features,
+        )
+        rhs_scan = self._analysis_result_for(
+            self.rhs_path,
+            self.rhs_label,
+            scan_features,
+        )
+        if lhs_scan is not None and rhs_scan is not None:
+            return self._scans_have_identical_timeline_content(lhs_scan, rhs_scan)
+
+        timestamps = list(media_analysis.identity_timestamps(duration, self.lhs_fps))
         self._probe_frames()
         lhs_timestamps = [self._nearest_frame_timestamp(self.lhs_all_frames, timestamp) for timestamp in timestamps]
         rhs_timestamps = [self._nearest_frame_timestamp(self.rhs_all_frames, timestamp) for timestamp in timestamps]
@@ -214,6 +235,74 @@ class PairMatcher:
 
         self.logger.debug("Equal-length identity check passed (%d samples).", len(timestamps))
         return True
+
+    def _scans_have_identical_timeline_content(
+        self,
+        lhs_scan: media_analysis.VideoScanResult,
+        rhs_scan: media_analysis.VideoScanResult,
+    ) -> bool:
+        if lhs_scan.decode_error is not None or rhs_scan.decode_error is not None:
+            return False
+
+        lhs_samples = lhs_scan.identity_samples
+        rhs_samples = rhs_scan.identity_samples
+        lhs_expected = len(media_analysis.identity_timestamps(self.lhs_duration_ms or 0, self.lhs_fps))
+        rhs_expected = len(media_analysis.identity_timestamps(self.rhs_duration_ms or 0, self.rhs_fps))
+        if len(lhs_samples) != lhs_expected or len(rhs_samples) != rhs_expected:
+            self.logger.debug(
+                "Equal-length identity check could not collect all samples (%d and %d).",
+                len(lhs_samples),
+                len(rhs_samples),
+            )
+            return False
+
+        identity_wd = os.path.join(self.debug_wd, "identity")
+        lhs_frames = self._normalize_scan_samples(
+            lhs_samples,
+            os.path.join(identity_wd, "lhs"),
+            self.lhs_label,
+        )
+        rhs_frames = self._normalize_scan_samples(
+            rhs_samples,
+            os.path.join(identity_wd, "rhs"),
+            self.rhs_label,
+        )
+
+        for lhs_sample, rhs_sample in zip(lhs_samples, rhs_samples):
+            distance = abs(
+                self.phash.get(self._extracted_path(lhs_frames[lhs_sample.timestamp_ms]))
+                - self.phash.get(self._extracted_path(rhs_frames[rhs_sample.timestamp_ms]))
+            )
+            if distance > self._MIN_PHASH_CUTOFF:
+                self.logger.debug(
+                    "Equal-length identity check failed near %d ms (pHash distance %d).",
+                    lhs_sample.target_ms,
+                    distance,
+                )
+                return False
+
+        self.logger.debug("Equal-length identity check passed (%d samples).", len(lhs_samples))
+        return True
+
+    def _normalize_scan_samples(
+        self,
+        samples: tuple[media_analysis.VideoSample, ...],
+        output_dir: str,
+        label: str,
+    ) -> FramesInfo:
+        os.makedirs(output_dir, exist_ok=True)
+        frames: FramesInfo = {
+            sample.timestamp_ms: FrameInfo(
+                frame_id=sample.frame_id,
+                path=sample.path,
+            )
+            for sample in samples
+        }
+        return self._normalize_frames(
+            frames,
+            output_dir,
+            desc=f"Normalizing identity samples: {label}",
+        )
 
     @staticmethod
     def _nearest_frame_timestamp(frames: FramesInfo, timestamp: int) -> int:
@@ -255,7 +344,18 @@ class PairMatcher:
             desc=f"Normalizing identity samples: {label}",
         )
 
-    def __init__(self, interruption: generic_utils.InterruptibleProcess, wd: str, lhs_path: str, rhs_path: str, logger: logging.Logger, lhs_label: str = "#1", rhs_label: str = "#2", cache: MeltCache | None = None) -> None:
+    def __init__(
+        self,
+        interruption: generic_utils.InterruptibleProcess,
+        wd: str,
+        lhs_path: str,
+        rhs_path: str,
+        logger: logging.Logger,
+        lhs_label: str = "#1",
+        rhs_label: str = "#2",
+        cache: MeltCache | None = None,
+        media_analysis_session: media_analysis.MediaAnalysisSession | None = None,
+    ) -> None:
         self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
         self.lhs_path = lhs_path
@@ -264,6 +364,7 @@ class PairMatcher:
         self.rhs_label = rhs_label
         self.logger = logger
         self.cache = cache
+        self.media_analysis = media_analysis_session
         self.phash = PhashCache()
         lhs_video_data = video_utils.get_video_data(lhs_path, logger=self.logger)["video"][0]
         rhs_video_data = video_utils.get_video_data(rhs_path, logger=self.logger)["video"][0]
@@ -309,6 +410,36 @@ class PairMatcher:
                   self.debug_wd,
         ]:
             os.makedirs(d)
+
+    def _analysis_result_for(
+        self,
+        path: str,
+        label: str,
+        features: media_analysis.MediaAnalysisFeature,
+    ) -> media_analysis.VideoScanResult | None:
+        result = self.media_analysis.result_for(path) if self.media_analysis is not None else None
+        if result is not None and result.supports(features):
+            return result
+
+        if self.media_analysis is None:
+            return None
+
+        if path == self.lhs_path:
+            duration_ms = self.lhs_duration_ms
+            fps = self.lhs_fps
+        else:
+            duration_ms = self.rhs_duration_ms
+            fps = self.rhs_fps
+        if duration_ms is None:
+            return None
+
+        return self.media_analysis.scan(
+            path,
+            duration_ms=duration_ms,
+            fps=fps,
+            label=label,
+            features=features,
+        )
 
     @staticmethod
     def calculate_ratio(pairs: list[tuple[int, int]]) -> float:
@@ -2531,6 +2662,19 @@ class PairMatcher:
         return lhs_scene_changes, rhs_scene_changes
 
     def _detect_scenes_for(self, video_path: str, label: str) -> list[int]:
+        analysis = self._analysis_result_for(
+            video_path,
+            label,
+            media_analysis.MediaAnalysisFeature.MATCHING,
+        )
+        if analysis is not None:
+            self.logger.info(
+                "[1/6] Scene changes for %s restored from media scan (%d scenes)",
+                label,
+                len(analysis.scene_changes),
+            )
+            return list(analysis.scene_changes)
+
         if self.cache:
             cached = self.cache.load_scene_changes(video_path)
             if cached is not None:
@@ -2555,6 +2699,25 @@ class PairMatcher:
             self.rhs_all_frames = self._probe_frames_for(self.rhs_path, self.rhs_label)
 
     def _probe_frames_for(self, video_path: str, label: str) -> FramesInfo:
+        analysis = self._analysis_result_for(
+            video_path,
+            label,
+            media_analysis.MediaAnalysisFeature.MATCHING,
+        )
+        if analysis is not None:
+            self.logger.info(
+                "[2/6] Frame probes for %s restored from media scan (%d frames)",
+                label,
+                len(analysis.frames),
+            )
+            return {
+                timestamp: FrameInfo(
+                    frame_id=int(info["frame_id"]),
+                    path=info["path"],
+                )
+                for timestamp, info in analysis.frames_copy().items()
+            }
+
         if self.cache:
             cached = self.cache.load_frame_probes(video_path)
             if cached is not None:

@@ -8,7 +8,7 @@ from common import TwoToneTestCase
 from twotone.tools.melt.melt import MeltAnalyzer, StaticSource
 from twotone.tools.melt.melt_analyzer import AlignmentRequirement, UnsupportedMeltInputError
 from twotone.tools.melt.melt_common import AudioStreamRef, MeltInputFiles, SubtitleStreamRef, VideoStreamRef
-from twotone.tools.utils import generic_utils, video_utils
+from twotone.tools.utils import generic_utils, media_analysis, video_utils
 
 
 class MeltAnalyzerTest(TwoToneTestCase):
@@ -363,15 +363,92 @@ class MeltAnalyzerTest(TwoToneTestCase):
                  self.analyzer,
                  "_find_alignment_requirements",
                  return_value=[AlignmentRequirement(subtitle_path, requirement_issue)],
-             ):
+             ), patch.object(self.analyzer, "_matching_request") as matching_request:
             plan, issue, _ = self.analyzer._analyze_group(
                 [base_path, subtitle_path], {base_path: 1, subtitle_path: 2}, "Title",
             )
 
         self.assertIsNone(plan)
+        matching_request.assert_not_called()
         self.assertEqual(
             issue,
             "Subtitle streams from #2 require video timeline alignment, which is not supported yet.",
+        )
+
+    def test_analyze_group_requests_matching_data_needed_for_allowed_timeline_alignment(self):
+        base_path = os.path.join(self.wd.path, "base.mkv")
+        source_path = os.path.join(self.wd.path, "audio-source.mkv")
+        tracks = {
+            base_path: {
+                "video": [{"tid": 0, "length": 6000, "fps": "25/1"}],
+                "audio": [],
+                "subtitle": [],
+            },
+            source_path: {
+                "video": [{"tid": 0, "length": 7000, "fps": "25/1"}],
+                "audio": [],
+                "subtitle": [],
+            },
+        }
+        details = {path: {"tracks": value, "attachments": []} for path, value in tracks.items()}
+        ids = {base_path: 1, source_path: 2}
+        self.analyzer.allow_video_timeline_mismatch = True
+
+        with patch.object(
+            self.analyzer,
+            "_probe_inputs",
+            return_value=(details, {base_path: [], source_path: []}, tracks),
+        ), patch.object(
+            self.analyzer,
+            "_pick_streams",
+            return_value=(
+                [VideoStreamRef(base_path, 0, 0, None)],
+                [AudioStreamRef(source_path, 1, 1, "eng")],
+                [],
+            ),
+        ), patch.object(
+            self.analyzer,
+            "_find_alignment_requirements",
+            return_value=[AlignmentRequirement(source_path, "Video length mismatch")],
+        ):
+            plan, issue, _ = self.analyzer._analyze_group(
+                [base_path, source_path], ids, "Title",
+            )
+
+        self.assertIsNone(issue)
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertNotIn("video_scans", plan)
+        requests = plan["media_analysis_requests"]
+        self.assertEqual([request.path for request in requests], [base_path, source_path])
+        self.assertTrue(all(
+            request.features == media_analysis.MediaAnalysisFeature.MATCHING
+            for request in requests
+        ))
+
+    def test_equal_length_check_collects_matching_data_when_timeline_alignment_is_allowed(self):
+        base_path = os.path.join(self.wd.path, "base.mkv")
+        source_path = os.path.join(self.wd.path, "source.mkv")
+        tracks = {
+            base_path: {"video": [{"tid": 0, "length": 6000, "fps": "25/1"}]},
+            source_path: {"video": [{"tid": 0, "length": 6000, "fps": "25/1"}]},
+        }
+        ids = {base_path: 1, source_path: 2}
+        self.analyzer.allow_video_timeline_mismatch = True
+
+        with patch("twotone.tools.melt.melt_analyzer.PairMatcher") as matcher_type:
+            matcher_type.return_value.has_identical_timeline_content.return_value = False
+            requirements = self.analyzer._find_alignment_requirements(
+                tracks,
+                ids,
+                [VideoStreamRef(base_path, 0, 0, None)],
+                [AudioStreamRef(source_path, 1, 1, "eng")],
+                [],
+            )
+
+        self.assertEqual([requirement.path for requirement in requirements], [source_path])
+        matcher_type.return_value.has_identical_timeline_content.assert_called_once_with(
+            additional_analysis_features=media_analysis.MediaAnalysisFeature.MATCHING,
         )
 
 

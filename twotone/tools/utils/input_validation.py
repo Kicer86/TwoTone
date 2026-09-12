@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from . import generic_utils, process_utils
+from . import generic_utils, media_analysis
 
 
 _CACHE_VERSION = 2
@@ -46,10 +46,18 @@ class ValidationReport:
 class InputValidator:
     """Validate every unique regular input file and cache results by file identity."""
 
-    def __init__(self, mode: ValidationMode, logger: logging.Logger, cache_dir: str | None = None) -> None:
+    def __init__(
+        self,
+        mode: ValidationMode,
+        logger: logging.Logger,
+        cache_dir: str | None = None,
+        *,
+        media_analysis_session: media_analysis.MediaAnalysisSession,
+    ) -> None:
         self.mode = mode
         self.logger = logger
         self.cache_path = Path(cache_dir or generic_utils.get_twotone_config_dir()) / "input_validation.json"
+        self.media_analysis = media_analysis_session
 
     def validate(self, paths: Iterable[str]) -> ValidationReport:
         if self.mode == ValidationMode.OFF:
@@ -73,7 +81,8 @@ class InputValidator:
                 continue
             key = self._cache_key(path)
             cached = cache.get(key)
-            if cached is not None:
+            has_fresh_decode = self._has_analysis_decode(path)
+            if cached is not None and not has_fresh_decode:
                 cached_count += 1
                 self.logger.info("Input validation %d/%d: using cached result for %s.", index, len(unique_paths), path)
                 if cached["issue"]:
@@ -100,51 +109,26 @@ class InputValidator:
             )
         return report
 
+    def _has_analysis_decode(self, path: str) -> bool:
+        result = self.media_analysis.result_for(path)
+        return result is not None and result.validated_all_streams
+
     def _validate_file(self, path: str) -> ValidationIssue | None:
-        probe = process_utils.start_process(
-            "ffprobe",
-            ["-v", "error", "-show_error", "-show_format", "-show_streams", "-of", "json", path],
-            show_progress=True,
-            progress_description="Reading media metadata",
-            logger=self.logger,
-        )
-        if probe.returncode != 0:
-            return ValidationIssue(path, self._summarize_error(probe.stderr or probe.stdout))
-        try:
-            probe_data = json.loads(probe.stdout)
-        except json.JSONDecodeError:
-            return ValidationIssue(path, "ffprobe returned invalid metadata.")
-        has_decodable_stream = any(
-            stream.get("codec_type") in {"audio", "video"}
-            for stream in probe_data.get("streams", [])
-        )
-        if self.mode == ValidationMode.FULL and has_decodable_stream:
-            decode = process_utils.start_process(
-                "ffmpeg",
-                ["-v", "error", "-stats", "-xerror", "-i", path, "-map", "0:v?", "-map", "0:a?", "-f", "null", "-"],
-                show_progress=True,
-                progress_description="Decoding media for validation",
-                logger=self.logger,
-            )
-            decode_output = decode.stderr or decode.stdout
-            decode_errors = self._ffmpeg_error_lines(decode_output)
-            if decode.returncode != 0 or decode_errors:
+        probe = self.media_analysis.probe(path)
+        if probe.error is not None:
+            return ValidationIssue(path, self._summarize_error(probe.error))
+
+        if self.mode == ValidationMode.FULL and probe.has_decodable_stream:
+            scan = self.media_analysis.validate_streams(path, label=path)
+            if scan.decode_error is not None:
                 return ValidationIssue(
                     path,
                     self._describe_decode_failure(
-                        probe_data,
-                        "\n".join(decode_errors) if decode_errors else decode_output,
+                        probe.data,
+                        scan.decode_error,
                     ),
                 )
         return None
-
-    @staticmethod
-    def _ffmpeg_error_lines(output: str) -> list[str]:
-        return [
-            line.strip()
-            for line in output.splitlines()
-            if line.strip() and not re.match(r"^(?:frame|size)=\s*", line.strip())
-        ]
 
     @staticmethod
     def _summarize_error(output: str) -> str:
