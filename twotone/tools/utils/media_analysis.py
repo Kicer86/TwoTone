@@ -69,6 +69,15 @@ class VideoSample:
 
 
 @dataclass(frozen=True)
+class MediaAnalysisRequest:
+    path: str
+    duration_ms: int
+    fps: float
+    label: str
+    features: MediaAnalysisFeature
+
+
+@dataclass(frozen=True)
 class MediaProbeResult:
     path: str
     data: dict
@@ -198,6 +207,15 @@ class MediaAnalysisSession:
         self._cache[key] = result
         self._path_results[real_path] = result
         return result
+
+    def fulfill(self, request: MediaAnalysisRequest) -> VideoScanResult:
+        return self.scan(
+            request.path,
+            duration_ms=request.duration_ms,
+            fps=request.fps,
+            label=request.label,
+            features=request.features,
+        )
 
     def result_for(self, path: str) -> VideoScanResult | None:
         return self._path_results.get(os.path.realpath(path))
