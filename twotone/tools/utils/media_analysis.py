@@ -224,6 +224,7 @@ class MediaAnalysisSession:
             missing_features &= ~cached.features
 
         scanned = self._scan(real_path, duration_ms, fps, label, missing_features)
+        self._store_persistent(scanned)
         result = self._merge_results(cached, scanned) if cached is not None else scanned
         self._cache[key] = result
         self._path_results[real_path] = result
@@ -254,6 +255,18 @@ class MediaAnalysisSession:
         if features == MediaAnalysisFeature.NONE:
             return None
         return VideoScanResult(path, features, frames, scenes, (), None)
+
+    def _store_persistent(self, result: VideoScanResult) -> None:
+        if self._persistent_cache is None or result.decode_error is not None:
+            return
+        if result.supports(MediaAnalysisFeature.SCENE_CHANGES):
+            self._persistent_cache.save_scene_changes(result.path, list(result.scene_changes))
+        if result.supports(MediaAnalysisFeature.FRAME_TIMESTAMPS):
+            frame_probes = {
+                timestamp: {**info, "path": None}
+                for timestamp, info in result.frames.items()
+            }
+            self._persistent_cache.save_frame_probes(result.path, frame_probes)
 
     def fulfill(self, request: MediaAnalysisRequest) -> VideoScanResult:
         return self.scan(
