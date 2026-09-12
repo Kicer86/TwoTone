@@ -40,6 +40,26 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertTrue(first.has_video)
         start_process.assert_called_once()
 
+    def test_identity_samples_can_reuse_a_sparse_frame(self):
+        samples = media_analysis.MediaAnalysisSession._build_samples(
+            (0, 250, 500, 750, 1000),
+            [(0, 0), (1, 1000)],
+            ["/first.png", "/last.png"],
+            {},
+        )
+
+        self.assertEqual(len(samples), 5)
+        self.assertEqual(
+            [(sample.timestamp_ms, sample.path) for sample in samples],
+            [
+                (0, "/first.png"),
+                (0, "/first.png"),
+                (0, "/first.png"),
+                (1000, "/last.png"),
+                (1000, "/last.png"),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
