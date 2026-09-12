@@ -407,7 +407,14 @@ class MeltAnalyzer:
                         self.logger.getChild("PairMatcher"), lhs_label=f"#{base_file_id}", rhs_label=f"#{file_id}",
                         media_analysis_session=self.media_analysis,
                     )
-                    if matcher.has_identical_timeline_content():
+                    additional_analysis_features = (
+                        media_analysis.MediaAnalysisFeature.MATCHING
+                        if self.allow_video_timeline_mismatch
+                        else media_analysis.MediaAnalysisFeature.NONE
+                    )
+                    if matcher.has_identical_timeline_content(
+                        additional_analysis_features=additional_analysis_features,
+                    ):
                         continue
 
                 issue = f"Video content mismatch between #{file_id} and #{base_file_id} (use --allow-video-timeline-mismatch)."

@@ -163,14 +163,23 @@ class PairMatcher:
     # log so the quoted limits never drift from the real ones.
     _MAX_CONSTANT_OFFSET_STD = 1.0
     _MAX_DRIFT_SLOPE_DELTA = 0.05
-    def has_identical_timeline_content(self) -> bool:
+
+    def has_identical_timeline_content(
+        self,
+        *,
+        additional_analysis_features: media_analysis.MediaAnalysisFeature = (
+            media_analysis.MediaAnalysisFeature.NONE
+        ),
+    ) -> bool:
         """Quickly certify that both videos show the same content in-place.
 
         This is deliberately a conservative fast path.  It samples both
         boundaries and evenly-spaced interior frames at identical timestamps;
         a failed sample merely asks callers to use :meth:`create_segments_mapping`
         for the authoritative answer.  It never declares different-looking
-        transfers incompatible by itself.
+        transfers incompatible by itself.  ``additional_analysis_features``
+        lets a caller collect data needed by that fallback during the same
+        sequential decode without running the fallback matching itself.
         """
         if self.lhs_duration_ms is None or self.rhs_duration_ms is None:
             return False
@@ -181,15 +190,19 @@ class PairMatcher:
         if duration <= 0:
             return False
 
+        scan_features = (
+            media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
+            | additional_analysis_features
+        )
         lhs_scan = self._analysis_result_for(
             self.lhs_path,
             self.lhs_label,
-            media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            scan_features,
         )
         rhs_scan = self._analysis_result_for(
             self.rhs_path,
             self.rhs_label,
-            media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            scan_features,
         )
         if lhs_scan is not None and rhs_scan is not None:
             return self._scans_have_identical_timeline_content(lhs_scan, rhs_scan)
