@@ -228,6 +228,7 @@ class MediaAnalysisSession:
         label: str,
         features: MediaAnalysisFeature,
     ) -> VideoScanResult:
+        probe = self.probe(path)
         scan_dir = self.workspace.unique_dir("media_scan")
         frame_stats_path = os.path.join(scan_dir, "frames.txt")
         sample_stats_path = os.path.join(scan_dir, "identity.txt")
@@ -325,10 +326,7 @@ class MediaAnalysisSession:
         scene_timestamps: list[int] = []
         duration_s = duration_ms / 1000
         last_progress_s = 0.0
-        timestamp_correction_ms = video_utils._showinfo_timestamp_correction_ms(
-            path,
-            logger=self.logger,
-        )
+        timestamp_correction_ms = self._timestamp_correction_ms(probe)
 
         progress = tqdm(
             total=duration_s,
@@ -398,6 +396,14 @@ class MediaAnalysisSession:
             identity_samples=samples,
             decode_error=decode_error,
         )
+
+    @staticmethod
+    def _timestamp_correction_ms(probe: MediaProbeResult) -> int:
+        try:
+            start_time = float(probe.data.get("format", {}).get("start_time") or 0.0)
+        except (TypeError, ValueError):
+            return 0
+        return min(0, round(start_time * 1000))
 
     @staticmethod
     def _merge_results(
