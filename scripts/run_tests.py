@@ -11,6 +11,30 @@ import unittest
 from pathlib import Path
 
 
+def _iter_tests(suite: unittest.TestSuite):
+    for test in suite:
+        if isinstance(test, unittest.TestSuite):
+            yield from _iter_tests(test)
+        else:
+            yield test
+
+
+def shard_suite(
+    suite: unittest.TestSuite,
+    shard_count: int,
+    shard_index: int,
+) -> unittest.TestSuite:
+    if shard_count < 1:
+        raise ValueError("Shard count must be at least 1")
+    if not 0 <= shard_index < shard_count:
+        raise ValueError(
+            f"Shard index must be between 0 and {shard_count - 1}"
+        )
+
+    tests = list(_iter_tests(suite))
+    return unittest.TestSuite(tests[shard_index::shard_count])
+
+
 class TimedTestResult(unittest.TextTestResult):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -51,11 +75,25 @@ def main() -> int:
     parser.add_argument("--durations", type=int, default=50)
     parser.add_argument("--pattern", default="test*.py")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--shard-count", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
     args = parser.parse_args()
 
     tests_dir = Path("tests").resolve()
     sys.path.insert(0, str(tests_dir))
     suite = unittest.defaultTestLoader.discover(args.start_dir, pattern=args.pattern)
+    discovered_count = suite.countTestCases()
+    try:
+        suite = shard_suite(suite, args.shard_count, args.shard_index)
+    except ValueError as error:
+        parser.error(str(error))
+
+    print(
+        f"Running shard {args.shard_index + 1}/{args.shard_count}: "
+        f"{suite.countTestCases()} of {discovered_count} test(s).",
+        file=sys.stderr,
+        flush=True,
+    )
     result = TimedTestRunner(
         durations=args.durations,
         verbosity=2 if args.verbose else 1,
