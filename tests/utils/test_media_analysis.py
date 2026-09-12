@@ -109,6 +109,95 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             ],
         )
 
+    def test_matching_scan_restores_and_updates_persistent_cache(self):
+        persistent = Mock()
+        persistent.load_scene_changes.return_value = [120]
+        persistent.load_frame_probes.return_value = None
+        self.session.set_persistent_cache(persistent)
+        scanned = media_analysis.VideoScanResult(
+            path=os.path.realpath(self.path),
+            features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+            frames={0: {"frame_id": 0, "path": "/temporary/sample.png"}},
+            scene_changes=(),
+            identity_samples=(),
+            decode_error=None,
+        )
+
+        with patch.object(self.session, "_scan", return_value=scanned) as scan:
+            result = self.session.scan(
+                self.path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.MATCHING,
+            )
+
+        scan.assert_called_once_with(
+            os.path.realpath(self.path),
+            1000,
+            25.0,
+            "#1",
+            media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS
+            | media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+        )
+        self.assertEqual(result.scene_changes, (120,))
+        self.assertEqual(list(result.frames), [0])
+        persistent.save_frame_probes.assert_called_once_with(
+            os.path.realpath(self.path),
+            {0: {"frame_id": 0, "path": None}},
+        )
+        persistent.save_scene_changes.assert_not_called()
+
+    def test_failed_scan_does_not_update_persistent_cache(self):
+        persistent = Mock()
+        persistent.load_frame_probes.return_value = None
+        self.session.set_persistent_cache(persistent)
+        scanned = media_analysis.VideoScanResult(
+            path=os.path.realpath(self.path),
+            features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+            frames={0: {"frame_id": 0, "path": None}},
+            scene_changes=(),
+            identity_samples=(),
+            decode_error="corrupt input",
+        )
+
+        with patch.object(self.session, "_scan", return_value=scanned):
+            self.session.scan(
+                self.path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+            )
+
+        persistent.save_frame_probes.assert_not_called()
+        persistent.save_scene_changes.assert_not_called()
+
+    def test_scanned_scenes_are_saved_to_persistent_cache(self):
+        persistent = Mock()
+        persistent.load_scene_changes.return_value = None
+        self.session.set_persistent_cache(persistent)
+        scanned = media_analysis.VideoScanResult(
+            path=os.path.realpath(self.path),
+            features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            frames={},
+            scene_changes=(120,),
+            identity_samples=(),
+            decode_error=None,
+        )
+
+        with patch.object(self.session, "_scan", return_value=scanned):
+            self.session.scan(
+                self.path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            )
+
+        persistent.save_scene_changes.assert_called_once_with(os.path.realpath(self.path), [120])
+        persistent.save_frame_probes.assert_not_called()
+
     def test_complete_persistent_matching_cache_avoids_a_scan(self):
         session = media_analysis.MediaAnalysisSession(
             self.workspace,
