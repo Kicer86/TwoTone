@@ -3,9 +3,9 @@ import os
 import tempfile
 import unittest
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from twotone.tools.utils import files_utils, generic_utils, media_analysis, process_utils
+from twotone.tools.utils import files_utils, generic_utils, media_analysis, process_utils, video_utils
 
 
 class MediaAnalysisSessionTest(unittest.TestCase):
@@ -39,6 +39,33 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertIs(first, second)
         self.assertTrue(first.has_video)
         start_process.assert_called_once()
+
+    def test_scan_reuses_probe_for_negative_timestamp_correction(self):
+        probe_result = process_utils.ProcessResult(
+            0,
+            '{"format": {"start_time": "-0.020"}, "streams": [{"codec_type": "video"}]}',
+            "",
+        )
+
+        def fake_ffmpeg(_args, _interruption, on_line, logger):
+            del logger
+            on_line("frame:0 pts:2 pts_time:0.080\n")
+            return Mock(returncode=0), []
+
+        with patch.object(process_utils, "start_process", return_value=probe_result) as start_process, \
+             patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_ffmpeg), \
+             patch.object(video_utils, "_showinfo_timestamp_correction_ms") as old_probe:
+            result = self.session.scan(
+                self.path,
+                duration_ms=120,
+                fps=25.0,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            )
+
+        self.assertEqual(result.scene_changes, (60,))
+        start_process.assert_called_once()
+        old_probe.assert_not_called()
 
     def test_identity_samples_can_reuse_a_sparse_frame(self):
         samples = media_analysis.MediaAnalysisSession._build_samples(
