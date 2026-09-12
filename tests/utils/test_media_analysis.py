@@ -109,6 +109,68 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             ],
         )
 
+    def test_complete_persistent_matching_cache_avoids_a_scan(self):
+        session = media_analysis.MediaAnalysisSession(
+            self.workspace,
+            generic_utils.InterruptibleProcess(),
+            logging.getLogger("PersistentMediaAnalysisTest"),
+            validate_all_streams=False,
+        )
+        persistent = Mock()
+        persistent.load_scene_changes.return_value = [120]
+        persistent.load_frame_probes.return_value = {
+            0: {"frame_id": 0, "path": None},
+        }
+        session.set_persistent_cache(persistent)
+
+        with patch.object(session, "_scan") as scan:
+            result = session.scan(
+                self.path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.MATCHING,
+            )
+
+        scan.assert_not_called()
+        self.assertEqual(result.scene_changes, (120,))
+        self.assertEqual(list(result.frames), [0])
+
+    def test_persistent_cache_does_not_replace_fresh_session_frames(self):
+        session = media_analysis.MediaAnalysisSession(
+            self.workspace,
+            generic_utils.InterruptibleProcess(),
+            logging.getLogger("PersistentMediaAnalysisTest"),
+            validate_all_streams=False,
+        )
+        persistent = Mock()
+        persistent.load_frame_probes.return_value = None
+        session.set_persistent_cache(persistent)
+        scanned = media_analysis.VideoScanResult(
+            path=os.path.realpath(self.path),
+            features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+            frames={0: {"frame_id": 0, "path": "/session/frame.png"}},
+            scene_changes=(),
+            identity_samples=(),
+            decode_error=None,
+        )
+
+        with patch.object(session, "_scan", return_value=scanned) as scan:
+            first = session.scan(
+                self.path, duration_ms=1000, fps=25.0, label="#1",
+                features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+            )
+            persistent.load_frame_probes.return_value = {0: {"frame_id": 0, "path": None}}
+            second = session.scan(
+                self.path, duration_ms=1000, fps=25.0, label="#1",
+                features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+            )
+
+        self.assertIs(second, first)
+        self.assertEqual(second.frames[0]["path"], "/session/frame.png")
+        scan.assert_called_once()
+        persistent.load_frame_probes.assert_called_once_with(os.path.realpath(self.path))
+
 
 if __name__ == "__main__":
     unittest.main()

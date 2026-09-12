@@ -7,6 +7,7 @@ import os
 import re
 
 from dataclasses import dataclass
+from typing import Protocol
 
 from tqdm import tqdm
 
@@ -117,6 +118,16 @@ class VideoScanResult:
         return {timestamp: info.copy() for timestamp, info in self.frames.items()}
 
 
+class PersistentMediaAnalysisCache(Protocol):
+    def load_scene_changes(self, video_path: str) -> list[int] | None: ...
+
+    def save_scene_changes(self, video_path: str, scenes: list[int]) -> None: ...
+
+    def load_frame_probes(self, video_path: str) -> dict[int, dict] | None: ...
+
+    def save_frame_probes(self, video_path: str, probes: dict[int, dict]) -> None: ...
+
+
 class MediaAnalysisSession:
     """Provide media-analysis data"""
 
@@ -137,6 +148,10 @@ class MediaAnalysisSession:
         self._cache: dict[tuple[object, ...], VideoScanResult] = {}
         self._probe_cache: dict[tuple[object, ...], MediaProbeResult] = {}
         self._path_results: dict[str, VideoScanResult] = {}
+        self._persistent_cache: PersistentMediaAnalysisCache | None = None
+
+    def set_persistent_cache(self, cache: PersistentMediaAnalysisCache) -> None:
+        self._persistent_cache = cache
 
     def probe(self, path: str) -> MediaProbeResult:
         real_path = os.path.realpath(path)
@@ -193,6 +208,12 @@ class MediaAnalysisSession:
             raise ValueError("At least one media analysis feature must be requested")
 
         cached = self._cache.get(key)
+        missing_features = requested_features & ~(cached.features if cached is not None else MediaAnalysisFeature.NONE)
+        persistent = self._restore_persistent(real_path, missing_features)
+        if persistent is not None:
+            cached = self._merge_results(cached, persistent) if cached is not None else persistent
+            self._cache[key] = cached
+
         if cached is not None and cached.supports(requested_features):
             self.logger.info("Media scan for %s restored from this run's cache.", label)
             self._path_results[real_path] = cached
@@ -207,6 +228,32 @@ class MediaAnalysisSession:
         self._cache[key] = result
         self._path_results[real_path] = result
         return result
+
+    def _restore_persistent(
+        self,
+        path: str,
+        requested_features: MediaAnalysisFeature,
+    ) -> VideoScanResult | None:
+        if self._persistent_cache is None:
+            return None
+
+        features = MediaAnalysisFeature.NONE
+        scenes: tuple[int, ...] = ()
+        frames: dict[int, dict] = {}
+        if requested_features & MediaAnalysisFeature.SCENE_CHANGES:
+            cached_scenes = self._persistent_cache.load_scene_changes(path)
+            if cached_scenes is not None:
+                features |= MediaAnalysisFeature.SCENE_CHANGES
+                scenes = tuple(cached_scenes)
+        if requested_features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
+            cached_frames = self._persistent_cache.load_frame_probes(path)
+            if cached_frames is not None:
+                features |= MediaAnalysisFeature.FRAME_TIMESTAMPS
+                frames = cached_frames
+
+        if features == MediaAnalysisFeature.NONE:
+            return None
+        return VideoScanResult(path, features, frames, scenes, (), None)
 
     def fulfill(self, request: MediaAnalysisRequest) -> VideoScanResult:
         return self.scan(
