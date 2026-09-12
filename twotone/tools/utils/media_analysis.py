@@ -489,7 +489,6 @@ class MediaAnalysisSession:
                 candidates,
                 key=lambda candidate: abs(candidate[1] - target_ms),
             )
-            candidates.remove((frame_id, timestamp_ms, path))
             if frames:
                 frame_timestamp = min(frames, key=lambda candidate: abs(candidate - timestamp_ms))
                 frame_id = int(frames[frame_timestamp]["frame_id"])
