@@ -67,6 +67,28 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         start_process.assert_called_once()
         old_probe.assert_not_called()
 
+    def test_fulfill_scans_requested_media_features(self):
+        request = media_analysis.MediaAnalysisRequest(
+            path=self.path,
+            duration_ms=1000,
+            fps=25.0,
+            label="#1",
+            features=media_analysis.MediaAnalysisFeature.MATCHING,
+        )
+        expected = object()
+
+        with patch.object(self.session, "scan", return_value=expected) as scan:
+            result = self.session.fulfill(request)
+
+        self.assertIs(result, expected)
+        scan.assert_called_once_with(
+            self.path,
+            duration_ms=1000,
+            fps=25.0,
+            label="#1",
+            features=media_analysis.MediaAnalysisFeature.MATCHING,
+        )
+
     def test_identity_samples_can_reuse_a_sparse_frame(self):
         samples = media_analysis.MediaAnalysisSession._build_samples(
             (0, 250, 500, 750, 1000),
