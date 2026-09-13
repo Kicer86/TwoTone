@@ -323,6 +323,9 @@ class MediaAnalysisSession:
             branches.append("vscenes")
         if features & MediaAnalysisFeature.IDENTITY_SAMPLES:
             branches.append("vsamples")
+        scene_only = branches == ["vscenes"]
+        if scene_only:
+            branches.append("voutput")
 
         filter_parts: list[str] = []
         if len(branches) > 1:
@@ -340,6 +343,8 @@ class MediaAnalysisSession:
                 f"{branch_source('vscenes')}select='gt(scene,{self._SCENE_THRESHOLD})',"
                 "metadata=mode=print:file='pipe\\:2',nullsink"
             )
+        if scene_only:
+            filter_parts.append("[voutput]null[scanout]")
 
         if features & MediaAnalysisFeature.IDENTITY_SAMPLES:
             filter_parts.append(
@@ -370,8 +375,8 @@ class MediaAnalysisSession:
                 args.extend(["-map", "[vframes]"])
             elif features & MediaAnalysisFeature.VALIDATE_STREAMS:
                 args.extend(["-map", "[vvalidate]"])
-            elif features & MediaAnalysisFeature.SCENE_CHANGES:
-                args.extend(["-map", "0:v:0"])
+            elif scene_only:
+                args.extend(["-map", "[scanout]"])
 
         if features & MediaAnalysisFeature.VALIDATE_STREAMS:
             args.extend([
