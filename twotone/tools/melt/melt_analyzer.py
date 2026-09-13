@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 from tqdm import tqdm
 
-from ..utils import files_utils, generic_utils, language_utils, video_utils
+from ..utils import files_utils, generic_utils, language_utils, media_analysis, video_utils
 from .attachments_picker import AttachmentsPicker
 from .duplicates_source import DuplicatesSource
 from .streams_picker import StreamsPicker
@@ -408,6 +408,26 @@ class MeltAnalyzer:
 
         return requirements
 
+    def _matching_request(
+        self,
+        path: str,
+        tracks: dict[str, Any],
+        file_id: int,
+    ) -> media_analysis.MediaAnalysisRequest | None:
+        track = self._pick_primary_video_track(tracks[path]["video"], file_id)
+        duration_ms = track.get("length")
+        fps_value = track.get("fps")
+        if duration_ms is None or fps_value is None:
+            return None
+
+        return media_analysis.MediaAnalysisRequest(
+            path=path,
+            duration_ms=int(duration_ms),
+            fps=generic_utils.fps_str_to_float(str(fps_value)),
+            label=f"#{file_id}",
+            features=media_analysis.MediaAnalysisFeature.MATCHING,
+        )
+
     def _analyze_group(
         self,
         files: list[str],
@@ -442,6 +462,12 @@ class MeltAnalyzer:
 
         if requirements:
             if self.allow_video_timeline_mismatch:
+                matching_paths = [video_streams[0].path] + [requirement.path for requirement in requirements]
+                media_analysis_requests = [
+                    request
+                    for path in matching_paths
+                    if (request := self._matching_request(path, tracks, ids[path])) is not None
+                ]
                 for requirement in requirements:
                     self.logger.debug(
                         "%s Continuing due to allow-video-timeline-mismatch; full content matching runs during processing.",
@@ -449,6 +475,8 @@ class MeltAnalyzer:
                     )
             else:
                 return None, "\n".join(requirement.issue for requirement in requirements), details_full
+        else:
+            media_analysis_requests = []
 
         chapter_source = self._pick_chapter_source(details_full, tracks, video_streams, ids)
 
@@ -481,4 +509,5 @@ class MeltAnalyzer:
             "audio_prod_lang": audio_prod_lang,
             "files_details": details_full,
             "alignment_paths": sorted(alignment_paths),
+            "media_analysis_requests": media_analysis_requests,
         }, None, details_full
