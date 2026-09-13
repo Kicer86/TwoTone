@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from twotone.tools.utils import files_utils, generic_utils, media_analysis, process_utils, video_utils
@@ -23,6 +24,15 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             generic_utils.InterruptibleProcess(),
             logging.getLogger("MediaAnalysisSessionTest"),
             validate_all_streams=True,
+        )
+
+    def _probe_result(self, streams: list[dict] | None = None) -> media_analysis.MediaProbeResult:
+        return media_analysis.MediaProbeResult(
+            path=os.path.realpath(self.path),
+            data={
+                "streams": [{"codec_type": "video"}] if streams is None else streams,
+            },
+            error=None,
         )
 
     def test_probe_reuses_result_for_the_same_unchanged_file(self):
@@ -88,6 +98,33 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             label="#1",
             features=media_analysis.MediaAnalysisFeature.MATCHING,
         )
+
+    def test_validation_only_decode_is_run_by_the_media_session(self):
+        def fake_start(args, _interruption, on_line, logger):
+            del on_line, logger
+            self.assertIn("-xerror", args)
+            self.assertIn("0:a?", args)
+            self.assertNotIn("-filter_complex", args)
+            return SimpleNamespace(returncode=0), []
+
+        with patch.object(self.session, "probe", return_value=self._probe_result()), \
+             patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start) as start, \
+             patch.object(video_utils, "_showinfo_timestamp_correction_ms") as timestamp_correction:
+            result = self.session.validate_streams(self.path)
+
+        start.assert_called_once()
+        timestamp_correction.assert_not_called()
+        self.assertTrue(result.validated_all_streams)
+        self.assertIsNone(result.decode_error)
+
+    def test_validation_skips_decode_when_probe_reports_no_audio_or_video(self):
+        with patch.object(self.session, "probe", return_value=self._probe_result([])), \
+             patch.object(video_utils, "_start_ffmpeg_streaming") as start:
+            result = self.session.validate_streams(self.path)
+
+        start.assert_not_called()
+        self.assertTrue(result.validated_all_streams)
+        self.assertIsNone(result.decode_error)
 
     def test_scene_only_scan_has_a_mapped_filter_output(self):
         session = media_analysis.MediaAnalysisSession(
