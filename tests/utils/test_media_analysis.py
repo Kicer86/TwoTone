@@ -89,6 +89,38 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             features=media_analysis.MediaAnalysisFeature.MATCHING,
         )
 
+    def test_scene_only_scan_has_a_mapped_filter_output(self):
+        session = media_analysis.MediaAnalysisSession(
+            self.workspace,
+            generic_utils.InterruptibleProcess(),
+            logging.getLogger("SceneOnlyMediaAnalysisTest"),
+            validate_all_streams=False,
+        )
+
+        def fake_start(args, _interruption, on_line, logger):
+            del on_line, logger
+            self.assertIn("[scanout]", args)
+            self.assertIn("split=2[vscenes][voutput]", " ".join(args))
+            return Mock(returncode=0), []
+
+        probe = media_analysis.MediaProbeResult(
+            path=os.path.realpath(self.path),
+            data={"streams": [{"codec_type": "video"}]},
+            error=None,
+        )
+        with patch.object(session, "probe", return_value=probe), \
+             patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start):
+            result = session.scan(
+                self.path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            )
+
+        self.assertEqual(result.scene_changes, ())
+        self.assertIsNone(result.decode_error)
+
     def test_identity_samples_can_reuse_a_sparse_frame(self):
         samples = media_analysis.MediaAnalysisSession._build_samples(
             (0, 250, 500, 750, 1000),
