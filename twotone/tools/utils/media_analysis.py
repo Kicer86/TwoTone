@@ -193,8 +193,8 @@ class MediaAnalysisSession:
         self,
         path: str,
         *,
-        duration_ms: int,
-        fps: float,
+        duration_ms: int | None,
+        fps: float | None,
         label: str,
         features: MediaAnalysisFeature,
     ) -> VideoScanResult:
@@ -277,6 +277,15 @@ class MediaAnalysisSession:
             features=request.features,
         )
 
+    def validate_streams(self, path: str, *, label: str | None = None) -> VideoScanResult:
+        return self.scan(
+            path,
+            duration_ms=None,
+            fps=None,
+            label=label or path,
+            features=MediaAnalysisFeature.VALIDATE_STREAMS,
+        )
+
     def result_for(self, path: str) -> VideoScanResult | None:
         return self._path_results.get(os.path.realpath(path))
 
@@ -301,23 +310,49 @@ class MediaAnalysisSession:
     def _scan(
         self,
         path: str,
-        duration_ms: int,
-        fps: float,
+        duration_ms: int | None,
+        fps: float | None,
         label: str,
         features: MediaAnalysisFeature,
     ) -> VideoScanResult:
+        if features & MediaAnalysisFeature.IDENTITY_SAMPLES:
+            if duration_ms is None or fps is None:
+                raise ValueError("Identity samples require video duration and frame rate")
+            target_timestamps = identity_timestamps(duration_ms, fps)
+            sample_select = self._sample_select_expression(target_timestamps)
+        else:
+            target_timestamps = ()
+            sample_select = ""
+
         probe = self.probe(path)
+        if (
+            features & MediaAnalysisFeature.VALIDATE_STREAMS
+            and (probe.error is not None or not probe.has_decodable_stream)
+        ):
+            if features == MediaAnalysisFeature.VALIDATE_STREAMS:
+                return VideoScanResult(
+                    path=path,
+                    features=features,
+                    frames={},
+                    scene_changes=(),
+                    identity_samples=(),
+                    decode_error=probe.error,
+                )
+
+        has_primary_video = probe.has_video
         scan_dir = self.workspace.unique_dir("media_scan")
         frame_stats_path = os.path.join(scan_dir, "frames.txt")
         sample_stats_path = os.path.join(scan_dir, "identity.txt")
         sample_pattern = os.path.join(scan_dir, "identity_%08d.png")
-        target_timestamps = identity_timestamps(duration_ms, fps)
-        sample_select = self._sample_select_expression(target_timestamps)
 
         branches: list[str] = []
         if features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
             branches.append("vframes")
-        elif features & MediaAnalysisFeature.VALIDATE_STREAMS:
+        elif (
+            features != MediaAnalysisFeature.VALIDATE_STREAMS
+            and features & MediaAnalysisFeature.VALIDATE_STREAMS
+            and has_primary_video
+        ):
             branches.append("vvalidate")
         if features & MediaAnalysisFeature.SCENE_CHANGES:
             branches.append("vscenes")
@@ -373,17 +408,17 @@ class MediaAnalysisSession:
         if needs_null_output:
             if features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
                 args.extend(["-map", "[vframes]"])
-            elif features & MediaAnalysisFeature.VALIDATE_STREAMS:
+            elif "vvalidate" in branches:
                 args.extend(["-map", "[vvalidate]"])
             elif scene_only:
                 args.extend(["-map", "[scanout]"])
 
         if features & MediaAnalysisFeature.VALIDATE_STREAMS:
-            args.extend([
-                "-map", "0:v?",
-                "-map", "-0:v:0",
-                "-map", "0:a?",
-            ])
+            if has_primary_video:
+                args.extend(["-map", "0:v?"])
+                if "vframes" in branches or "vvalidate" in branches:
+                    args.extend(["-map", "-0:v:0?"])
+            args.extend(["-map", "0:a?"])
         elif needs_null_output:
             args.append("-an")
 
@@ -407,7 +442,7 @@ class MediaAnalysisSession:
             ])
 
         scene_timestamps: list[int] = []
-        duration_s = duration_ms / 1000
+        duration_s = duration_ms / 1000 if duration_ms is not None and duration_ms > 0 else None
         last_progress_s = 0.0
         timestamp_correction_ms = self._timestamp_correction_ms(probe)
 
@@ -434,7 +469,8 @@ class MediaAnalysisSession:
             progress_match = _PROGRESS_TIME_RE.match(stripped)
             if progress_match:
                 current_s = int(progress_match.group(1)) / 1_000_000
-                delta = min(duration_s, current_s) - last_progress_s
+                bounded_current_s = min(duration_s, current_s) if duration_s is not None else current_s
+                delta = bounded_current_s - last_progress_s
                 if delta > 0:
                     progress.update(delta)
                     last_progress_s += delta
@@ -445,7 +481,7 @@ class MediaAnalysisSession:
             on_line=on_line,
             logger=self.logger,
         )
-        if last_progress_s < duration_s:
+        if duration_s is not None and last_progress_s < duration_s:
             progress.update(duration_s - last_progress_s)
         progress.close()
 
