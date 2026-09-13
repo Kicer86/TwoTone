@@ -1,11 +1,12 @@
 import argparse
 import logging
 import os
+from collections.abc import Iterable
 
 from overrides import override
 
 from ..tool import EmptyPlan, Plan, Tool
-from ..utils import files_utils, generic_utils
+from ..utils import files_utils, generic_utils, media_analysis
 from .duplicates_source import DuplicatesSource
 from .jellyfin import JellyfinSource
 from .static_source import StaticSource
@@ -137,6 +138,15 @@ class MeltTool(Tool):
                             help='Directory for caching expensive per-video operations (scene detection, '
                                  'frame probing, frame extraction). Speeds up repeated runs on the same input files. '
                                  'Cache is invalidated automatically when the input file changes.')
+
+    @override
+    def media_analysis_requests(
+        self,
+        plan: Plan,
+    ) -> Iterable[media_analysis.MediaAnalysisRequest]:
+        if not isinstance(plan, MeltPlan):
+            return ()
+        return plan.media_analysis_requests()
 
     @override
     def analyze(self, args, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:

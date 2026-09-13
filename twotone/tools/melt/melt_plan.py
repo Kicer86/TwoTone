@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
-from ..utils import language_utils
+from ..utils import language_utils, media_analysis
 from .melt_common import MeltInputFiles, StreamType, stream_short_details
 
 
@@ -24,6 +24,14 @@ class MeltPlan:
             for group in item.get("groups", [])
             for path in group.get("files", [])
         }
+
+    def media_analysis_requests(self) -> tuple[media_analysis.MediaAnalysisRequest, ...]:
+        return tuple(
+            request
+            for item in self.items
+            for group in item.get("groups", [])
+            for request in group.get("media_analysis_requests", [])
+        )
 
     def render(self, logger: logging.Logger) -> None:
         if not self.items:
