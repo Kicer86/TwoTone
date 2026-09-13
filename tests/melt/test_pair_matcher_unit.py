@@ -3,9 +3,9 @@ import logging
 import unittest
 
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from twotone.tools.utils import files_utils, generic_utils, image_utils, video_utils
+from twotone.tools.utils import files_utils, generic_utils, image_utils, media_analysis, video_utils
 from twotone.tools.melt.melt import MappingRelation, PairMatcher
 from twotone.tools.melt.pair_matcher import GlobalLinearFit, _BoundaryVerifyContext, _VerifySide
 from twotone.tools.melt.phash_cache import PhashCache
@@ -53,6 +53,30 @@ class PairMatcherUnitTest(unittest.TestCase):
     @staticmethod
     def _timestamp_for_frame(frame_id: int, fps: float) -> int:
         return round(frame_id * 1000 / fps)
+
+    def test_scene_and_frame_probe_reuse_shared_media_scan(self):
+        pm = self._make_pair_matcher()
+        analysis = media_analysis.VideoScanResult(
+            path=pm.lhs_path,
+            features=media_analysis.MediaAnalysisFeature.MATCHING,
+            frames={0: {"frame_id": 0, "path": None}},
+            scene_changes=(120,),
+            identity_samples=(),
+            decode_error=None,
+        )
+        session = Mock(spec=media_analysis.MediaAnalysisSession)
+        session.result_for.return_value = analysis
+        pm.media_analysis = session
+
+        with patch.object(video_utils, "detect_scene_changes", side_effect=AssertionError("legacy scene scan")), \
+             patch.object(video_utils, "probe_frame_timestamps", side_effect=AssertionError("legacy frame probe")):
+            scenes = pm._detect_scenes_for(pm.lhs_path, pm.lhs_label)
+            frames = pm._probe_frames_for(pm.lhs_path, pm.lhs_label)
+
+        self.assertEqual(scenes, [120])
+        self.assertEqual(frames, {0: {"frame_id": 0, "path": None}})
+        session.scan.assert_not_called()
+
 
     # ---- _extrapolate_through_low_entropy ----
 
