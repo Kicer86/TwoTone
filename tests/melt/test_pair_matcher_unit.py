@@ -78,6 +78,62 @@ class PairMatcherUnitTest(unittest.TestCase):
         session.scan.assert_not_called()
 
 
+    def test_identical_timeline_uses_shared_media_scans(self):
+        pm = self._make_pair_matcher()
+        pm.lhs_duration_ms = 6000
+        pm.rhs_duration_ms = 6000
+
+        def scan(path: str, prefix: str) -> media_analysis.VideoScanResult:
+            samples = tuple(
+                media_analysis.VideoSample(timestamp, timestamp, index, f"/{prefix}/{timestamp}.png")
+                for index, timestamp in enumerate((0, 1000, 2000, 3000, 4000, 5000, 5960))
+            )
+            return media_analysis.VideoScanResult(
+                path=path,
+                features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+                frames={},
+                scene_changes=(),
+                identity_samples=samples,
+                decode_error=None,
+            )
+
+        session = Mock(spec=media_analysis.MediaAnalysisSession)
+        session.result_for.return_value = None
+        session.scan.side_effect = [
+            scan(pm.lhs_path, "lhs"),
+            scan(pm.rhs_path, "rhs"),
+        ]
+        pm.media_analysis = session
+
+        with patch.object(PairMatcher, "_normalize_frames", side_effect=lambda frames, *_args, **_kwargs: frames), \
+             patch.object(pm.phash, "get", return_value=0), \
+             patch.object(PairMatcher, "_probe_frames", side_effect=AssertionError("legacy probe must not run")), \
+             patch.object(video_utils, "extract_frames_at_ranges", side_effect=AssertionError("second decode must not run")):
+            self.assertTrue(pm.has_identical_timeline_content())
+
+        self.assertEqual(session.scan.call_count, 2)
+        for call in session.scan.call_args_list:
+            self.assertEqual(
+                call.kwargs["features"],
+                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            )
+
+    def test_identity_check_keeps_legacy_sampling_when_frame_rates_differ(self):
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=24.0)
+        pm.lhs_duration_ms = 6000
+        pm.rhs_duration_ms = 6000
+        pm.lhs_all_frames = {0: {"frame_id": 0, "path": None}}
+        pm.rhs_all_frames = {0: {"frame_id": 0, "path": None}}
+        session = Mock(spec=media_analysis.MediaAnalysisSession)
+        pm.media_analysis = session
+
+        with patch.object(pm, "_probe_frames") as probe, \
+             patch.object(pm, "_extract_identity_samples", return_value=None):
+            self.assertFalse(pm.has_identical_timeline_content())
+
+        probe.assert_called_once()
+        session.scan.assert_not_called()
+
     # ---- _extrapolate_through_low_entropy ----
 
     def test_extrapolate_pure_low_entropy_lhs_extends(self):
