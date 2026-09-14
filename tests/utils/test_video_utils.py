@@ -10,6 +10,25 @@ from common import TwoToneTestCase, generate_subtitles, get_video, remove_key, r
 
 
 class UtilsTests(TwoToneTestCase):
+    def test_frame_ranges_use_separate_timestamps_when_frame_ids_restart(self):
+        frames = {
+            0: {"frame_id": 0, "path": None},
+            40: {"frame_id": 1, "path": None},
+            80: {"frame_id": 0, "path": None},
+            120: {"frame_id": 1, "path": None},
+        }
+
+        ranges = video_utils._timestamp_ranges_for_frame_ranges(
+            [(1, 1)],
+            frames,
+            correction_ms=-10,
+        )
+
+        self.assertEqual(ranges, [(0.05, 0.05), (0.13, 0.13)])
+        expression = video_utils._balanced_timestamp_select_expr(ranges)
+        self.assertIn(r"between(t\,0.049250\,0.050750)", expression)
+        self.assertIn(r"between(t\,0.129250\,0.130750)", expression)
+
     def test_mkvmerge_parser_reuses_supplied_identification(self):
         mkvmerge_info = {
             "tracks": [],

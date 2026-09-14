@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import tempfile
 import time
+
+from bisect import bisect_right
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -454,25 +456,69 @@ def probe_frame_timestamps(
     return mapping
 
 
-def _balanced_select_expr(frame_ranges: list[tuple[int, int]]) -> str:
-    """Build a balanced binary tree of between() clauses for ffmpeg's select filter.
+def _timestamp_ranges_for_frame_ranges(
+    frame_ranges: list[tuple[int, int]],
+    probed_metadata: dict[int, Any],
+    correction_ms: int,
+) -> list[tuple[float, float]]:
+    """Translate frame-id ranges into contiguous input-timestamp ranges.
 
-    A flat ``a+b+c+d`` expression has O(N) parser stack depth and hits
-    ffmpeg's internal limit at ~101 terms.  A balanced tree
-    ``(a+b)+(c+d)`` has O(log₂ N) depth, supporting thousands of ranges
-    in a single invocation.
+    FFmpeg filter frame counters may restart when a stream changes format in
+    the middle of a file. Probed global frame ordinals do not, so timestamps
+    are the stable selector shared by both cases. Repeated legacy frame IDs
+    naturally produce multiple timestamp ranges, matching the old behavior.
     """
-    parts = [f"between(n\\,{start}\\,{end})" for start, end in frame_ranges]
+    merged_ranges: list[tuple[int, int]] = []
+    for start, end in sorted(frame_ranges):
+        if merged_ranges and start <= merged_ranges[-1][1] + 1:
+            merged_ranges[-1] = (merged_ranges[-1][0], max(end, merged_ranges[-1][1]))
+        else:
+            merged_ranges.append((start, end))
 
-    def _build(items: list[str]) -> str:
+    starts = [start for start, _ in merged_ranges]
+
+    def is_selected(frame_id: int) -> bool:
+        index = bisect_right(starts, frame_id) - 1
+        return index >= 0 and frame_id <= merged_ranges[index][1]
+
+    timestamp_ranges: list[tuple[float, float]] = []
+    run_start_ms: int | None = None
+    run_end_ms: int | None = None
+    for timestamp_ms, info in sorted(probed_metadata.items()):
+        if is_selected(int(info["frame_id"])):
+            if run_start_ms is None:
+                run_start_ms = timestamp_ms
+            run_end_ms = timestamp_ms
+        elif run_start_ms is not None and run_end_ms is not None:
+            timestamp_ranges.append((
+                (run_start_ms - correction_ms) / 1000,
+                (run_end_ms - correction_ms) / 1000,
+            ))
+            run_start_ms = run_end_ms = None
+
+    if run_start_ms is not None and run_end_ms is not None:
+        timestamp_ranges.append((
+            (run_start_ms - correction_ms) / 1000,
+            (run_end_ms - correction_ms) / 1000,
+        ))
+
+    return timestamp_ranges
+
+
+def _balanced_timestamp_select_expr(timestamp_ranges: list[tuple[float, float]]) -> str:
+    rounding_margin_s = 0.00075
+    parts = [
+        f"between(t\\,{start - rounding_margin_s:.6f}\\,{end + rounding_margin_s:.6f})"
+        for start, end in timestamp_ranges
+    ]
+
+    def build(items: list[str]) -> str:
         if len(items) == 1:
             return items[0]
         mid = len(items) // 2
-        left = _build(items[:mid])
-        right = _build(items[mid:])
-        return f"({left}+{right})"
+        return f"({build(items[:mid])}+{build(items[mid:])})"
 
-    return _build(parts)
+    return build(parts)
 
 
 def extract_frames_at_ranges(
@@ -489,7 +535,7 @@ def extract_frames_at_ranges(
     """Extract frames from specific frame-number ranges and update *probed_metadata* paths.
 
     *frame_ranges* is a list of ``(first_frame_id, last_frame_id)`` inclusive
-    ranges where frame IDs correspond to ffmpeg's sequential ``n`` variable.
+    ranges using the identifiers stored in *probed_metadata*.
 
     *probed_metadata* is the dict returned by :func:`probe_frame_timestamps`.
     For each extracted frame, the ``"path"`` value at the matching timestamp
@@ -502,8 +548,10 @@ def extract_frames_at_ranges(
     writes sequentially-numbered files into a private temporary subdirectory,
     which are renamed once the showinfo timestamps are known.
 
-    Uses ffmpeg's ``select='between(n,a,b)+…'`` filter so only the
-    requested frames are encoded and written.  The select expression is
+    Uses ffmpeg's ``select='between(t,a,b)+…'`` filter so only the
+    requested frames are encoded and written. Frame ranges are translated
+    to timestamp ranges first because FFmpeg's filter-local ``n`` counter can
+    restart when video parameters change mid-file. The select expression is
     structured as a balanced binary tree of ``+`` operations so that the
     parser stack depth is O(log₂ N) instead of O(N), allowing thousands
     of ranges in a single ffmpeg invocation.
@@ -512,7 +560,15 @@ def extract_frames_at_ranges(
         return
 
     logger = logger or DEFAULT_LOGGER
-    select_expr = _balanced_select_expr(frame_ranges)
+    timestamp_correction_ms = _showinfo_timestamp_correction_ms(video_path, logger=logger)
+    timestamp_ranges = _timestamp_ranges_for_frame_ranges(
+        frame_ranges,
+        probed_metadata,
+        timestamp_correction_ms,
+    )
+    if not timestamp_ranges:
+        return
+    select_expr = _balanced_timestamp_select_expr(timestamp_ranges)
 
     scale_filter = ""
     if isinstance(scale, float):
@@ -531,7 +587,6 @@ def extract_frames_at_ranges(
     basename = os.path.basename(video_path)
     bar_desc = desc or f"Extracting frames: {basename}"
 
-    timestamp_correction_ms = _showinfo_timestamp_correction_ms(video_path, logger=logger)
     showinfo_entries: list[tuple[int, int]] = []  # (output_seq, timestamp_ms)
 
     pbar = tqdm(
