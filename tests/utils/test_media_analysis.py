@@ -126,6 +126,66 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertTrue(result.validated_all_streams)
         self.assertIsNone(result.decode_error)
 
+    def test_collects_frames_scenes_samples_and_validation_in_one_ffmpeg_call(self):
+        def fake_start(args, _interruption, on_line, logger):
+            stats_options = [
+                index for index, value in enumerate(args)
+                if value == "-stats_enc_pre:v:0"
+            ]
+            self.assertEqual(len(stats_options), 2)
+            frame_stats = args[stats_options[0] + 1]
+            sample_stats = args[stats_options[1] + 1]
+
+            with open(frame_stats, "w", encoding="utf-8") as file:
+                file.write("0 0.000\n1 0.040\n2 0.080\n")
+            with open(sample_stats, "w", encoding="utf-8") as file:
+                file.write("0 0.000\n1 0.080\n")
+
+            output_pattern = next(value for value in args if "identity_%08d.png" in value)
+            for index in (1, 2):
+                with open(output_pattern.replace("%08d", f"{index:08d}"), "wb") as file:
+                    file.write(b"png")
+
+            on_line("frame:0 pts:2 pts_time:0.080\n")
+            on_line("lavfi.scene_score=0.75\n")
+            on_line("out_time_ms=80000\n")
+            on_line("progress=end\n")
+            return SimpleNamespace(returncode=0), []
+
+        with patch.object(self.session, "probe", return_value=self._probe_result()), \
+             patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start) as start, \
+             patch.object(video_utils, "_showinfo_timestamp_correction_ms", return_value=0):
+            result = self.session.scan(
+                self.path,
+                duration_ms=120,
+                fps=25.0,
+                label="#1",
+                features=(
+                    media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
+                    | media_analysis.MediaAnalysisFeature.MATCHING
+                ),
+            )
+
+        start.assert_called_once()
+        args = start.call_args.args[0]
+        self.assertIn("-xerror", args)
+        self.assertIn("0:a?", args)
+        self.assertIn("split=3", " ".join(args))
+        stats_formats = [
+            args[index + 1]
+            for index, value in enumerate(args)
+            if value == "-stats_enc_pre_fmt:v:0"
+        ]
+        self.assertEqual(stats_formats, ["{ni} {ti}", "{ni} {ti}"])
+        self.assertEqual(result.scene_changes, (80,))
+        self.assertEqual(list(result.frames), [0, 40, 80])
+        self.assertEqual(
+            [(sample.timestamp_ms, sample.frame_id) for sample in result.identity_samples],
+            [(0, 0)] * 4 + [(80, 2)] * 3,
+        )
+        self.assertTrue(result.validated_all_streams)
+        self.assertIsNone(result.decode_error)
+
     def test_scene_only_scan_has_a_mapped_filter_output(self):
         session = media_analysis.MediaAnalysisSession(
             self.workspace,
