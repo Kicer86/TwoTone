@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from overrides import override
 
 from ..tool import EmptyPlan, Plan, Tool, ToolRuntimeContext
-from ..utils import files_utils, generic_utils, media_analysis
+from ..utils import media_analysis
 from .duplicates_source import DuplicatesSource
 from .jellyfin import JellyfinSource
 from .static_source import StaticSource
@@ -151,7 +151,11 @@ class MeltTool(Tool):
     @override
     def analyze(self, args, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:
         workspace = context.workspace
-        interruption = generic_utils.InterruptibleProcess(logger)
+        interruption = context.interruption
+        if args.cache_dir:
+            context.media_analysis.set_persistent_cache(
+                MeltCache(args.cache_dir, logger.getChild("cache")),
+            )
         data_source: DuplicatesSource | None = None
         input_paths: tuple[str, ...] = ()
         parser = self.parser
@@ -224,6 +228,7 @@ class MeltTool(Tool):
             data_source,
             workspace,
             args.allow_video_timeline_mismatch,
+            context.media_analysis,
         )
         analyzer.input_paths = input_paths
         analysis = analyzer.analyze_duplicates(duplicates)
@@ -234,18 +239,17 @@ class MeltTool(Tool):
 
     @override
     def perform(self, args, logger: logging.Logger, context: ToolRuntimeContext, plan: Plan) -> None:
-        workspace = context.workspace
         if not isinstance(plan, MeltPlan):
             raise TypeError(f"Expected MeltPlan, got {type(plan).__name__}")
 
-        interruption = generic_utils.InterruptibleProcess(logger)
         cache = MeltCache(args.cache_dir, logger.getChild("cache")) if args.cache_dir else None
         performer = MeltPerformer(
             logger,
-            interruption,
-            workspace,
+            context.interruption,
+            context.workspace,
             plan.output_dir,
             cache=cache,
             fill_audio_gaps=args.fill_audio_gaps,
+            media_analysis_session=context.media_analysis,
         )
         performer.process_duplicates(plan.items)
