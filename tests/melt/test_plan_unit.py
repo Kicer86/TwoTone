@@ -1,6 +1,8 @@
 
 import logging
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from twotone.tools.melt.melt_plan import MeltPlan
 from twotone.tools.melt.melt_tool import MeltTool
@@ -31,6 +33,40 @@ class MeltPlanMediaAnalysisTest(unittest.TestCase):
 
         self.assertEqual(plan.media_analysis_requests(), (included,))
         self.assertEqual(tuple(MeltTool().media_analysis_requests(plan)), (included,))
+
+
+class MeltToolContextTest(unittest.TestCase):
+    def test_analyze_and_perform_share_media_analysis_session(self):
+        tool = MeltTool()
+        tool.parser = Mock()
+        logger = logging.getLogger("test.melt_tool")
+        context = Mock()
+        args = SimpleNamespace(
+            cache_dir="/cache",
+            jellyfin_server=None,
+            input_entries=[{"path": "/input.mkv"}],
+            title="Movie",
+            allow_video_timeline_mismatch=False,
+            output_dir="/output",
+            fill_audio_gaps=False,
+        )
+
+        with patch("twotone.tools.melt.melt_tool.os.path.exists", return_value=True), \
+             patch("twotone.tools.melt.melt_tool.StaticSource") as source, \
+             patch("twotone.tools.melt.melt_tool.MeltAnalyzer") as analyzer, \
+             patch("twotone.tools.melt.melt_tool.MeltPerformer") as performer, \
+             patch("twotone.tools.melt.melt_tool.MeltCache") as cache:
+            source.return_value.collect_duplicates.return_value = {"Movie": ["/input.mkv"]}
+            analyzer.return_value.analyze_duplicates.return_value = []
+
+            plan = tool.analyze(args, logger, context)
+            tool.perform(args, logger, context, plan)
+
+        context.media_analysis.set_persistent_cache.assert_called_once_with(cache.return_value)
+        self.assertIs(analyzer.call_args.args[-1], context.media_analysis)
+        self.assertIs(performer.call_args.kwargs["media_analysis_session"], context.media_analysis)
+        self.assertIs(source.call_args.kwargs["interruption"], context.interruption)
+        self.assertIs(performer.call_args.args[1], context.interruption)
 
 
 class MeltPlanFormatTrackLineTest(unittest.TestCase):
