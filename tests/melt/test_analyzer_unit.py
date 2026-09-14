@@ -2,7 +2,7 @@ import os
 import unittest
 
 from parameterized import parameterized
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from common import TwoToneTestCase
 from twotone.tools.melt.melt import MeltAnalyzer, StaticSource
@@ -22,6 +22,34 @@ class MeltAnalyzerTest(TwoToneTestCase):
             self.workspace,
             allow_video_timeline_mismatch=False,
         )
+
+    def test_equal_length_matcher_receives_shared_media_session(self):
+        session = Mock(spec=media_analysis.MediaAnalysisSession)
+        analyzer = MeltAnalyzer(
+            self.logger,
+            self.analyzer.duplicates_source,
+            self.workspace,
+            allow_video_timeline_mismatch=False,
+            media_analysis_session=session,
+        )
+        base_path = "/base.mkv"
+        source_path = "/source.mkv"
+        tracks = {
+            base_path: {"video": [{"length": 6000}]},
+            source_path: {"video": [{"length": 6000}]},
+        }
+
+        with patch("twotone.tools.melt.melt_analyzer.PairMatcher") as matcher:
+            requirements = analyzer._find_alignment_requirements(
+                tracks,
+                {base_path: 1, source_path: 2},
+                [VideoStreamRef(base_path, 0, 0, None)],
+                [AudioStreamRef(source_path, 1, 1, None)],
+                [],
+            )
+
+        self.assertEqual(requirements, [])
+        self.assertIs(matcher.call_args.kwargs["media_analysis_session"], session)
 
 
     @staticmethod
