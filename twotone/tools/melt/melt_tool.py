@@ -5,7 +5,7 @@ from collections.abc import Iterable
 
 from overrides import override
 
-from ..tool import EmptyPlan, Plan, Tool
+from ..tool import EmptyPlan, Plan, Tool, ToolRuntimeContext
 from ..utils import files_utils, generic_utils, media_analysis
 from .duplicates_source import DuplicatesSource
 from .jellyfin import JellyfinSource
@@ -149,7 +149,8 @@ class MeltTool(Tool):
         return plan.media_analysis_requests()
 
     @override
-    def analyze(self, args, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
+    def analyze(self, args, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:
+        workspace = context.workspace
         interruption = generic_utils.InterruptibleProcess(logger)
         data_source: DuplicatesSource | None = None
         input_paths: tuple[str, ...] = ()
@@ -232,7 +233,8 @@ class MeltTool(Tool):
         )
 
     @override
-    def perform(self, args, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
+    def perform(self, args, logger: logging.Logger, context: ToolRuntimeContext, plan: Plan) -> None:
+        workspace = context.workspace
         if not isinstance(plan, MeltPlan):
             raise TypeError(f"Expected MeltPlan, got {type(plan).__name__}")
 

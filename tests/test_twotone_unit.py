@@ -31,14 +31,18 @@ class _TestTool(Tool):
     def __init__(self, plan: _TestPlan) -> None:
         self.plan = plan
         self.performed = False
+        self.analyze_context = None
+        self.perform_context = None
 
     def setup_parser(self, _parser) -> None:
         return None
 
-    def analyze(self, _args, logger, workspace) -> _TestPlan:
+    def analyze(self, _args, logger, context) -> _TestPlan:
+        self.analyze_context = context
         return self.plan
 
-    def perform(self, _args, logger, workspace, plan) -> None:
+    def perform(self, _args, logger, context, plan) -> None:
+        self.perform_context = context
         self.performed = True
 
 
@@ -110,6 +114,7 @@ class RuntimeVersionTest(unittest.TestCase):
                 validator.assert_called_once()
                 validator.return_value.validate.assert_called_once_with({input_path})
                 self.assertTrue(tool.performed)
+                self.assertIs(tool.analyze_context, tool.perform_context)
 
 
 class DeleteWarningTest(unittest.TestCase):
