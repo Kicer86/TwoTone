@@ -270,6 +270,14 @@ def execute(argv: list[str]) -> None:
                 if validation_mode == input_validation.ValidationMode.FULL:
                     validation_tools.append("ffmpeg")
                 process_utils.ensure_tools_exist(validation_tools, tool_logger)
+            if args.no_dry_run or args.interactive:
+                media_analysis_requests = tuple(tool.media_analysis_requests(plan))
+                if (media_analysis_requests and "ffmpeg" not in required_tools
+                        and validation_mode != input_validation.ValidationMode.FULL):
+                    process_utils.ensure_tools_exist(["ffmpeg"], tool_logger)
+
+                for request in media_analysis_requests:
+                    context.media_analysis.fulfill(request)
             validation = input_validation.InputValidator(
                 validation_mode,
                 tool_logger,
