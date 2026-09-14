@@ -126,6 +126,57 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertTrue(result.validated_all_streams)
         self.assertIsNone(result.decode_error)
 
+    def test_upgrades_cached_scan_with_only_missing_features(self):
+        identity = media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
+        matching = media_analysis.MediaAnalysisFeature.MATCHING
+        validation = media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS
+
+        def scan(_path, _duration_ms, _fps, _label, features):
+            return media_analysis.VideoScanResult(
+                path=os.path.realpath(self.path),
+                features=features,
+                frames={40: {"frame_id": 1, "path": None}} if features & matching else {},
+                scene_changes=(40,) if features & matching else (),
+                identity_samples=(
+                    media_analysis.VideoSample(0, 0, 0, "/sample.png"),
+                ) if features & identity else (),
+                decode_error=None,
+            )
+
+        with patch.object(self.session, "_scan", side_effect=scan) as scan_mock:
+            first = self.session.scan(
+                self.path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#1",
+                features=identity,
+            )
+            upgraded = self.session.scan(
+                self.path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#1",
+                features=matching,
+            )
+            restored = self.session.scan(
+                self.path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#2",
+                features=identity | matching,
+            )
+
+        self.assertEqual(first.features, identity | validation)
+        self.assertEqual(upgraded.features, identity | matching | validation)
+        self.assertEqual(upgraded.identity_samples, first.identity_samples)
+        self.assertEqual(upgraded.scene_changes, (40,))
+        self.assertEqual(list(upgraded.frames), [40])
+        self.assertIs(restored, upgraded)
+        self.assertEqual(
+            [call.args[-1] for call in scan_mock.call_args_list],
+            [identity | validation, matching],
+        )
+
     def test_collects_frames_scenes_samples_and_validation_in_one_ffmpeg_call(self):
         def fake_start(args, _interruption, on_line, logger):
             stats_options = [
