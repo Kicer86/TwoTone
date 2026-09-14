@@ -8,7 +8,7 @@ from array import array
 from parameterized import parameterized
 from unittest.mock import Mock, patch
 
-from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
+from twotone.tools.utils import files_utils, generic_utils, media_analysis, process_utils, video_utils
 from twotone.tools.melt.melt import MeltPerformer, StaticSource, StreamsPicker
 from twotone.tools.melt.melt_common import AttachmentRef, AudioStreamRef, VideoStreamRef
 from twotone.tools.melt.melt_performer import (
@@ -70,6 +70,42 @@ class MeltPerformerUnitTest(unittest.TestCase):
             performer.process_duplicates(plan)
 
         return captured_args
+
+    def test_pair_match_reuses_media_analysis_session(self):
+        media_analysis_session = Mock(spec=media_analysis.MediaAnalysisSession)
+        output = files_utils.Workspace.temporary()
+        workspace = files_utils.Workspace.temporary()
+        self.addCleanup(output.close)
+        self.addCleanup(workspace.close)
+        performer = MeltPerformer(
+            logger=logging.getLogger("test.MeltPerformer"),
+            interruption=generic_utils.InterruptibleProcess(),
+            workspace=workspace,
+            output_dir=output.root,
+            media_analysis_session=media_analysis_session,
+        )
+        base_path = "/media/base.mkv"
+        source_path = "/media/source.mkv"
+
+        with patch(
+            "twotone.tools.melt.melt_performer.PairMatcher",
+        ) as matcher_type, patch.object(
+            video_utils,
+            "get_video_duration",
+            return_value=6000,
+        ):
+            matcher_type.return_value.create_segments_mapping.return_value = Mock()
+            performer._pair_match(
+                "/tmp/matching",
+                base_path,
+                source_path,
+                {base_path: 1, source_path: 2},
+            )
+
+        self.assertIs(
+            matcher_type.call_args.kwargs["media_analysis_session"],
+            media_analysis_session,
+        )
 
     def test_process_duplicates_rejects_output_aliasing_input(self):
         performer = self._make_performer()
