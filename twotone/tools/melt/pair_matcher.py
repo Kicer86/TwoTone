@@ -163,8 +163,6 @@ class PairMatcher:
     # log so the quoted limits never drift from the real ones.
     _MAX_CONSTANT_OFFSET_STD = 1.0
     _MAX_DRIFT_SLOPE_DELTA = 0.05
-    _IDENTITY_SAMPLE_COUNT = 7
-
     def has_identical_timeline_content(self) -> bool:
         """Quickly certify that both videos show the same content in-place.
 
@@ -182,11 +180,22 @@ class PairMatcher:
         duration = self.lhs_duration_ms
         if duration <= 0:
             return False
-        last_timestamp = max(0, duration - max(1, round(1000 / self.lhs_fps)))
-        timestamps = sorted({
-            round(last_timestamp * index / (self._IDENTITY_SAMPLE_COUNT - 1))
-            for index in range(self._IDENTITY_SAMPLE_COUNT)
-        })
+
+        if self.lhs_fps == self.rhs_fps:
+            lhs_scan = self._analysis_result_for(
+                self.lhs_path,
+                self.lhs_label,
+                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            )
+            rhs_scan = self._analysis_result_for(
+                self.rhs_path,
+                self.rhs_label,
+                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            )
+            if lhs_scan is not None and rhs_scan is not None:
+                return self._scans_have_identical_timeline_content(lhs_scan, rhs_scan)
+
+        timestamps = list(media_analysis.identity_timestamps(duration, self.lhs_fps))
         self._probe_frames()
         lhs_timestamps = [self._nearest_frame_timestamp(self.lhs_all_frames, timestamp) for timestamp in timestamps]
         rhs_timestamps = [self._nearest_frame_timestamp(self.rhs_all_frames, timestamp) for timestamp in timestamps]
@@ -214,6 +223,74 @@ class PairMatcher:
 
         self.logger.debug("Equal-length identity check passed (%d samples).", len(timestamps))
         return True
+
+    def _scans_have_identical_timeline_content(
+        self,
+        lhs_scan: media_analysis.VideoScanResult,
+        rhs_scan: media_analysis.VideoScanResult,
+    ) -> bool:
+        if lhs_scan.decode_error is not None or rhs_scan.decode_error is not None:
+            return False
+
+        lhs_samples = lhs_scan.identity_samples
+        rhs_samples = rhs_scan.identity_samples
+        lhs_expected = len(media_analysis.identity_timestamps(self.lhs_duration_ms or 0, self.lhs_fps))
+        rhs_expected = len(media_analysis.identity_timestamps(self.rhs_duration_ms or 0, self.rhs_fps))
+        if len(lhs_samples) != lhs_expected or len(rhs_samples) != rhs_expected:
+            self.logger.debug(
+                "Equal-length identity check could not collect all samples (%d and %d).",
+                len(lhs_samples),
+                len(rhs_samples),
+            )
+            return False
+
+        identity_wd = os.path.join(self.debug_wd, "identity")
+        lhs_frames = self._normalize_scan_samples(
+            lhs_samples,
+            os.path.join(identity_wd, "lhs"),
+            self.lhs_label,
+        )
+        rhs_frames = self._normalize_scan_samples(
+            rhs_samples,
+            os.path.join(identity_wd, "rhs"),
+            self.rhs_label,
+        )
+
+        for lhs_sample, rhs_sample in zip(lhs_samples, rhs_samples):
+            distance = abs(
+                self.phash.get(self._extracted_path(lhs_frames[lhs_sample.timestamp_ms]))
+                - self.phash.get(self._extracted_path(rhs_frames[rhs_sample.timestamp_ms]))
+            )
+            if distance > self._MIN_PHASH_CUTOFF:
+                self.logger.debug(
+                    "Equal-length identity check failed near %d ms (pHash distance %d).",
+                    lhs_sample.target_ms,
+                    distance,
+                )
+                return False
+
+        self.logger.debug("Equal-length identity check passed (%d samples).", len(lhs_samples))
+        return True
+
+    def _normalize_scan_samples(
+        self,
+        samples: tuple[media_analysis.VideoSample, ...],
+        output_dir: str,
+        label: str,
+    ) -> FramesInfo:
+        os.makedirs(output_dir, exist_ok=True)
+        frames: FramesInfo = {
+            sample.timestamp_ms: FrameInfo(
+                frame_id=sample.frame_id,
+                path=sample.path,
+            )
+            for sample in samples
+        }
+        return self._normalize_frames(
+            frames,
+            output_dir,
+            desc=f"Normalizing identity samples: {label}",
+        )
 
     @staticmethod
     def _nearest_frame_timestamp(frames: FramesInfo, timestamp: int) -> int:
