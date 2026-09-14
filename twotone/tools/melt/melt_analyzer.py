@@ -40,11 +40,18 @@ class MeltAnalyzer:
         duplicates_source: DuplicatesSource,
         workspace: files_utils.Workspace,
         allow_video_timeline_mismatch: bool,
+        media_analysis_session: media_analysis.MediaAnalysisSession | None = None,
     ) -> None:
         self.logger = logger
         self.duplicates_source = duplicates_source
         self.workspace = workspace
         self.allow_video_timeline_mismatch = allow_video_timeline_mismatch
+        self.media_analysis = media_analysis_session or media_analysis.MediaAnalysisSession(
+            workspace,
+            duplicates_source.interruption,
+            logger.getChild("MediaAnalysis"),
+            validate_all_streams=False,
+        )
         self.input_paths: tuple[str, ...] = ()
 
     def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
@@ -398,6 +405,7 @@ class MeltAnalyzer:
                     matcher = PairMatcher(
                         self.duplicates_source.interruption, matching_wd, base_path, path,
                         self.logger.getChild("PairMatcher"), lhs_label=f"#{base_file_id}", rhs_label=f"#{file_id}",
+                        media_analysis_session=self.media_analysis,
                     )
                     if matcher.has_identical_timeline_content():
                         continue
