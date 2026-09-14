@@ -21,7 +21,8 @@ from .tools import          \
     transcode,              \
     utilities
 
-from .tools.utils import files_utils, generic_utils, input_validation, process_utils
+from .tools.tool import ToolRuntimeContext
+from .tools.utils import files_utils, generic_utils, input_validation, media_analysis, process_utils
 
 TOOLS = {
     "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file", True),
@@ -243,16 +244,27 @@ def execute(argv: list[str]) -> None:
                  logger=logger,
              ) as workspace:
             tool_logger = logger.getChild(args.tool)
+            validation_mode = input_validation.ValidationMode(args.validate_inputs)
+            interruption = generic_utils.InterruptibleProcess(tool_logger)
+            context = ToolRuntimeContext(
+                workspace=workspace,
+                interruption=interruption,
+                media_analysis=media_analysis.MediaAnalysisSession(
+                    workspace,
+                    interruption,
+                    tool_logger.getChild("MediaAnalysis"),
+                    validate_all_streams=validation_mode == input_validation.ValidationMode.FULL,
+                ),
+            )
             required_tools = sorted(tool.required_tools())
             if required_tools:
                 process_utils.ensure_tools_exist(required_tools, tool_logger)
             plan = tool.analyze(
                 args,
                 logger=tool_logger,
-                workspace=workspace,
+                context=context,
             )
 
-            validation_mode = input_validation.ValidationMode(args.validate_inputs)
             if validation_mode != input_validation.ValidationMode.OFF:
                 validation_tools = ["ffprobe"]
                 if validation_mode == input_validation.ValidationMode.FULL:
@@ -277,7 +289,7 @@ def execute(argv: list[str]) -> None:
                     tool.perform(
                         args,
                         logger=tool_logger,
-                        workspace=workspace,
+                        context=context,
                         plan=plan,
                     )
             elif args.interactive:
@@ -300,7 +312,7 @@ def execute(argv: list[str]) -> None:
                         tool.perform(
                             args,
                             logger=tool_logger,
-                            workspace=workspace,
+                            context=context,
                             plan=plan,
                         )
                     else:
@@ -325,7 +337,7 @@ def execute(argv: list[str]) -> None:
                     tool.perform(
                         args,
                         logger=tool_logger,
-                        workspace=workspace,
+                        context=context,
                         plan=plan,
                     )
                 else:

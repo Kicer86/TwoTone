@@ -37,11 +37,11 @@ class DummyRequirementsTool(Tool):
     def setup_parser(self, parser) -> None:
         return None
 
-    def analyze(self, args, logger, workspace):
+    def analyze(self, args, logger, context):
         self._entrypoint()
         return EmptyPlan()
 
-    def perform(self, args, logger, workspace, plan):
+    def perform(self, args, logger, context, plan):
         self._perform_helper()
         return None
 
