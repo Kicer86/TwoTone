@@ -40,18 +40,13 @@ class MeltAnalyzer:
         duplicates_source: DuplicatesSource,
         workspace: files_utils.Workspace,
         allow_video_timeline_mismatch: bool,
-        media_analysis_session: media_analysis.MediaAnalysisSession | None = None,
+        media_analysis_session: media_analysis.MediaAnalysisSession,
     ) -> None:
         self.logger = logger
         self.duplicates_source = duplicates_source
         self.workspace = workspace
         self.allow_video_timeline_mismatch = allow_video_timeline_mismatch
-        self.media_analysis = media_analysis_session or media_analysis.MediaAnalysisSession(
-            workspace,
-            duplicates_source.interruption,
-            logger.getChild("MediaAnalysis"),
-            validate_all_streams=False,
-        )
+        self.media_analysis = media_analysis_session
         self.input_paths: tuple[str, ...] = ()
 
     def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
@@ -421,17 +416,12 @@ class MeltAnalyzer:
         path: str,
         tracks: dict[str, Any],
         file_id: int,
-    ) -> media_analysis.MediaAnalysisRequest | None:
+    ) -> media_analysis.MediaAnalysisRequest:
         track = self._pick_primary_video_track(tracks[path]["video"], file_id)
-        duration_ms = track.get("length")
-        fps_value = track.get("fps")
-        if duration_ms is None or fps_value is None:
-            return None
-
         return media_analysis.MediaAnalysisRequest(
             path=path,
-            duration_ms=int(duration_ms),
-            fps=generic_utils.fps_str_to_float(str(fps_value)),
+            duration_ms=int(track["length"]),
+            fps=generic_utils.fps_str_to_float(str(track["fps"])),
             label=f"#{file_id}",
             features=media_analysis.MediaAnalysisFeature.MATCHING,
         )
@@ -472,9 +462,8 @@ class MeltAnalyzer:
             if self.allow_video_timeline_mismatch:
                 matching_paths = [video_streams[0].path] + [requirement.path for requirement in requirements]
                 media_analysis_requests = [
-                    request
+                    self._matching_request(path, tracks, ids[path])
                     for path in matching_paths
-                    if (request := self._matching_request(path, tracks, ids[path])) is not None
                 ]
                 for requirement in requirements:
                     self.logger.debug(

@@ -194,7 +194,8 @@ class MeltPerformer(TrackTimelineMixin):
         output_dir: str,
         cache: MeltCache | None = None,
         fill_audio_gaps: bool = False,
-        media_analysis_session: media_analysis.MediaAnalysisSession | None = None,
+        *,
+        media_analysis_session: media_analysis.MediaAnalysisSession,
     ) -> None:
         self.logger = logger
         self.interruption = interruption

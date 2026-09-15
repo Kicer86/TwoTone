@@ -192,8 +192,7 @@ class PairMatcher:
                 self.rhs_label,
                 media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             )
-            if lhs_scan is not None and rhs_scan is not None:
-                return self._scans_have_identical_timeline_content(lhs_scan, rhs_scan)
+            return self._scans_have_identical_timeline_content(lhs_scan, rhs_scan)
 
         timestamps = list(media_analysis.identity_timestamps(duration, self.lhs_fps))
         self._probe_frames()
@@ -342,7 +341,8 @@ class PairMatcher:
         lhs_label: str = "#1",
         rhs_label: str = "#2",
         cache: MeltCache | None = None,
-        media_analysis_session: media_analysis.MediaAnalysisSession | None = None,
+        *,
+        media_analysis_session: media_analysis.MediaAnalysisSession,
     ) -> None:
         self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
@@ -404,23 +404,13 @@ class PairMatcher:
         path: str,
         label: str,
         features: media_analysis.MediaAnalysisFeature,
-    ) -> media_analysis.VideoScanResult | None:
-        result = self.media_analysis.result_for(path) if self.media_analysis is not None else None
-        if result is not None and result.supports(features):
-            return result
-
-        if self.media_analysis is None:
-            return None
-
+    ) -> media_analysis.VideoScanResult:
         if path == self.lhs_path:
             duration_ms = self.lhs_duration_ms
             fps = self.lhs_fps
         else:
             duration_ms = self.rhs_duration_ms
             fps = self.rhs_fps
-        if duration_ms is None:
-            return None
-
         return self.media_analysis.scan(
             path,
             duration_ms=duration_ms,
@@ -2655,29 +2645,12 @@ class PairMatcher:
             label,
             media_analysis.MediaAnalysisFeature.MATCHING,
         )
-        if analysis is not None:
-            self.logger.info(
-                "[1/6] Scene changes for %s restored from media scan (%d scenes)",
-                label,
-                len(analysis.scene_changes),
-            )
-            return list(analysis.scene_changes)
-
-        if self.cache:
-            cached = self.cache.load_scene_changes(video_path)
-            if cached is not None:
-                self.logger.info("[1/6] Scene changes for %s restored from cache (%d scenes)", label, len(cached))
-                return cached
-
-        result = video_utils.detect_scene_changes(
-            video_path, threshold=0.3, logger=self.logger,
-            interruption=self.interruption, desc=f"[1/6] Detecting scenes: {label}",
+        self.logger.info(
+            "[1/6] Scene changes for %s restored from media scan (%d scenes)",
+            label,
+            len(analysis.scene_changes),
         )
-
-        if self.cache:
-            self.cache.save_scene_changes(video_path, result)
-
-        return result
+        return list(analysis.scene_changes)
 
     def _probe_frames(self) -> None:
         """Phase 2: Probe all frame timestamps (fast — no images written)."""
@@ -2692,36 +2665,18 @@ class PairMatcher:
             label,
             media_analysis.MediaAnalysisFeature.MATCHING,
         )
-        if analysis is not None:
-            self.logger.info(
-                "[2/6] Frame probes for %s restored from media scan (%d frames)",
-                label,
-                len(analysis.frames),
-            )
-            return {
-                timestamp: FrameInfo(
-                    frame_id=int(info["frame_id"]),
-                    path=info["path"],
-                )
-                for timestamp, info in analysis.frames_copy().items()
-            }
-
-        if self.cache:
-            cached = self.cache.load_frame_probes(video_path)
-            if cached is not None:
-                self.logger.info("[2/6] Frame probes for %s restored from cache (%d frames)", label, len(cached))
-                return cached
-
-        result = video_utils.probe_frame_timestamps(
-            video_path, interruption=self.interruption,
-            desc=f"[2/6] Probing frames: {label}",
-            logger=self.logger,
+        self.logger.info(
+            "[2/6] Frame probes for %s restored from media scan (%d frames)",
+            label,
+            len(analysis.frames),
         )
-
-        if self.cache:
-            self.cache.save_frame_probes(video_path, result)
-
-        return result
+        return {
+            timestamp: FrameInfo(
+                frame_id=int(info["frame_id"]),
+                path=info["path"],
+            )
+            for timestamp, info in analysis.frames_copy().items()
+        }
 
     def _extract_scene_frames(
         self,

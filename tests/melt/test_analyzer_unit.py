@@ -16,11 +16,18 @@ class MeltAnalyzerTest(TwoToneTestCase):
         super().setUp()
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
+        self.media_analysis = media_analysis.MediaAnalysisSession(
+            self.workspace,
+            interruption,
+            self.logger.getChild("MediaAnalysis"),
+            validate_all_streams=False,
+        )
         self.analyzer = MeltAnalyzer(
             self.logger,
             duplicates,
             self.workspace,
             allow_video_timeline_mismatch=False,
+            media_analysis_session=self.media_analysis,
         )
 
     def test_equal_length_matcher_receives_shared_media_session(self):
