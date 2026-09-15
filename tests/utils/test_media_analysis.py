@@ -472,6 +472,51 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         scan.assert_called_once()
         persistent.load_frame_probes.assert_called_once_with(os.path.realpath(self.path))
 
+    def test_identity_scan_does_not_collect_matching_data(self):
+        def fake_start(args, _interruption, on_line, logger):
+            del on_line, logger
+            stats_options = [
+                index for index, value in enumerate(args)
+                if value == "-stats_enc_pre:v:0"
+            ]
+            self.assertEqual(len(stats_options), 1)
+            sample_stats = args[stats_options[0] + 1]
+            with open(sample_stats, "w", encoding="utf-8") as file:
+                file.write("0 0.000\n1 0.080\n")
+
+            output_pattern = next(value for value in args if "identity_%08d.png" in value)
+            for index in (1, 2):
+                with open(output_pattern.replace("%08d", f"{index:08d}"), "wb") as file:
+                    file.write(b"png")
+
+            return SimpleNamespace(returncode=0), []
+
+        with patch.object(self.session, "probe", return_value=self._probe_result()), \
+             patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start) as start, \
+             patch.object(video_utils, "_showinfo_timestamp_correction_ms", return_value=0):
+            result = self.session.scan(
+                self.path,
+                duration_ms=120,
+                fps=25.0,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            )
+
+        args = start.call_args.args[0]
+        self.assertIn("-xerror", args)
+        self.assertIn("split=2[vvalidate][vsamples]", " ".join(args))
+        self.assertIn("[vvalidate]", args)
+        self.assertNotIn("frames.txt", " ".join(args))
+        self.assertNotIn("gt(scene", " ".join(args))
+        self.assertEqual(
+            result.features,
+            media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
+            | media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+        )
+        self.assertEqual(result.frames, {})
+        self.assertEqual(result.scene_changes, ())
+        self.assertEqual(len(result.identity_samples), 7)
+
 
 if __name__ == "__main__":
     unittest.main()

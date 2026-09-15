@@ -129,7 +129,7 @@ class PersistentMediaAnalysisCache(Protocol):
 
 
 class MediaAnalysisSession:
-    """Provide media-analysis data"""
+    """Collect and reuse requested media-analysis data throughout one tool run."""
 
     _SCENE_THRESHOLD = 0.3
 
@@ -400,10 +400,11 @@ class MediaAnalysisSession:
         if filter_parts:
             args.extend(["-filter_complex", ";".join(filter_parts)])
 
-        needs_null_output = bool(
-            features
-            & (MediaAnalysisFeature.FRAME_TIMESTAMPS | MediaAnalysisFeature.VALIDATE_STREAMS)
-        ) or not features & MediaAnalysisFeature.IDENTITY_SAMPLES
+        needs_null_output = bool(features & (
+            MediaAnalysisFeature.SCENE_CHANGES
+            | MediaAnalysisFeature.FRAME_TIMESTAMPS
+            | MediaAnalysisFeature.VALIDATE_STREAMS
+        ))
 
         if needs_null_output:
             if features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
