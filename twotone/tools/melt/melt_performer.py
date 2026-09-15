@@ -11,11 +11,11 @@ from typing import Any, NamedTuple
 
 from tqdm import tqdm
 
+from ..tool import ToolRuntimeContext
 from ..utils import (
     files_utils,
     generic_utils,
     language_utils,
-    media_analysis,
     process_utils,
     video_utils,
 )
@@ -202,16 +202,13 @@ class MeltPerformer(TrackTimelineMixin):
     def __init__(
         self,
         logger: logging.Logger,
-        interruption: generic_utils.InterruptibleProcess,
-        workspace: files_utils.Workspace,
+        context: ToolRuntimeContext,
         output_dir: str,
         cache: MeltCache | None = None,
         fill_audio_gaps: bool = False,
-        *,
-        media_analysis_session: media_analysis.MediaAnalysisSession,
     ) -> None:
         self.logger = logger
-        self.interruption = interruption
+        self.interruption = context.interruption
         self.output_dir = output_dir
         self.cache = cache
         self.fill_audio_gaps = fill_audio_gaps
@@ -219,8 +216,8 @@ class MeltPerformer(TrackTimelineMixin):
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
         self._media_info_cache: dict[str, dict[str, Any]] = {}
         self._stream_info_cache: dict[tuple[str, str, int], dict[str, Any] | None] = {}
-        self.media_analysis = media_analysis_session
-        self.workspace = workspace
+        self.media_analysis = context.media_analysis
+        self.workspace = context.workspace
 
     def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
         planned_items = [item for item in plan if item.get("groups")]

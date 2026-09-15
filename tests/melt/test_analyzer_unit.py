@@ -16,6 +16,7 @@ from twotone.tools.melt.melt_common import (
     SubtitleStreamRef,
     VideoStreamRef,
 )
+from twotone.tools.tool import ToolRuntimeContext
 from twotone.tools.utils import generic_utils, media_analysis, video_utils
 
 
@@ -30,22 +31,26 @@ class MeltAnalyzerTest(TwoToneTestCase):
             self.logger.getChild("MediaAnalysis"),
             validate_all_streams=False,
         )
+        self.context = ToolRuntimeContext(self.workspace, interruption, self.media_analysis)
         self.analyzer = MeltAnalyzer(
             self.logger,
             duplicates,
-            self.workspace,
+            self.context,
             allow_video_timeline_mismatch=False,
-            media_analysis_session=self.media_analysis,
         )
 
     def test_equal_length_matcher_receives_shared_media_session(self):
         session = Mock(spec=media_analysis.MediaAnalysisSession)
+        context = ToolRuntimeContext(
+            self.workspace,
+            self.analyzer.duplicates_source.interruption,
+            session,
+        )
         analyzer = MeltAnalyzer(
             self.logger,
             self.analyzer.duplicates_source,
-            self.workspace,
+            context,
             allow_video_timeline_mismatch=False,
-            media_analysis_session=session,
         )
         base_path = "/base.mkv"
         source_path = "/source.mkv"
