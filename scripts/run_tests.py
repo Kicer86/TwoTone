@@ -6,9 +6,9 @@ import argparse
 import sys
 import time
 import unittest
-
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, cast
+from typing import cast
 
 
 def _iter_tests(suite: unittest.TestSuite) -> Iterator[unittest.TestCase]:

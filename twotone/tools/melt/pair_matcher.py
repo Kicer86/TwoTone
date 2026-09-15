@@ -1,21 +1,22 @@
 
-import cv2 as cv
 import enum
 import logging
-import numpy as np
 import os
-
-from concurrent.futures import ThreadPoolExecutor
 from bisect import bisect_right
-from sklearn.linear_model import RANSACRegressor, LinearRegression
-from tqdm import tqdm
-from typing import Callable, NamedTuple, TypedDict
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from typing import NamedTuple, TypedDict
 
+import cv2 as cv
+import numpy as np
+from sklearn.linear_model import LinearRegression, RANSACRegressor
+from tqdm import tqdm
+
+from ..utils import files_utils, generic_utils, image_utils, media_analysis, video_utils
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
 from .melt_common import FrameInfo, FramesInfo
 from .phash_cache import PhashCache
-from ..utils import files_utils, generic_utils, image_utils, media_analysis, video_utils
 
 
 class MappingRelation(enum.Enum):

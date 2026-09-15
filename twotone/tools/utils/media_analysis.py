@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import re
-
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -14,7 +13,6 @@ from tqdm import tqdm
 from . import generic_utils, process_utils, video_utils
 from .files_utils import Workspace
 from .generic_utils import InterruptibleProcess
-
 
 _SCENE_FRAME_RE = re.compile(
     r"^frame:\d+\s+pts:\S+\s+pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))"

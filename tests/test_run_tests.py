@@ -1,8 +1,6 @@
 import importlib.util
 import unittest
-
 from pathlib import Path
-
 
 _SPEC = importlib.util.spec_from_file_location(
     "run_tests",

@@ -3,17 +3,24 @@ import logging
 import math
 import os
 import statistics
-
 from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Any, Iterable, Mapping, NamedTuple, Sequence
+from typing import Any, NamedTuple
+
 from tqdm import tqdm
 
-from ..utils import files_utils, generic_utils, language_utils, media_analysis, process_utils, video_utils
+from ..utils import (
+    files_utils,
+    generic_utils,
+    language_utils,
+    media_analysis,
+    process_utils,
+    video_utils,
+)
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
-from .pair_matcher import CoverageSummary, MappingRelation, PairMatcher, SegmentsMappingResult
 from .melt_common import (
     AttachmentRef,
     AudioStreamRef,
@@ -22,6 +29,12 @@ from .melt_common import (
     StreamType,
     SubtitleStreamRef,
     VideoStreamRef,
+)
+from .pair_matcher import (
+    CoverageSummary,
+    MappingRelation,
+    PairMatcher,
+    SegmentsMappingResult,
 )
 from .track_timeline import TrackTimelineMixin
 

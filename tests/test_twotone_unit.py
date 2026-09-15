@@ -1,9 +1,8 @@
 import io
+import logging
 import os
 import sys
 import unittest
-import logging
-
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from unittest.mock import Mock, patch

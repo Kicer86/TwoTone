@@ -1,15 +1,21 @@
 import logging
 import os
-
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
+
 from tqdm import tqdm
 
-from ..utils import files_utils, generic_utils, language_utils, media_analysis, video_utils
+from ..utils import (
+    files_utils,
+    generic_utils,
+    language_utils,
+    media_analysis,
+    video_utils,
+)
 from .attachments_picker import AttachmentsPicker
 from .duplicates_source import DuplicatesSource
-from .streams_picker import StreamsPicker
 from .melt_common import (
     AttachmentRef,
     AudioStreamRef,
@@ -21,6 +27,7 @@ from .melt_common import (
     stream_short_details,
 )
 from .pair_matcher import PairMatcher
+from .streams_picker import StreamsPicker
 
 
 class UnsupportedMeltInputError(RuntimeError):

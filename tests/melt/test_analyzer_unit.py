@@ -1,13 +1,21 @@
 import os
 import unittest
-
-from parameterized import parameterized
 from unittest.mock import Mock, patch
 
 from common import TwoToneTestCase
+from parameterized import parameterized
+
 from twotone.tools.melt.melt import MeltAnalyzer, StaticSource
-from twotone.tools.melt.melt_analyzer import AlignmentRequirement, UnsupportedMeltInputError
-from twotone.tools.melt.melt_common import AudioStreamRef, MeltInputFiles, SubtitleStreamRef, VideoStreamRef
+from twotone.tools.melt.melt_analyzer import (
+    AlignmentRequirement,
+    UnsupportedMeltInputError,
+)
+from twotone.tools.melt.melt_common import (
+    AudioStreamRef,
+    MeltInputFiles,
+    SubtitleStreamRef,
+    VideoStreamRef,
+)
 from twotone.tools.utils import generic_utils, media_analysis, video_utils
 
 

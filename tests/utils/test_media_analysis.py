@@ -2,11 +2,16 @@ import logging
 import os
 import tempfile
 import unittest
-
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from twotone.tools.utils import files_utils, generic_utils, media_analysis, process_utils, video_utils
+from twotone.tools.utils import (
+    files_utils,
+    generic_utils,
+    media_analysis,
+    process_utils,
+    video_utils,
+)
 
 
 class MediaAnalysisSessionTest(unittest.TestCase):

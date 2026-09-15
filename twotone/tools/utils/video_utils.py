@@ -7,16 +7,21 @@ import shutil
 import subprocess
 import tempfile
 import time
-
 from bisect import bisect_right
 from collections import Counter, defaultdict
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from tqdm import tqdm
 
 from . import language_utils, process_utils, subtitles_utils
-from .generic_utils import InterruptibleProcess, fps_str_to_float, get_tqdm_defaults, time_to_ms
+from .generic_utils import (
+    InterruptibleProcess,
+    fps_str_to_float,
+    get_tqdm_defaults,
+    time_to_ms,
+)
 from .subtitles_utils import SubtitleFile
 
 DEFAULT_LOGGER = logging.getLogger("TwoTone.utils.video_utils")

@@ -1,27 +1,26 @@
 
-import numpy as np
 import math
 import os
-import wave
 import unittest
-
+import wave
 from dataclasses import dataclass, replace
 from itertools import combinations, permutations, product
-from parameterized import parameterized
 from pathlib import Path
 from typing import ClassVar
 
-from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
-from twotone.tools.melt.melt_cache import MeltCache
-from twotone.tools.utils import generic_utils, media_analysis, video_utils
-
+import numpy as np
 from common import (
-    TwoToneTestCase,
     FileCache,
+    TwoToneTestCase,
     get_video,
     hashes,
     run_ffmpeg,
 )
+from parameterized import parameterized
+
+from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
+from twotone.tools.melt.melt_cache import MeltCache
+from twotone.tools.utils import generic_utils, media_analysis, video_utils
 
 
 @dataclass(frozen=True)

@@ -1,12 +1,17 @@
 
 import argparse
 import logging
-
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
-from twotone.tools.utils import files_utils, generic_utils, media_analysis, requirements_utils
+from twotone.tools.utils import (
+    files_utils,
+    generic_utils,
+    media_analysis,
+    requirements_utils,
+)
 
 
 @runtime_checkable
