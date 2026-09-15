@@ -126,6 +126,38 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertTrue(result.validated_all_streams)
         self.assertIsNone(result.decode_error)
 
+    def test_reuses_one_scan_for_the_same_unchanged_file(self):
+        result = media_analysis.VideoScanResult(
+            path=os.path.realpath(self.path),
+            features=(
+                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
+                | media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS
+            ),
+            frames={},
+            scene_changes=(),
+            identity_samples=(),
+            decode_error=None,
+        )
+
+        with patch.object(self.session, "_scan", return_value=result) as scan:
+            first = self.session.scan(
+                self.path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            )
+            second = self.session.scan(
+                self.path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#2",
+                features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            )
+
+        self.assertIs(first, second)
+        scan.assert_called_once()
+
     def test_upgrades_cached_scan_with_only_missing_features(self):
         identity = media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
         matching = media_analysis.MediaAnalysisFeature.MATCHING
