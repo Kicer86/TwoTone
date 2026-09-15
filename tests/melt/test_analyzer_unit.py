@@ -46,7 +46,6 @@ class MeltAnalyzerTest(TwoToneTestCase):
             self.workspace,
             allow_video_timeline_mismatch=False,
             media_analysis_session=session,
-            prepare_matching_data=True,
         )
         base_path = "/base.mkv"
         source_path = "/source.mkv"
@@ -66,10 +65,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
 
         self.assertEqual(requirements, [])
         self.assertIs(matcher.call_args.kwargs["media_analysis_session"], session)
-        matcher.return_value.has_identical_timeline_content.assert_called_once_with(
-            media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
-            | media_analysis.MediaAnalysisFeature.MATCHING,
-        )
+        matcher.return_value.has_identical_timeline_content.assert_called_once_with()
 
 
     @staticmethod
