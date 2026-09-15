@@ -1,10 +1,11 @@
 
 import logging
 
-from twotone.tools.utils import generic_utils, media_analysis, video_utils
-from twotone.tools.melt.melt import MappingRelation, PairMatcher
 from common import add_to_test_dir
+
 from melt.helpers import MeltTestBase
+from twotone.tools.melt.melt import MappingRelation, PairMatcher
+from twotone.tools.utils import generic_utils, media_analysis, video_utils
 
 
 class PairMatcherIntegrationTest(MeltTestBase):
