@@ -326,18 +326,17 @@ class MediaAnalysisSession:
 
         probe = self.probe(path)
         if (
-            features & MediaAnalysisFeature.VALIDATE_STREAMS
+            features == MediaAnalysisFeature.VALIDATE_STREAMS
             and (probe.error is not None or not probe.has_decodable_stream)
         ):
-            if features == MediaAnalysisFeature.VALIDATE_STREAMS:
-                return VideoScanResult(
-                    path=path,
-                    features=features,
-                    frames={},
-                    scene_changes=(),
-                    identity_samples=(),
-                    decode_error=probe.error,
-                )
+            return VideoScanResult(
+                path=path,
+                features=features,
+                frames={},
+                scene_changes=(),
+                identity_samples=(),
+                decode_error=probe.error,
+            )
 
         has_primary_video = probe.has_video
         scan_dir = self.workspace.unique_dir("media_scan")
