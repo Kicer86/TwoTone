@@ -517,6 +517,45 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertEqual(result.scene_changes, ())
         self.assertEqual(len(result.identity_samples), 7)
 
+    def test_scene_and_identity_scan_does_not_add_an_extra_null_output(self):
+        session = media_analysis.MediaAnalysisSession(
+            self.workspace,
+            generic_utils.InterruptibleProcess(),
+            logging.getLogger("MediaAnalysisSessionTest.combined"),
+            validate_all_streams=False,
+        )
+
+        def fake_start(args, _interruption, on_line, logger):
+            del on_line, logger
+            stats_index = args.index("-stats_enc_pre:v:0")
+            with open(args[stats_index + 1], "w", encoding="utf-8") as file:
+                file.write("0 0.000\n")
+
+            output_pattern = next(value for value in args if "identity_%08d.png" in value)
+            with open(output_pattern.replace("%08d", "00000001"), "wb") as file:
+                file.write(b"png")
+            return SimpleNamespace(returncode=0), []
+
+        with patch.object(session, "probe", return_value=self._probe_result()), \
+             patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start) as start, \
+             patch.object(video_utils, "_showinfo_timestamp_correction_ms", return_value=0):
+            result = session.scan(
+                self.path,
+                duration_ms=120,
+                fps=25.0,
+                label="#1",
+                features=(
+                    media_analysis.MediaAnalysisFeature.SCENE_CHANGES
+                    | media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
+                ),
+            )
+
+        args = start.call_args.args[0]
+        output_triplets = [args[index:index + 3] for index in range(len(args) - 2)]
+        self.assertNotIn(["-f", "null", "-"], output_triplets)
+        self.assertTrue(result.supports(media_analysis.MediaAnalysisFeature.SCENE_CHANGES))
+        self.assertTrue(result.supports(media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES))
+
 
 if __name__ == "__main__":
     unittest.main()
