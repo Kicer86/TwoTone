@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Run unittest discovery and report the slowest individual tests."""
 
 from __future__ import annotations
@@ -9,9 +8,10 @@ import time
 import unittest
 
 from pathlib import Path
+from typing import Iterator, cast
 
 
-def _iter_tests(suite: unittest.TestSuite):
+def _iter_tests(suite: unittest.TestSuite) -> Iterator[unittest.TestCase]:
     for test in suite:
         if isinstance(test, unittest.TestSuite):
             yield from _iter_tests(test)
@@ -60,7 +60,7 @@ class TimedTestRunner(unittest.TextTestRunner):
         self.slowest_count = durations
 
     def run(self, test) -> TimedTestResult:
-        result = super().run(test)
+        result = cast(TimedTestResult, super().run(test))
         if self.slowest_count:
             self.stream.writeln()
             self.stream.writeln(f"Slowest {self.slowest_count} test(s):")
