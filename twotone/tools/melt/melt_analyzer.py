@@ -41,12 +41,14 @@ class MeltAnalyzer:
         workspace: files_utils.Workspace,
         allow_video_timeline_mismatch: bool,
         media_analysis_session: media_analysis.MediaAnalysisSession,
+        prepare_matching_data: bool = False,
     ) -> None:
         self.logger = logger
         self.duplicates_source = duplicates_source
         self.workspace = workspace
         self.allow_video_timeline_mismatch = allow_video_timeline_mismatch
         self.media_analysis = media_analysis_session
+        self.prepare_matching_data = prepare_matching_data
         self._timeline_identity_cache: dict[tuple[str, str], bool] = {}
         self.input_paths: tuple[str, ...] = ()
 
@@ -380,6 +382,8 @@ class MeltAnalyzer:
         source_path: str,
         base_file_id: int,
         source_file_id: int,
+        *,
+        prepare_matching_data: bool = False,
     ) -> bool:
         key = (base_path, source_path)
         if key in self._timeline_identity_cache:
@@ -396,7 +400,10 @@ class MeltAnalyzer:
                 rhs_label=f"#{source_file_id}",
                 media_analysis_session=self.media_analysis,
             )
-            result = matcher.has_identical_timeline_content()
+            scan_features = media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
+            if prepare_matching_data:
+                scan_features |= media_analysis.MediaAnalysisFeature.MATCHING
+            result = matcher.has_identical_timeline_content(scan_features)
 
         self._timeline_identity_cache[key] = result
         return result
@@ -441,6 +448,7 @@ class MeltAnalyzer:
                     path,
                     base_file_id,
                     file_id,
+                    prepare_matching_data=self.prepare_matching_data,
                 ):
                     continue
 

@@ -229,6 +229,7 @@ class MeltTool(Tool):
             workspace,
             args.allow_video_timeline_mismatch,
             context.media_analysis,
+            prepare_matching_data=args.no_dry_run or args.interactive,
         )
         analyzer.input_paths = input_paths
         analysis = analyzer.analyze_duplicates(duplicates)

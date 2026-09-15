@@ -49,6 +49,8 @@ class MeltToolContextTest(unittest.TestCase):
             allow_video_timeline_mismatch=False,
             output_dir="/output",
             fill_audio_gaps=False,
+            no_dry_run=False,
+            interactive=False,
         )
 
         with patch("twotone.tools.melt.melt_tool.os.path.exists", return_value=True), \
@@ -64,6 +66,7 @@ class MeltToolContextTest(unittest.TestCase):
 
         context.media_analysis.set_persistent_cache.assert_called_once_with(cache.return_value)
         self.assertIs(analyzer.call_args.args[-1], context.media_analysis)
+        self.assertFalse(analyzer.call_args.kwargs["prepare_matching_data"])
         self.assertIs(performer.call_args.kwargs["media_analysis_session"], context.media_analysis)
         self.assertIs(source.call_args.kwargs["interruption"], context.interruption)
         self.assertIs(performer.call_args.args[1], context.interruption)
