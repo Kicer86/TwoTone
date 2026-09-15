@@ -202,6 +202,30 @@ class RuntimeVersionTest(unittest.TestCase):
             media_analysis_session.fulfill.assert_not_called()
             validator.return_value.validate.assert_called_once_with({input_path})
 
+    def test_executor_checks_tool_and_validation_dependencies_together(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tool = _TestTool(_TestPlan(set()))
+            tool.required_tools = Mock(return_value={"mkvmerge"})
+            report = twotone.input_validation.ValidationReport((), 0, 0)
+
+            with patch.dict(twotone.TOOLS, {"test": (tool, "test tool", False)}, clear=True), \
+                 patch.object(twotone.process_utils, "ensure_tools_exist") as ensure_tools, \
+                 patch.object(twotone.input_validation, "InputValidator") as validator:
+                validator.return_value.validate.return_value = report
+                twotone.execute([
+                    "--working-dir", os.path.join(temp_dir, "work"),
+                    "--validation-cache-dir", os.path.join(temp_dir, "cache"),
+                    "test",
+                ])
+
+            ensure_tools.assert_called_once()
+            self.assertEqual(
+                ensure_tools.call_args.args[0],
+                ["ffmpeg", "ffprobe", "mkvmerge"],
+            )
+
 
 class DeleteWarningTest(unittest.TestCase):
     def test_destructive_tool_warns_and_waits_ten_seconds(self):

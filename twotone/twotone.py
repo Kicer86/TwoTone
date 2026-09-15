@@ -256,24 +256,23 @@ def execute(argv: list[str]) -> None:
                     validate_all_streams=validation_mode == input_validation.ValidationMode.FULL,
                 ),
             )
-            required_tools = sorted(tool.required_tools())
+            required_tools = set(tool.required_tools())
+            if validation_mode != input_validation.ValidationMode.OFF:
+                required_tools.add("ffprobe")
+                if validation_mode == input_validation.ValidationMode.FULL:
+                    required_tools.add("ffmpeg")
+
             if required_tools:
-                process_utils.ensure_tools_exist(required_tools, tool_logger)
+                process_utils.ensure_tools_exist(sorted(required_tools), tool_logger)
             plan = tool.analyze(
                 args,
                 logger=tool_logger,
                 context=context,
             )
 
-            if validation_mode != input_validation.ValidationMode.OFF:
-                validation_tools = ["ffprobe"]
-                if validation_mode == input_validation.ValidationMode.FULL:
-                    validation_tools.append("ffmpeg")
-                process_utils.ensure_tools_exist(validation_tools, tool_logger)
             if args.no_dry_run or args.interactive:
                 media_analysis_requests = tuple(tool.media_analysis_requests(plan))
-                if (media_analysis_requests and "ffmpeg" not in required_tools
-                        and validation_mode != input_validation.ValidationMode.FULL):
+                if media_analysis_requests and "ffmpeg" not in required_tools:
                     process_utils.ensure_tools_exist(["ffmpeg"], tool_logger)
 
                 for request in media_analysis_requests:
