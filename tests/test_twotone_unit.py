@@ -124,7 +124,7 @@ class RuntimeVersionTest(unittest.TestCase):
                 self.assertTrue(tool.performed)
                 self.assertIs(tool.analyze_context, tool.perform_context)
 
-    def test_live_executor_fulfills_planned_media_analysis_requests(self):
+    def test_live_executor_shares_media_analysis_session_with_tool_and_validator(self):
         import tempfile
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -159,6 +159,10 @@ class RuntimeVersionTest(unittest.TestCase):
                 ])
 
             self.assertIs(tool.analyze_context.media_analysis, media_analysis_session)
+            self.assertIs(
+                validator.call_args.kwargs["media_analysis_session"],
+                media_analysis_session,
+            )
             media_analysis_session.fulfill.assert_called_once_with(request)
             validator.return_value.validate.assert_called_once_with({input_path})
 

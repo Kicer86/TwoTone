@@ -282,6 +282,7 @@ def execute(argv: list[str]) -> None:
                 validation_mode,
                 tool_logger,
                 args.validation_cache_dir,
+                media_analysis_session=context.media_analysis,
             ).validate(plan.input_files())
             if not validation.is_valid:
                 plan.render(tool_logger)
