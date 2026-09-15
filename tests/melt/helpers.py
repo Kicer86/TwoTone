@@ -47,6 +47,12 @@ def analyze_duplicates_helper(
     workspace: Workspace,
     allow_video_timeline_mismatch: bool = False,
 ):
+    media_analysis_session = media_analysis.MediaAnalysisSession(
+        workspace,
+        duplicates_source.interruption,
+        logger.getChild("MediaAnalysis"),
+        validate_all_streams=False,
+    )
     duplicates_raw = duplicates_source.collect_duplicates()
     duplicates = {title: list(files) for title, files in duplicates_raw.items()}
     analyzer = MeltAnalyzer(
@@ -54,6 +60,7 @@ def analyze_duplicates_helper(
         duplicates_source,
         workspace,
         allow_video_timeline_mismatch,
+        media_analysis_session,
     )
     return analyzer.analyze_duplicates(duplicates)
 

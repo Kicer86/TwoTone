@@ -32,12 +32,22 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
     def _make_performer(self) -> MeltPerformer:
         output = files_utils.Workspace.temporary()
+        workspace = files_utils.Workspace.temporary()
         self.addCleanup(output.close)
+        self.addCleanup(workspace.close)
+        interruption = generic_utils.InterruptibleProcess()
+        media_analysis_session = media_analysis.MediaAnalysisSession(
+            workspace,
+            interruption,
+            logging.getLogger("test.MeltPerformer.MediaAnalysis"),
+            validate_all_streams=False,
+        )
         return MeltPerformer(
             logger=logging.getLogger("test.MeltPerformer"),
-            interruption=generic_utils.InterruptibleProcess(),
-            workspace=files_utils.Workspace.temporary(),
+            interruption=interruption,
+            workspace=workspace,
             output_dir=output.root,
+            media_analysis_session=media_analysis_session,
         )
 
     def _process_single_source_plan(

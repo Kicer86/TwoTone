@@ -1,13 +1,35 @@
 
 import logging
 
-from twotone.tools.utils import generic_utils, video_utils
+from twotone.tools.utils import generic_utils, media_analysis, video_utils
 from twotone.tools.melt.melt import MappingRelation, PairMatcher
 from common import add_to_test_dir
 from melt.helpers import MeltTestBase
 
 
 class PairMatcherIntegrationTest(MeltTestBase):
+
+    def _make_pair_matcher(
+        self,
+        interruption: generic_utils.InterruptibleProcess,
+        lhs_path: str,
+        rhs_path: str,
+        logger: logging.Logger | None = None,
+    ) -> PairMatcher:
+        session = media_analysis.MediaAnalysisSession(
+            self.workspace,
+            interruption,
+            self.logger.getChild("MediaAnalysis"),
+            validate_all_streams=False,
+        )
+        return PairMatcher(
+            interruption,
+            self.wd.path,
+            lhs_path,
+            rhs_path,
+            logger or self.logger,
+            media_analysis_session=session,
+        )
 
     def test_scene_detection_is_stable_and_content_driven(self):
         """Scene detection must be stable — the whole frame-matching pipeline
@@ -57,7 +79,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
         file2 = add_to_test_dir(self.wd.path, self.sample_vhs_video_file)
 
         interruption = generic_utils.InterruptibleProcess()
-        pair_matcher = PairMatcher(interruption, self.wd.path, file1, file2, logging.getLogger("PM"))
+        pair_matcher = self._make_pair_matcher(interruption, file1, file2, logging.getLogger("PM"))
         mappings = pair_matcher.create_segments_mapping().mapping
 
         # At least 6 pairs across the 82s video
@@ -87,7 +109,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
         file1_path, file2_path = self.edge_fixtures["black_intro_same"]
 
         interruption = generic_utils.InterruptibleProcess()
-        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        pair_matcher = self._make_pair_matcher(interruption, file1_path, file2_path)
         result = pair_matcher.create_segments_mapping()
         mappings = result.mapping
         # The fixtures are related by a 1.03x linear speed change, so the
@@ -117,7 +139,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
         file1_path, file2_path = self.edge_fixtures["black_intro_diff"]
 
         interruption = generic_utils.InterruptibleProcess()
-        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        pair_matcher = self._make_pair_matcher(interruption, file1_path, file2_path)
         result = pair_matcher.create_segments_mapping()
         mappings = result.mapping
         # The fixtures are related by a 1.03x linear speed change, so the
@@ -156,7 +178,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
         file1_path, file2_path = self.edge_fixtures["black_outro"]
 
         interruption = generic_utils.InterruptibleProcess()
-        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        pair_matcher = self._make_pair_matcher(interruption, file1_path, file2_path)
         result = pair_matcher.create_segments_mapping()
         mappings = result.mapping
         # The fixtures are related by a 1.03x linear speed change, so the
@@ -185,7 +207,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
         file1_path, file2_path = self.edge_fixtures["both_black"]
 
         interruption = generic_utils.InterruptibleProcess()
-        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        pair_matcher = self._make_pair_matcher(interruption, file1_path, file2_path)
         result = pair_matcher.create_segments_mapping()
         mappings = result.mapping
         # The fixtures are related by a 1.03x linear speed change, so the
@@ -216,7 +238,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
         file1_path, file2_path = self.edge_fixtures["no_speed"]
 
         interruption = generic_utils.InterruptibleProcess()
-        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        pair_matcher = self._make_pair_matcher(interruption, file1_path, file2_path)
         result = pair_matcher.create_segments_mapping()
         mappings = result.mapping
         # Same speed, zero offset: a constant-offset global-linear relation.
@@ -257,7 +279,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
         file1_path, file2_path = self.edge_fixtures["open_matte"]
 
         interruption = generic_utils.InterruptibleProcess()
-        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        pair_matcher = self._make_pair_matcher(interruption, file1_path, file2_path)
         result = pair_matcher.create_segments_mapping()
 
         self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
@@ -276,7 +298,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
         file1_path, file2_path = self.edge_fixtures["diff_intro_same"]
 
         interruption = generic_utils.InterruptibleProcess()
-        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        pair_matcher = self._make_pair_matcher(interruption, file1_path, file2_path)
         result = pair_matcher.create_segments_mapping()
         mappings = result.mapping
         # The shared bodies are related by a 1.03x linear speed change, so
@@ -314,7 +336,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
         file1_path, file2_path = self.edge_fixtures["diff_intro_diff"]
 
         interruption = generic_utils.InterruptibleProcess()
-        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        pair_matcher = self._make_pair_matcher(interruption, file1_path, file2_path)
         result = pair_matcher.create_segments_mapping()
         mappings = result.mapping
         # The shared bodies are related by a 1.03x linear speed change, so
@@ -352,7 +374,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
         file1_path, file2_path = self.edge_fixtures["diff_outro"]
 
         interruption = generic_utils.InterruptibleProcess()
-        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        pair_matcher = self._make_pair_matcher(interruption, file1_path, file2_path)
         result = pair_matcher.create_segments_mapping()
         mappings = result.mapping
         # The fixtures are related by a 1.03x linear speed change, so the
@@ -388,7 +410,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
         file1_path, file2_path = self.edge_fixtures["diff_both"]
 
         interruption = generic_utils.InterruptibleProcess()
-        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        pair_matcher = self._make_pair_matcher(interruption, file1_path, file2_path)
         result = pair_matcher.create_segments_mapping()
         mappings = result.mapping
         # The shared bodies are related by a 1.03x linear speed change, so
@@ -459,7 +481,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
         file1_path, file2_path = self.edge_fixtures["no_speed"]
 
         interruption = generic_utils.InterruptibleProcess()
-        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        pair_matcher = self._make_pair_matcher(interruption, file1_path, file2_path)
         mappings = pair_matcher.create_segments_mapping().mapping
 
         d1 = video_utils.get_video_duration(file1_path)
@@ -478,7 +500,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
         file1_path, file2_path = self.edge_fixtures["diff_intro_same"]
 
         interruption = generic_utils.InterruptibleProcess()
-        pair_matcher = PairMatcher(interruption, self.wd.path, file1_path, file2_path, self.logger)
+        pair_matcher = self._make_pair_matcher(interruption, file1_path, file2_path)
         mappings = pair_matcher.create_segments_mapping().mapping
 
         d1 = video_utils.get_video_duration(file1_path)
