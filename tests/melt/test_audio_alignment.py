@@ -20,6 +20,7 @@ from parameterized import parameterized
 
 from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
 from twotone.tools.melt.melt_cache import MeltCache
+from twotone.tools.tool import ToolRuntimeContext
 from twotone.tools.utils import generic_utils, media_analysis, video_utils
 
 
@@ -743,13 +744,13 @@ class AudioAlignmentTest(TwoToneTestCase):
         )
         if self.melt_cache is not None:
             media_analysis_session.set_persistent_cache(self.melt_cache)
+        context = ToolRuntimeContext(self.workspace, interruption, media_analysis_session)
 
         analyzer = MeltAnalyzer(
             logger,
             duplicates,
-            self.workspace,
+            context,
             True,
-            media_analysis_session,
         )
         duplicates_raw = duplicates.collect_duplicates()
         plan = analyzer.analyze_duplicates({
@@ -763,11 +764,9 @@ class AudioAlignmentTest(TwoToneTestCase):
 
         performer = MeltPerformer(
             logger,
-            interruption,
-            self.workspace,
+            context,
             output_dir,
             cache=self.melt_cache,
-            media_analysis_session=media_analysis_session,
         )
         performer.process_duplicates(plan)
 

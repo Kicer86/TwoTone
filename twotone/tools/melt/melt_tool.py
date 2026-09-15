@@ -150,8 +150,6 @@ class MeltTool(Tool):
 
     @override
     def analyze(self, args, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:
-        workspace = context.workspace
-        interruption = context.interruption
         if args.cache_dir:
             context.media_analysis.set_persistent_cache(
                 MeltCache(args.cache_dir, logger.getChild("cache")),
@@ -173,7 +171,7 @@ class MeltTool(Tool):
             if path_fix_list:
                 path_fix = (path_fix_list[0], path_fix_list[1])
 
-            data_source = JellyfinSource(interruption = interruption,
+            data_source = JellyfinSource(interruption = context.interruption,
                                          url = args.jellyfin_server,
                                          token = args.jellyfin_token,
                                          path_fix = path_fix,
@@ -186,7 +184,7 @@ class MeltTool(Tool):
             if not title:
                 parser.error("Missing required option: --title")
 
-            src = StaticSource(interruption=interruption)
+            src = StaticSource(interruption=context.interruption)
 
             for entry in input_entries:
                 path = entry['path']
@@ -226,9 +224,8 @@ class MeltTool(Tool):
         analyzer = MeltAnalyzer(
             logger,
             data_source,
-            workspace,
+            context,
             args.allow_video_timeline_mismatch,
-            context.media_analysis,
         )
         analyzer.input_paths = input_paths
         analysis = analyzer.analyze_duplicates(duplicates)
@@ -245,11 +242,9 @@ class MeltTool(Tool):
         cache = MeltCache(args.cache_dir, logger.getChild("cache")) if args.cache_dir else None
         performer = MeltPerformer(
             logger,
-            context.interruption,
-            context.workspace,
+            context,
             plan.output_dir,
             cache=cache,
             fill_audio_gaps=args.fill_audio_gaps,
-            media_analysis_session=context.media_analysis,
         )
         performer.process_duplicates(plan.items)

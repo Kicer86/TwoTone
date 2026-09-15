@@ -7,6 +7,7 @@ from typing import Any
 
 from tqdm import tqdm
 
+from ..tool import ToolRuntimeContext
 from ..utils import (
     files_utils,
     generic_utils,
@@ -45,15 +46,14 @@ class MeltAnalyzer:
         self,
         logger: logging.Logger,
         duplicates_source: DuplicatesSource,
-        workspace: files_utils.Workspace,
+        context: ToolRuntimeContext,
         allow_video_timeline_mismatch: bool,
-        media_analysis_session: media_analysis.MediaAnalysisSession,
     ) -> None:
         self.logger = logger
         self.duplicates_source = duplicates_source
-        self.workspace = workspace
+        self.workspace = context.workspace
         self.allow_video_timeline_mismatch = allow_video_timeline_mismatch
-        self.media_analysis = media_analysis_session
+        self.media_analysis = context.media_analysis
         self._timeline_identity_cache: dict[tuple[str, str], bool] = {}
         self.input_paths: tuple[str, ...] = ()
 

@@ -36,7 +36,7 @@ class MeltPlanMediaAnalysisTest(unittest.TestCase):
 
 
 class MeltToolContextTest(unittest.TestCase):
-    def test_analyze_and_perform_share_media_analysis_session(self):
+    def test_analyze_and_perform_share_runtime_context(self):
         tool = MeltTool()
         tool.parser = Mock()
         logger = logging.getLogger("test.melt_tool")
@@ -63,10 +63,9 @@ class MeltToolContextTest(unittest.TestCase):
             tool.perform(args, logger, context, plan)
 
         context.media_analysis.set_persistent_cache.assert_called_once_with(cache.return_value)
-        self.assertIs(analyzer.call_args.args[-1], context.media_analysis)
-        self.assertIs(performer.call_args.kwargs["media_analysis_session"], context.media_analysis)
+        self.assertIs(analyzer.call_args.args[2], context)
+        self.assertIs(performer.call_args.args[1], context)
         self.assertIs(source.call_args.kwargs["interruption"], context.interruption)
-        self.assertIs(performer.call_args.args[1], context.interruption)
 
 
 class MeltPlanFormatTrackLineTest(unittest.TestCase):
