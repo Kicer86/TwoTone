@@ -1,14 +1,23 @@
 
 import logging
 import unittest
-
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from twotone.tools.utils import files_utils, generic_utils, image_utils, video_utils
 from twotone.tools.melt.melt import MappingRelation, PairMatcher
-from twotone.tools.melt.pair_matcher import GlobalLinearFit, _BoundaryVerifyContext, _VerifySide
+from twotone.tools.melt.pair_matcher import (
+    GlobalLinearFit,
+    _BoundaryVerifyContext,
+    _VerifySide,
+)
 from twotone.tools.melt.phash_cache import PhashCache
+from twotone.tools.utils import (
+    files_utils,
+    generic_utils,
+    image_utils,
+    media_analysis,
+    video_utils,
+)
 
 
 class PairMatcherUnitTest(unittest.TestCase):
@@ -27,6 +36,7 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         wd = files_utils.Workspace.temporary()
         self.addCleanup(wd.close)
+        media_analysis_session = Mock(spec=media_analysis.MediaAnalysisSession)
         with patch.object(video_utils, 'get_video_data',
                           side_effect=lambda p, **_kwargs: {"video": [{"fps": fps_map[p]}]}):
             pm = PairMatcher(
@@ -35,6 +45,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                 lhs_path="/fake/lhs.mp4",
                 rhs_path="/fake/rhs.mp4",
                 logger=logging.getLogger("test.PairMatcher"),
+                media_analysis_session=media_analysis_session,
             )
         return pm
 
@@ -53,6 +64,86 @@ class PairMatcherUnitTest(unittest.TestCase):
     @staticmethod
     def _timestamp_for_frame(frame_id: int, fps: float) -> int:
         return round(frame_id * 1000 / fps)
+
+    def test_scene_and_frame_probe_reuse_shared_media_scan(self):
+        pm = self._make_pair_matcher()
+        analysis = media_analysis.VideoScanResult(
+            path=pm.lhs_path,
+            features=media_analysis.MediaAnalysisFeature.MATCHING,
+            frames={0: {"frame_id": 0, "path": None}},
+            scene_changes=(120,),
+            identity_samples=(),
+            decode_error=None,
+        )
+        session = Mock(spec=media_analysis.MediaAnalysisSession)
+        session.scan.return_value = analysis
+        pm.media_analysis = session
+
+        with patch.object(video_utils, "detect_scene_changes", side_effect=AssertionError("legacy scene scan")), \
+             patch.object(video_utils, "probe_frame_timestamps", side_effect=AssertionError("legacy frame probe")):
+            scenes = pm._detect_scenes_for(pm.lhs_path, pm.lhs_label)
+            frames = pm._probe_frames_for(pm.lhs_path, pm.lhs_label)
+
+        self.assertEqual(scenes, [120])
+        self.assertEqual(frames, {0: {"frame_id": 0, "path": None}})
+        self.assertEqual(session.scan.call_count, 2)
+
+
+    def test_identical_timeline_uses_shared_media_scans(self):
+        pm = self._make_pair_matcher()
+        pm.lhs_duration_ms = 6000
+        pm.rhs_duration_ms = 6000
+
+        def scan(path: str, prefix: str) -> media_analysis.VideoScanResult:
+            samples = tuple(
+                media_analysis.VideoSample(timestamp, timestamp, index, f"/{prefix}/{timestamp}.png")
+                for index, timestamp in enumerate((0, 1000, 2000, 3000, 4000, 5000, 5960))
+            )
+            return media_analysis.VideoScanResult(
+                path=path,
+                features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+                frames={},
+                scene_changes=(),
+                identity_samples=samples,
+                decode_error=None,
+            )
+
+        session = Mock(spec=media_analysis.MediaAnalysisSession)
+        session.result_for.return_value = None
+        session.scan.side_effect = [
+            scan(pm.lhs_path, "lhs"),
+            scan(pm.rhs_path, "rhs"),
+        ]
+        pm.media_analysis = session
+
+        with patch.object(PairMatcher, "_normalize_frames", side_effect=lambda frames, *_args, **_kwargs: frames), \
+             patch.object(pm.phash, "get", return_value=0), \
+             patch.object(PairMatcher, "_probe_frames", side_effect=AssertionError("legacy probe must not run")), \
+             patch.object(video_utils, "extract_frames_at_ranges", side_effect=AssertionError("second decode must not run")):
+            self.assertTrue(pm.has_identical_timeline_content())
+
+        self.assertEqual(session.scan.call_count, 2)
+        for call in session.scan.call_args_list:
+            self.assertEqual(
+                call.kwargs["features"],
+                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            )
+
+    def test_identity_check_keeps_legacy_sampling_when_frame_rates_differ(self):
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=24.0)
+        pm.lhs_duration_ms = 6000
+        pm.rhs_duration_ms = 6000
+        pm.lhs_all_frames = {0: {"frame_id": 0, "path": None}}
+        pm.rhs_all_frames = {0: {"frame_id": 0, "path": None}}
+        session = Mock(spec=media_analysis.MediaAnalysisSession)
+        pm.media_analysis = session
+
+        with patch.object(pm, "_probe_frames") as probe, \
+             patch.object(pm, "_extract_identity_samples", return_value=None):
+            self.assertFalse(pm.has_identical_timeline_content())
+
+        probe.assert_called_once()
+        session.scan.assert_not_called()
 
     # ---- _extrapolate_through_low_entropy ----
 
@@ -662,6 +753,24 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         lhs_probed = self._make_frames([0, 40, 80], prefix="lhs_raw")
         rhs_probed = self._make_frames([0, 40, 80], prefix="rhs_raw")
+        analyses = {
+            pm.lhs_path: media_analysis.VideoScanResult(
+                pm.lhs_path,
+                media_analysis.MediaAnalysisFeature.MATCHING,
+                lhs_probed,
+                (40,),
+                (),
+                None,
+            ),
+            pm.rhs_path: media_analysis.VideoScanResult(
+                pm.rhs_path,
+                media_analysis.MediaAnalysisFeature.MATCHING,
+                rhs_probed,
+                (40,),
+                (),
+                None,
+            ),
+        }
         extrapolated_pairs = [(0, 0), (10000, 9880)]
         fit = GlobalLinearFit(slope=1.0, intercept=-3.0, is_constant_offset=True, time_scale=0.96)
 
@@ -675,8 +784,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                 for ts, info in frames_info.items()
             }
 
-        with patch.object(video_utils, 'detect_scene_changes', side_effect=[[40], [40]]), \
-             patch.object(video_utils, 'probe_frame_timestamps', side_effect=[lhs_probed, rhs_probed]), \
+        with patch.object(pm.media_analysis, "scan", side_effect=lambda path, **_kwargs: analyses[path]), \
              patch.object(video_utils, 'extract_frames_at_ranges', side_effect=fake_extract), \
              patch('twotone.tools.melt.pair_matcher.DebugRoutines') as debug_cls, \
              patch.object(PairMatcher, '_normalize_frames', side_effect=fake_normalize), \

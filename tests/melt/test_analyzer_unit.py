@@ -1,14 +1,22 @@
 import os
 import unittest
-
-from parameterized import parameterized
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from common import TwoToneTestCase
+from parameterized import parameterized
+
 from twotone.tools.melt.melt import MeltAnalyzer, StaticSource
-from twotone.tools.melt.melt_analyzer import AlignmentRequirement, UnsupportedMeltInputError
-from twotone.tools.melt.melt_common import AudioStreamRef, MeltInputFiles, SubtitleStreamRef, VideoStreamRef
-from twotone.tools.utils import generic_utils, video_utils
+from twotone.tools.melt.melt_analyzer import (
+    AlignmentRequirement,
+    UnsupportedMeltInputError,
+)
+from twotone.tools.melt.melt_common import (
+    AudioStreamRef,
+    MeltInputFiles,
+    SubtitleStreamRef,
+    VideoStreamRef,
+)
+from twotone.tools.utils import generic_utils, media_analysis, video_utils
 
 
 class MeltAnalyzerTest(TwoToneTestCase):
@@ -16,12 +24,48 @@ class MeltAnalyzerTest(TwoToneTestCase):
         super().setUp()
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
+        self.media_analysis = media_analysis.MediaAnalysisSession(
+            self.workspace,
+            interruption,
+            self.logger.getChild("MediaAnalysis"),
+            validate_all_streams=False,
+        )
         self.analyzer = MeltAnalyzer(
             self.logger,
             duplicates,
             self.workspace,
             allow_video_timeline_mismatch=False,
+            media_analysis_session=self.media_analysis,
         )
+
+    def test_equal_length_matcher_receives_shared_media_session(self):
+        session = Mock(spec=media_analysis.MediaAnalysisSession)
+        analyzer = MeltAnalyzer(
+            self.logger,
+            self.analyzer.duplicates_source,
+            self.workspace,
+            allow_video_timeline_mismatch=False,
+            media_analysis_session=session,
+        )
+        base_path = "/base.mkv"
+        source_path = "/source.mkv"
+        tracks = {
+            base_path: {"video": [{"length": 6000}]},
+            source_path: {"video": [{"length": 6000}]},
+        }
+
+        with patch("twotone.tools.melt.melt_analyzer.PairMatcher") as matcher:
+            requirements = analyzer._find_alignment_requirements(
+                tracks,
+                {base_path: 1, source_path: 2},
+                [VideoStreamRef(base_path, 0, 0, None)],
+                [AudioStreamRef(source_path, 1, 1, None)],
+                [],
+            )
+
+        self.assertEqual(requirements, [])
+        self.assertIs(matcher.call_args.kwargs["media_analysis_session"], session)
+        matcher.return_value.has_identical_timeline_content.assert_called_once_with()
 
 
     @staticmethod
@@ -213,14 +257,65 @@ class MeltAnalyzerTest(TwoToneTestCase):
             other_path: {"video": [{"tid": 0, "length": 1000}]},
         }
 
-        source = self.analyzer._pick_chapter_source(
-            details,
-            tracks,
-            [VideoStreamRef(base_path, 0, 0, None)],
-            {base_path: 1, other_path: 2},
-        )
+        with patch("twotone.tools.melt.melt_analyzer.PairMatcher") as matcher:
+            matcher.return_value.has_identical_timeline_content.return_value = True
+            source = self.analyzer._pick_chapter_source(
+                details,
+                tracks,
+                [VideoStreamRef(base_path, 0, 0, None)],
+                {base_path: 1, other_path: 2},
+            )
 
         self.assertEqual(source, other_path)
+
+    def test_pick_chapter_source_rejects_same_length_different_content(self):
+        base_path = os.path.join(self.wd.path, "base.mkv")
+        other_path = os.path.join(self.wd.path, "other.mkv")
+        details = {
+            base_path: {"chapters": []},
+            other_path: {"chapters": [{"num_entries": 2}]},
+        }
+        tracks = {
+            base_path: {"video": [{"tid": 0, "length": 1000}]},
+            other_path: {"video": [{"tid": 0, "length": 1000}]},
+        }
+
+        with patch("twotone.tools.melt.melt_analyzer.PairMatcher") as matcher:
+            matcher.return_value.has_identical_timeline_content.return_value = False
+            source = self.analyzer._pick_chapter_source(
+                details,
+                tracks,
+                [VideoStreamRef(base_path, 0, 0, None)],
+                {base_path: 1, other_path: 2},
+            )
+
+        self.assertIsNone(source)
+
+    def test_timeline_identity_check_is_reused_for_chapters(self):
+        base_path = os.path.join(self.wd.path, "base.mkv")
+        other_path = os.path.join(self.wd.path, "other.mkv")
+        details = {
+            base_path: {"chapters": []},
+            other_path: {"chapters": [{"num_entries": 2}]},
+        }
+        tracks = {
+            base_path: {"video": [{"tid": 0, "length": 1000}]},
+            other_path: {"video": [{"tid": 0, "length": 1000}]},
+        }
+        ids = {base_path: 1, other_path: 2}
+
+        with patch("twotone.tools.melt.melt_analyzer.PairMatcher") as matcher:
+            matcher.return_value.has_identical_timeline_content.return_value = True
+            self.analyzer._videos_have_identical_timeline(base_path, other_path, 1, 2)
+            source = self.analyzer._pick_chapter_source(
+                details,
+                tracks,
+                [VideoStreamRef(base_path, 0, 0, None)],
+                ids,
+            )
+
+        self.assertEqual(source, other_path)
+        matcher.assert_called_once()
 
     def test_pick_chapter_source_skips_different_length_non_base_video(self):
         base_path = os.path.join(self.wd.path, "base.mkv")
@@ -363,17 +458,68 @@ class MeltAnalyzerTest(TwoToneTestCase):
                  self.analyzer,
                  "_find_alignment_requirements",
                  return_value=[AlignmentRequirement(subtitle_path, requirement_issue)],
-             ):
+             ), patch.object(self.analyzer, "_matching_request") as matching_request:
             plan, issue, _ = self.analyzer._analyze_group(
                 [base_path, subtitle_path], {base_path: 1, subtitle_path: 2}, "Title",
             )
 
         self.assertIsNone(plan)
+        matching_request.assert_not_called()
         self.assertEqual(
             issue,
             "Subtitle streams from #2 require video timeline alignment, which is not supported yet.",
         )
 
+    def test_analyze_group_requests_matching_data_needed_for_allowed_timeline_alignment(self):
+        base_path = os.path.join(self.wd.path, "base.mkv")
+        source_path = os.path.join(self.wd.path, "audio-source.mkv")
+        tracks = {
+            base_path: {
+                "video": [{"tid": 0, "length": 6000, "fps": "25/1"}],
+                "audio": [],
+                "subtitle": [],
+            },
+            source_path: {
+                "video": [{"tid": 0, "length": 7000, "fps": "25/1"}],
+                "audio": [],
+                "subtitle": [],
+            },
+        }
+        details = {path: {"tracks": value, "attachments": []} for path, value in tracks.items()}
+        ids = {base_path: 1, source_path: 2}
+        self.analyzer.allow_video_timeline_mismatch = True
+
+        with patch.object(
+            self.analyzer,
+            "_probe_inputs",
+            return_value=(details, {base_path: [], source_path: []}, tracks),
+        ), patch.object(
+            self.analyzer,
+            "_pick_streams",
+            return_value=(
+                [VideoStreamRef(base_path, 0, 0, None)],
+                [AudioStreamRef(source_path, 1, 1, "eng")],
+                [],
+            ),
+        ), patch.object(
+            self.analyzer,
+            "_find_alignment_requirements",
+            return_value=[AlignmentRequirement(source_path, "Video length mismatch")],
+        ):
+            plan, issue, _ = self.analyzer._analyze_group(
+                [base_path, source_path], ids, "Title",
+            )
+
+        self.assertIsNone(issue)
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertNotIn("video_scans", plan)
+        requests = plan["media_analysis_requests"]
+        self.assertEqual([request.path for request in requests], [base_path, source_path])
+        self.assertTrue(all(
+            request.features == media_analysis.MediaAnalysisFeature.MATCHING
+            for request in requests
+        ))
 
 class MeltInputFilesTest(unittest.TestCase):
     def test_assigns_stable_one_based_ids_and_formats_paths_from_inputs(self):

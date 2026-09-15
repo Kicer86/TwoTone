@@ -1,27 +1,26 @@
 
-import numpy as np
 import math
 import os
-import wave
 import unittest
-
+import wave
 from dataclasses import dataclass, replace
 from itertools import combinations, permutations, product
-from parameterized import parameterized
 from pathlib import Path
 from typing import ClassVar
 
-from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
-from twotone.tools.melt.melt_cache import MeltCache
-from twotone.tools.utils import generic_utils, video_utils
-
+import numpy as np
 from common import (
-    TwoToneTestCase,
     FileCache,
+    TwoToneTestCase,
     get_video,
     hashes,
     run_ffmpeg,
 )
+from parameterized import parameterized
+
+from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
+from twotone.tools.melt.melt_cache import MeltCache
+from twotone.tools.utils import generic_utils, media_analysis, video_utils
 
 
 @dataclass(frozen=True)
@@ -736,12 +735,31 @@ class AudioAlignmentTest(TwoToneTestCase):
         os.makedirs(output_dir)
 
         logger = self.logger.getChild("Melter")
-        analyzer = MeltAnalyzer(logger, duplicates, self.workspace, True)
+        media_analysis_session = media_analysis.MediaAnalysisSession(
+            self.workspace,
+            interruption,
+            logger.getChild("MediaAnalysis"),
+            validate_all_streams=False,
+        )
+        if self.melt_cache is not None:
+            media_analysis_session.set_persistent_cache(self.melt_cache)
+
+        analyzer = MeltAnalyzer(
+            logger,
+            duplicates,
+            self.workspace,
+            True,
+            media_analysis_session,
+        )
         duplicates_raw = duplicates.collect_duplicates()
         plan = analyzer.analyze_duplicates({
             title: list(files)
             for title, files in duplicates_raw.items()
         })
+        for item in plan:
+            for group in item.get("groups", []):
+                for request in group.get("media_analysis_requests", []):
+                    media_analysis_session.fulfill(request)
 
         performer = MeltPerformer(
             logger,
@@ -749,6 +767,7 @@ class AudioAlignmentTest(TwoToneTestCase):
             self.workspace,
             output_dir,
             cache=self.melt_cache,
+            media_analysis_session=media_analysis_session,
         )
         performer.process_duplicates(plan)
 

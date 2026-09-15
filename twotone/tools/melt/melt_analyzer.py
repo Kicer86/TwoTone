@@ -1,15 +1,21 @@
 import logging
 import os
-
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
+
 from tqdm import tqdm
 
-from ..utils import files_utils, generic_utils, language_utils, video_utils
+from ..utils import (
+    files_utils,
+    generic_utils,
+    language_utils,
+    media_analysis,
+    video_utils,
+)
 from .attachments_picker import AttachmentsPicker
 from .duplicates_source import DuplicatesSource
-from .streams_picker import StreamsPicker
 from .melt_common import (
     AttachmentRef,
     AudioStreamRef,
@@ -21,6 +27,7 @@ from .melt_common import (
     stream_short_details,
 )
 from .pair_matcher import PairMatcher
+from .streams_picker import StreamsPicker
 
 
 class UnsupportedMeltInputError(RuntimeError):
@@ -40,11 +47,14 @@ class MeltAnalyzer:
         duplicates_source: DuplicatesSource,
         workspace: files_utils.Workspace,
         allow_video_timeline_mismatch: bool,
+        media_analysis_session: media_analysis.MediaAnalysisSession,
     ) -> None:
         self.logger = logger
         self.duplicates_source = duplicates_source
         self.workspace = workspace
         self.allow_video_timeline_mismatch = allow_video_timeline_mismatch
+        self.media_analysis = media_analysis_session
+        self._timeline_identity_cache: dict[tuple[str, str], bool] = {}
         self.input_paths: tuple[str, ...] = ()
 
     def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
@@ -350,7 +360,19 @@ class MeltAnalyzer:
             file_id = ids[path]
             source_track = self._pick_primary_video_track(tracks[path]["video"], file_id)
             if source_track.get("length") == base_length:
-                return path
+                if self._videos_have_identical_timeline(
+                    base_path,
+                    path,
+                    ids[base_path],
+                    file_id,
+                ):
+                    return path
+
+                self.logger.debug(
+                    "Not copying chapters from file #%d because its video content differs from the base video.",
+                    file_id,
+                )
+                continue
 
             self.logger.debug(
                 "Not copying chapters from file #%d because its video length differs from the base video.",
@@ -358,6 +380,33 @@ class MeltAnalyzer:
             )
 
         return None
+
+    def _videos_have_identical_timeline(
+        self,
+        base_path: str,
+        source_path: str,
+        base_file_id: int,
+        source_file_id: int,
+    ) -> bool:
+        key = (base_path, source_path)
+        if key in self._timeline_identity_cache:
+            return self._timeline_identity_cache[key]
+
+        with self.workspace.scoped_dir("equal_length_content") as matching_wd:
+            matcher = PairMatcher(
+                self.duplicates_source.interruption,
+                matching_wd,
+                base_path,
+                source_path,
+                self.logger.getChild("PairMatcher"),
+                lhs_label=f"#{base_file_id}",
+                rhs_label=f"#{source_file_id}",
+                media_analysis_session=self.media_analysis,
+            )
+            result = matcher.has_identical_timeline_content()
+
+        self._timeline_identity_cache[key] = result
+        return result
 
     def _log_group_inputs(self, title: str, input_files: MeltInputFiles) -> None:
         self.logger.info("Title %s: input files:", title)
@@ -394,19 +443,34 @@ class MeltAnalyzer:
             elif base_length is None or length is None:
                 continue
             else:
-                with self.workspace.scoped_dir("equal_length_content") as matching_wd:
-                    matcher = PairMatcher(
-                        self.duplicates_source.interruption, matching_wd, base_path, path,
-                        self.logger.getChild("PairMatcher"), lhs_label=f"#{base_file_id}", rhs_label=f"#{file_id}",
-                    )
-                    if matcher.has_identical_timeline_content():
-                        continue
+                if self._videos_have_identical_timeline(
+                    base_path,
+                    path,
+                    base_file_id,
+                    file_id,
+                ):
+                    continue
 
                 issue = f"Video content mismatch between #{file_id} and #{base_file_id} (use --allow-video-timeline-mismatch)."
 
             requirements.append(AlignmentRequirement(path, issue))
 
         return requirements
+
+    def _matching_request(
+        self,
+        path: str,
+        tracks: dict[str, Any],
+        file_id: int,
+    ) -> media_analysis.MediaAnalysisRequest:
+        track = self._pick_primary_video_track(tracks[path]["video"], file_id)
+        return media_analysis.MediaAnalysisRequest(
+            path=path,
+            duration_ms=int(track["length"]),
+            fps=generic_utils.fps_str_to_float(str(track["fps"])),
+            label=f"#{file_id}",
+            features=media_analysis.MediaAnalysisFeature.MATCHING,
+        )
 
     def _analyze_group(
         self,
@@ -442,6 +506,11 @@ class MeltAnalyzer:
 
         if requirements:
             if self.allow_video_timeline_mismatch:
+                matching_paths = [video_streams[0].path] + [requirement.path for requirement in requirements]
+                media_analysis_requests = [
+                    self._matching_request(path, tracks, ids[path])
+                    for path in matching_paths
+                ]
                 for requirement in requirements:
                     self.logger.debug(
                         "%s Continuing due to allow-video-timeline-mismatch; full content matching runs during processing.",
@@ -449,6 +518,8 @@ class MeltAnalyzer:
                     )
             else:
                 return None, "\n".join(requirement.issue for requirement in requirements), details_full
+        else:
+            media_analysis_requests = []
 
         chapter_source = self._pick_chapter_source(details_full, tracks, video_streams, ids)
 
@@ -481,4 +552,5 @@ class MeltAnalyzer:
             "audio_prod_lang": audio_prod_lang,
             "files_details": details_full,
             "alignment_paths": sorted(alignment_paths),
+            "media_analysis_requests": media_analysis_requests,
         }, None, details_full

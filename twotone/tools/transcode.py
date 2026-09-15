@@ -3,14 +3,16 @@ import argparse
 import logging
 import os
 import re
-from dataclasses import dataclass
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+
 from overrides import override
 from tqdm import tqdm
-from typing import Callable
 
-from .tool import EmptyPlan, Plan, Tool
 from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
+
+from .tool import EmptyPlan, Plan, Tool, ToolRuntimeContext
 
 
 class Transcoder(generic_utils.InterruptibleProcess):
@@ -439,14 +441,16 @@ class TranscodeTool(Tool):
 
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:
+        workspace = context.workspace
         transcoder = Transcoder(workspace, logger = logger, target_ssim = args.ssim)
         analysis = transcoder.analyze_directory(args.videos_path[0])
         return TranscodePlan(items=analysis, target_ssim=args.ssim)
 
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, context: ToolRuntimeContext, plan: Plan) -> None:
+        workspace = context.workspace
         if not isinstance(plan, TranscodePlan):
             raise TypeError(f"Expected TranscodePlan, got {type(plan).__name__}")
 

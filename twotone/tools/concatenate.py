@@ -3,15 +3,17 @@ import argparse
 import logging
 import os
 import re
-from dataclasses import dataclass
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
 from overrides import override
 from tqdm import tqdm
 
-from .tool import EmptyPlan, Plan, Tool
-from twotone.tools.utils import generic_utils, process_utils, video_utils, files_utils
+from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
+
+from .tool import EmptyPlan, Plan, Tool, ToolRuntimeContext
 
 
 class Concatenate(generic_utils.InterruptibleProcess):
@@ -254,7 +256,8 @@ class ConcatenateTool(Tool):
                             help='Skip videos with warnings and continue with valid groups.')
 
     @override
-    def analyze(self, args, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
+    def analyze(self, args, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:
+        workspace = context.workspace
         concatenator = Concatenate(logger, workspace=workspace)
         inputs = args.inputs
         directories = [path for path in inputs if os.path.isdir(path)]
@@ -294,7 +297,8 @@ class ConcatenateTool(Tool):
         return ConcatenatePlan(items=analysis)
 
     @override
-    def perform(self, args, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
+    def perform(self, args, logger: logging.Logger, context: ToolRuntimeContext, plan: Plan) -> None:
+        workspace = context.workspace
         if not isinstance(plan, ConcatenatePlan):
             raise TypeError(f"Expected ConcatenatePlan, got {type(plan).__name__}")
 

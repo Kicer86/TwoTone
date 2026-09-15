@@ -8,9 +8,8 @@ from dataclasses import dataclass
 
 from overrides import override
 
-from .tool import EmptyPlan, Plan, Tool
-from .utils import video_utils, process_utils, files_utils
-
+from .tool import EmptyPlan, Plan, Tool, ToolRuntimeContext
+from .utils import files_utils, process_utils, video_utils
 
 DEFAULT_LOGGER = logging.getLogger("TwoTone.utilities")
 
@@ -136,7 +135,7 @@ class UtilitiesTool(Tool):
                                       help = "Frames scale in %%. Default is 100")
 
     @override
-    def analyze(self, args, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
+    def analyze(self, args, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:
         if args.subtool == "scenes":
             try:
                 scale = float(args.scale)
@@ -154,7 +153,8 @@ class UtilitiesTool(Tool):
             return EmptyPlan()
 
     @override
-    def perform(self, args, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
+    def perform(self, args, logger: logging.Logger, context: ToolRuntimeContext, plan: Plan) -> None:
+        workspace = context.workspace
         if not isinstance(plan, ScenesPlan):
             raise TypeError(f"Expected ScenesPlan, got {type(plan).__name__}")
 

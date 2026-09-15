@@ -2,14 +2,16 @@
 import argparse
 import logging
 import os
-from dataclasses import dataclass
 from collections import defaultdict
-from overrides import override
-from tqdm import tqdm
+from dataclasses import dataclass
 from pathlib import Path
 
-from .tool import Plan, Tool
+from overrides import override
+from tqdm import tqdm
+
 from twotone.tools.utils import files_utils, generic_utils, subtitles_utils, video_utils
+
+from .tool import Plan, Tool, ToolRuntimeContext
 
 
 class Merge(generic_utils.InterruptibleProcess):
@@ -398,7 +400,8 @@ class MergeTool(Tool):
                                 'the end in undefined order')
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:
+        workspace = context.workspace
         logger.info("Searching for movie and subtitle files to be merged")
 
         merger = Merge(logger,
@@ -409,7 +412,8 @@ class MergeTool(Tool):
         return MergePlan(items=analysis, base_path=os.path.abspath(args.videos_path[0]))
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, context: ToolRuntimeContext, plan: Plan) -> None:
+        workspace = context.workspace
         if not isinstance(plan, MergePlan):
             raise TypeError(f"Expected MergePlan, got {type(plan).__name__}")
 
