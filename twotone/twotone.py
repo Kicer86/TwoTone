@@ -242,7 +242,7 @@ def execute(argv: list[str]) -> None:
                  generic_utils.get_twotone_working_dir(),
                  keep=args.keep_wd,
                  logger=logger,
-             ) as workspace:
+            ) as workspace:
             tool_logger = logger.getChild(args.tool)
             validation_mode = input_validation.ValidationMode(args.validate_inputs)
             interruption = generic_utils.InterruptibleProcess(tool_logger)
@@ -277,12 +277,16 @@ def execute(argv: list[str]) -> None:
 
                 for request in media_analysis_requests:
                     context.media_analysis.fulfill(request)
+
             validation = input_validation.InputValidator(
                 validation_mode,
                 tool_logger,
                 args.validation_cache_dir,
                 media_analysis_session=context.media_analysis,
-            ).validate(plan.input_files())
+            ).validate(
+                plan.input_files(),
+            )
+
             if not validation.is_valid:
                 plan.render(tool_logger)
                 validation.render(tool_logger)
@@ -302,6 +306,7 @@ def execute(argv: list[str]) -> None:
                     )
             elif args.interactive:
                 plan.render(tool_logger)
+
                 if plan.is_empty():
                     tool_logger.info("Analysis complete: nothing to do.")
                     tool_logger.info("Skipping perform.")
@@ -335,6 +340,7 @@ def execute(argv: list[str]) -> None:
                         tool_logger.info("Dry run mode: analyze completed, skipping perform.")
                 elif args.no_dry_run:
                     plan_count = _plan_item_count(plan)
+
                     if plan_count is None:
                         tool_logger.info("Analysis complete: starting perform.")
                     else:
