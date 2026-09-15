@@ -164,10 +164,7 @@ class PairMatcher:
     # log so the quoted limits never drift from the real ones.
     _MAX_CONSTANT_OFFSET_STD = 1.0
     _MAX_DRIFT_SLOPE_DELTA = 0.05
-    def has_identical_timeline_content(
-        self,
-        scan_features: media_analysis.MediaAnalysisFeature = media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
-    ) -> bool:
+    def has_identical_timeline_content(self) -> bool:
         """Quickly certify that both videos show the same content in-place.
 
         This is deliberately a conservative fast path.  It samples both
@@ -189,12 +186,12 @@ class PairMatcher:
             lhs_scan = self._analysis_result_for(
                 self.lhs_path,
                 self.lhs_label,
-                scan_features,
+                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             )
             rhs_scan = self._analysis_result_for(
                 self.rhs_path,
                 self.rhs_label,
-                scan_features,
+                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             )
             return self._scans_have_identical_timeline_content(lhs_scan, rhs_scan)
 

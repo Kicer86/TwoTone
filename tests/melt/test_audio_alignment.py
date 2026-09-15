@@ -750,7 +750,6 @@ class AudioAlignmentTest(TwoToneTestCase):
             self.workspace,
             True,
             media_analysis_session,
-            prepare_matching_data=True,
         )
         duplicates_raw = duplicates.collect_duplicates()
         plan = analyzer.analyze_duplicates({
