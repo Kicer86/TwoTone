@@ -287,13 +287,6 @@ class MediaAnalysisSession:
     def result_for(self, path: str) -> VideoScanResult | None:
         return self._path_results.get(os.path.realpath(path))
 
-    def results_for(self, paths: set[str]) -> dict[str, VideoScanResult]:
-        return {
-            path: result
-            for path in paths
-            if (result := self.result_for(path)) is not None
-        }
-
     @staticmethod
     def _file_key(path: str) -> tuple[object, ...]:
         stat = os.stat(path)
