@@ -2,14 +2,16 @@
 import argparse
 import logging
 import os
-from dataclasses import dataclass
 from collections import defaultdict
-from overrides import override
-from tqdm import tqdm
+from dataclasses import dataclass
 from pathlib import Path
 
-from .tool import Plan, Tool, ToolRuntimeContext
+from overrides import override
+from tqdm import tqdm
+
 from twotone.tools.utils import files_utils, generic_utils, subtitles_utils, video_utils
+
+from .tool import Plan, Tool, ToolRuntimeContext
 
 
 class Merge(generic_utils.InterruptibleProcess):

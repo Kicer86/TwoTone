@@ -3,15 +3,17 @@ import argparse
 import logging
 import os
 import re
-from dataclasses import dataclass
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
 from overrides import override
 from tqdm import tqdm
 
+from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
+
 from .tool import EmptyPlan, Plan, Tool, ToolRuntimeContext
-from twotone.tools.utils import generic_utils, process_utils, video_utils, files_utils
 
 
 class Concatenate(generic_utils.InterruptibleProcess):

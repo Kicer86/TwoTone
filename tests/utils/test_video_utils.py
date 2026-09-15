@@ -1,12 +1,19 @@
 
 import os
 import unittest
-from parameterized import parameterized
 from unittest.mock import patch
 
-from twotone.tools.utils import process_utils
-from twotone.tools.utils import subtitles_utils, video_utils
-from common import TwoToneTestCase, generate_subtitles, get_video, remove_key, run_ffmpeg, write_subtitle
+from common import (
+    TwoToneTestCase,
+    generate_subtitles,
+    get_video,
+    remove_key,
+    run_ffmpeg,
+    write_subtitle,
+)
+from parameterized import parameterized
+
+from twotone.tools.utils import process_utils, subtitles_utils, video_utils
 
 
 class UtilsTests(TwoToneTestCase):
