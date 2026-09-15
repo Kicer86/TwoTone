@@ -3,22 +3,22 @@ import logging
 import os
 import tempfile
 import types
-
 from collections.abc import Iterator
 from functools import partial
 from itertools import permutations
 from pathlib import Path
 
-from twotone.tools.utils import generic_utils, media_analysis, video_utils
-from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
-from twotone.tools.utils.files_utils import Workspace
 from common import (
-    TwoToneTestCase,
     FileCache,
+    TwoToneTestCase,
     get_audio,
     get_video,
     run_ffmpeg,
 )
+
+from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
+from twotone.tools.utils import generic_utils, media_analysis, video_utils
+from twotone.tools.utils.files_utils import Workspace
 
 
 def normalize(obj):

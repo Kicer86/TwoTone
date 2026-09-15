@@ -2,27 +2,32 @@
 import argparse
 import logging
 import os
-import sys
 import shutil
+import sys
 import time
-
 from importlib import metadata
 
 import argcomplete
 from overrides import override
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from .tools import          \
-    concatenate,            \
-    language_fixer,         \
-    melt,                   \
-    merge,                  \
-    subtitles_fixer,        \
-    transcode,              \
-    utilities
-
+from .tools import (
+    concatenate,
+    language_fixer,
+    melt,
+    merge,
+    subtitles_fixer,
+    transcode,
+    utilities,
+)
 from .tools.tool import ToolRuntimeContext
-from .tools.utils import files_utils, generic_utils, input_validation, media_analysis, process_utils
+from .tools.utils import (
+    files_utils,
+    generic_utils,
+    input_validation,
+    media_analysis,
+    process_utils,
+)
 
 TOOLS = {
     "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file", True),

@@ -9,12 +9,12 @@ from ..tool import EmptyPlan, Plan, Tool, ToolRuntimeContext
 from ..utils import media_analysis
 from .duplicates_source import DuplicatesSource
 from .jellyfin import JellyfinSource
-from .static_source import StaticSource
 from .melt_analyzer import MeltAnalyzer
 from .melt_cache import MeltCache
 from .melt_common import _split_path_fix
 from .melt_performer import MeltPerformer
 from .melt_plan import MeltPlan
+from .static_source import StaticSource
 
 
 class RequireJellyfinServer(argparse.Action):

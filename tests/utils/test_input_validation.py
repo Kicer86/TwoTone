@@ -2,7 +2,6 @@ import logging
 import os
 import tempfile
 import unittest
-
 from unittest.mock import Mock
 
 from twotone.tools.utils import input_validation, media_analysis

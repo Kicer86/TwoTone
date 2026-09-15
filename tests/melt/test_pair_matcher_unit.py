@@ -1,14 +1,23 @@
 
 import logging
 import unittest
-
 from typing import cast
 from unittest.mock import Mock, patch
 
-from twotone.tools.utils import files_utils, generic_utils, image_utils, media_analysis, video_utils
 from twotone.tools.melt.melt import MappingRelation, PairMatcher
-from twotone.tools.melt.pair_matcher import GlobalLinearFit, _BoundaryVerifyContext, _VerifySide
+from twotone.tools.melt.pair_matcher import (
+    GlobalLinearFit,
+    _BoundaryVerifyContext,
+    _VerifySide,
+)
 from twotone.tools.melt.phash_cache import PhashCache
+from twotone.tools.utils import (
+    files_utils,
+    generic_utils,
+    image_utils,
+    media_analysis,
+    video_utils,
+)
 
 
 class PairMatcherUnitTest(unittest.TestCase):

@@ -3,28 +3,34 @@ import logging
 import os
 import tempfile
 import unittest
-
 from array import array
-from parameterized import parameterized
 from unittest.mock import Mock, patch
 
-from twotone.tools.utils import files_utils, generic_utils, media_analysis, process_utils, video_utils
+from common import run_ffmpeg
+from parameterized import parameterized
+
+from melt.helpers import _FAKE_PROCESS_OK
 from twotone.tools.melt.melt import MeltPerformer, StaticSource, StreamsPicker
 from twotone.tools.melt.melt_common import AttachmentRef, AudioStreamRef, VideoStreamRef
 from twotone.tools.melt.melt_performer import (
-    AudioSourceWindow,
     AudioPatchRequest,
     AudioPatchResult,
+    AudioSourceWindow,
     TimelineInterval,
     VideoToAudioTimeline,
-    _AudioStrategy,
     _AudioPart,
+    _AudioStrategy,
     _PairMatchResult,
     _StreamEntry,
 )
 from twotone.tools.melt.pair_matcher import MappingRelation, SegmentsMappingResult
-from common import run_ffmpeg
-from melt.helpers import _FAKE_PROCESS_OK
+from twotone.tools.utils import (
+    files_utils,
+    generic_utils,
+    media_analysis,
+    process_utils,
+    video_utils,
+)
 
 
 class MeltPerformerUnitTest(unittest.TestCase):
