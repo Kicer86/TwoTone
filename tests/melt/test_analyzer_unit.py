@@ -248,14 +248,65 @@ class MeltAnalyzerTest(TwoToneTestCase):
             other_path: {"video": [{"tid": 0, "length": 1000}]},
         }
 
-        source = self.analyzer._pick_chapter_source(
-            details,
-            tracks,
-            [VideoStreamRef(base_path, 0, 0, None)],
-            {base_path: 1, other_path: 2},
-        )
+        with patch("twotone.tools.melt.melt_analyzer.PairMatcher") as matcher:
+            matcher.return_value.has_identical_timeline_content.return_value = True
+            source = self.analyzer._pick_chapter_source(
+                details,
+                tracks,
+                [VideoStreamRef(base_path, 0, 0, None)],
+                {base_path: 1, other_path: 2},
+            )
 
         self.assertEqual(source, other_path)
+
+    def test_pick_chapter_source_rejects_same_length_different_content(self):
+        base_path = os.path.join(self.wd.path, "base.mkv")
+        other_path = os.path.join(self.wd.path, "other.mkv")
+        details = {
+            base_path: {"chapters": []},
+            other_path: {"chapters": [{"num_entries": 2}]},
+        }
+        tracks = {
+            base_path: {"video": [{"tid": 0, "length": 1000}]},
+            other_path: {"video": [{"tid": 0, "length": 1000}]},
+        }
+
+        with patch("twotone.tools.melt.melt_analyzer.PairMatcher") as matcher:
+            matcher.return_value.has_identical_timeline_content.return_value = False
+            source = self.analyzer._pick_chapter_source(
+                details,
+                tracks,
+                [VideoStreamRef(base_path, 0, 0, None)],
+                {base_path: 1, other_path: 2},
+            )
+
+        self.assertIsNone(source)
+
+    def test_timeline_identity_check_is_reused_for_chapters(self):
+        base_path = os.path.join(self.wd.path, "base.mkv")
+        other_path = os.path.join(self.wd.path, "other.mkv")
+        details = {
+            base_path: {"chapters": []},
+            other_path: {"chapters": [{"num_entries": 2}]},
+        }
+        tracks = {
+            base_path: {"video": [{"tid": 0, "length": 1000}]},
+            other_path: {"video": [{"tid": 0, "length": 1000}]},
+        }
+        ids = {base_path: 1, other_path: 2}
+
+        with patch("twotone.tools.melt.melt_analyzer.PairMatcher") as matcher:
+            matcher.return_value.has_identical_timeline_content.return_value = True
+            self.analyzer._videos_have_identical_timeline(base_path, other_path, 1, 2)
+            source = self.analyzer._pick_chapter_source(
+                details,
+                tracks,
+                [VideoStreamRef(base_path, 0, 0, None)],
+                ids,
+            )
+
+        self.assertEqual(source, other_path)
+        matcher.assert_called_once()
 
     def test_pick_chapter_source_skips_different_length_non_base_video(self):
         base_path = os.path.join(self.wd.path, "base.mkv")
