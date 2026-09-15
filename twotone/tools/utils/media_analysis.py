@@ -401,10 +401,9 @@ class MediaAnalysisSession:
             args.extend(["-filter_complex", ";".join(filter_parts)])
 
         needs_null_output = bool(features & (
-            MediaAnalysisFeature.SCENE_CHANGES
-            | MediaAnalysisFeature.FRAME_TIMESTAMPS
+            MediaAnalysisFeature.FRAME_TIMESTAMPS
             | MediaAnalysisFeature.VALIDATE_STREAMS
-        ))
+        )) or scene_only
 
         if needs_null_output:
             if features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
