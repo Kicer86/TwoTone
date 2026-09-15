@@ -136,7 +136,6 @@ class UtilitiesTool(Tool):
 
     @override
     def analyze(self, args, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:
-        workspace = context.workspace
         if args.subtool == "scenes":
             try:
                 scale = float(args.scale)
