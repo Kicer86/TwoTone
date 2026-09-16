@@ -249,7 +249,9 @@ def execute(argv: list[str]) -> None:
                  logger=logger,
             ) as workspace:
             tool_logger = logger.getChild(args.tool)
-            validation_mode = input_validation.ValidationMode(args.validate_inputs)
+            validation_policy = input_validation.InputValidationPolicy(
+                input_validation.ValidationMode(args.validate_inputs)
+            )
             interruption = generic_utils.InterruptibleProcess(tool_logger)
             context = ToolRuntimeContext(
                 workspace=workspace,
@@ -258,14 +260,10 @@ def execute(argv: list[str]) -> None:
                     workspace,
                     interruption,
                     tool_logger.getChild("MediaAnalysis"),
-                    validate_all_streams=validation_mode == input_validation.ValidationMode.FULL,
+                    validate_all_streams=validation_policy.validate_all_streams,
                 ),
             )
-            required_tools = set(tool.required_tools())
-            if validation_mode != input_validation.ValidationMode.OFF:
-                required_tools.add("ffprobe")
-                if validation_mode == input_validation.ValidationMode.FULL:
-                    required_tools.add("ffmpeg")
+            required_tools = tool.required_tools() | validation_policy.required_tools()
 
             if required_tools:
                 process_utils.ensure_tools_exist(sorted(required_tools), tool_logger)
@@ -283,8 +281,8 @@ def execute(argv: list[str]) -> None:
                 for request in media_analysis_requests:
                     context.media_analysis.fulfill(request)
 
-            validation = input_validation.InputValidator(
-                validation_mode,
+            validation_report = input_validation.InputValidator(
+                validation_policy,
                 tool_logger,
                 args.validation_cache_dir,
                 media_analysis_session=context.media_analysis,
@@ -292,9 +290,9 @@ def execute(argv: list[str]) -> None:
                 plan.input_files(),
             )
 
-            if not validation.is_valid:
+            if not validation_report.is_valid:
                 plan.render(tool_logger)
-                validation.render(tool_logger)
+                validation_report.render(tool_logger)
                 tool_logger.error("Input validation failed. Skipping perform.")
                 return
 
