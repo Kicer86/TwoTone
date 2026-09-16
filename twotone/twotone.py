@@ -263,10 +263,10 @@ def execute(argv: list[str]) -> None:
                     validate_all_streams=validation_policy.validate_all_streams,
                 ),
             )
-            required_tools = tool.required_tools() | validation_policy.required_tools()
 
-            if required_tools:
-                process_utils.ensure_tools_exist(sorted(required_tools), tool_logger)
+            required_tools = tool.required_tools() | validation_policy.required_tools()
+            process_utils.ensure_tools_exist(sorted(required_tools), tool_logger)
+
             plan = tool.analyze(
                 args,
                 logger=tool_logger,
