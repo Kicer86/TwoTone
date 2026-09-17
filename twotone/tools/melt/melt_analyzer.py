@@ -75,6 +75,7 @@ class MeltAnalyzer:
                 groups_iter = tqdm(groups, desc="Candidates", unit="set", position=1, **generic_utils.get_tqdm_defaults())
             else:
                 groups_iter = groups
+
             for group in groups_iter:
                 files = group["files"]
                 output_name = group["output_name"]
@@ -88,6 +89,7 @@ class MeltAnalyzer:
                 except UnsupportedMeltInputError as err:
                     plan_details = None
                     issue = str(err)
+
                 if plan_details is None:
                     self._log_group_issue(issue or "Unknown issue.")
                     skipped_groups.append({
@@ -439,7 +441,7 @@ class MeltAnalyzer:
 
         for path in sorted(stream_paths - {base_path}, key=ids.__getitem__):
             file_id = ids[path]
-            self.logger.info("Checking video alignment: #%d ↔ #%d", base_file_id, file_id)
+            self.logger.info("Checking video alignment: #%d - #%d", base_file_id, file_id)
             length = self._pick_primary_video_track(tracks[path]["video"], file_id).get("length")
 
             if _is_length_mismatch(base_length, length):
