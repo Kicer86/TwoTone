@@ -64,6 +64,10 @@ class MeltToolContextTest(unittest.TestCase):
 
         context.media_analysis.set_persistent_cache.assert_called_once_with(cache.return_value)
         self.assertIs(analyzer.call_args.args[2], context)
+        analyzer.return_value.analyze_duplicates.assert_called_once_with(
+            {"Movie": ["/input.mkv"]},
+            display_roots=("/input.mkv",),
+        )
         self.assertIs(performer.call_args.args[1], context)
         self.assertIs(source.call_args.kwargs["interruption"], context.interruption)
 

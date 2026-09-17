@@ -155,7 +155,7 @@ class MeltTool(Tool):
                 MeltCache(args.cache_dir, logger.getChild("cache")),
             )
         data_source: DuplicatesSource | None = None
-        input_paths: tuple[str, ...] = ()
+        display_roots: tuple[str, ...] = ()
         parser = self.parser
         if parser is None:
             raise RuntimeError("Parser not initialized. Call setup_parser before analyze.")
@@ -179,7 +179,7 @@ class MeltTool(Tool):
         elif args.input_entries:
             title = args.title
             input_entries = args.input_entries
-            input_paths = tuple(entry['path'] for entry in input_entries)
+            display_roots = tuple(entry['path'] for entry in input_entries)
 
             if not title:
                 parser.error("Missing required option: --title")
@@ -227,8 +227,10 @@ class MeltTool(Tool):
             context,
             args.allow_video_timeline_mismatch,
         )
-        analyzer.input_paths = input_paths
-        analysis = analyzer.analyze_duplicates(duplicates)
+        analysis = analyzer.analyze_duplicates(
+            duplicates,
+            display_roots=display_roots,
+        )
         return MeltPlan(
             items=analysis,
             output_dir=args.output_dir,
