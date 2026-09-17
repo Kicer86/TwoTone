@@ -415,7 +415,6 @@ class MeltAnalyzerTest(TwoToneTestCase):
     def test_analyze_duplicates_displays_paths_relative_to_input(self):
         input_dir = os.path.join(self.wd.path, "input")
         input_path = os.path.join(input_dir, "nested", "input.mkv")
-        self.analyzer.input_paths = (input_dir,)
         base_plan = [{
             "title": "Title",
             "groups": [{"files": [input_path], "output_name": "input"}],
@@ -424,7 +423,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
         with self.assertLogs(self.logger, level="INFO") as logged, \
              patch.object(self.analyzer, "_prepare_duplicates_set", return_value=base_plan), \
              patch.object(self.analyzer, "_analyze_group", return_value=({}, None, {})):
-            self.analyzer.analyze_duplicates({})
+            self.analyzer.analyze_duplicates({}, display_roots=(input_dir,))
 
         relative_path = os.path.join("nested", "input.mkv")
         self.assertTrue(any(f"#1: {relative_path}" in message for message in logged.output))
@@ -530,7 +529,7 @@ class MeltInputFilesTest(unittest.TestCase):
     def test_assigns_stable_one_based_ids_and_formats_paths_from_inputs(self):
         files = MeltInputFiles(
             ["/media/first.mkv", "/media/input/nested/second.mkv", "/net/library/third.mkv"],
-            input_paths=["/media/first.mkv", "/media/input"],
+            display_roots=["/media/first.mkv", "/media/input"],
         )
 
         self.assertEqual(files.id_for("/media/first.mkv"), 1)

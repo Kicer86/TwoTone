@@ -55,9 +55,13 @@ class MeltAnalyzer:
         self.allow_video_timeline_mismatch = allow_video_timeline_mismatch
         self.media_analysis = context.media_analysis
         self._timeline_identity_cache: dict[tuple[str, str], bool] = {}
-        self.input_paths: tuple[str, ...] = ()
 
-    def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
+    def analyze_duplicates(
+        self,
+        duplicates: dict[str, list[str]],
+        *,
+        display_roots: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
         base_plan = self._prepare_duplicates_set(duplicates)
 
         analysis_plan: list[dict[str, Any]] = []
@@ -75,7 +79,7 @@ class MeltAnalyzer:
                 files = group["files"]
                 output_name = group["output_name"]
 
-                input_files = MeltInputFiles(files, self.input_paths)
+                input_files = MeltInputFiles(files, display_roots)
                 self._log_group_inputs(title, input_files)
 
                 # analysis for group

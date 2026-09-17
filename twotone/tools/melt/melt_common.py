@@ -27,11 +27,11 @@ class MeltInputFiles:
     """Stable, one-based references to the files in one Melt input group."""
 
     paths: tuple[str, ...]
-    input_paths: tuple[str, ...] = ()
+    display_roots: tuple[str, ...] = ()
 
-    def __init__(self, paths: list[str] | tuple[str, ...], input_paths: list[str] | tuple[str, ...] = ()) -> None:
+    def __init__(self, paths: list[str] | tuple[str, ...], display_roots: list[str] | tuple[str, ...] = ()) -> None:
         object.__setattr__(self, "paths", tuple(paths))
-        object.__setattr__(self, "input_paths", tuple(input_paths))
+        object.__setattr__(self, "display_roots", tuple(display_roots))
 
     def id_for(self, path: str) -> int:
         return self.paths.index(path) + 1
@@ -46,11 +46,11 @@ class MeltInputFiles:
     def display_path(self, path: str) -> str:
         path_abs = os.path.abspath(path)
         containing_inputs = []
-        for input_path in self.input_paths:
-            input_abs = os.path.abspath(input_path)
+        for display_root in self.display_roots:
+            root_abs = os.path.abspath(display_root)
             try:
-                if os.path.commonpath([input_abs, path_abs]) == input_abs:
-                    containing_inputs.append(input_path)
+                if os.path.commonpath([root_abs, path_abs]) == root_abs:
+                    containing_inputs.append(display_root)
             except ValueError:
                 continue
 
