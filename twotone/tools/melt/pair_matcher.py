@@ -229,9 +229,6 @@ class PairMatcher:
         lhs_scan: media_analysis.VideoScanResult,
         rhs_scan: media_analysis.VideoScanResult,
     ) -> bool:
-        if lhs_scan.decode_error is not None or rhs_scan.decode_error is not None:
-            return False
-
         lhs_samples = lhs_scan.identity_samples
         rhs_samples = rhs_scan.identity_samples
         lhs_expected = len(media_analysis.identity_timestamps(self.lhs_duration_ms or 0, self.lhs_fps))
