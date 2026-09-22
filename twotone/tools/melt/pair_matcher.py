@@ -1719,8 +1719,21 @@ class PairMatcher:
 
     def create_segments_mapping(self) -> SegmentsMappingResult:
 
-        lhs_scene_changes, rhs_scene_changes = self._detect_scenes()
-        self._probe_frames()
+        lhs_analysis = self._analysis_result_for(
+            self.lhs_path,
+            self.lhs_label,
+            media_analysis.MediaAnalysisFeature.MATCHING,
+        )
+        rhs_analysis = self._analysis_result_for(
+            self.rhs_path,
+            self.rhs_label,
+            media_analysis.MediaAnalysisFeature.MATCHING,
+        )
+        lhs_scene_changes, rhs_scene_changes = self._detect_scenes(
+            lhs_analysis,
+            rhs_analysis,
+        )
+        self._probe_frames(lhs_analysis, rhs_analysis)
         lhs_scene_ranges, rhs_scene_ranges = self._extract_scene_frames(lhs_scene_changes, rhs_scene_changes)
         lhs_normalized_frames, rhs_normalized_frames, lhs_key_frames, rhs_key_frames = self._normalize_extracted(
             lhs_scene_changes, rhs_scene_changes,
@@ -2627,22 +2640,25 @@ class PairMatcher:
             gaps.append((cursor, max_frame))
         return gaps
 
-    def _detect_scenes(self) -> tuple[list[int], list[int]]:
+    def _detect_scenes(
+        self,
+        lhs_analysis: media_analysis.VideoScanResult,
+        rhs_analysis: media_analysis.VideoScanResult,
+    ) -> tuple[list[int], list[int]]:
         """Phase 1: Detect scene changes in both files."""
-        lhs_scene_changes = self._detect_scenes_for(self.lhs_path, self.lhs_label)
-        rhs_scene_changes = self._detect_scenes_for(self.rhs_path, self.rhs_label)
+        lhs_scene_changes = self._detect_scenes_for(lhs_analysis, self.lhs_label)
+        rhs_scene_changes = self._detect_scenes_for(rhs_analysis, self.rhs_label)
 
         if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
             raise RuntimeError("Not enough scene changes detected")
 
         return lhs_scene_changes, rhs_scene_changes
 
-    def _detect_scenes_for(self, video_path: str, label: str) -> list[int]:
-        analysis = self._analysis_result_for(
-            video_path,
-            label,
-            media_analysis.MediaAnalysisFeature.MATCHING,
-        )
+    def _detect_scenes_for(
+        self,
+        analysis: media_analysis.VideoScanResult,
+        label: str,
+    ) -> list[int]:
         self.logger.info(
             "[1/6] Scene changes for %s restored from media scan (%d scenes)",
             label,
@@ -2650,19 +2666,34 @@ class PairMatcher:
         )
         return list(analysis.scene_changes)
 
-    def _probe_frames(self) -> None:
+    def _probe_frames(
+        self,
+        lhs_analysis: media_analysis.VideoScanResult | None = None,
+        rhs_analysis: media_analysis.VideoScanResult | None = None,
+    ) -> None:
         """Phase 2: Probe all frame timestamps (fast — no images written)."""
         if not self.lhs_all_frames:
-            self.lhs_all_frames = self._probe_frames_for(self.lhs_path, self.lhs_label)
+            if lhs_analysis is None:
+                lhs_analysis = self._analysis_result_for(
+                    self.lhs_path,
+                    self.lhs_label,
+                    media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+                )
+            self.lhs_all_frames = self._probe_frames_for(lhs_analysis, self.lhs_label)
         if not self.rhs_all_frames:
-            self.rhs_all_frames = self._probe_frames_for(self.rhs_path, self.rhs_label)
+            if rhs_analysis is None:
+                rhs_analysis = self._analysis_result_for(
+                    self.rhs_path,
+                    self.rhs_label,
+                    media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+                )
+            self.rhs_all_frames = self._probe_frames_for(rhs_analysis, self.rhs_label)
 
-    def _probe_frames_for(self, video_path: str, label: str) -> FramesInfo:
-        analysis = self._analysis_result_for(
-            video_path,
-            label,
-            media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
-        )
+    def _probe_frames_for(
+        self,
+        analysis: media_analysis.VideoScanResult,
+        label: str,
+    ) -> FramesInfo:
         self.logger.info(
             "[2/6] Frame probes for %s restored from media scan (%d frames)",
             label,

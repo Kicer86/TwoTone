@@ -65,7 +65,7 @@ class PairMatcherUnitTest(unittest.TestCase):
     def _timestamp_for_frame(frame_id: int, fps: float) -> int:
         return round(frame_id * 1000 / fps)
 
-    def test_scene_and_frame_probe_reuse_shared_media_scan(self):
+    def test_scene_and_frame_stages_consume_one_shared_media_scan(self):
         pm = self._make_pair_matcher()
         analysis = media_analysis.VideoScanResult(
             path=pm.lhs_path,
@@ -75,18 +75,14 @@ class PairMatcherUnitTest(unittest.TestCase):
             identity_samples=(),
             decode_error=None,
         )
-        session = Mock(spec=media_analysis.MediaAnalysisSession)
-        session.scan.return_value = analysis
-        pm.media_analysis = session
-
         with patch.object(video_utils, "detect_scene_changes", side_effect=AssertionError("legacy scene scan")), \
              patch.object(video_utils, "probe_frame_timestamps", side_effect=AssertionError("legacy frame probe")):
-            scenes = pm._detect_scenes_for(pm.lhs_path, pm.lhs_label)
-            frames = pm._probe_frames_for(pm.lhs_path, pm.lhs_label)
+            scenes = pm._detect_scenes_for(analysis, pm.lhs_label)
+            frames = pm._probe_frames_for(analysis, pm.lhs_label)
 
         self.assertEqual(scenes, [120])
         self.assertEqual(frames, {0: {"frame_id": 0, "path": None}})
-        self.assertEqual(session.scan.call_count, 2)
+        pm.media_analysis.scan.assert_not_called()
 
 
     def test_identical_timeline_uses_shared_media_scans(self):
@@ -817,7 +813,11 @@ class PairMatcherUnitTest(unittest.TestCase):
                 for ts, info in frames_info.items()
             }
 
-        with patch.object(pm.media_analysis, "scan", side_effect=lambda path, **_kwargs: analyses[path]), \
+        with patch.object(
+                 pm.media_analysis,
+                 "scan",
+                 side_effect=lambda path, **_kwargs: analyses[path],
+             ) as scan, \
              patch.object(video_utils, 'extract_frames_at_ranges', side_effect=fake_extract), \
              patch('twotone.tools.melt.pair_matcher.DebugRoutines') as debug_cls, \
              patch.object(PairMatcher, '_normalize_frames', side_effect=fake_normalize), \
@@ -834,6 +834,12 @@ class PairMatcherUnitTest(unittest.TestCase):
             result = pm.create_segments_mapping()
 
         self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
+        self.assertEqual(scan.call_count, 2)
+        for call in scan.call_args_list:
+            self.assertEqual(
+                call.kwargs["features"],
+                media_analysis.MediaAnalysisFeature.MATCHING,
+            )
         # Boundaries come from the fit's content-verified extrapolation.
         extrap.assert_called_once()
         self.assertEqual(result.mapping, extrapolated_pairs)
