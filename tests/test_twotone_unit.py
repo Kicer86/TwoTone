@@ -201,6 +201,50 @@ class RuntimeVersionTest(unittest.TestCase):
             media_analysis_session.fulfill.assert_not_called()
             validator.return_value.validate.assert_called_once_with({input_path})
 
+    def test_interactive_run_defers_media_analysis_until_confirmation(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = os.path.join(temp_dir, "input.mkv")
+            with open(input_path, "wb") as file:
+                file.write(b"media")
+            request = media_analysis.MediaAnalysisRequest(
+                path=input_path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.MATCHING,
+            )
+            report = twotone.input_validation.ValidationReport((), 1, 0)
+
+            for answer, expected_fulfill_count in (("n", 0), ("y", 1)):
+                with self.subTest(answer=answer):
+                    tool = _TestTool(_TestPlan({input_path}), (request,))
+                    media_analysis_session = Mock()
+
+                    with patch.dict(twotone.TOOLS, {"test": (tool, "test tool", False)}, clear=True), \
+                         patch.object(twotone.process_utils, "ensure_tools_exist"), \
+                         patch.object(
+                             twotone.media_analysis,
+                             "MediaAnalysisSession",
+                             return_value=media_analysis_session,
+                         ), \
+                         patch.object(twotone.input_validation, "InputValidator") as validator, \
+                         patch("builtins.input", return_value=answer):
+                        validator.return_value.validate.return_value = report
+                        twotone.execute([
+                            "--interactive",
+                            "--working-dir", os.path.join(temp_dir, f"work-{answer}"),
+                            "--validation-cache-dir", os.path.join(temp_dir, "cache"),
+                            "test",
+                        ])
+
+                    self.assertEqual(
+                        media_analysis_session.fulfill.call_count,
+                        expected_fulfill_count,
+                    )
+                    self.assertEqual(tool.performed, answer == "y")
+
     def test_executor_checks_tool_and_validation_dependencies_together(self):
         import tempfile
 
