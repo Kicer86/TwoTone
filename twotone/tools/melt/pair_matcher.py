@@ -2661,7 +2661,7 @@ class PairMatcher:
         analysis = self._analysis_result_for(
             video_path,
             label,
-            media_analysis.MediaAnalysisFeature.MATCHING,
+            media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
         )
         self.logger.info(
             "[2/6] Frame probes for %s restored from media scan (%d frames)",

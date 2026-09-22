@@ -129,21 +129,30 @@ class PairMatcherUnitTest(unittest.TestCase):
                 media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             )
 
-    def test_identity_check_keeps_legacy_sampling_when_frame_rates_differ(self):
+    def test_identity_check_requests_only_frame_timestamps_when_frame_rates_differ(self):
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=24.0)
         pm.lhs_duration_ms = 6000
         pm.rhs_duration_ms = 6000
-        pm.lhs_all_frames = {0: {"frame_id": 0, "path": None}}
-        pm.rhs_all_frames = {0: {"frame_id": 0, "path": None}}
         session = Mock(spec=media_analysis.MediaAnalysisSession)
+        session.scan.side_effect = lambda path, **_kwargs: media_analysis.VideoScanResult(
+            path=path,
+            features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+            frames={0: {"frame_id": 0, "path": None}},
+            scene_changes=(),
+            identity_samples=(),
+            decode_error=None,
+        )
         pm.media_analysis = session
 
-        with patch.object(pm, "_probe_frames") as probe, \
-             patch.object(pm, "_extract_identity_samples", return_value=None):
+        with patch.object(pm, "_extract_identity_samples", return_value=None):
             self.assertFalse(pm.has_identical_timeline_content())
 
-        probe.assert_called_once()
-        session.scan.assert_not_called()
+        self.assertEqual(session.scan.call_count, 2)
+        for call in session.scan.call_args_list:
+            self.assertEqual(
+                call.kwargs["features"],
+                media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+            )
 
     def test_identity_check_ignores_unrelated_validation_error(self):
         pm = self._make_pair_matcher()
