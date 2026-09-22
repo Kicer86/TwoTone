@@ -47,7 +47,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
             workspace,
             interruption,
             logging.getLogger("test.MeltPerformer.MediaAnalysis"),
-            validate_all_streams=False,
         )
         context = ToolRuntimeContext(workspace, interruption, media_analysis_session)
         return MeltPerformer(

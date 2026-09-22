@@ -52,7 +52,6 @@ def analyze_duplicates_helper(
         workspace,
         duplicates_source.interruption,
         logger.getChild("MediaAnalysis"),
-        validate_all_streams=False,
     )
     context = ToolRuntimeContext(workspace, duplicates_source.interruption, media_analysis_session)
     duplicates_raw = duplicates_source.collect_duplicates()
@@ -77,7 +76,6 @@ def process_duplicates_helper(
         workspace,
         interruption,
         logger.getChild("MediaAnalysis"),
-        validate_all_streams=False,
     )
     context = ToolRuntimeContext(workspace, interruption, media_analysis_session)
     for item in plan:

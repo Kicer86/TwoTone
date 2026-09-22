@@ -28,7 +28,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             self.workspace,
             generic_utils.InterruptibleProcess(),
             logging.getLogger("MediaAnalysisSessionTest"),
-            validate_all_streams=True,
         )
 
     def _probe_result(self, streams: list[dict] | None = None) -> media_analysis.MediaProbeResult:
@@ -186,8 +185,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
     def test_upgrades_cached_scan_with_only_missing_features(self):
         identity = media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
         matching = media_analysis.MediaAnalysisFeature.MATCHING
-        validation = media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS
-
         def scan(_path, _duration_ms, _fps, _label, features):
             return media_analysis.VideoScanResult(
                 path=os.path.realpath(self.path),
@@ -224,28 +221,27 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 features=identity | matching,
             )
 
-        self.assertEqual(first.features, identity | validation)
-        self.assertEqual(upgraded.features, identity | matching | validation)
+        self.assertEqual(first.features, identity)
+        self.assertEqual(upgraded.features, identity | matching)
         self.assertEqual(upgraded.identity_samples, first.identity_samples)
         self.assertEqual(upgraded.scene_changes, (40,))
         self.assertEqual(list(upgraded.frames), [40])
         self.assertIs(restored, upgraded)
         self.assertEqual(
             [call.args[-1] for call in scan_mock.call_args_list],
-            [identity | validation, matching],
+            [identity, matching],
         )
         logs = "\n".join(captured.output)
         self.assertIn(
-            "requested=[identity_samples], effective=[identity_samples, validate_streams]",
+            "features=[identity_samples]",
             logs,
         )
         self.assertIn(
-            "requires a fresh scan: missing=[identity_samples, validate_streams]",
+            "requires a fresh scan: missing=[identity_samples]",
             logs,
         )
         self.assertIn(
-            "requested=[scene_changes, frame_timestamps], "
-            "effective=[scene_changes, frame_timestamps, validate_streams]",
+            "features=[scene_changes, frame_timestamps]",
             logs,
         )
         self.assertIn(
@@ -298,6 +294,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 features=(
                     media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
                     | media_analysis.MediaAnalysisFeature.MATCHING
+                    | media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS
                 ),
             )
 
@@ -337,7 +334,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             self.workspace,
             generic_utils.InterruptibleProcess(),
             logging.getLogger("SceneOnlyMediaAnalysisTest"),
-            validate_all_streams=False,
         )
 
         def fake_start(args, _interruption, on_line, logger):
@@ -414,7 +410,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             25.0,
             "#1",
             media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS
-            | media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
         )
         self.assertEqual(result.scene_changes, (120,))
         self.assertEqual(list(result.frames), [0])
@@ -483,7 +478,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             self.workspace,
             generic_utils.InterruptibleProcess(),
             logging.getLogger("PersistentMediaAnalysisTest"),
-            validate_all_streams=False,
         )
         persistent = Mock()
         persistent.load_scene_changes.return_value = [120]
@@ -510,7 +504,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             self.workspace,
             generic_utils.InterruptibleProcess(),
             logging.getLogger("PersistentMediaAnalysisTest"),
-            validate_all_streams=False,
         )
         persistent = Mock()
         persistent.load_frame_probes.return_value = None
@@ -571,15 +564,13 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             )
 
         args = start.call_args.args[0]
-        self.assertIn("-xerror", args)
-        self.assertIn("split=2[vvalidate][vsamples]", " ".join(args))
-        self.assertIn("[vvalidate]", args)
+        self.assertNotIn("-xerror", args)
+        self.assertNotIn("vvalidate", " ".join(args))
         self.assertNotIn("frames.txt", " ".join(args))
         self.assertNotIn("gt(scene", " ".join(args))
         self.assertEqual(
             result.features,
-            media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
-            | media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+            media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
         )
         self.assertEqual(result.frames, {})
         self.assertEqual(result.scene_changes, ())
@@ -590,7 +581,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             self.workspace,
             generic_utils.InterruptibleProcess(),
             logging.getLogger("MediaAnalysisSessionTest.combined"),
-            validate_all_streams=False,
         )
 
         def fake_start(args, _interruption, on_line, logger):

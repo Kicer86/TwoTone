@@ -149,13 +149,10 @@ class MediaAnalysisSession:
         workspace: Workspace,
         interruption: InterruptibleProcess,
         logger: logging.Logger,
-        *,
-        validate_all_streams: bool,
     ) -> None:
         self.workspace = workspace
         self.interruption = interruption
         self.logger = logger
-        self.validate_all_streams = validate_all_streams
         self._cache: dict[tuple[object, ...], VideoScanResult] = {}
         self._probe_cache: dict[tuple[object, ...], MediaProbeResult] = {}
         self._path_results: dict[str, VideoScanResult] = {}
@@ -219,20 +216,14 @@ class MediaAnalysisSession:
     ) -> VideoScanResult:
         real_path = os.path.realpath(path)
         key = self._file_key(real_path)
-        requested_features = features
-        if self.validate_all_streams:
-            requested_features |= MediaAnalysisFeature.VALIDATE_STREAMS
-
-        if requested_features == MediaAnalysisFeature.NONE:
+        if features == MediaAnalysisFeature.NONE:
             raise ValueError("At least one media analysis feature must be requested")
 
         self.logger.debug(
-            "Media analysis request for %s (%s): requested=[%s], effective=[%s], "
-            "duration_ms=%s, fps=%s.",
+            "Media analysis request for %s (%s): features=[%s], duration_ms=%s, fps=%s.",
             label,
             real_path,
             _format_features(features),
-            _format_features(requested_features),
             duration_ms,
             fps,
         )
@@ -243,7 +234,7 @@ class MediaAnalysisSession:
         else:
             self._log_scan_result("Media analysis run cache contains data", label, cached)
 
-        missing_features = requested_features & ~(cached.features if cached is not None else MediaAnalysisFeature.NONE)
+        missing_features = features & ~(cached.features if cached is not None else MediaAnalysisFeature.NONE)
         persistent = self._restore_persistent(real_path, missing_features)
         if persistent is not None:
             self._log_scan_result("Persistent media analysis cache restored data", label, persistent)
@@ -256,13 +247,13 @@ class MediaAnalysisSession:
                 _format_features(missing_features),
             )
 
-        if cached is not None and cached.supports(requested_features):
+        if cached is not None and cached.supports(features):
             self.logger.info("Media scan for %s restored from cache.", label)
             self._log_scan_result("Media analysis satisfied without FFmpeg", label, cached)
             self._path_results[real_path] = cached
             return cached
 
-        missing_features = requested_features
+        missing_features = features
         if cached is not None:
             missing_features &= ~cached.features
 

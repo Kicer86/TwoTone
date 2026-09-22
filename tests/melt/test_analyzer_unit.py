@@ -29,7 +29,6 @@ class MeltAnalyzerTest(TwoToneTestCase):
             self.workspace,
             interruption,
             self.logger.getChild("MediaAnalysis"),
-            validate_all_streams=False,
         )
         self.context = ToolRuntimeContext(self.workspace, interruption, self.media_analysis)
         self.analyzer = MeltAnalyzer(
