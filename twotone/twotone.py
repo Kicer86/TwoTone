@@ -272,13 +272,16 @@ def execute(argv: list[str]) -> None:
                 context=context,
             )
 
-            if args.no_dry_run or args.interactive:
+            def fulfill_media_analysis_requests() -> None:
                 media_analysis_requests = tuple(tool.media_analysis_requests(plan))
                 if media_analysis_requests and "ffmpeg" not in required_tools:
                     process_utils.ensure_tools_exist(["ffmpeg"], tool_logger)
 
                 for request in media_analysis_requests:
                     context.media_analysis.fulfill(request)
+
+            if args.no_dry_run:
+                fulfill_media_analysis_requests()
 
             validation_report = input_validation.InputValidator(
                 validation_policy,
@@ -324,6 +327,7 @@ def execute(argv: list[str]) -> None:
                         answer = ""
                     if answer in {"y", "yes"}:
                         tool_logger.info("User confirmed. Starting perform.")
+                        fulfill_media_analysis_requests()
                         tool.perform(
                             args,
                             logger=tool_logger,
