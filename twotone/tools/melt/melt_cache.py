@@ -17,8 +17,6 @@ class MeltCache:
     (path + size + mtime).
     """
 
-    _CODE_FILES = ("pair_matcher.py", "video_utils.py")
-
     def __init__(self, cache_dir: str, logger: logging.Logger) -> None:
         self.cache_dir = cache_dir
         self.logger = logger
@@ -214,6 +212,7 @@ class MeltCache:
         utils_dir = os.path.join(os.path.dirname(base), "utils")
         paths = [
             os.path.join(base, "pair_matcher.py"),
+            os.path.join(utils_dir, "media_analysis.py"),
             os.path.join(utils_dir, "video_utils.py"),
         ]
         for p in sorted(paths):
