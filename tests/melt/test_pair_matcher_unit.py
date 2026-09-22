@@ -145,6 +145,30 @@ class PairMatcherUnitTest(unittest.TestCase):
         probe.assert_called_once()
         session.scan.assert_not_called()
 
+    def test_identity_check_ignores_unrelated_validation_error(self):
+        pm = self._make_pair_matcher()
+        pm.lhs_duration_ms = 6000
+        pm.rhs_duration_ms = 6000
+        samples = tuple(
+            media_analysis.VideoSample(timestamp, timestamp, index, f"/sample/{timestamp}.png")
+            for index, timestamp in enumerate((0, 1000, 2000, 3000, 4000, 5000, 5960))
+        )
+        scan = media_analysis.VideoScanResult(
+            path=pm.lhs_path,
+            features=(
+                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
+                | media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS
+            ),
+            frames={},
+            scene_changes=(),
+            identity_samples=samples,
+            decode_error="audio stream failed validation",
+        )
+
+        with patch.object(PairMatcher, "_normalize_frames", side_effect=lambda frames, *_args, **_kwargs: frames), \
+             patch.object(pm.phash, "get", return_value=0):
+            self.assertTrue(pm._scans_have_identical_timeline_content(scan, scan))
+
     # ---- _extrapolate_through_low_entropy ----
 
     def test_extrapolate_pure_low_entropy_lhs_extends(self):
