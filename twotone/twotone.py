@@ -260,7 +260,6 @@ def execute(argv: list[str]) -> None:
                     workspace,
                     interruption,
                     tool_logger.getChild("MediaAnalysis"),
-                    validate_all_streams=validation_policy.validate_all_streams,
                 ),
             )
 

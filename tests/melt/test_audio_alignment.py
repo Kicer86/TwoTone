@@ -740,7 +740,6 @@ class AudioAlignmentTest(TwoToneTestCase):
             self.workspace,
             interruption,
             logger.getChild("MediaAnalysis"),
-            validate_all_streams=False,
         )
         if self.melt_cache is not None:
             media_analysis_session.set_persistent_cache(self.melt_cache)

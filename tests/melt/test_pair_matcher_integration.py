@@ -21,7 +21,6 @@ class PairMatcherIntegrationTest(MeltTestBase):
             self.workspace,
             interruption,
             self.logger.getChild("MediaAnalysis"),
-            validate_all_streams=False,
         )
         return PairMatcher(
             interruption,
