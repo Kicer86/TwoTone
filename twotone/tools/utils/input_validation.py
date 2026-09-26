@@ -101,6 +101,7 @@ class InputValidator:
             if not os.path.isfile(path):
                 issues.append(ValidationIssue(path, "Input file no longer exists or is not a regular file."))
                 continue
+
             key = self._cache_key(path)
             cached = cache.get(key)
             has_fresh_decode = self._has_analysis_decode(path)
@@ -217,7 +218,7 @@ class InputValidator:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             temporary_path = self.cache_path.with_suffix(".tmp")
             with temporary_path.open("w", encoding="utf-8") as file:
-                json.dump(cache, file, sort_keys=True)
+                json.dump(cache, file, sort_keys=True, indent=4)
             os.replace(temporary_path, self.cache_path)
         except OSError as error:
             self.logger.warning("Could not save input-validation cache: %s", error)
