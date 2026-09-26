@@ -20,7 +20,7 @@ from .tools import (
     transcode,
     utilities,
 )
-from .tools.tool import ToolRuntimeContext
+from .tools.tool import Plan, Tool, ToolRuntimeContext
 from .tools.utils import (
     files_utils,
     generic_utils,
@@ -102,6 +102,63 @@ def _plan_item_count(plan: object) -> int | None:
         return len(items)
     except TypeError:
         return None
+
+
+def _should_perform_plan(
+    args: argparse.Namespace,
+    plan: Plan,
+    logger: logging.Logger,
+) -> bool:
+    if plan.is_empty():
+        if args.no_dry_run:
+            logger.info("Nothing to do.")
+        else:
+            logger.info("Analysis complete: nothing to do.")
+            if args.interactive:
+                logger.info("Skipping perform.")
+            else:
+                logger.info("Dry run mode: analyze completed, skipping perform.")
+        return False
+
+    if args.no_dry_run:
+        return True
+
+    if not args.interactive:
+        logger.info("Dry run mode: analyze completed, skipping perform.")
+        return False
+
+    plan_count = _plan_item_count(plan)
+    if plan_count is None:
+        logger.info("Analysis complete: ready to perform.")
+    else:
+        logger.info("Analysis complete: %d item(s) ready.", plan_count)
+
+    try:
+        answer = input("Proceed with perform? [y/N]: ").strip().lower()
+    except EOFError:
+        answer = ""
+
+    if answer in {"y", "yes"}:
+        logger.info("User confirmed. Starting perform.")
+        return True
+
+    logger.info("User aborted. Skipping perform.")
+    return False
+
+
+def _prepare_media_analysis_for_perform(
+    tool: Tool,
+    plan: Plan,
+    context: ToolRuntimeContext,
+    required_tools: set[str],
+    logger: logging.Logger,
+) -> None:
+    requests = tuple(tool.media_analysis_requests(plan))
+    if requests and "ffmpeg" not in required_tools:
+        process_utils.ensure_tools_exist(["ffmpeg"], logger)
+
+    for request in requests:
+        context.media_analysis.fulfill(request)
 
 
 def _warn_before_deleting_inputs(destructive: bool, logger: logging.Logger) -> None:
@@ -249,9 +306,7 @@ def execute(argv: list[str]) -> None:
                  logger=logger,
             ) as workspace:
             tool_logger = logger.getChild(args.tool)
-            validation_policy = input_validation.InputValidationPolicy(
-                input_validation.ValidationMode(args.validate_inputs)
-            )
+            validation_policy = input_validation.InputValidationPolicy(input_validation.ValidationMode(args.validate_inputs))
             interruption = generic_utils.InterruptibleProcess(tool_logger)
             context = ToolRuntimeContext(
                 workspace=workspace,
@@ -272,17 +327,6 @@ def execute(argv: list[str]) -> None:
                 context=context,
             )
 
-            def fulfill_media_analysis_requests() -> None:
-                media_analysis_requests = tuple(tool.media_analysis_requests(plan))
-                if media_analysis_requests and "ffmpeg" not in required_tools:
-                    process_utils.ensure_tools_exist(["ffmpeg"], tool_logger)
-
-                for request in media_analysis_requests:
-                    context.media_analysis.fulfill(request)
-
-            if args.no_dry_run:
-                fulfill_media_analysis_requests()
-
             validation_report = input_validation.InputValidator(
                 validation_policy,
                 tool_logger,
@@ -298,71 +342,23 @@ def execute(argv: list[str]) -> None:
                 tool_logger.error("Input validation failed. Skipping perform.")
                 return
 
-            if args.no_dry_run:
-                plan.render(tool_logger)
-                if plan.is_empty():
-                    tool_logger.info("Nothing to do.")
-                else:
-                    tool.perform(
-                        args,
-                        logger=tool_logger,
-                        context=context,
-                        plan=plan,
-                    )
-            elif args.interactive:
-                plan.render(tool_logger)
+            plan.render(tool_logger)
+            if not _should_perform_plan(args, plan, tool_logger):
+                return
 
-                if plan.is_empty():
-                    tool_logger.info("Analysis complete: nothing to do.")
-                    tool_logger.info("Skipping perform.")
-                else:
-                    plan_count = _plan_item_count(plan)
-                    if plan_count is None:
-                        tool_logger.info("Analysis complete: ready to perform.")
-                    else:
-                        tool_logger.info("Analysis complete: %d item(s) ready.", plan_count)
-                    try:
-                        answer = input("Proceed with perform? [y/N]: ").strip().lower()
-                    except EOFError:
-                        answer = ""
-                    if answer in {"y", "yes"}:
-                        tool_logger.info("User confirmed. Starting perform.")
-                        fulfill_media_analysis_requests()
-                        tool.perform(
-                            args,
-                            logger=tool_logger,
-                            context=context,
-                            plan=plan,
-                        )
-                    else:
-                        tool_logger.info("User aborted. Skipping perform.")
-            else:
-                if plan.is_empty():
-                    plan.render(tool_logger)
-                    tool_logger.info("Analysis complete: nothing to do.")
-                    if args.no_dry_run:
-                        tool_logger.info("Skipping perform.")
-                    else:
-                        tool_logger.info("Dry run mode: analyze completed, skipping perform.")
-                elif args.no_dry_run:
-                    plan_count = _plan_item_count(plan)
-
-                    if plan_count is None:
-                        tool_logger.info("Analysis complete: starting perform.")
-                    else:
-                        tool_logger.info(
-                            "Analysis complete: %d item(s) to process. Starting perform.",
-                            plan_count,
-                        )
-                    tool.perform(
-                        args,
-                        logger=tool_logger,
-                        context=context,
-                        plan=plan,
-                    )
-                else:
-                    plan.render(tool_logger)
-                    tool_logger.info("Dry run mode: analyze completed, skipping perform.")
+            _prepare_media_analysis_for_perform(
+                tool,
+                plan,
+                context,
+                required_tools,
+                tool_logger,
+            )
+            tool.perform(
+                args,
+                logger=tool_logger,
+                context=context,
+                plan=plan,
+            )
     else:
         logger.error(f"Error: Unknown tool {args.tool}")
         sys.exit(1)
