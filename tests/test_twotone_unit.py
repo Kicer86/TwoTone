@@ -165,6 +165,84 @@ class RuntimeVersionTest(unittest.TestCase):
             media_analysis_session.fulfill.assert_called_once_with(request)
             validator.return_value.validate.assert_called_once_with({input_path})
 
+    def test_live_executor_prepares_media_analysis_immediately_before_perform(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = os.path.join(temp_dir, "input.mkv")
+            with open(input_path, "wb") as file:
+                file.write(b"media")
+            request = media_analysis.MediaAnalysisRequest(
+                path=input_path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.MATCHING,
+            )
+            tool = _TestTool(_TestPlan({input_path}), (request,))
+            report = twotone.input_validation.ValidationReport((), 1, 0)
+            media_analysis_session = Mock()
+            events = []
+            media_analysis_session.fulfill.side_effect = lambda *_: events.append("prepare")
+            tool.required_tools = Mock(return_value=set())
+            tool.perform = Mock(side_effect=lambda *_, **__: events.append("perform"))
+
+            with patch.dict(twotone.TOOLS, {"test": (tool, "test tool", False)}, clear=True), \
+                 patch.object(twotone.process_utils, "ensure_tools_exist"), \
+                 patch.object(
+                     twotone.media_analysis,
+                     "MediaAnalysisSession",
+                     return_value=media_analysis_session,
+                 ), \
+                 patch.object(twotone.input_validation, "InputValidator") as validator:
+                validator.return_value.validate.side_effect = lambda *_: events.append("validate") or report
+                twotone.execute([
+                    "-r",
+                    "--working-dir", os.path.join(temp_dir, "work"),
+                    "--validation-cache-dir", os.path.join(temp_dir, "cache"),
+                    "test",
+                ])
+
+            self.assertEqual(events, ["validate", "prepare", "perform"])
+
+    def test_invalid_plan_inputs_skip_perform_media_analysis(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = os.path.join(temp_dir, "input.mkv")
+            with open(input_path, "wb") as file:
+                file.write(b"media")
+            request = media_analysis.MediaAnalysisRequest(
+                path=input_path,
+                duration_ms=1000,
+                fps=25.0,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.MATCHING,
+            )
+            tool = _TestTool(_TestPlan({input_path}), (request,))
+            report = Mock()
+            report.is_valid = False
+            media_analysis_session = Mock()
+
+            with patch.dict(twotone.TOOLS, {"test": (tool, "test tool", False)}, clear=True), \
+                 patch.object(twotone.process_utils, "ensure_tools_exist"), \
+                 patch.object(
+                     twotone.media_analysis,
+                     "MediaAnalysisSession",
+                     return_value=media_analysis_session,
+                 ), \
+                 patch.object(twotone.input_validation, "InputValidator") as validator:
+                validator.return_value.validate.return_value = report
+                twotone.execute([
+                    "-r",
+                    "--working-dir", os.path.join(temp_dir, "work"),
+                    "--validation-cache-dir", os.path.join(temp_dir, "cache"),
+                    "test",
+                ])
+
+            media_analysis_session.fulfill.assert_not_called()
+            self.assertFalse(tool.performed)
+
     def test_dry_run_skips_media_analysis_needed_only_by_perform(self):
         import tempfile
 
