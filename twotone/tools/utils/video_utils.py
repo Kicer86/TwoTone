@@ -694,7 +694,13 @@ def get_video_duration(video_file, logger: logging.Logger | None = None):
         return None
 
 
-def get_video_full_info(path: str, logger: logging.Logger | None = None) -> dict:
+def get_video_full_info(
+    path: str,
+    logger: logging.Logger | None = None,
+    *,
+    show_progress: bool = False,
+    progress_description: str | None = None,
+) -> dict:
     logger = logger or DEFAULT_LOGGER
     result = process_utils.start_process(
         "ffprobe",
@@ -706,6 +712,8 @@ def get_video_full_info(path: str, logger: logging.Logger | None = None) -> dict
             "-show_streams",
             path,
         ],
+        show_progress=show_progress,
+        progress_description=progress_description,
         logger=logger,
     )
 

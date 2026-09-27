@@ -1,7 +1,6 @@
 """Run-scoped media analysis shared by planning, validation, and execution."""
 
 import enum
-import json
 import logging
 import os
 import re
@@ -10,7 +9,7 @@ from typing import Protocol
 
 from tqdm import tqdm
 
-from . import generic_utils, process_utils, video_utils
+from . import generic_utils, video_utils
 from .files_utils import Workspace
 from .generic_utils import InterruptibleProcess
 
@@ -176,30 +175,16 @@ class MediaAnalysisSession:
             return cached
 
         self.logger.debug("Running ffprobe for media metadata: %s.", real_path)
-        process = process_utils.start_process(
-            "ffprobe",
-            [
-                "-v", "error",
-                "-show_error",
-                "-show_format",
-                "-show_streams",
-                "-of", "json",
+        try:
+            data = video_utils.get_video_full_info(
                 real_path,
-            ],
-            show_progress=True,
-            progress_description="Reading media metadata",
-            logger=self.logger,
-        )
-        if process.returncode != 0:
-            result = MediaProbeResult(real_path, {}, process.stderr or process.stdout)
-        else:
-            try:
-                data = json.loads(process.stdout)
-                if not isinstance(data, dict):
-                    raise json.JSONDecodeError("Expected a JSON object", process.stdout, 0)
-                result = MediaProbeResult(real_path, data, None)
-            except json.JSONDecodeError:
-                result = MediaProbeResult(real_path, {}, "ffprobe returned invalid metadata.")
+                logger=self.logger,
+                show_progress=True,
+                progress_description="Reading media metadata",
+            )
+            result = MediaProbeResult(real_path, data, None)
+        except RuntimeError as error:
+            result = MediaProbeResult(real_path, {}, str(error))
 
         self._probe_cache[key] = result
         self._log_probe_result("Media probe completed", result)

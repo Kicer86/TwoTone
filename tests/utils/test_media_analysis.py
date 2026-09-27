@@ -9,7 +9,6 @@ from twotone.tools.utils import (
     files_utils,
     generic_utils,
     media_analysis,
-    process_utils,
     video_utils,
 )
 
@@ -40,39 +39,51 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         )
 
     def test_probe_reuses_result_for_the_same_unchanged_file(self):
-        success = process_utils.ProcessResult(
-            0,
-            '{"streams": [{"codec_type": "video", "codec_name": "h264"}]}',
-            "",
-        )
+        data = {"streams": [{"codec_type": "video", "codec_name": "h264"}]}
 
         with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
-             patch.object(process_utils, "start_process", return_value=success) as start_process:
+             patch.object(video_utils, "get_video_full_info", return_value=data) as probe:
             first = self.session.probe(self.path)
             second = self.session.probe(self.path)
 
         self.assertIs(first, second)
         self.assertTrue(first.has_video)
-        start_process.assert_called_once()
+        probe.assert_called_once_with(
+            os.path.realpath(self.path),
+            logger=self.session.logger,
+            show_progress=True,
+            progress_description="Reading media metadata",
+        )
         logs = "\n".join(captured.output)
         self.assertIn("Media probe requested", logs)
         self.assertIn("Running ffprobe", logs)
         self.assertIn("streams=1, video=True, audio=False, error=none", logs)
         self.assertIn("Media probe cache hit", logs)
 
+    def test_probe_caches_error_reported_by_video_utils(self):
+        error = RuntimeError("ffprobe failed for input.mkv: corrupt header")
+
+        with patch.object(video_utils, "get_video_full_info", side_effect=error) as probe:
+            first = self.session.probe(self.path)
+            second = self.session.probe(self.path)
+
+        self.assertIs(first, second)
+        self.assertEqual(first.data, {})
+        self.assertEqual(first.error, str(error))
+        probe.assert_called_once()
+
     def test_scan_reuses_probe_for_negative_timestamp_correction(self):
-        probe_result = process_utils.ProcessResult(
-            0,
-            '{"format": {"start_time": "-0.020"}, "streams": [{"codec_type": "video"}]}',
-            "",
-        )
+        probe_result = {
+            "format": {"start_time": "-0.020"},
+            "streams": [{"codec_type": "video"}],
+        }
 
         def fake_ffmpeg(_args, _interruption, on_line, logger):
             del logger
             on_line("frame:0 pts:2 pts_time:0.080\n")
             return Mock(returncode=0), []
 
-        with patch.object(process_utils, "start_process", return_value=probe_result) as start_process, \
+        with patch.object(video_utils, "get_video_full_info", return_value=probe_result) as probe, \
              patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_ffmpeg), \
              patch.object(video_utils, "_showinfo_timestamp_correction_ms") as old_probe:
             result = self.session.scan(
@@ -84,7 +95,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             )
 
         self.assertEqual(result.scene_changes, (60,))
-        start_process.assert_called_once()
+        probe.assert_called_once()
         old_probe.assert_not_called()
 
     def test_fulfill_scans_requested_media_features(self):
