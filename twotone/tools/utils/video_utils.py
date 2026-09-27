@@ -1016,21 +1016,17 @@ def get_video_full_info_mkvmerge(path: str, logger: logging.Logger | None = None
     return json.loads(result.stdout)
 
 
-def get_video_data_mkvmerge(
-    path: str,
-    enrich: bool = False,
-    logger: logging.Logger | None = None,
+def normalize_mkvmerge_data(
+    mkvmerge_info: Mapping[str, Any],
     *,
-    _mkvmerge_info: dict[str, Any] | None = None,
+    probe_info: Mapping[str, Any] | None = None,
+    logger: logging.Logger | None = None,
 ) -> dict:
-    """
-        Return stream information parsed from ``mkvmerge -J`` output.
-        For non mkv files, mkvmerge does not provide as much information as ffprobe.
-        Set 'enrich' to True to enrich mkvmerge's output with data from ffprobe.
-        In enriched results, ``tid`` remains the mkvmerge track ID while
-        ``ffprobe_stream_index`` is the absolute ffprobe/ffmpeg stream index.
-        A caller that already ran ``mkvmerge -J`` may provide its result via
-        ``_mkvmerge_info`` to avoid probing the same file twice.
+    """Normalize raw ``mkvmerge -J`` metadata.
+
+    Raw ffprobe metadata may be supplied to enrich mkvmerge's output. In
+    enriched results, ``tid`` remains the mkvmerge track ID while
+    ``ffprobe_stream_index`` is the absolute ffprobe/ffmpeg stream index.
     """
     logger = logger or DEFAULT_LOGGER
 
@@ -1051,7 +1047,10 @@ def get_video_data_mkvmerge(
                 return None
         return None
 
-    def build_track_mapping(mkv_tracks: list[dict], probe_info: dict) -> dict[int, int]:
+    def build_track_mapping(
+        mkv_tracks: list[dict],
+        raw_probe_info: Mapping[str, Any],
+    ) -> dict[int, int]:
         """Map mkvmerge track IDs to absolute ffprobe stream indexes.
 
         The two tools use independent namespaces.  A container-native track
@@ -1066,7 +1065,7 @@ def get_video_data_mkvmerge(
                 if normalized_track_type(track.get("type")) == stream_type
             ]
             typed_streams = [
-                stream for stream in probe_info.get("streams", [])
+                stream for stream in raw_probe_info.get("streams", [])
                 if stream.get("codec_type") == stream_type
                 and not stream.get("disposition", {}).get("attached_pic", 0)
             ]
@@ -1119,7 +1118,7 @@ def get_video_data_mkvmerge(
         ]
         supported_probe_indexes = [
             int(stream["index"])
-            for stream in probe_info.get("streams", [])
+            for stream in raw_probe_info.get("streams", [])
             if normalized_track_type(stream.get("codec_type")) is not None
             and not stream.get("disposition", {}).get("attached_pic", 0)
         ]
@@ -1183,24 +1182,21 @@ def get_video_data_mkvmerge(
 
         return output
 
-    info = (
-        _mkvmerge_info
-        if _mkvmerge_info is not None
-        else get_video_full_info_mkvmerge(path, logger=logger)
-    )
-
     # process streams/tracks
     streams = defaultdict(list)
-    probe_info = get_video_full_info(path, logger=logger) if enrich else None
     ffprobe_info = (
         normalize_video_data(probe_info)
         if probe_info is not None
         else None
     )
     ffprobe_streams_by_index = build_ffprobe_stream_lookup(ffprobe_info)
-    track_mapping = build_track_mapping(info.get("tracks", []), probe_info) if probe_info is not None else {}
+    track_mapping = (
+        build_track_mapping(mkvmerge_info.get("tracks", []), probe_info)
+        if probe_info is not None
+        else {}
+    )
 
-    for track in info.get("tracks", []):
+    for track in mkvmerge_info.get("tracks", []):
         track_type = track.get("type")
         tid = track.get("id")
         props = track.get("properties", {})
@@ -1233,7 +1229,7 @@ def get_video_data_mkvmerge(
             "enabled": props.get("enabled_track", track_initial_data.get("enabled", True)),
             "forced": props.get("forced_track", track_initial_data.get("forced", False)),
         }
-        if enrich:
+        if probe_info is not None:
             stream_data["ffprobe_stream_index"] = track_mapping[int(tid)]
 
         if track_type == "video":
@@ -1296,7 +1292,7 @@ def get_video_data_mkvmerge(
 
     # attachments
     attachments = []
-    for attachment in info.get("attachments", []):
+    for attachment in mkvmerge_info.get("attachments", []):
         content_type = attachment.get("content_type", "")
         if content_type[:5] == "image":
             props = attachment.get("properties", {})
@@ -1313,6 +1309,33 @@ def get_video_data_mkvmerge(
         "attachments": attachments,
         "tracks": dict(streams),
     }
+
+
+def get_video_data_mkvmerge(
+    path: str,
+    enrich: bool = False,
+    logger: logging.Logger | None = None,
+    *,
+    _mkvmerge_info: dict[str, Any] | None = None,
+) -> dict:
+    """Probe a file with mkvmerge and return normalized stream information.
+
+    For non-MKV files, mkvmerge does not provide as much information as
+    ffprobe. Set ``enrich`` to add ffprobe metadata. A caller that already ran
+    ``mkvmerge -J`` may temporarily provide its result via ``_mkvmerge_info``.
+    """
+    logger = logger or DEFAULT_LOGGER
+    mkvmerge_info = (
+        _mkvmerge_info
+        if _mkvmerge_info is not None
+        else get_video_full_info_mkvmerge(path, logger=logger)
+    )
+    probe_info = get_video_full_info(path, logger=logger) if enrich else None
+    return normalize_mkvmerge_data(
+        mkvmerge_info,
+        probe_info=probe_info,
+        logger=logger,
+    )
 
 
 def compare_videos(lhs: list[dict], rhs: list[dict]) -> bool:

@@ -147,6 +147,39 @@ class UtilsTests(TwoToneTestCase):
         probe.assert_called_once_with("input.mkv", logger=self.logger)
         normalize.assert_called_once_with(probe_info)
 
+    def test_get_video_data_mkvmerge_probes_then_normalizes(self):
+        mkvmerge_info = {"tracks": [], "attachments": []}
+        probe_info = {"format": {}, "streams": []}
+        normalized = {"attachments": [], "tracks": {}}
+
+        with patch.object(
+            video_utils,
+            "get_video_full_info_mkvmerge",
+            return_value=mkvmerge_info,
+        ) as identify, patch.object(
+            video_utils,
+            "get_video_full_info",
+            return_value=probe_info,
+        ) as probe, patch.object(
+            video_utils,
+            "normalize_mkvmerge_data",
+            return_value=normalized,
+        ) as normalize:
+            result = video_utils.get_video_data_mkvmerge(
+                "input.mkv",
+                enrich=True,
+                logger=self.logger,
+            )
+
+        self.assertIs(result, normalized)
+        identify.assert_called_once_with("input.mkv", logger=self.logger)
+        probe.assert_called_once_with("input.mkv", logger=self.logger)
+        normalize.assert_called_once_with(
+            mkvmerge_info,
+            probe_info=probe_info,
+            logger=self.logger,
+        )
+
     def test_mkvmerge_enrichment_preserves_cyclic_native_track_mapping(self):
         mkvmerge_info = {
             "tracks": [
@@ -169,10 +202,15 @@ class UtilsTests(TwoToneTestCase):
         ]
         original_parsed_audio = [stream.copy() for stream in parsed_audio]
 
-        with patch.object(video_utils, "get_video_full_info_mkvmerge", return_value=mkvmerge_info), \
-             patch.object(video_utils, "get_video_full_info", return_value=probe_info), \
-             patch.object(video_utils, "normalize_video_data", return_value={"audio": parsed_audio}):
-            enriched = video_utils.get_video_data_mkvmerge("cyclic.mka", enrich=True)
+        with patch.object(
+            video_utils,
+            "normalize_video_data",
+            return_value={"audio": parsed_audio},
+        ):
+            enriched = video_utils.normalize_mkvmerge_data(
+                mkvmerge_info,
+                probe_info=probe_info,
+            )
 
         self.assertEqual(
             [
