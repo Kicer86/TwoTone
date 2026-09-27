@@ -17,6 +17,56 @@ from twotone.tools.utils import process_utils, subtitles_utils, video_utils
 
 
 class UtilsTests(TwoToneTestCase):
+    def test_get_video_full_info_requests_ffprobe_error_details(self):
+        result = process_utils.ProcessResult(
+            0,
+            '{"format": {}, "streams": []}',
+            "",
+        )
+
+        with patch.object(process_utils, "start_process", return_value=result) as start:
+            info = video_utils.get_video_full_info("input.mkv", logger=self.logger)
+
+        self.assertEqual(info, {"format": {}, "streams": []})
+        args = start.call_args.args[1]
+        self.assertEqual(args[:3], ["-v", "error", "-show_error"])
+        self.assertIn("-show_format", args)
+        self.assertIn("-show_streams", args)
+
+    def test_get_video_full_info_reports_structured_ffprobe_error(self):
+        result = process_utils.ProcessResult(
+            1,
+            '{"error": {"code": -2, "string": "No such file or directory"}}',
+            "input.mkv: No such file or directory",
+        )
+
+        with patch.object(process_utils, "start_process", return_value=result):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"ffprobe failed for input\.mkv: No such file or directory",
+            ):
+                video_utils.get_video_full_info("input.mkv", logger=self.logger)
+
+    def test_get_video_full_info_reports_invalid_json(self):
+        result = process_utils.ProcessResult(0, "not JSON", "")
+
+        with patch.object(process_utils, "start_process", return_value=result):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"ffprobe returned invalid JSON for input\.mkv",
+            ):
+                video_utils.get_video_full_info("input.mkv", logger=self.logger)
+
+    def test_get_video_full_info_requires_json_object(self):
+        result = process_utils.ProcessResult(0, "[]", "")
+
+        with patch.object(process_utils, "start_process", return_value=result):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"ffprobe returned invalid metadata for input\.mkv: expected a JSON object",
+            ):
+                video_utils.get_video_full_info("input.mkv", logger=self.logger)
+
     def test_frame_ranges_use_separate_timestamps_when_frame_ids_restart(self):
         frames = {
             0: {"frame_id": 0, "path": None},

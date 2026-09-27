@@ -696,20 +696,50 @@ def get_video_duration(video_file, logger: logging.Logger | None = None):
 
 def get_video_full_info(path: str, logger: logging.Logger | None = None) -> dict:
     logger = logger or DEFAULT_LOGGER
-    args = []
-    args.extend(["-v", "quiet"])
-    args.extend(["-print_format", "json"])
-    args.append("-show_format")
-    args.append("-show_streams")
-    args.append(path)
-
-    result = process_utils.start_process("ffprobe", args, logger=logger)
+    result = process_utils.start_process(
+        "ffprobe",
+        [
+            "-v", "error",
+            "-show_error",
+            "-print_format", "json",
+            "-show_format",
+            "-show_streams",
+            path,
+        ],
+        logger=logger,
+    )
 
     if result.returncode != 0:
-        raise RuntimeError(f"ffprobe exited with unexpected error:\n{result.stderr}")
+        detail = None
+        try:
+            output = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            output = None
 
-    output_lines = result.stdout
-    output_json = json.loads(output_lines)
+        if isinstance(output, dict):
+            error = output.get("error")
+            if isinstance(error, dict):
+                message = error.get("string")
+                code = error.get("code")
+                if message:
+                    detail = str(message)
+                    if code is not None:
+                        detail += f" (code {code})"
+
+        detail = detail or result.stderr.strip() or result.stdout.strip()
+        if not detail:
+            detail = f"exit code {result.returncode}"
+        raise RuntimeError(f"ffprobe failed for {path}: {detail}")
+
+    try:
+        output_json = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"ffprobe returned invalid JSON for {path}: {error}") from error
+
+    if not isinstance(output_json, dict):
+        raise RuntimeError(
+            f"ffprobe returned invalid metadata for {path}: expected a JSON object"
+        )
 
     return output_json
 
