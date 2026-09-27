@@ -900,6 +900,20 @@ def get_video_data(
     _probe_info: dict[str, Any] | None = None,
 ) -> dict:
     logger = logger or DEFAULT_LOGGER
+    output_json = (
+        _probe_info
+        if _probe_info is not None
+        else get_video_full_info(path, logger=logger)
+    )
+    media_format = output_json.get("format")
+    container_duration_ms = None
+    if isinstance(media_format, dict):
+        container_duration = media_format.get("duration")
+        if container_duration is not None:
+            try:
+                container_duration_ms = int(float(container_duration) * 1000)
+            except (TypeError, ValueError):
+                pass
 
     def get_length(stream) -> int | None:
         """Return stream length in milliseconds if available."""
@@ -933,8 +947,6 @@ def get_video_data(
 
         return language
 
-    output_json = _probe_info if _probe_info is not None else get_video_full_info(path, logger=logger)
-
     streams = defaultdict(list)
     for stream in output_json["streams"]:
         stream_type = stream["codec_type"]
@@ -966,6 +978,8 @@ def get_video_data(
             fps = stream["r_frame_rate"]
             length = get_length(stream)
             if length is None:
+                length = container_duration_ms
+            if length is None and _probe_info is None:
                 length = get_video_duration(path, logger=logger)
 
             width = stream["width"]
