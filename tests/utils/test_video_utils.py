@@ -114,6 +114,30 @@ class UtilsTests(TwoToneTestCase):
         self.assertEqual({"attachments": [], "tracks": {}}, parsed)
         identify.assert_not_called()
 
+    def test_video_data_reuses_supplied_container_duration(self):
+        probe_info = {
+            "format": {"duration": "12.345"},
+            "streams": [{
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "h264",
+                "r_frame_rate": "25/1",
+                "width": 1920,
+                "height": 1080,
+            }],
+        }
+
+        with patch.object(video_utils, "get_video_full_info") as probe, \
+             patch.object(video_utils, "get_video_duration") as duration_probe:
+            parsed = video_utils.get_video_data(
+                "already-probed.mkv",
+                _probe_info=probe_info,
+            )
+
+        self.assertEqual(parsed["video"][0]["length"], 12345)
+        probe.assert_not_called()
+        duration_probe.assert_not_called()
+
     def test_mkvmerge_enrichment_preserves_cyclic_native_track_mapping(self):
         mkvmerge_info = {
             "tracks": [
