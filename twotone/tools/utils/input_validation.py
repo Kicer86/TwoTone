@@ -93,6 +93,7 @@ class InputValidator:
                 len(unique_paths),
                 self.policy.mode.value,
             )
+
         issues: list[ValidationIssue] = []
         checked_count = 0
         cached_count = 0
@@ -122,6 +123,7 @@ class InputValidator:
 
         if changed:
             self._save_cache(cache)
+
         report = ValidationReport(tuple(issues), checked_count, cached_count)
         if unique_paths:
             self.logger.info(
@@ -130,6 +132,7 @@ class InputValidator:
                 report.cached_count,
                 len(report.issues),
             )
+
         return report
 
     def _has_analysis_decode(self, path: str) -> bool:
