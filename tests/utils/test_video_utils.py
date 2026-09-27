@@ -25,13 +25,26 @@ class UtilsTests(TwoToneTestCase):
         )
 
         with patch.object(process_utils, "start_process", return_value=result) as start:
-            info = video_utils.get_video_full_info("input.mkv", logger=self.logger)
+            info = video_utils.get_video_full_info(
+                "input.mkv",
+                logger=self.logger,
+                show_progress=True,
+                progress_description="Reading media metadata",
+            )
 
         self.assertEqual(info, {"format": {}, "streams": []})
         args = start.call_args.args[1]
         self.assertEqual(args[:3], ["-v", "error", "-show_error"])
         self.assertIn("-show_format", args)
         self.assertIn("-show_streams", args)
+        self.assertEqual(
+            start.call_args.kwargs,
+            {
+                "show_progress": True,
+                "progress_description": "Reading media metadata",
+                "logger": self.logger,
+            },
+        )
 
     def test_get_video_full_info_reports_structured_ffprobe_error(self):
         result = process_utils.ProcessResult(
