@@ -893,19 +893,9 @@ def validate_media_output(
         )
 
 
-def get_video_data(
-    path: str,
-    logger: logging.Logger | None = None,
-    *,
-    _probe_info: dict[str, Any] | None = None,
-) -> dict:
-    logger = logger or DEFAULT_LOGGER
-    output_json = (
-        _probe_info
-        if _probe_info is not None
-        else get_video_full_info(path, logger=logger)
-    )
-    media_format = output_json.get("format")
+def normalize_video_data(probe_info: Mapping[str, Any]) -> dict:
+    """Normalize raw ffprobe metadata without performing any I/O."""
+    media_format = probe_info.get("format")
     container_duration_ms = None
     if isinstance(media_format, dict):
         container_duration = media_format.get("duration")
@@ -948,7 +938,7 @@ def get_video_data(
         return language
 
     streams = defaultdict(list)
-    for stream in output_json["streams"]:
+    for stream in probe_info["streams"]:
         stream_type = stream["codec_type"]
         tid = stream["index"]
         codec = stream.get("codec_name", None)
@@ -979,8 +969,6 @@ def get_video_data(
             length = get_length(stream)
             if length is None:
                 length = container_duration_ms
-            if length is None and _probe_info is None:
-                length = get_video_duration(path, logger=logger)
 
             width = stream["width"]
             height = stream["height"]
@@ -1009,6 +997,11 @@ def get_video_data(
         streams[stream_type].append(stream_data)
 
     return dict(streams)
+
+
+def get_video_data(path: str, logger: logging.Logger | None = None) -> dict:
+    logger = logger or DEFAULT_LOGGER
+    return normalize_video_data(get_video_full_info(path, logger=logger))
 
 
 def get_video_full_info_mkvmerge(path: str, logger: logging.Logger | None = None) -> dict:
@@ -1200,7 +1193,7 @@ def get_video_data_mkvmerge(
     streams = defaultdict(list)
     probe_info = get_video_full_info(path, logger=logger) if enrich else None
     ffprobe_info = (
-        get_video_data(path, logger=logger, _probe_info=probe_info)
+        normalize_video_data(probe_info)
         if probe_info is not None
         else None
     )
