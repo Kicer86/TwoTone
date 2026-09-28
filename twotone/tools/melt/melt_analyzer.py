@@ -247,12 +247,15 @@ class MeltAnalyzer:
         }
         self._validate_supported_elements(raw_details, ids)
 
+        probe_details = {
+            file: video_utils.get_video_full_info(file, logger=self.logger)
+            for file in files
+        }
         details_full = {
-            file: video_utils.get_video_data_mkvmerge(
-                file,
-                enrich=True,
+            file: video_utils.normalize_mkvmerge_data(
+                raw_details[file],
+                probe_info=probe_details[file],
                 logger=self.logger,
-                _mkvmerge_info=raw_details[file],
             )
             for file in files
         }

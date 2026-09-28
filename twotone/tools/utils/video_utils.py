@@ -1315,21 +1315,14 @@ def get_video_data_mkvmerge(
     path: str,
     enrich: bool = False,
     logger: logging.Logger | None = None,
-    *,
-    _mkvmerge_info: dict[str, Any] | None = None,
 ) -> dict:
     """Probe a file with mkvmerge and return normalized stream information.
 
     For non-MKV files, mkvmerge does not provide as much information as
-    ffprobe. Set ``enrich`` to add ffprobe metadata. A caller that already ran
-    ``mkvmerge -J`` may temporarily provide its result via ``_mkvmerge_info``.
+    ffprobe. Set ``enrich`` to add ffprobe metadata.
     """
     logger = logger or DEFAULT_LOGGER
-    mkvmerge_info = (
-        _mkvmerge_info
-        if _mkvmerge_info is not None
-        else get_video_full_info_mkvmerge(path, logger=logger)
-    )
+    mkvmerge_info = get_video_full_info_mkvmerge(path, logger=logger)
     probe_info = get_video_full_info(path, logger=logger) if enrich else None
     return normalize_mkvmerge_data(
         mkvmerge_info,

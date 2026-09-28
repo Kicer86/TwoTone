@@ -99,21 +99,6 @@ class UtilsTests(TwoToneTestCase):
         self.assertIn(r"between(t\,0.049250\,0.050750)", expression)
         self.assertIn(r"between(t\,0.129250\,0.130750)", expression)
 
-    def test_mkvmerge_parser_reuses_supplied_identification(self):
-        mkvmerge_info = {
-            "tracks": [],
-            "attachments": [],
-        }
-
-        with patch.object(video_utils, "get_video_full_info_mkvmerge") as identify:
-            parsed = video_utils.get_video_data_mkvmerge(
-                "already-identified.mkv",
-                _mkvmerge_info=mkvmerge_info,
-            )
-
-        self.assertEqual({"attachments": [], "tracks": {}}, parsed)
-        identify.assert_not_called()
-
     def test_normalize_video_data_uses_container_duration_without_io(self):
         probe_info = {
             "format": {"duration": "12.345"},

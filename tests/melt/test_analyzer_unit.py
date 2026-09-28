@@ -73,7 +73,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
 
 
     @staticmethod
-    def _mkvmerge_info(**overrides):
+    def _make_mkvmerge_info(**overrides):
         info = {
             "tracks": [],
             "attachments": [],
@@ -129,10 +129,11 @@ class MeltAnalyzerTest(TwoToneTestCase):
         # Exercise the Windows path that previously broke regex-based assertions,
         # even when this test runs on another platform.
         input_path = r"C:\Users\runneradmin\AppData\Local\Temp\input.mkv"
-        raw_info = self._mkvmerge_info(**raw_overrides)
+        raw_info = self._make_mkvmerge_info(**raw_overrides)
 
         with patch.object(video_utils, "get_video_full_info_mkvmerge", return_value=raw_info), \
-             patch.object(video_utils, "get_video_data_mkvmerge") as parse_info:
+             patch.object(video_utils, "get_video_full_info") as probe_info, \
+             patch.object(video_utils, "normalize_mkvmerge_data") as normalize:
             with self.assertRaises(UnsupportedMeltInputError) as raised:
                 self.analyzer._probe_inputs([input_path], {input_path: 1})
 
@@ -142,18 +143,19 @@ class MeltAnalyzerTest(TwoToneTestCase):
         self.assertIn("not supported yet", message)
         self.assertIn("File #1", message)
         self.assertNotIn("Melt input", message)
-        parse_info.assert_not_called()
+        probe_info.assert_not_called()
+        normalize.assert_not_called()
 
     def test_probe_inputs_rejects_multiple_thumbnails_across_group(self):
         first_path = os.path.join(self.wd.path, "first.mkv")
         second_path = os.path.join(self.wd.path, "second.mkv")
-        first_info = self._mkvmerge_info(attachments=[{
+        first_info = self._make_mkvmerge_info(attachments=[{
             "id": 0,
             "content_type": "image/jpeg",
             "file_name": "first.jpg",
             "properties": {},
         }])
-        second_info = self._mkvmerge_info(attachments=[{
+        second_info = self._make_mkvmerge_info(attachments=[{
             "id": 0,
             "content_type": "image/png",
             "file_name": "second.png",
@@ -164,18 +166,20 @@ class MeltAnalyzerTest(TwoToneTestCase):
             video_utils,
             "get_video_full_info_mkvmerge",
             side_effect=[first_info, second_info],
-        ), patch.object(video_utils, "get_video_data_mkvmerge") as parse_info:
+        ), patch.object(video_utils, "get_video_full_info") as probe_info, \
+             patch.object(video_utils, "normalize_mkvmerge_data") as normalize:
             with self.assertRaisesRegex(
                 UnsupportedMeltInputError,
                 "2 thumbnails.*not supported yet",
             ):
                 self.analyzer._probe_inputs([first_path, second_path], {first_path: 1, second_path: 2})
 
-        parse_info.assert_not_called()
+        probe_info.assert_not_called()
+        normalize.assert_not_called()
 
     def test_probe_inputs_accepts_one_thumbnail_and_standard_tags(self):
         input_path = os.path.join(self.wd.path, "input.mkv")
-        raw_info = self._mkvmerge_info(
+        raw_info = self._make_mkvmerge_info(
             tracks=[
                 {"id": 0, "type": "video", "properties": {}},
                 {"id": 1, "type": "audio", "properties": {}},
@@ -202,6 +206,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
                 "subtitle": [{"tid": 2}],
             },
         }
+        probe_info = {"format": {}, "streams": []}
 
         with patch.object(
             video_utils,
@@ -209,9 +214,13 @@ class MeltAnalyzerTest(TwoToneTestCase):
             return_value=raw_info,
         ) as raw_probe, patch.object(
             video_utils,
-            "get_video_data_mkvmerge",
+            "get_video_full_info",
+            return_value=probe_info,
+        ) as ffprobe, patch.object(
+            video_utils,
+            "normalize_mkvmerge_data",
             return_value=parsed_info,
-        ) as parse_info:
+        ) as normalize:
             details, attachments, tracks = self.analyzer._probe_inputs([input_path], {input_path: 1})
 
         self.assertEqual(
@@ -221,11 +230,11 @@ class MeltAnalyzerTest(TwoToneTestCase):
         self.assertEqual({input_path: parsed_info["attachments"]}, attachments)
         self.assertEqual({input_path: parsed_info["tracks"]}, tracks)
         raw_probe.assert_called_once_with(input_path, logger=self.logger)
-        parse_info.assert_called_once_with(
-            input_path,
-            enrich=True,
+        ffprobe.assert_called_once_with(input_path, logger=self.logger)
+        normalize.assert_called_once_with(
+            raw_info,
+            probe_info=probe_info,
             logger=self.logger,
-            _mkvmerge_info=raw_info,
         )
 
     def test_pick_chapter_source_prefers_base_video(self):
