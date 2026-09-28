@@ -40,20 +40,30 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
     def test_probe_reuses_result_for_the_same_unchanged_file(self):
         data = {"streams": [{"codec_type": "video", "codec_name": "h264"}]}
+        normalized_data = {
+            "video": [{"tid": 0, "length": 1000, "fps": "25/1"}],
+        }
 
         with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
-             patch.object(video_utils, "get_video_full_info", return_value=data) as probe:
+             patch.object(video_utils, "get_video_full_info", return_value=data) as probe, \
+             patch.object(
+                 video_utils,
+                 "normalize_video_data",
+                 return_value=normalized_data,
+             ) as normalize:
             first = self.session.probe(self.path)
             second = self.session.probe(self.path)
 
         self.assertIs(first, second)
         self.assertTrue(first.has_video)
+        self.assertIs(first.normalized_data, normalized_data)
         probe.assert_called_once_with(
             os.path.realpath(self.path),
             logger=self.session.logger,
             show_progress=True,
             progress_description="Reading media metadata",
         )
+        normalize.assert_called_once_with(data)
         logs = "\n".join(captured.output)
         self.assertIn("Media probe requested", logs)
         self.assertIn("Running ffprobe", logs)
@@ -63,19 +73,29 @@ class MediaAnalysisSessionTest(unittest.TestCase):
     def test_probe_caches_error_reported_by_video_utils(self):
         error = RuntimeError("ffprobe failed for input.mkv: corrupt header")
 
-        with patch.object(video_utils, "get_video_full_info", side_effect=error) as probe:
+        with patch.object(video_utils, "get_video_full_info", side_effect=error) as probe, \
+             patch.object(video_utils, "normalize_video_data") as normalize:
             first = self.session.probe(self.path)
             second = self.session.probe(self.path)
 
         self.assertIs(first, second)
         self.assertEqual(first.data, {})
+        self.assertEqual(first.normalized_data, {})
         self.assertEqual(first.error, str(error))
         probe.assert_called_once()
+        normalize.assert_not_called()
 
     def test_scan_reuses_probe_for_negative_timestamp_correction(self):
         probe_result = {
-            "format": {"start_time": "-0.020"},
-            "streams": [{"codec_type": "video"}],
+            "format": {"start_time": "-0.020", "duration": "0.120"},
+            "streams": [{
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "h264",
+                "r_frame_rate": "25/1",
+                "width": 16,
+                "height": 16,
+            }],
         }
 
         def fake_ffmpeg(_args, _interruption, on_line, logger):
