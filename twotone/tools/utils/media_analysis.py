@@ -82,8 +82,6 @@ class VideoSample:
 @dataclass(frozen=True)
 class MediaAnalysisRequest:
     path: str
-    duration_ms: int
-    fps: float
     label: str
     features: MediaAnalysisFeature
 
@@ -106,6 +104,23 @@ class MediaProbeResult:
     @property
     def has_decodable_stream(self) -> bool:
         return self.has_audio or self.has_video
+
+    @property
+    def primary_video_track(self) -> dict | None:
+        normalized_tracks = self.normalized_data.get("video", [])
+        tracks_by_index = {
+            track.get("tid"): track
+            for track in normalized_tracks
+        }
+        for stream in self.data.get("streams", []):
+            if (
+                stream.get("codec_type") == "video"
+                and not stream.get("disposition", {}).get("attached_pic", 0)
+            ):
+                track = tracks_by_index.get(stream.get("index"))
+                if track is not None:
+                    return track
+        return None
 
 
 @dataclass(frozen=True)
@@ -201,8 +216,6 @@ class MediaAnalysisSession:
         self,
         path: str,
         *,
-        duration_ms: int | None,
-        fps: float | None,
         label: str,
         features: MediaAnalysisFeature,
     ) -> VideoScanResult:
@@ -212,12 +225,10 @@ class MediaAnalysisSession:
             raise ValueError("At least one media analysis feature must be requested")
 
         self.logger.debug(
-            "Media analysis request for %s (%s): features=[%s], duration_ms=%s, fps=%s.",
+            "Media analysis request for %s (%s): features=[%s].",
             label,
             real_path,
             _format_features(features),
-            duration_ms,
-            fps,
         )
 
         cached = self._cache.get(key)
@@ -254,7 +265,7 @@ class MediaAnalysisSession:
             label,
             _format_features(missing_features),
         )
-        scanned = self._scan(real_path, duration_ms, fps, label, missing_features)
+        scanned = self._scan(real_path, label, missing_features)
         self._log_scan_result("Fresh media analysis collected", label, scanned)
         self._store_persistent(scanned)
         result = self._merge_results(cached, scanned) if cached is not None else scanned
@@ -320,18 +331,13 @@ class MediaAnalysisSession:
 
     def fulfill(self, request: MediaAnalysisRequest) -> VideoScanResult:
         self.logger.debug(
-            "Fulfilling declared media analysis request for %s (%s): features=[%s], "
-            "duration_ms=%d, fps=%s.",
+            "Fulfilling declared media analysis request for %s (%s): features=[%s].",
             request.label,
             os.path.realpath(request.path),
             _format_features(request.features),
-            request.duration_ms,
-            request.fps,
         )
         return self.scan(
             request.path,
-            duration_ms=request.duration_ms,
-            fps=request.fps,
             label=request.label,
             features=request.features,
         )
@@ -344,8 +350,6 @@ class MediaAnalysisSession:
         )
         return self.scan(
             path,
-            duration_ms=None,
-            fps=None,
             label=label or path,
             features=MediaAnalysisFeature.VALIDATE_STREAMS,
         )
@@ -412,21 +416,34 @@ class MediaAnalysisSession:
     def _scan(
         self,
         path: str,
-        duration_ms: int | None,
-        fps: float | None,
         label: str,
         features: MediaAnalysisFeature,
     ) -> VideoScanResult:
+        probe = self.probe(path)
+        primary_video = probe.primary_video_track or {}
+        duration_ms = primary_video.get("length")
+        fps_value = primary_video.get("fps")
+        try:
+            fps = generic_utils.fps_str_to_float(str(fps_value))
+        except (TypeError, ValueError):
+            fps = None
+
         if features & MediaAnalysisFeature.IDENTITY_SAMPLES:
-            if duration_ms is None or fps is None:
-                raise ValueError("Identity samples require video duration and frame rate")
+            valid_duration = isinstance(duration_ms, int) and duration_ms > 0
+            valid_fps = fps is not None and fps > 0
+            if not valid_duration or not valid_fps:
+                raise ValueError(
+                    f"Cannot collect identity samples for {label}: probe did not report "
+                    "a positive video duration and frame rate"
+                )
+            assert isinstance(duration_ms, int)
+            assert fps is not None
             target_timestamps = identity_timestamps(duration_ms, fps)
             sample_select = self._sample_select_expression(target_timestamps)
         else:
             target_timestamps = ()
             sample_select = ""
 
-        probe = self.probe(path)
         if (
             features == MediaAnalysisFeature.VALIDATE_STREAMS
             and (probe.error is not None or not probe.has_decodable_stream)

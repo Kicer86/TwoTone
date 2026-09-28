@@ -403,16 +403,8 @@ class PairMatcher:
         label: str,
         features: media_analysis.MediaAnalysisFeature,
     ) -> media_analysis.VideoScanResult:
-        if path == self.lhs_path:
-            duration_ms = self.lhs_duration_ms
-            fps = self.lhs_fps
-        else:
-            duration_ms = self.rhs_duration_ms
-            fps = self.rhs_fps
         return self.media_analysis.scan(
             path,
-            duration_ms=duration_ms,
-            fps=fps,
             label=label,
             features=features,
         )
