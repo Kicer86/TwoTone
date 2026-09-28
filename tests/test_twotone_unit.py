@@ -163,6 +163,50 @@ class RuntimeVersionTest(unittest.TestCase):
             media_analysis_session.fulfill.assert_called_once_with(request)
             validator.return_value.validate.assert_called_once_with({input_path})
 
+    def test_prepare_media_analysis_aggregates_features_for_the_same_file(self):
+        first_path = "/media/./first.mkv"
+        canonical_first_path = "/media/first.mkv"
+        second_path = "/media/second.mkv"
+        requests = (
+            media_analysis.MediaAnalysisRequest(
+                path=first_path,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            ),
+            media_analysis.MediaAnalysisRequest(
+                path=second_path,
+                label="#3",
+                features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+            ),
+            media_analysis.MediaAnalysisRequest(
+                path=canonical_first_path,
+                label="#2",
+                features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+            ),
+        )
+        tool = _TestTool(_TestPlan(set()), requests)
+        context = Mock()
+
+        twotone._prepare_media_analysis_for_perform(
+            tool,
+            tool.plan,
+            context,
+            {"ffmpeg"},
+            logging.getLogger("MediaAnalysisAggregationTest"),
+        )
+
+        self.assertEqual(
+            [call.args[0] for call in context.media_analysis.fulfill.call_args_list],
+            [
+                media_analysis.MediaAnalysisRequest(
+                    path=first_path,
+                    label="#1, #2",
+                    features=media_analysis.MediaAnalysisFeature.MATCHING,
+                ),
+                requests[1],
+            ],
+        )
+
     def test_live_executor_prepares_media_analysis_immediately_before_perform(self):
         import tempfile
 

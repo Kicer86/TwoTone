@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import time
+from collections.abc import Iterable
 from importlib import metadata
 
 import argcomplete
@@ -146,6 +147,30 @@ def _should_perform_plan(
     return False
 
 
+def _aggregate_media_analysis_requests(
+    requests: Iterable[media_analysis.MediaAnalysisRequest],
+) -> tuple[media_analysis.MediaAnalysisRequest, ...]:
+    aggregated: dict[str, media_analysis.MediaAnalysisRequest] = {}
+    labels: dict[str, list[str]] = {}
+
+    for request in requests:
+        key = os.path.realpath(request.path)
+        existing = aggregated.get(key)
+        if existing is None:
+            aggregated[key] = request
+            labels[key] = [request.label]
+        else:
+            if request.label not in labels[key]:
+                labels[key].append(request.label)
+            aggregated[key] = media_analysis.MediaAnalysisRequest(
+                path=existing.path,
+                label=", ".join(labels[key]),
+                features=existing.features | request.features,
+            )
+
+    return tuple(aggregated.values())
+
+
 def _prepare_media_analysis_for_perform(
     tool: Tool,
     plan: Plan,
@@ -153,7 +178,14 @@ def _prepare_media_analysis_for_perform(
     required_tools: set[str],
     logger: logging.Logger,
 ) -> None:
-    requests = tuple(tool.media_analysis_requests(plan))
+    declared_requests = tuple(tool.media_analysis_requests(plan))
+    requests = _aggregate_media_analysis_requests(declared_requests)
+    if len(requests) < len(declared_requests):
+        logger.debug(
+            "Aggregated %d media analysis request(s) into %d file-level request(s).",
+            len(declared_requests),
+            len(requests),
+        )
     if requests and "ffmpeg" not in required_tools:
         process_utils.ensure_tools_exist(["ffmpeg"], logger)
 
