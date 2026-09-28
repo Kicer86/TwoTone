@@ -82,7 +82,7 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertEqual(scenes, [120])
         self.assertEqual(frames, {0: {"frame_id": 0, "path": None}})
-        pm.media_analysis.scan.assert_not_called()
+        pm.media_analysis.fulfill.assert_not_called()
 
 
     def test_identical_timeline_uses_shared_media_scans(self):
@@ -106,7 +106,7 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         session = Mock(spec=media_analysis.MediaAnalysisSession)
         session.result_for.return_value = None
-        session.scan.side_effect = [
+        session.fulfill.side_effect = [
             scan(pm.lhs_path, "lhs"),
             scan(pm.rhs_path, "rhs"),
         ]
@@ -118,10 +118,10 @@ class PairMatcherUnitTest(unittest.TestCase):
              patch.object(video_utils, "extract_frames_at_ranges", side_effect=AssertionError("second decode must not run")):
             self.assertTrue(pm.has_identical_timeline_content())
 
-        self.assertEqual(session.scan.call_count, 2)
-        for call in session.scan.call_args_list:
+        self.assertEqual(session.fulfill.call_count, 2)
+        for call in session.fulfill.call_args_list:
             self.assertEqual(
-                call.kwargs["features"],
+                call.args[0].features,
                 media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             )
 
@@ -130,8 +130,8 @@ class PairMatcherUnitTest(unittest.TestCase):
         pm.lhs_duration_ms = 6000
         pm.rhs_duration_ms = 6000
         session = Mock(spec=media_analysis.MediaAnalysisSession)
-        session.scan.side_effect = lambda path, **_kwargs: media_analysis.VideoScanResult(
-            path=path,
+        session.fulfill.side_effect = lambda request: media_analysis.VideoScanResult(
+            path=request.path,
             features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
             frames={0: {"frame_id": 0, "path": None}},
             scene_changes=(),
@@ -143,10 +143,10 @@ class PairMatcherUnitTest(unittest.TestCase):
         with patch.object(pm, "_extract_identity_samples", return_value=None):
             self.assertFalse(pm.has_identical_timeline_content())
 
-        self.assertEqual(session.scan.call_count, 2)
-        for call in session.scan.call_args_list:
+        self.assertEqual(session.fulfill.call_count, 2)
+        for call in session.fulfill.call_args_list:
             self.assertEqual(
-                call.kwargs["features"],
+                call.args[0].features,
                 media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
             )
 
@@ -815,8 +815,8 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         with patch.object(
                  pm.media_analysis,
-                 "scan",
-                 side_effect=lambda path, **_kwargs: analyses[path],
+                 "fulfill",
+                 side_effect=lambda request: analyses[request.path],
              ) as scan, \
              patch.object(video_utils, 'extract_frames_at_ranges', side_effect=fake_extract), \
              patch('twotone.tools.melt.pair_matcher.DebugRoutines') as debug_cls, \
@@ -837,7 +837,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(scan.call_count, 2)
         for call in scan.call_args_list:
             self.assertEqual(
-                call.kwargs["features"],
+                call.args[0].features,
                 media_analysis.MediaAnalysisFeature.MATCHING,
             )
         # Boundaries come from the fit's content-verified extrapolation.

@@ -43,6 +43,17 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             normalized_data=normalized_data,
         )
 
+    def _request(
+        self,
+        features: media_analysis.MediaAnalysisFeature,
+        label: str = "#1",
+    ) -> media_analysis.MediaAnalysisRequest:
+        return media_analysis.MediaAnalysisRequest(
+            path=self.path,
+            label=label,
+            features=features,
+        )
+
     def test_probe_reuses_result_for_the_same_unchanged_file(self):
         data = {"streams": [{"codec_type": "video", "codec_name": "h264"}]}
         normalized_data = {
@@ -134,11 +145,9 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         with patch.object(video_utils, "get_video_full_info", return_value=probe_result) as probe, \
              patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_ffmpeg), \
              patch.object(video_utils, "_showinfo_timestamp_correction_ms") as old_probe:
-            result = self.session.scan(
-                self.path,
-                label="#1",
-                features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
-            )
+            result = self.session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            ))
 
         self.assertEqual(result.scene_changes, (60,))
         probe.assert_called_once()
@@ -150,20 +159,27 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             label="#1",
             features=media_analysis.MediaAnalysisFeature.MATCHING,
         )
-        expected = object()
+        expected = media_analysis.VideoScanResult(
+            path=os.path.realpath(self.path),
+            features=media_analysis.MediaAnalysisFeature.MATCHING,
+            frames={},
+            scene_changes=(),
+            identity_samples=(),
+            decode_error=None,
+        )
 
         with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
-             patch.object(self.session, "scan", return_value=expected) as scan:
+             patch.object(self.session, "_scan", return_value=expected) as scan:
             result = self.session.fulfill(request)
 
         self.assertIs(result, expected)
         scan.assert_called_once_with(
-            self.path,
-            label="#1",
-            features=media_analysis.MediaAnalysisFeature.MATCHING,
+            os.path.realpath(self.path),
+            "#1",
+            media_analysis.MediaAnalysisFeature.MATCHING,
         )
         self.assertIn(
-            "Fulfilling declared media analysis request for #1",
+            "Fulfilling media analysis request for #1",
             "\n".join(captured.output),
         )
         self.assertIn(
@@ -182,7 +198,10 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         with patch.object(self.session, "probe", return_value=self._probe_result()), \
              patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start) as start, \
              patch.object(video_utils, "_showinfo_timestamp_correction_ms") as timestamp_correction:
-            result = self.session.validate_streams(self.path)
+            result = self.session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+                label=self.path,
+            ))
 
         start.assert_called_once()
         timestamp_correction.assert_not_called()
@@ -193,7 +212,10 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
              patch.object(self.session, "probe", return_value=self._probe_result([])), \
              patch.object(video_utils, "_start_ffmpeg_streaming") as start:
-            result = self.session.validate_streams(self.path)
+            result = self.session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+                label=self.path,
+            ))
 
         start.assert_not_called()
         self.assertTrue(result.validated_all_streams)
@@ -217,11 +239,9 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 ValueError,
                 "probe did not report a positive video duration and frame rate",
             ):
-                self.session.scan(
-                    self.path,
-                    label="#1",
-                    features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
-                )
+                self.session.fulfill(self._request(
+                    media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+                ))
 
         start.assert_not_called()
 
@@ -239,16 +259,13 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         )
 
         with patch.object(self.session, "_scan", return_value=result) as scan:
-            first = self.session.scan(
-                self.path,
-                label="#1",
-                features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
-            )
-            second = self.session.scan(
-                self.path,
+            first = self.session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            ))
+            second = self.session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
                 label="#2",
-                features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
-            )
+            ))
 
         self.assertIs(first, second)
         scan.assert_called_once()
@@ -270,21 +287,12 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
         with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
              patch.object(self.session, "_scan", side_effect=scan) as scan_mock:
-            first = self.session.scan(
-                self.path,
-                label="#1",
-                features=identity,
-            )
-            upgraded = self.session.scan(
-                self.path,
-                label="#1",
-                features=matching,
-            )
-            restored = self.session.scan(
-                self.path,
+            first = self.session.fulfill(self._request(identity))
+            upgraded = self.session.fulfill(self._request(matching))
+            restored = self.session.fulfill(self._request(
+                identity | matching,
                 label="#2",
-                features=identity | matching,
-            )
+            ))
 
         self.assertEqual(first.features, identity)
         self.assertEqual(upgraded.features, identity | matching)
@@ -351,15 +359,13 @@ class MediaAnalysisSessionTest(unittest.TestCase):
              patch.object(self.session, "probe", return_value=self._probe_result()), \
              patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start) as start, \
              patch.object(video_utils, "_showinfo_timestamp_correction_ms", return_value=0):
-            result = self.session.scan(
-                self.path,
-                label="#1",
-                features=(
+            result = self.session.fulfill(self._request(
+                (
                     media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
                     | media_analysis.MediaAnalysisFeature.MATCHING
                     | media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS
                 ),
-            )
+            ))
 
         start.assert_called_once()
         args = start.call_args.args[0]
@@ -412,11 +418,9 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         )
         with patch.object(session, "probe", return_value=probe), \
              patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start):
-            result = session.scan(
-                self.path,
-                label="#1",
-                features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
-            )
+            result = session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            ))
 
         self.assertEqual(result.scene_changes, ())
         self.assertIsNone(result.decode_error)
@@ -457,11 +461,9 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
         with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
              patch.object(self.session, "_scan", return_value=scanned) as scan:
-            result = self.session.scan(
-                self.path,
-                label="#1",
-                features=media_analysis.MediaAnalysisFeature.MATCHING,
-            )
+            result = self.session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.MATCHING,
+            ))
 
         scan.assert_called_once_with(
             os.path.realpath(self.path),
@@ -494,11 +496,9 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         )
 
         with patch.object(self.session, "_scan", return_value=scanned):
-            self.session.scan(
-                self.path,
-                label="#1",
-                features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
-            )
+            self.session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+            ))
 
         persistent.save_frame_probes.assert_not_called()
         persistent.save_scene_changes.assert_not_called()
@@ -517,11 +517,9 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         )
 
         with patch.object(self.session, "_scan", return_value=scanned):
-            self.session.scan(
-                self.path,
-                label="#1",
-                features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
-            )
+            self.session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            ))
 
         persistent.save_scene_changes.assert_called_once_with(os.path.realpath(self.path), [120])
         persistent.save_frame_probes.assert_not_called()
@@ -540,11 +538,9 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         session.set_persistent_cache(persistent)
 
         with patch.object(session, "_scan") as scan:
-            result = session.scan(
-                self.path,
-                label="#1",
-                features=media_analysis.MediaAnalysisFeature.MATCHING,
-            )
+            result = session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.MATCHING,
+            ))
 
         scan.assert_not_called()
         self.assertEqual(result.scene_changes, (120,))
@@ -569,15 +565,13 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         )
 
         with patch.object(session, "_scan", return_value=scanned) as scan:
-            first = session.scan(
-                self.path, label="#1",
-                features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
-            )
+            first = session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+            ))
             persistent.load_frame_probes.return_value = {0: {"frame_id": 0, "path": None}}
-            second = session.scan(
-                self.path, label="#1",
-                features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
-            )
+            second = session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+            ))
 
         self.assertIs(second, first)
         self.assertEqual(second.frames[0]["path"], "/session/frame.png")
@@ -606,11 +600,9 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         with patch.object(self.session, "probe", return_value=self._probe_result()), \
              patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start) as start, \
              patch.object(video_utils, "_showinfo_timestamp_correction_ms", return_value=0):
-            result = self.session.scan(
-                self.path,
-                label="#1",
-                features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
-            )
+            result = self.session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            ))
 
         args = start.call_args.args[0]
         self.assertNotIn("-xerror", args)
@@ -646,14 +638,12 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         with patch.object(session, "probe", return_value=self._probe_result()), \
              patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start) as start, \
              patch.object(video_utils, "_showinfo_timestamp_correction_ms", return_value=0):
-            result = session.scan(
-                self.path,
-                label="#1",
-                features=(
+            result = session.fulfill(self._request(
+                (
                     media_analysis.MediaAnalysisFeature.SCENE_CHANGES
                     | media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
                 ),
-            )
+            ))
 
         args = start.call_args.args[0]
         output_triplets = [args[index:index + 3] for index in range(len(args) - 2)]
