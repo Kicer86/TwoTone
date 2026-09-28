@@ -4,7 +4,7 @@ import enum
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from tqdm import tqdm
@@ -93,6 +93,7 @@ class MediaProbeResult:
     path: str
     data: dict
     error: str | None
+    normalized_data: dict = field(default_factory=dict)
 
     @property
     def has_audio(self) -> bool:
@@ -182,7 +183,13 @@ class MediaAnalysisSession:
                 show_progress=True,
                 progress_description="Reading media metadata",
             )
-            result = MediaProbeResult(real_path, data, None)
+            normalized_data = video_utils.normalize_video_data(data)
+            result = MediaProbeResult(
+                path=real_path,
+                data=data,
+                error=None,
+                normalized_data=normalized_data,
+            )
         except RuntimeError as error:
             result = MediaProbeResult(real_path, {}, str(error))
 
