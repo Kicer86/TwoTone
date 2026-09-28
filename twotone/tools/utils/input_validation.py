@@ -145,7 +145,12 @@ class InputValidator:
             return ValidationIssue(path, self._summarize_error(probe.error))
 
         if self.policy.validate_all_streams and probe.has_decodable_stream:
-            scan = self.media_analysis.validate_streams(path, label=path)
+            request = media_analysis.MediaAnalysisRequest(
+                path=path,
+                label=path,
+                features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+            )
+            scan = self.media_analysis.fulfill(request)
             if scan.decode_error is not None:
                 return ValidationIssue(
                     path,

@@ -212,20 +212,18 @@ class MediaAnalysisSession:
         self._log_probe_result("Media probe completed", result)
         return result
 
-    def scan(
-        self,
-        path: str,
-        *,
-        label: str,
-        features: MediaAnalysisFeature,
-    ) -> VideoScanResult:
+    def fulfill(self, request: MediaAnalysisRequest) -> VideoScanResult:
+        """Collect the requested feature set, reusing all available cached data."""
+        path = request.path
+        label = request.label
+        features = request.features
         real_path = os.path.realpath(path)
         key = self._file_key(real_path)
         if features == MediaAnalysisFeature.NONE:
             raise ValueError("At least one media analysis feature must be requested")
 
         self.logger.debug(
-            "Media analysis request for %s (%s): features=[%s].",
+            "Fulfilling media analysis request for %s (%s): features=[%s].",
             label,
             real_path,
             _format_features(features),
@@ -328,31 +326,6 @@ class MediaAnalysisSession:
                 len(frame_probes),
                 result.path,
             )
-
-    def fulfill(self, request: MediaAnalysisRequest) -> VideoScanResult:
-        self.logger.debug(
-            "Fulfilling declared media analysis request for %s (%s): features=[%s].",
-            request.label,
-            os.path.realpath(request.path),
-            _format_features(request.features),
-        )
-        return self.scan(
-            request.path,
-            label=request.label,
-            features=request.features,
-        )
-
-    def validate_streams(self, path: str, *, label: str | None = None) -> VideoScanResult:
-        self.logger.debug(
-            "Media stream validation requested for %s (label=%s).",
-            os.path.realpath(path),
-            label or path,
-        )
-        return self.scan(
-            path,
-            label=label or path,
-            features=MediaAnalysisFeature.VALIDATE_STREAMS,
-        )
 
     def result_for(self, path: str) -> VideoScanResult | None:
         real_path = os.path.realpath(path)
