@@ -13,15 +13,11 @@ class MeltPlanMediaAnalysisTest(unittest.TestCase):
     def test_collects_requests_from_planned_groups_only(self):
         included = media_analysis.MediaAnalysisRequest(
             path="/media/included.mkv",
-            duration_ms=6000,
-            fps=25.0,
             label="#1",
             features=media_analysis.MediaAnalysisFeature.MATCHING,
         )
         skipped = media_analysis.MediaAnalysisRequest(
             path="/media/skipped.mkv",
-            duration_ms=7000,
-            fps=25.0,
             label="#2",
             features=media_analysis.MediaAnalysisFeature.MATCHING,
         )

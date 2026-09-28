@@ -132,8 +132,6 @@ class RuntimeVersionTest(unittest.TestCase):
                 file.write(b"media")
             request = media_analysis.MediaAnalysisRequest(
                 path=input_path,
-                duration_ms=1000,
-                fps=25.0,
                 label="#1",
                 features=media_analysis.MediaAnalysisFeature.MATCHING,
             )
@@ -174,8 +172,6 @@ class RuntimeVersionTest(unittest.TestCase):
                 file.write(b"media")
             request = media_analysis.MediaAnalysisRequest(
                 path=input_path,
-                duration_ms=1000,
-                fps=25.0,
                 label="#1",
                 features=media_analysis.MediaAnalysisFeature.MATCHING,
             )
@@ -214,8 +210,6 @@ class RuntimeVersionTest(unittest.TestCase):
                 file.write(b"media")
             request = media_analysis.MediaAnalysisRequest(
                 path=input_path,
-                duration_ms=1000,
-                fps=25.0,
                 label="#1",
                 features=media_analysis.MediaAnalysisFeature.MATCHING,
             )
@@ -252,8 +246,6 @@ class RuntimeVersionTest(unittest.TestCase):
                 file.write(b"media")
             request = media_analysis.MediaAnalysisRequest(
                 path=input_path,
-                duration_ms=1000,
-                fps=25.0,
                 label="#1",
                 features=media_analysis.MediaAnalysisFeature.MATCHING,
             )
@@ -288,8 +280,6 @@ class RuntimeVersionTest(unittest.TestCase):
                 file.write(b"media")
             request = media_analysis.MediaAnalysisRequest(
                 path=input_path,
-                duration_ms=1000,
-                fps=25.0,
                 label="#1",
                 features=media_analysis.MediaAnalysisFeature.MATCHING,
             )

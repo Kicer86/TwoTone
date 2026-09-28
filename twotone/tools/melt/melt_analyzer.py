@@ -469,14 +469,10 @@ class MeltAnalyzer:
     def _matching_request(
         self,
         path: str,
-        tracks: dict[str, Any],
         file_id: int,
     ) -> media_analysis.MediaAnalysisRequest:
-        track = self._pick_primary_video_track(tracks[path]["video"], file_id)
         return media_analysis.MediaAnalysisRequest(
             path=path,
-            duration_ms=int(track["length"]),
-            fps=generic_utils.fps_str_to_float(str(track["fps"])),
             label=f"#{file_id}",
             features=media_analysis.MediaAnalysisFeature.MATCHING,
         )
@@ -517,7 +513,7 @@ class MeltAnalyzer:
             if self.allow_video_timeline_mismatch:
                 matching_paths = [video_streams[0].path] + [requirement.path for requirement in requirements]
                 media_analysis_requests = [
-                    self._matching_request(path, tracks, ids[path])
+                    self._matching_request(path, ids[path])
                     for path in matching_paths
                 ]
                 for requirement in requirements:
