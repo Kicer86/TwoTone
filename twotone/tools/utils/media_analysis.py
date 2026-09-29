@@ -386,6 +386,29 @@ class MediaAnalysisSession:
             stat.st_mtime_ns,
         )
 
+    @staticmethod
+    def _progress_description(
+        label: str,
+        features: MediaAnalysisFeature,
+    ) -> str:
+        purposes = []
+        if features & MediaAnalysisFeature.VALIDATE_STREAMS:
+            purposes.append("decode validation")
+        if features & MediaAnalysisFeature.MATCHING:
+            purposes.append("timeline matching")
+        if features & MediaAnalysisFeature.IDENTITY_SAMPLES:
+            purposes.append("sample comparison")
+
+        if len(purposes) > 1:
+            return f"Analyzing input {label} ({', '.join(purposes)})"
+        if purposes == ["decode validation"]:
+            return f"Checking input {label} for decoding errors"
+        if purposes == ["timeline matching"]:
+            return f"Analyzing input {label} for timeline matching"
+        if purposes == ["sample comparison"]:
+            return f"Sampling input {label} for comparison"
+        return f"Analyzing input {label}"
+
     def _scan(
         self,
         path: str,
@@ -556,7 +579,7 @@ class MediaAnalysisSession:
 
         progress = tqdm(
             total=duration_s,
-            desc=f"Scanning media: {label}",
+            desc=self._progress_description(label, features),
             unit="s",
             **generic_utils.get_tqdm_defaults(),
         )

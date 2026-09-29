@@ -208,6 +208,41 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertTrue(result.validated_all_streams)
         self.assertIsNone(result.decode_error)
 
+    def test_progress_description_explains_analysis_purpose(self):
+        cases = (
+            (
+                media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+                "Checking input #1 for decoding errors",
+            ),
+            (
+                media_analysis.MediaAnalysisFeature.MATCHING,
+                "Analyzing input #1 for timeline matching",
+            ),
+            (
+                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+                "Sampling input #1 for comparison",
+            ),
+            (
+                media_analysis.MediaAnalysisFeature.NONE,
+                "Analyzing input #1",
+            ),
+            (
+                (
+                    media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
+                    | media_analysis.MediaAnalysisFeature.MATCHING
+                    | media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS
+                ),
+                "Analyzing input #1 (decode validation, timeline matching, sample comparison)",
+            ),
+        )
+
+        for features, expected in cases:
+            with self.subTest(features=features):
+                self.assertEqual(
+                    self.session._progress_description("#1", features),
+                    expected,
+                )
+
     def test_validation_skips_decode_when_probe_reports_no_audio_or_video(self):
         with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
              patch.object(self.session, "probe", return_value=self._probe_result([])), \
