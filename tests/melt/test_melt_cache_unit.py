@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import tempfile
@@ -8,6 +9,22 @@ from twotone.tools.melt.melt_cache import MeltCache
 
 
 class MeltCacheUnitTest(unittest.TestCase):
+    def test_cache_key_does_not_reuse_legacy_timestamp_data(self):
+        with tempfile.TemporaryDirectory() as cache_dir:
+            video_path = os.path.join(cache_dir, "input.mkv")
+            with open(video_path, "wb") as file:
+                file.write(b"video")
+
+            stat = os.stat(video_path)
+            legacy_identity = (
+                f"{os.path.realpath(video_path)}:{stat.st_size}:{stat.st_mtime_ns}"
+            )
+            legacy_key = hashlib.sha256(legacy_identity.encode()).hexdigest()[:16]
+
+            cache = MeltCache(cache_dir, logging.getLogger("test.MeltCache"))
+
+            self.assertNotEqual(legacy_key, cache._cache_key(video_path))
+
     def test_code_hash_includes_all_media_analysis_implementations(self):
         with tempfile.TemporaryDirectory() as cache_dir:
             cache = MeltCache(cache_dir, logging.getLogger("test.MeltCache"))
