@@ -536,7 +536,7 @@ class MediaAnalysisSession:
 
         if features & MediaAnalysisFeature.VALIDATE_STREAMS:
             if has_primary_video:
-                args.extend(["-map", "0:v?"])
+                args.extend(["-map", "0:V?"])
                 if "vframes" in branches or "vvalidate" in branches:
                     args.extend(["-map", "-0:v:0?"])
             args.extend(["-map", "0:a?"])
@@ -612,7 +612,12 @@ class MediaAnalysisSession:
             on_line=on_line,
             logger=self.logger,
         )
-        if duration_s is not None and last_progress_s < duration_s:
+        decode_error = self._decode_error(process.returncode, stderr_lines)
+        if (
+            decode_error is None
+            and duration_s is not None
+            and last_progress_s < duration_s
+        ):
             progress.update(duration_s - last_progress_s)
         progress.close()
 
@@ -637,7 +642,6 @@ class MediaAnalysisSession:
         else:
             samples = ()
 
-        decode_error = self._decode_error(process.returncode, stderr_lines)
         return VideoScanResult(
             path=path,
             features=features,
