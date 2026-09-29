@@ -199,7 +199,7 @@ class InputValidatorTest(unittest.TestCase):
             validator.validate([self.path])
 
         self.assertIn("Validating 1 input file(s) with fast validation.", logs.output[0])
-        self.assertIn("Input validation 1/1: checking", logs.output[1])
+        self.assertIn(f"Checking input: {self.path}.", logs.output[1])
         self.assertIn(f"Input is valid: {self.path}.", logs.output[2])
         self.assertIn("All input files are valid.", logs.output[3])
 
