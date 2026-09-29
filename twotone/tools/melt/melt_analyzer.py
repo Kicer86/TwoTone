@@ -76,12 +76,16 @@ class MeltAnalyzer:
             else:
                 groups_iter = groups
 
-            for group in groups_iter:
+            for group_index, group in enumerate(groups_iter, start=1):
                 files = group["files"]
                 output_name = group["output_name"]
 
                 input_files = MeltInputFiles(files, display_roots)
-                self._log_group_inputs(title, input_files)
+                self._log_group_inputs(
+                    title,
+                    input_files,
+                    candidate_number=group_index if len(groups) > 1 else None,
+                )
 
                 # analysis for group
                 try:
@@ -417,8 +421,21 @@ class MeltAnalyzer:
         self._timeline_identity_cache[key] = result
         return result
 
-    def _log_group_inputs(self, title: str, input_files: MeltInputFiles) -> None:
-        self.logger.info("Title %s: input files:", title)
+    def _log_group_inputs(
+        self,
+        title: str,
+        input_files: MeltInputFiles,
+        *,
+        candidate_number: int | None = None,
+    ) -> None:
+        if candidate_number is not None:
+            self.logger.info(
+                "Title %s, candidate #%d: input files:",
+                title,
+                candidate_number,
+            )
+        else:
+            self.logger.info("Title %s: input files:", title)
         input_files.render(self.logger, prefix="  ")
 
     def _log_group_issue(self, issue: str) -> None:

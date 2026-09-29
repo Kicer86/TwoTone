@@ -45,9 +45,16 @@ class InputValidationPolicy:
 
 
 @dataclass(frozen=True)
+class InputValidationTarget:
+    path: str
+    reference: str
+
+
+@dataclass(frozen=True)
 class ValidationIssue:
     path: str
     message: str
+    reference: str | None = None
 
 
 @dataclass(frozen=True)
@@ -62,7 +69,11 @@ class ValidationReport:
 
     def render(self, logger: logging.Logger) -> None:
         for issue in self.issues:
-            logger.error("Input validation failed for %s: %s", issue.path, issue.message)
+            logger.error(
+                "Input validation failed for %s: %s",
+                issue.reference or issue.path,
+                issue.message,
+            )
 
 
 class InputValidator:
@@ -81,20 +92,38 @@ class InputValidator:
         self.cache_path = Path(cache_dir or generic_utils.get_twotone_config_dir()) / "input_validation.json"
         self.media_analysis = media_analysis_session
 
-    def validate(self, paths: Iterable[str]) -> ValidationReport:
+    def validate(
+        self,
+        inputs: Iterable[str | InputValidationTarget],
+    ) -> ValidationReport:
         if not self.policy.enabled:
             return ValidationReport((), 0, 0)
 
         cache = self._load_cache()
-        unique_paths = sorted({os.path.realpath(path) for path in paths})
+        targets_by_path: dict[str, InputValidationTarget] = {}
+        for input_value in inputs:
+            target = (
+                input_value
+                if isinstance(input_value, InputValidationTarget)
+                else InputValidationTarget(input_value, input_value)
+            )
+            real_path = os.path.realpath(target.path)
+            targets_by_path.setdefault(
+                real_path,
+                InputValidationTarget(real_path, target.reference),
+            )
+        targets = tuple(targets_by_path.values())
+
         results: dict[str, ValidationIssue | None] = {}
-        pending_checks: list[tuple[str, str]] = []
+        pending_checks: list[tuple[InputValidationTarget, str]] = []
         cached_count = 0
-        for path in unique_paths:
+        for target in targets:
+            path = target.path
             if not os.path.isfile(path):
                 results[path] = ValidationIssue(
                     path,
                     "Input file no longer exists or is not a regular file.",
+                    target.reference,
                 )
                 continue
 
@@ -105,12 +134,12 @@ class InputValidator:
                 cached_count += 1
                 cached_issue = cached["issue"]
                 results[path] = (
-                    ValidationIssue(path, cached_issue)
+                    ValidationIssue(path, cached_issue, target.reference)
                     if cached_issue is not None
                     else None
                 )
             else:
-                pending_checks.append((path, key))
+                pending_checks.append((target, key))
 
         if cached_count:
             file_label = "input file" if cached_count == 1 else "input files"
@@ -136,9 +165,10 @@ class InputValidator:
                     file_label,
                 )
 
-        for path, key in pending_checks:
-            self.logger.info("Checking input: %s.", path)
-            issue = self._validate_file(path)
+        for target, key in pending_checks:
+            path = target.path
+            self.logger.info("Checking input %s.", target.reference)
+            issue = self._validate_file(target)
             results[path] = issue
             cache[key] = {"issue": issue.message if issue else None}
 
@@ -147,16 +177,16 @@ class InputValidator:
 
         issues = tuple(
             issue
-            for path in unique_paths
-            if (issue := results[path]) is not None
+            for target in targets
+            if (issue := results[target.path]) is not None
         )
         report = ValidationReport(issues, checked_count, cached_count)
-        if unique_paths:
-            for path in unique_paths:
-                if results[path] is not None:
-                    self.logger.warning("Input is invalid: %s.", path)
+        if targets:
+            for target in targets:
+                if results[target.path] is not None:
+                    self.logger.warning("Input %s is invalid.", target.reference)
                 else:
-                    self.logger.info("Input is valid: %s.", path)
+                    self.logger.info("Input %s is valid.", target.reference)
 
             self.logger.debug(
                 "Input validation statistics: checked=%d, cached=%d, issues=%d.",
@@ -173,15 +203,20 @@ class InputValidator:
         result = self.media_analysis.result_for(path)
         return result is not None and result.validated_all_streams
 
-    def _validate_file(self, path: str) -> ValidationIssue | None:
+    def _validate_file(self, target: InputValidationTarget) -> ValidationIssue | None:
+        path = target.path
         probe = self.media_analysis.probe(path)
         if probe.error is not None:
-            return ValidationIssue(path, self._summarize_error(probe.error))
+            return ValidationIssue(
+                path,
+                self._summarize_error(probe.error),
+                target.reference,
+            )
 
         if self.policy.validate_all_streams and probe.has_decodable_stream:
             request = media_analysis.MediaAnalysisRequest(
                 path=path,
-                label=path,
+                label=target.reference,
                 features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
             )
             scan = self.media_analysis.fulfill(request)
@@ -192,6 +227,7 @@ class InputValidator:
                         probe.data,
                         scan.decode_error,
                     ),
+                    target.reference,
                 )
         return None
 
