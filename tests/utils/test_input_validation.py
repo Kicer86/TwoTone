@@ -200,7 +200,7 @@ class InputValidatorTest(unittest.TestCase):
 
         self.assertIn("Validating 1 input file(s) with fast validation.", logs.output[0])
         self.assertIn("Input validation 1/1: checking", logs.output[1])
-        self.assertIn("Input validation complete: 1 checked, 0 cached, 0 issue(s).", logs.output[2])
+        self.assertIn("All input files are valid.", logs.output[2])
 
 
 if __name__ == "__main__":

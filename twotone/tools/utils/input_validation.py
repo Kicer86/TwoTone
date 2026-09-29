@@ -126,12 +126,14 @@ class InputValidator:
 
         report = ValidationReport(tuple(issues), checked_count, cached_count)
         if unique_paths:
-            self.logger.info(
-                "Input validation complete: %d checked, %d cached, %d issue(s).",
+            self.logger.debug(
+                "Input validation statistics: checked=%d, cached=%d, issues=%d.",
                 report.checked_count,
                 report.cached_count,
                 len(report.issues),
             )
+            if report.is_valid:
+                self.logger.info("All input files are valid.")
 
         return report
 
