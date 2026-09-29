@@ -186,7 +186,7 @@ class MediaAnalysisSession:
         key = self._file_key(real_path)
         cached = self._probe_cache.get(key)
         if cached is not None:
-            self.logger.info("Media probe restored from this run's cache: %s", path)
+            self.logger.debug("Media probe restored from this run's cache: %s", path)
             self._log_probe_result("Media probe cache hit", cached)
             return cached
 
@@ -249,7 +249,7 @@ class MediaAnalysisSession:
             )
 
         if cached is not None and cached.supports(features):
-            self.logger.info("Media scan for %s restored from cache.", label)
+            self.logger.debug("Media scan for %s restored from cache.", label)
             self._log_scan_result("Media analysis satisfied without FFmpeg", label, cached)
             self._path_results[real_path] = cached
             return cached

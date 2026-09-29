@@ -85,6 +85,12 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertIn("Running ffprobe", logs)
         self.assertIn("streams=1, video=True, audio=False, error=none", logs)
         self.assertIn("Media probe cache hit", logs)
+        cache_restore = next(
+            record
+            for record in captured.records
+            if "Media probe restored from this run's cache" in record.getMessage()
+        )
+        self.assertEqual(cache_restore.levelno, logging.DEBUG)
 
     def test_probe_caches_error_reported_by_video_utils(self):
         error = RuntimeError("ffprobe failed for input.mkv: corrupt header")
@@ -293,7 +299,8 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             decode_error=None,
         )
 
-        with patch.object(self.session, "_scan", return_value=result) as scan:
+        with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
+             patch.object(self.session, "_scan", return_value=result) as scan:
             first = self.session.fulfill(self._request(
                 media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             ))
@@ -304,6 +311,12 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
         self.assertIs(first, second)
         scan.assert_called_once()
+        cache_restore = next(
+            record
+            for record in captured.records
+            if "Media scan for #2 restored from cache" in record.getMessage()
+        )
+        self.assertEqual(cache_restore.levelno, logging.DEBUG)
 
     def test_upgrades_cached_scan_with_only_missing_features(self):
         identity = media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
