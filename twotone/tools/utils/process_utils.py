@@ -106,7 +106,7 @@ def start_process(
             # indeterminate progress indicator alive while it reads large or
             # remote containers so the caller still has visible feedback.
             description = progress_description or "Probing media"
-            logger.info("%s: started.", description)
+            logger.debug("%s: started.", description)
             with tqdm(desc=description, unit="file", total=None, **generic_utils.get_tqdm_defaults()) as pbar:
                 while stdout is None or stderr is None:
                     try:
