@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 from twotone.tools.melt.melt_plan import MeltPlan
 from twotone.tools.melt.melt_tool import MeltTool
-from twotone.tools.utils import media_analysis
+from twotone.tools.utils import input_validation, media_analysis
 
 
 class MeltPlanMediaAnalysisTest(unittest.TestCase):
@@ -29,6 +29,53 @@ class MeltPlanMediaAnalysisTest(unittest.TestCase):
 
         self.assertEqual(plan.media_analysis_requests(), (included,))
         self.assertEqual(tuple(MeltTool().media_analysis_requests(plan)), (included,))
+
+
+class MeltPlanInputValidationTest(unittest.TestCase):
+    def test_single_group_uses_the_existing_file_numbers(self):
+        plan = MeltPlan(items=[{
+            "title": "Movie",
+            "groups": [{"files": ["/media/first.mkv", "/media/second.mkv"]}],
+        }], output_dir="/output")
+
+        targets = plan.input_validation_targets()
+
+        self.assertEqual(targets, (
+            input_validation.InputValidationTarget("/media/first.mkv", "#1"),
+            input_validation.InputValidationTarget("/media/second.mkv", "#2"),
+        ))
+        self.assertEqual(tuple(MeltTool().input_validation_targets(plan)), targets)
+
+    def test_multiple_groups_add_context_to_group_local_file_numbers(self):
+        plan = MeltPlan(items=[
+            {
+                "title": "Movie",
+                "groups": [
+                    {"files": ["/media/a.mkv", "/media/b.mkv"]},
+                    {"files": ["/media/c.mkv"]},
+                ],
+            },
+            {
+                "title": "Other",
+                "groups": [{"files": ["/media/d.mkv"]}],
+            },
+        ], output_dir="/output")
+
+        self.assertEqual(plan.input_validation_targets(), (
+            input_validation.InputValidationTarget(
+                "/media/a.mkv",
+                "#1 (Movie, candidate #1)",
+            ),
+            input_validation.InputValidationTarget(
+                "/media/b.mkv",
+                "#2 (Movie, candidate #1)",
+            ),
+            input_validation.InputValidationTarget(
+                "/media/c.mkv",
+                "#1 (Movie, candidate #2)",
+            ),
+            input_validation.InputValidationTarget("/media/d.mkv", "#1 (Other)"),
+        ))
 
 
 class MeltToolContextTest(unittest.TestCase):

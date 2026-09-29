@@ -174,13 +174,13 @@ class InputValidatorTest(unittest.TestCase):
         self.assertEqual(second.cached_count, 1)
         self.media_analysis.probe.assert_not_called()
         self.media_analysis.fulfill.assert_not_called()
-        self.assertIn(f"Input is invalid: {self.path}.", "\n".join(fresh_logs.output))
+        self.assertIn(f"Input {self.path} is invalid.", "\n".join(fresh_logs.output))
         saved_output = "\n".join(saved_logs.output)
         self.assertIn(
             "Loaded validation results from an earlier run for 1 unchanged input file.",
             saved_output,
         )
-        self.assertIn(f"Input is invalid: {self.path}.", saved_output)
+        self.assertIn(f"Input {self.path} is invalid.", saved_output)
         self.assertNotIn("previously checked", saved_output)
 
     def test_probe_error_is_reported_without_stream_decode(self):
@@ -209,8 +209,8 @@ class InputValidatorTest(unittest.TestCase):
             validator.validate([self.path])
 
         self.assertIn("Checking metadata for 1 input file.", logs.output[0])
-        self.assertIn(f"Checking input: {self.path}.", logs.output[1])
-        self.assertIn(f"Input is valid: {self.path}.", logs.output[2])
+        self.assertIn(f"Checking input {self.path}.", logs.output[1])
+        self.assertIn(f"Input {self.path} is valid.", logs.output[2])
         self.assertIn("All input files are valid.", logs.output[3])
 
     def test_cached_success_loads_the_previous_result_before_reporting_it(self):
@@ -229,7 +229,7 @@ class InputValidatorTest(unittest.TestCase):
             "Loaded validation results from an earlier run for 1 unchanged input file.",
             output,
         )
-        self.assertIn(f"Input is valid: {self.path}.", output)
+        self.assertIn(f"Input {self.path} is valid.", output)
         self.assertNotIn("previously checked", output)
         self.assertNotIn("using cached result", output)
 
@@ -253,14 +253,14 @@ class InputValidatorTest(unittest.TestCase):
             [
                 "Loaded validation results from an earlier run for 1 unchanged input file.",
                 "Checking metadata for 1 input file.",
-                f"Checking input: {second_path}.",
+                f"Checking input {second_path}.",
             ],
         )
         self.assertEqual(
             messages[3:],
             [
-                f"Input is valid: {self.path}.",
-                f"Input is valid: {second_path}.",
+                f"Input {self.path} is valid.",
+                f"Input {second_path} is valid.",
                 "All input files are valid.",
             ],
         )
@@ -275,8 +275,41 @@ class InputValidatorTest(unittest.TestCase):
         self.assertFalse(report.is_valid)
         output = "\n".join(logs.output)
         self.assertIn("Checking 1 input file for media errors.", output)
-        self.assertIn(f"Input is invalid: {self.path}.", output)
+        self.assertIn(f"Input {self.path} is invalid.", output)
         self.assertNotIn("All input files are valid.", output)
+
+    def test_uses_the_supplied_reference_in_logs_and_media_analysis(self):
+        self._probe([{"codec_type": "audio", "codec_name": "ac3"}])
+        self._scan()
+        target = input_validation.InputValidationTarget(self.path, "#7")
+
+        with self.assertLogs(self.logger, "INFO") as logs:
+            report = self._validator(input_validation.ValidationMode.FULL).validate([target])
+
+        self.assertTrue(report.is_valid)
+        output = "\n".join(logs.output)
+        self.assertIn("Checking input #7.", output)
+        self.assertIn("Input #7 is valid.", output)
+        self.assertNotIn(self.path, output)
+        self.media_analysis.fulfill.assert_called_once_with(
+            media_analysis.MediaAnalysisRequest(
+                path=os.path.realpath(self.path),
+                label="#7",
+                features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+            ),
+        )
+
+    def test_uses_the_supplied_reference_in_error_reports(self):
+        self._probe(error="Invalid data found when processing input")
+        target = input_validation.InputValidationTarget(self.path, "#7")
+
+        report = self._validator(input_validation.ValidationMode.FULL).validate([target])
+
+        with self.assertLogs(self.logger, "ERROR") as logs:
+            report.render(self.logger)
+        output = "\n".join(logs.output)
+        self.assertIn("Input validation failed for #7", output)
+        self.assertNotIn(self.path, output)
 
 
 if __name__ == "__main__":

@@ -38,6 +38,20 @@ class MeltAnalyzerTest(TwoToneTestCase):
             allow_video_timeline_mismatch=False,
         )
 
+    def test_multiple_candidate_input_mapping_includes_the_candidate_number(self):
+        input_files = MeltInputFiles(["/media/a.mkv", "/media/b.mkv"])
+
+        with self.assertLogs(self.logger, "INFO") as logs:
+            self.analyzer._log_group_inputs(
+                "Movie",
+                input_files,
+                candidate_number=2,
+            )
+
+        self.assertIn("Title Movie, candidate #2: input files:", logs.output[0])
+        self.assertIn("#1: /media/a.mkv", logs.output[1])
+        self.assertIn("#2: /media/b.mkv", logs.output[2])
+
     def test_equal_length_matcher_receives_shared_media_session(self):
         session = Mock(spec=media_analysis.MediaAnalysisSession)
         context = ToolRuntimeContext(
