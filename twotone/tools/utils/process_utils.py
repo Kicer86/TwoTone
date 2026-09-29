@@ -10,7 +10,6 @@ from tqdm import tqdm
 from typing import Any
 
 from . import generic_utils
-from . import video_utils
 
 DEFAULT_LOGGER = logging.getLogger("TwoTone.utils.process_utils")
 
@@ -42,6 +41,9 @@ def start_process(
         if opt not in args:
             args.insert(0, opt)
 
+    if show_progress and process == "ffmpeg":
+        args = ["-progress", "pipe:2", "-nostats", *args]
+
     command = [process]
     command.extend(args)
 
@@ -69,26 +71,32 @@ def start_process(
     stderr: str | None = None
     if show_progress:
         if process == "ffmpeg":
-            index_of_i = args.index("-i")
-            input_file = args[index_of_i + 1]
             description = progress_description or "Processing video"
             logger.info("%s: started.", description)
 
-            if video_utils.is_video(input_file) and sub_process.stderr:
-                progress_pattern = re.compile(r"frame= *(\d+)")
-                frames = video_utils.get_video_frames_count(input_file, logger=logger)
-                with tqdm(desc=description, unit="frame", total=frames, **generic_utils.get_tqdm_defaults()) as pbar:
-                    last_frame = 0
+            if sub_process.stderr:
+                # Use FFmpeg's output timestamp as the progress metric. Reading it
+                # from the running process avoids a separate input frame-count scan.
+                duration_pattern = re.compile(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)")
+                progress_pattern = re.compile(r"out_time_us=(-?\d+)$")
+                with tqdm(desc=description, unit="s", total=None, **generic_utils.get_tqdm_defaults()) as pbar:
+                    last_time = 0.0
+                    duration_found = False
                     for line in sub_process.stderr:
                         line = line.strip()
                         captured_stderr.append(line)
-                        if "frame=" in line:
-                            match = progress_pattern.search(line)
-                            if match:
-                                current_frame = int(match.group(1))
-                                delta = current_frame - last_frame
-                                pbar.update(delta)
-                                last_frame = current_frame
+                        duration = duration_pattern.search(line)
+                        if duration and not duration_found:
+                            hours, minutes, seconds = map(float, duration.groups())
+                            pbar.total = hours * 3600 + minutes * 60 + seconds
+                            duration_found = True
+                            pbar.refresh()
+                        match = progress_pattern.fullmatch(line)
+                        if match:
+                            current_time = int(match.group(1)) / 1_000_000
+                            if current_time > last_time:
+                                pbar.update(current_time - last_time)
+                                last_time = current_time
         elif process == "mkvmerge" and sub_process.stdout:
             progress_pattern = re.compile(r"\w:\s*(\d+)%")
             with tqdm(desc="Muxing", unit="%", total=100, **generic_utils.get_tqdm_defaults()) as pbar:
