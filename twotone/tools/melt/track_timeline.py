@@ -288,7 +288,7 @@ class TrackTimelineMixin:
                 process_utils.start_process("ffmpeg", [
                     "-y", "-i", source_video, "-map", source_map,
                     "-c:a", "copy", "-f", "adts", adts_path,
-                ], logger=logger)
+                ], show_progress=True, progress_description="Extracting AAC audio", logger=logger)
             )
             input_path = adts_path
             input_map = "0:a:0"  # the remuxed ADTS file carries only the selected stream
@@ -321,7 +321,10 @@ class TrackTimelineMixin:
             args += ["-ar", str(output_sample_rate)]
         args += ["-sample_fmt", sample_fmt, "-c:a", "flac", output_path]
         try:
-            process_utils.raise_on_error(process_utils.start_process("ffmpeg", args, logger=logger))
+            process_utils.raise_on_error(process_utils.start_process(
+                "ffmpeg", args, show_progress=True,
+                progress_description="Decoding audio to FLAC", logger=logger,
+            ))
         finally:
             if adts_path and not self.workspace.keep and os.path.exists(adts_path):
                 os.remove(adts_path)

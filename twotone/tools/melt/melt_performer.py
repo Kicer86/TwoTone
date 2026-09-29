@@ -927,7 +927,7 @@ class MeltPerformer(TrackTimelineMixin):
                     "-filter:a", filter_arg,
                     "-sample_fmt", "s32", "-c:a", "flac",
                     output_path,
-                ], logger=self.logger)
+                ], show_progress=True, progress_description="Scaling audio", logger=self.logger)
             )
             actual_duration_ms = video_utils.get_video_duration(output_path, logger=self.logger)
             if actual_duration_ms is not None:
@@ -1539,7 +1539,7 @@ class MeltPerformer(TrackTimelineMixin):
                 *layout_args,
                 "-c:a", "aac",
                 output_path,
-            ], logger=logger)
+            ], show_progress=True, progress_description="Encoding audio to AAC", logger=logger)
         )
 
     def _patch_audio_segment(
@@ -1602,6 +1602,7 @@ class MeltPerformer(TrackTimelineMixin):
         match_result = self._pair_match_cache.get(cache_key)
 
         if match_result is None:
+            self.logger.info("Matching video content: #%d - #%d", lhs_id, rhs_id)
             duration = video_utils.get_video_duration(source_path)
             matcher = PairMatcher(
                 self.interruption, mwd, video_path_base, source_path,
@@ -2125,7 +2126,7 @@ class MeltPerformer(TrackTimelineMixin):
                     "-y", "-i", flac_path, "-map", "0:a:0",
                     "-filter:a", trim_filter,
                     "-sample_fmt", "s32", "-c:a", "flac", prepared_flac,
-                ], logger=self.logger)
+                ], show_progress=True, progress_description="Trimming audio", logger=self.logger)
             )
 
         output_path = self._temporary_audio_path("normalized_unscaled_audio", ffprobe_stream_index)
@@ -2285,6 +2286,10 @@ class MeltPerformer(TrackTimelineMixin):
                         trim_end_ms = base_output_end_ms
                 needs_unscaled_preparation = needs_mkvmerge_normalization or trim_end_ms is not None
                 if needs_unscaled_preparation:
+                    self.logger.info(
+                        "Preparing audio track #%d from file #%d for muxing.",
+                        audio_stream.mkvmerge_track_id, file_ids[path],
+                    )
                     output_stream = self._prepare_normalized_unscaled_audio(
                         audio_stream,
                         desired_end_ms=trim_end_ms,

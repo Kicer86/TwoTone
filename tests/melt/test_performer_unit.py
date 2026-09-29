@@ -1510,6 +1510,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
     def test_prepare_normalized_unscaled_audio_decodes_via_flac_then_encodes_aac_once(self):
         performer = self._make_performer()
         calls = []
+        progress_options = []
         source_full_info = {
             "streams": [
                 {"codec_type": "video", "index": 0, "codec_name": "h264"},
@@ -1519,6 +1520,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         def fake_start_process(tool, args, **kwargs):
             calls.append((tool, list(args)))
+            progress_options.append(kwargs)
             return _FAKE_PROCESS_OK
 
         def fake_full_info(path, logger=None):
@@ -1544,6 +1546,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         # could re-apply encoder-delay priming.  The second call is fully cached.
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(tool == "ffmpeg" for tool, _ in calls))
+        self.assertTrue(all(options.get("show_progress") for options in progress_options))
+        self.assertEqual(
+            [options.get("progress_description") for options in progress_options],
+            ["Decoding audio to FLAC", "Encoding audio to AAC"],
+        )
 
         decode_args = calls[0][1]
         self.assertEqual(decode_args[decode_args.index("-map") + 1], "0:1")
