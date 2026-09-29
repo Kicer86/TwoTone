@@ -5,6 +5,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from fractions import Fraction
 from typing import Protocol
 
 from tqdm import tqdm
@@ -18,7 +19,7 @@ _SCENE_FRAME_RE = re.compile(
 )
 _PROGRESS_TIME_RE = re.compile(r"^out_time_ms=(\d+)$")
 _STATS_FRAME_RE = re.compile(
-    r"^(\d+)\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+))$"
+    r"^(\d+)\s+([-+]?\d+)\s+([-+]?\d+/[-+]?\d+)$"
 )
 _PROGRESS_PREFIXES = (
     "bitrate=",
@@ -548,7 +549,7 @@ class MediaAnalysisSession:
             if features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
                 args.extend([
                     "-stats_enc_pre:v:0", frame_stats_path,
-                    "-stats_enc_pre_fmt:v:0", "{ni} {ti}",
+                    "-stats_enc_pre_fmt:v:0", "{ni} {ptsi} {tbi}",
                 ])
             args.extend(["-f", "null", "-"])
 
@@ -558,7 +559,7 @@ class MediaAnalysisSession:
                 "-an", "-sn", "-dn",
                 "-fps_mode", "vfr",
                 "-stats_enc_pre:v:0", sample_stats_path,
-                "-stats_enc_pre_fmt:v:0", "{ni} {ti}",
+                "-stats_enc_pre_fmt:v:0", "{ni} {ptsi} {tbi}",
                 sample_pattern,
             ])
 
@@ -716,10 +717,11 @@ class MediaAnalysisSession:
             if match is None:
                 continue
             frame_id = int(match.group(1))
-            timestamp_ms = video_utils._showinfo_timestamp_ms(
-                match.group(2),
-                correction_ms,
-            )
+            pts = int(match.group(2))
+            time_base = Fraction(match.group(3))
+            if pts == 2**63 - 1 or time_base == 0:
+                continue
+            timestamp_ms = max(0, round(pts * time_base * 1000) + correction_ms)
             entries.append((frame_id, timestamp_ms))
         return entries
 
