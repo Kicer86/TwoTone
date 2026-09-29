@@ -114,7 +114,7 @@ class InputValidator:
                 continue
 
             checked_count += 1
-            self.logger.info("Input validation %d/%d: checking %s.", index, len(unique_paths), path)
+            self.logger.info("Checking input: %s.", path)
             issue = self._validate_file(path)
             cache[key] = {"issue": issue.message if issue else None}
             changed = True
