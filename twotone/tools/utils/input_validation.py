@@ -120,6 +120,9 @@ class InputValidator:
             changed = True
             if issue:
                 issues.append(issue)
+                self.logger.warning("Input is invalid: %s.", path)
+            else:
+                self.logger.info("Input is valid: %s.", path)
 
         if changed:
             self._save_cache(cache)

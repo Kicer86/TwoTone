@@ -200,7 +200,20 @@ class InputValidatorTest(unittest.TestCase):
 
         self.assertIn("Validating 1 input file(s) with fast validation.", logs.output[0])
         self.assertIn("Input validation 1/1: checking", logs.output[1])
-        self.assertIn("All input files are valid.", logs.output[2])
+        self.assertIn(f"Input is valid: {self.path}.", logs.output[2])
+        self.assertIn("All input files are valid.", logs.output[3])
+
+    def test_failed_validation_logs_the_outcome_without_a_success_summary(self):
+        self._probe(error="Invalid data found when processing input")
+        validator = self._validator(input_validation.ValidationMode.FULL)
+
+        with self.assertLogs(self.logger, "INFO") as logs:
+            report = validator.validate([self.path])
+
+        self.assertFalse(report.is_valid)
+        output = "\n".join(logs.output)
+        self.assertIn(f"Input is invalid: {self.path}.", output)
+        self.assertNotIn("All input files are valid.", output)
 
 
 if __name__ == "__main__":
