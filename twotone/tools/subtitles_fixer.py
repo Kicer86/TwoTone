@@ -10,7 +10,7 @@ from overrides import override
 from tqdm import tqdm
 from typing import Callable
 
-from .tool import EmptyPlan, Plan, Tool
+from .tool import EmptyPlan, Plan, Tool, ToolRuntimeContext
 from twotone.tools.utils import files_utils, generic_utils, process_utils, subtitles_utils, video_utils
 
 
@@ -255,7 +255,8 @@ class FixerTool(Tool):
                             help='Path with videos to analyze.')
 
     @override
-    def analyze(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
+    def analyze(self, args: argparse.Namespace, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:
+        workspace = context.workspace
         logger.info("Searching for broken files")
 
         fixer = Fixer(logger, workspace=workspace)
@@ -263,7 +264,8 @@ class FixerTool(Tool):
         return SubtitlesFixPlan(items=broken_videos)
 
     @override
-    def perform(self, args: argparse.Namespace, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
+    def perform(self, args: argparse.Namespace, logger: logging.Logger, context: ToolRuntimeContext, plan: Plan) -> None:
+        workspace = context.workspace
         if not isinstance(plan, SubtitlesFixPlan):
             raise TypeError(f"Expected SubtitlesFixPlan, got {type(plan).__name__}")
 

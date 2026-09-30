@@ -10,7 +10,7 @@ from typing import Any
 from overrides import override
 from tqdm import tqdm
 
-from .tool import EmptyPlan, Plan, Tool
+from .tool import EmptyPlan, Plan, Tool, ToolRuntimeContext
 from twotone.tools.utils import generic_utils, process_utils, video_utils, files_utils
 
 
@@ -254,7 +254,8 @@ class ConcatenateTool(Tool):
                             help='Skip videos with warnings and continue with valid groups.')
 
     @override
-    def analyze(self, args, logger: logging.Logger, workspace: files_utils.Workspace) -> Plan:
+    def analyze(self, args, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:
+        workspace = context.workspace
         concatenator = Concatenate(logger, workspace=workspace)
         inputs = args.inputs
         directories = [path for path in inputs if os.path.isdir(path)]
@@ -294,7 +295,8 @@ class ConcatenateTool(Tool):
         return ConcatenatePlan(items=analysis)
 
     @override
-    def perform(self, args, logger: logging.Logger, workspace: files_utils.Workspace, plan: Plan) -> None:
+    def perform(self, args, logger: logging.Logger, context: ToolRuntimeContext, plan: Plan) -> None:
+        workspace = context.workspace
         if not isinstance(plan, ConcatenatePlan):
             raise TypeError(f"Expected ConcatenatePlan, got {type(plan).__name__}")
 
