@@ -93,6 +93,7 @@ class InputValidator:
                 len(unique_paths),
                 self.policy.mode.value,
             )
+
         issues: list[ValidationIssue] = []
         checked_count = 0
         cached_count = 0
@@ -101,6 +102,7 @@ class InputValidator:
             if not os.path.isfile(path):
                 issues.append(ValidationIssue(path, "Input file no longer exists or is not a regular file."))
                 continue
+
             key = self._cache_key(path)
             cached = cache.get(key)
             has_fresh_decode = self._has_analysis_decode(path)
@@ -121,6 +123,7 @@ class InputValidator:
 
         if changed:
             self._save_cache(cache)
+
         report = ValidationReport(tuple(issues), checked_count, cached_count)
         if unique_paths:
             self.logger.info(
@@ -129,6 +132,7 @@ class InputValidator:
                 report.cached_count,
                 len(report.issues),
             )
+
         return report
 
     def _has_analysis_decode(self, path: str) -> bool:
@@ -217,7 +221,7 @@ class InputValidator:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             temporary_path = self.cache_path.with_suffix(".tmp")
             with temporary_path.open("w", encoding="utf-8") as file:
-                json.dump(cache, file, sort_keys=True)
+                json.dump(cache, file, sort_keys=True, indent=4)
             os.replace(temporary_path, self.cache_path)
         except OSError as error:
             self.logger.warning("Could not save input-validation cache: %s", error)

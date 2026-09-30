@@ -227,10 +227,12 @@ class MeltTool(Tool):
             context,
             args.allow_video_timeline_mismatch,
         )
+
         analysis = analyzer.analyze_duplicates(
             duplicates,
             display_roots=display_roots,
         )
+
         return MeltPlan(
             items=analysis,
             output_dir=args.output_dir,
