@@ -477,6 +477,7 @@ class MediaAnalysisSession:
         has_primary_video = probe.has_video
         scan_dir = self.workspace.unique_dir("media_scan")
         frame_stats_path = os.path.join(scan_dir, "frames.txt")
+        scene_stats_path = os.path.join(scan_dir, "scenes.txt")
         sample_stats_path = os.path.join(scan_dir, "identity.txt")
         sample_pattern = os.path.join(scan_dir, "identity_%08d.png")
 
@@ -493,9 +494,6 @@ class MediaAnalysisSession:
             branches.append("vscenes")
         if features & MediaAnalysisFeature.IDENTITY_SAMPLES:
             branches.append("vsamples")
-        scene_only = branches == ["vscenes"]
-        if scene_only:
-            branches.append("voutput")
 
         filter_parts: list[str] = []
         if len(branches) > 1:
@@ -510,11 +508,8 @@ class MediaAnalysisSession:
 
         if features & MediaAnalysisFeature.SCENE_CHANGES:
             filter_parts.append(
-                f"{branch_source('vscenes')}select='gt(scene,{self._SCENE_THRESHOLD})',"
-                "metadata=mode=print:file='pipe\\:2',nullsink"
+                f"{branch_source('vscenes')}select='gt(scene,{self._SCENE_THRESHOLD})'[scenes]"
             )
-        if scene_only:
-            filter_parts.append("[voutput]null[scanout]")
 
         if features & MediaAnalysisFeature.IDENTITY_SAMPLES:
             filter_parts.append(
@@ -537,16 +532,22 @@ class MediaAnalysisSession:
 
         needs_null_output = bool(features & (
             MediaAnalysisFeature.FRAME_TIMESTAMPS
+            | MediaAnalysisFeature.SCENE_CHANGES
             | MediaAnalysisFeature.VALIDATE_STREAMS
-        )) or scene_only
+        ))
 
+        scene_video_stream_index: int | None = None
         if needs_null_output:
+            mapped_video_streams = 0
             if features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
                 args.extend(["-map", "[vframes]"])
+                mapped_video_streams += 1
             elif "vvalidate" in branches:
                 args.extend(["-map", "[vvalidate]"])
-            elif scene_only:
-                args.extend(["-map", "[scanout]"])
+                mapped_video_streams += 1
+            if features & MediaAnalysisFeature.SCENE_CHANGES:
+                scene_video_stream_index = mapped_video_streams
+                args.extend(["-map", "[scenes]"])
 
         if features & MediaAnalysisFeature.VALIDATE_STREAMS:
             if has_primary_video:
@@ -563,6 +564,11 @@ class MediaAnalysisSession:
                 args.extend([
                     "-stats_enc_pre:v:0", frame_stats_path,
                     "-stats_enc_pre_fmt:v:0", "{ni} {ptsi} {tbi}",
+                ])
+            if scene_video_stream_index is not None:
+                args.extend([
+                    f"-stats_enc_pre:v:{scene_video_stream_index}", scene_stats_path,
+                    f"-stats_enc_pre_fmt:v:{scene_video_stream_index}", "{ni} {ptsi} {tbi}",
                 ])
             args.extend(["-f", "null", "-"])
 
@@ -586,7 +592,6 @@ class MediaAnalysisSession:
             bool(features & MediaAnalysisFeature.VALIDATE_STREAMS),
         )
 
-        scene_timestamps: list[int] = []
         duration_s = duration_ms / 1000 if duration_ms is not None and duration_ms > 0 else None
         last_progress_s = 0.0
         timestamp_correction_ms = self._timestamp_correction_ms(probe)
@@ -602,15 +607,6 @@ class MediaAnalysisSession:
             nonlocal last_progress_s
 
             stripped = line.strip()
-            scene_match = _SCENE_FRAME_RE.match(stripped)
-            if scene_match:
-                timestamp_ms = video_utils._showinfo_timestamp_ms(
-                    scene_match.group(1),
-                    timestamp_correction_ms,
-                )
-                scene_timestamps.append(timestamp_ms)
-                return
-
             progress_match = _PROGRESS_TIME_RE.match(stripped)
             if progress_match:
                 current_s = int(progress_match.group(1)) / 1_000_000
@@ -635,6 +631,11 @@ class MediaAnalysisSession:
             progress.update(duration_s - last_progress_s)
         progress.close()
 
+        scene_timestamps = (
+            self._read_scene_timestamps(scene_stats_path, timestamp_correction_ms)
+            if features & MediaAnalysisFeature.SCENE_CHANGES
+            else []
+        )
         frames = (
             self._read_frames(frame_stats_path, timestamp_correction_ms)
             if features & MediaAnalysisFeature.FRAME_TIMESTAMPS
@@ -726,6 +727,13 @@ class MediaAnalysisSession:
             timestamp_ms: {"frame_id": frame_id, "path": None}
             for frame_id, timestamp_ms in cls._read_frame_entries(path, correction_ms)
         }
+
+    @classmethod
+    def _read_scene_timestamps(cls, path: str, correction_ms: int) -> list[int]:
+        return [
+            timestamp_ms
+            for _frame_id, timestamp_ms in cls._read_frame_entries(path, correction_ms)
+        ]
 
     @staticmethod
     def _build_samples(
