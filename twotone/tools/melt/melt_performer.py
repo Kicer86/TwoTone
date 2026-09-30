@@ -1714,7 +1714,10 @@ class MeltPerformer(TrackTimelineMixin):
                     - self._mapping_stream_bias_ms(audio_path, matching.rhs_all_frames)
                 )
                 unscaled_shift_ms = self._unscaled_timeline_shift_ms(
-                    mapping, matching.lhs_fps, stream_bias_ms,
+                    mapping,
+                    matching.lhs_fps,
+                    stream_bias_ms=stream_bias_ms,
+                    rhs_fps=matching.rhs_fps,
                 )
                 if unscaled_shift_ms:
                     self.logger.info(
@@ -1889,6 +1892,7 @@ class MeltPerformer(TrackTimelineMixin):
         mapping: list[tuple[int, int]],
         lhs_fps: float | None,
         stream_bias_ms: int = 0,
+        rhs_fps: float | None = None,
     ) -> int:
         """Base-minus-source timeline shift carried by an unscaled mapping.
 
@@ -1900,22 +1904,55 @@ class MeltPerformer(TrackTimelineMixin):
         shift lands in stream space, the space tracks are placed in.  There a
         container start offset cancels out: content restored to its canonical
         position by such an offset yields a zero shift and keeps being placed
-        by its content start alone.  Content can only be offset by dropped or
-        added frames, so a genuine shift puts the median on the whole-frame
-        grid of the base (residual under a millisecond); the shift is accepted
-        only there.  Frame-rate-drift pairs carry deltas quantized to the
-        coarser side's frame grid instead, and their median can sit anywhere
-        within ±half of that frame — off-grid, rejected here as matcher noise
-        rather than rounded up to a spurious whole frame.
+        by its content start alone.
+
+        A delta close to the base's whole-frame grid is the unambiguous case
+        (for example, dropped leading frames) and stays snapped to that grid.
+        Small off-grid deltas are timestamp phase noise: two independently
+        quantized frame timestamps can differ by up to half a frame from each
+        side.  A delta larger than that ambiguity can nevertheless be real when
+        the inputs use different frame rates; accept its millisecond median
+        when both its robust spread and its beginning-to-end drift remain
+        within the same quantization budget.
         """
         if not mapping or not lhs_fps or lhs_fps <= 0:
             return 0
-        frame_ms = 1000 / lhs_fps
-        median_delta = statistics.median(lhs - rhs for lhs, rhs in mapping) + stream_bias_ms
-        frames = round(median_delta / frame_ms)
-        if abs(median_delta - frames * frame_ms) > frame_ms / 4:
+
+        lhs_frame_ms = 1000 / lhs_fps
+        ordered_deltas = [
+            lhs - rhs + stream_bias_ms
+            for lhs, rhs in sorted(mapping)
+        ]
+        median_delta = statistics.median(ordered_deltas)
+        frames = round(median_delta / lhs_frame_ms)
+        snapped_delta = frames * lhs_frame_ms
+        if abs(median_delta - snapped_delta) <= lhs_frame_ms / 4:
+            return round(snapped_delta)
+
+        rhs_frame_ms = (
+            1000 / rhs_fps
+            if rhs_fps is not None and rhs_fps > 0
+            else lhs_frame_ms
+        )
+        quantization_budget_ms = (lhs_frame_ms + rhs_frame_ms) / 2
+        if abs(median_delta) <= quantization_budget_ms:
             return 0
-        return round(frames * frame_ms)
+
+        deviations = sorted(abs(delta - median_delta) for delta in ordered_deltas)
+        p95_index = math.ceil(0.95 * len(deviations)) - 1
+        p95_deviation = deviations[p95_index]
+        edge_count = max(1, len(ordered_deltas) // 5)
+        edge_drift = abs(
+            statistics.median(ordered_deltas[:edge_count])
+            - statistics.median(ordered_deltas[-edge_count:])
+        )
+        if (
+            p95_deviation > quantization_budget_ms
+            or edge_drift > quantization_budget_ms
+        ):
+            return 0
+
+        return round(median_delta)
 
     @staticmethod
     def _strict_audio_mapping(mapping: list[tuple[int, int]]) -> list[tuple[int, int]]:

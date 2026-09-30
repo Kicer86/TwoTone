@@ -427,6 +427,28 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         self.assertEqual(shift, 0)
 
+    def test_unscaled_timeline_shift_accepts_large_stable_cross_fps_offset(self):
+        # Regression: a 29.97 fps base and a 23.976 fps source share the same
+        # playback speed, but their independently quantized timestamps put the
+        # real ~1.15 s content offset between base-frame grid positions.  The
+        # offset stays stable across the whole film and must not be discarded
+        # merely because its median is off the base frame grid.
+        mapping = [
+            (4371, 3212),
+            (1_000_000, 998_850),
+            (2_700_000, 2_698_851),
+            (4_000_000, 3_998_858),
+            (5_408_208, 5_407_068),
+        ]
+
+        shift = MeltPerformer._unscaled_timeline_shift_ms(
+            mapping,
+            29.97,
+            rhs_fps=24000 / 1001,
+        )
+
+        self.assertEqual(shift, 1149)
+
     def test_unscaled_timeline_shift_applies_stream_bias_correction(self):
         # A container start offset present in one side's frame times only
         # (mkv rebases to zero, mp4 keeps the offset) must cancel out instead
