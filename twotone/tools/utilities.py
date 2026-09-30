@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from overrides import override
 
 from .tool import EmptyPlan, Plan, Tool, ToolRuntimeContext
-from .utils import video_utils, process_utils, files_utils
-
+from .utils import files_utils, process_utils, video_utils
 
 DEFAULT_LOGGER = logging.getLogger("TwoTone.utilities")
 
@@ -137,7 +136,6 @@ class UtilitiesTool(Tool):
 
     @override
     def analyze(self, args, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:
-        workspace = context.workspace
         if args.subtool == "scenes":
             try:
                 scale = float(args.scale)

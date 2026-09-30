@@ -2,10 +2,26 @@ import logging
 import os
 import tempfile
 import unittest
-
 from unittest.mock import Mock
 
 from twotone.tools.utils import input_validation, media_analysis
+
+
+class InputValidationPolicyTest(unittest.TestCase):
+    def test_mode_defines_validation_requirements(self):
+        cases = (
+            (input_validation.ValidationMode.OFF, False, set(), False),
+            (input_validation.ValidationMode.FAST, True, {"ffprobe"}, False),
+            (input_validation.ValidationMode.FULL, True, {"ffmpeg", "ffprobe"}, True),
+        )
+
+        for mode, enabled, required_tools, validate_all_streams in cases:
+            with self.subTest(mode=mode):
+                policy = input_validation.InputValidationPolicy(mode)
+
+                self.assertEqual(policy.enabled, enabled)
+                self.assertEqual(policy.required_tools(), required_tools)
+                self.assertEqual(policy.validate_all_streams, validate_all_streams)
 
 
 class InputValidatorTest(unittest.TestCase):
@@ -24,7 +40,7 @@ class InputValidatorTest(unittest.TestCase):
         mode: input_validation.ValidationMode,
     ) -> input_validation.InputValidator:
         return input_validation.InputValidator(
-            mode,
+            input_validation.InputValidationPolicy(mode),
             self.logger,
             self.temp_dir.name,
             media_analysis_session=self.media_analysis,

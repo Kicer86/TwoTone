@@ -2,16 +2,23 @@
 import argparse
 import logging
 import os
-import pysubs2
-
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
+
+import pysubs2
 from overrides import override
 from tqdm import tqdm
-from typing import Callable
+
+from twotone.tools.utils import (
+    files_utils,
+    generic_utils,
+    process_utils,
+    subtitles_utils,
+    video_utils,
+)
 
 from .tool import EmptyPlan, Plan, Tool, ToolRuntimeContext
-from twotone.tools.utils import files_utils, generic_utils, process_utils, subtitles_utils, video_utils
 
 
 class Fixer(generic_utils.InterruptibleProcess):

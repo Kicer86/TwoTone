@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import re
-
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -14,7 +13,6 @@ from tqdm import tqdm
 from . import generic_utils, process_utils, video_utils
 from .files_utils import Workspace
 from .generic_utils import InterruptibleProcess
-
 
 _SCENE_FRAME_RE = re.compile(
     r"^frame:\d+\s+pts:\S+\s+pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))"
@@ -48,6 +46,19 @@ class MediaAnalysisFeature(enum.IntFlag):
     VALIDATE_STREAMS = enum.auto()
 
     MATCHING = SCENE_CHANGES | FRAME_TIMESTAMPS
+
+
+_FEATURE_LABELS = (
+    (MediaAnalysisFeature.IDENTITY_SAMPLES, "identity_samples"),
+    (MediaAnalysisFeature.SCENE_CHANGES, "scene_changes"),
+    (MediaAnalysisFeature.FRAME_TIMESTAMPS, "frame_timestamps"),
+    (MediaAnalysisFeature.VALIDATE_STREAMS, "validate_streams"),
+)
+
+
+def _format_features(features: MediaAnalysisFeature) -> str:
+    names = [name for feature, name in _FEATURE_LABELS if features & feature]
+    return ", ".join(names) if names else "none"
 
 
 def identity_timestamps(duration_ms: int, fps: float) -> tuple[int, ...]:
@@ -138,13 +149,10 @@ class MediaAnalysisSession:
         workspace: Workspace,
         interruption: InterruptibleProcess,
         logger: logging.Logger,
-        *,
-        validate_all_streams: bool,
     ) -> None:
         self.workspace = workspace
         self.interruption = interruption
         self.logger = logger
-        self.validate_all_streams = validate_all_streams
         self._cache: dict[tuple[object, ...], VideoScanResult] = {}
         self._probe_cache: dict[tuple[object, ...], MediaProbeResult] = {}
         self._path_results: dict[str, VideoScanResult] = {}
@@ -152,15 +160,22 @@ class MediaAnalysisSession:
 
     def set_persistent_cache(self, cache: PersistentMediaAnalysisCache) -> None:
         self._persistent_cache = cache
+        self.logger.debug(
+            "Persistent media analysis cache configured: %s.",
+            type(cache).__name__,
+        )
 
     def probe(self, path: str) -> MediaProbeResult:
         real_path = os.path.realpath(path)
+        self.logger.debug("Media probe requested for %s.", real_path)
         key = self._file_key(real_path)
         cached = self._probe_cache.get(key)
         if cached is not None:
             self.logger.info("Media probe restored from this run's cache: %s", path)
+            self._log_probe_result("Media probe cache hit", cached)
             return cached
 
+        self.logger.debug("Running ffprobe for media metadata: %s.", real_path)
         process = process_utils.start_process(
             "ffprobe",
             [
@@ -187,6 +202,7 @@ class MediaAnalysisSession:
                 result = MediaProbeResult(real_path, {}, "ffprobe returned invalid metadata.")
 
         self._probe_cache[key] = result
+        self._log_probe_result("Media probe completed", result)
         return result
 
     def scan(
@@ -200,34 +216,59 @@ class MediaAnalysisSession:
     ) -> VideoScanResult:
         real_path = os.path.realpath(path)
         key = self._file_key(real_path)
-        requested_features = features
-        if self.validate_all_streams:
-            requested_features |= MediaAnalysisFeature.VALIDATE_STREAMS
-
-        if requested_features == MediaAnalysisFeature.NONE:
+        if features == MediaAnalysisFeature.NONE:
             raise ValueError("At least one media analysis feature must be requested")
 
+        self.logger.debug(
+            "Media analysis request for %s (%s): features=[%s], duration_ms=%s, fps=%s.",
+            label,
+            real_path,
+            _format_features(features),
+            duration_ms,
+            fps,
+        )
+
         cached = self._cache.get(key)
-        missing_features = requested_features & ~(cached.features if cached is not None else MediaAnalysisFeature.NONE)
+        if cached is None:
+            self.logger.debug("Media analysis run cache for %s is empty.", label)
+        else:
+            self._log_scan_result("Media analysis run cache contains data", label, cached)
+
+        missing_features = features & ~(cached.features if cached is not None else MediaAnalysisFeature.NONE)
         persistent = self._restore_persistent(real_path, missing_features)
         if persistent is not None:
+            self._log_scan_result("Persistent media analysis cache restored data", label, persistent)
             cached = self._merge_results(cached, persistent) if cached is not None else persistent
             self._cache[key] = cached
+        elif self._persistent_cache is not None and missing_features:
+            self.logger.debug(
+                "Persistent media analysis cache for %s did not provide=[%s].",
+                label,
+                _format_features(missing_features),
+            )
 
-        if cached is not None and cached.supports(requested_features):
-            self.logger.info("Media scan for %s restored from this run's cache.", label)
+        if cached is not None and cached.supports(features):
+            self.logger.info("Media scan for %s restored from cache.", label)
+            self._log_scan_result("Media analysis satisfied without FFmpeg", label, cached)
             self._path_results[real_path] = cached
             return cached
 
-        missing_features = requested_features
+        missing_features = features
         if cached is not None:
             missing_features &= ~cached.features
 
+        self.logger.debug(
+            "Media analysis for %s requires a fresh scan: missing=[%s].",
+            label,
+            _format_features(missing_features),
+        )
         scanned = self._scan(real_path, duration_ms, fps, label, missing_features)
+        self._log_scan_result("Fresh media analysis collected", label, scanned)
         self._store_persistent(scanned)
         result = self._merge_results(cached, scanned) if cached is not None else scanned
         self._cache[key] = result
         self._path_results[real_path] = result
+        self._log_scan_result("Media analysis satisfied", label, result)
         return result
 
     def _restore_persistent(
@@ -257,18 +298,44 @@ class MediaAnalysisSession:
         return VideoScanResult(path, features, frames, scenes, (), None)
 
     def _store_persistent(self, result: VideoScanResult) -> None:
-        if self._persistent_cache is None or result.decode_error is not None:
+        if self._persistent_cache is None:
+            return
+        if result.decode_error is not None:
+            self.logger.debug(
+                "Persistent media analysis cache not updated for %s because the scan failed: %s.",
+                result.path,
+                result.decode_error,
+            )
             return
         if result.supports(MediaAnalysisFeature.SCENE_CHANGES):
             self._persistent_cache.save_scene_changes(result.path, list(result.scene_changes))
+            self.logger.debug(
+                "Persistent media analysis cache stored %d scene changes for %s.",
+                len(result.scene_changes),
+                result.path,
+            )
         if result.supports(MediaAnalysisFeature.FRAME_TIMESTAMPS):
             frame_probes = {
                 timestamp: {**info, "path": None}
                 for timestamp, info in result.frames.items()
             }
             self._persistent_cache.save_frame_probes(result.path, frame_probes)
+            self.logger.debug(
+                "Persistent media analysis cache stored %d frame timestamps for %s.",
+                len(frame_probes),
+                result.path,
+            )
 
     def fulfill(self, request: MediaAnalysisRequest) -> VideoScanResult:
+        self.logger.debug(
+            "Fulfilling declared media analysis request for %s (%s): features=[%s], "
+            "duration_ms=%d, fps=%s.",
+            request.label,
+            os.path.realpath(request.path),
+            _format_features(request.features),
+            request.duration_ms,
+            request.fps,
+        )
         return self.scan(
             request.path,
             duration_ms=request.duration_ms,
@@ -278,6 +345,11 @@ class MediaAnalysisSession:
         )
 
     def validate_streams(self, path: str, *, label: str | None = None) -> VideoScanResult:
+        self.logger.debug(
+            "Media stream validation requested for %s (label=%s).",
+            os.path.realpath(path),
+            label or path,
+        )
         return self.scan(
             path,
             duration_ms=None,
@@ -287,14 +359,52 @@ class MediaAnalysisSession:
         )
 
     def result_for(self, path: str) -> VideoScanResult | None:
-        return self._path_results.get(os.path.realpath(path))
+        real_path = os.path.realpath(path)
+        result = self._path_results.get(real_path)
+        if result is None:
+            self.logger.debug("Media analysis result lookup for %s: miss.", real_path)
+        else:
+            self._log_scan_result("Media analysis result lookup", real_path, result)
+        return result
 
-    def results_for(self, paths: set[str]) -> dict[str, VideoScanResult]:
-        return {
-            path: result
-            for path in paths
-            if (result := self.result_for(path)) is not None
-        }
+    def _log_probe_result(self, action: str, result: MediaProbeResult) -> None:
+        streams = result.data.get("streams", [])
+        streams = streams if isinstance(streams, list) else []
+        has_video = any(
+            isinstance(stream, dict) and stream.get("codec_type") == "video"
+            for stream in streams
+        )
+        has_audio = any(
+            isinstance(stream, dict) and stream.get("codec_type") == "audio"
+            for stream in streams
+        )
+        self.logger.debug(
+            "%s for %s: streams=%d, video=%s, audio=%s, error=%s.",
+            action,
+            result.path,
+            len(streams),
+            has_video,
+            has_audio,
+            result.error or "none",
+        )
+
+    def _log_scan_result(
+        self,
+        action: str,
+        label: str,
+        result: VideoScanResult,
+    ) -> None:
+        self.logger.debug(
+            "%s for %s: features=[%s], frames=%d, scene_changes=%d, "
+            "identity_samples=%d, decode_error=%s.",
+            action,
+            label,
+            _format_features(result.features),
+            len(result.frames),
+            len(result.scene_changes),
+            len(result.identity_samples),
+            result.decode_error or "none",
+        )
 
     @staticmethod
     def _file_key(path: str) -> tuple[object, ...]:
@@ -326,18 +436,24 @@ class MediaAnalysisSession:
 
         probe = self.probe(path)
         if (
-            features & MediaAnalysisFeature.VALIDATE_STREAMS
+            features == MediaAnalysisFeature.VALIDATE_STREAMS
             and (probe.error is not None or not probe.has_decodable_stream)
         ):
-            if features == MediaAnalysisFeature.VALIDATE_STREAMS:
-                return VideoScanResult(
-                    path=path,
-                    features=features,
-                    frames={},
-                    scene_changes=(),
-                    identity_samples=(),
-                    decode_error=probe.error,
-                )
+            self.logger.debug(
+                "FFmpeg media scan skipped for %s: validation-only request, "
+                "decodable_stream=%s, probe_error=%s.",
+                label,
+                probe.has_decodable_stream,
+                probe.error or "none",
+            )
+            return VideoScanResult(
+                path=path,
+                features=features,
+                frames={},
+                scene_changes=(),
+                identity_samples=(),
+                decode_error=probe.error,
+            )
 
         has_primary_video = probe.has_video
         scan_dir = self.workspace.unique_dir("media_scan")
@@ -440,6 +556,16 @@ class MediaAnalysisSession:
                 "-stats_enc_pre_fmt:v:0", "{ni} {ti}",
                 sample_pattern,
             ])
+
+        self.logger.debug(
+            "FFmpeg media scan pipeline for %s: features=[%s], video_branches=[%s], "
+            "identity_targets=%d, validates_all_streams=%s.",
+            label,
+            _format_features(features),
+            ", ".join(branches) if branches else "none",
+            len(target_timestamps),
+            bool(features & MediaAnalysisFeature.VALIDATE_STREAMS),
+        )
 
         scene_timestamps: list[int] = []
         duration_s = duration_ms / 1000 if duration_ms is not None and duration_ms > 0 else None

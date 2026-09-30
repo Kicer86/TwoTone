@@ -1,15 +1,22 @@
 import logging
 import os
-
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
+
 from tqdm import tqdm
 
-from ..utils import files_utils, generic_utils, language_utils, media_analysis, video_utils
+from ..tool import ToolRuntimeContext
+from ..utils import (
+    files_utils,
+    generic_utils,
+    language_utils,
+    media_analysis,
+    video_utils,
+)
 from .attachments_picker import AttachmentsPicker
 from .duplicates_source import DuplicatesSource
-from .streams_picker import StreamsPicker
 from .melt_common import (
     AttachmentRef,
     AudioStreamRef,
@@ -21,6 +28,7 @@ from .melt_common import (
     stream_short_details,
 )
 from .pair_matcher import PairMatcher
+from .streams_picker import StreamsPicker
 
 
 class UnsupportedMeltInputError(RuntimeError):
@@ -38,19 +46,22 @@ class MeltAnalyzer:
         self,
         logger: logging.Logger,
         duplicates_source: DuplicatesSource,
-        workspace: files_utils.Workspace,
+        context: ToolRuntimeContext,
         allow_video_timeline_mismatch: bool,
-        media_analysis_session: media_analysis.MediaAnalysisSession,
     ) -> None:
         self.logger = logger
         self.duplicates_source = duplicates_source
-        self.workspace = workspace
+        self.workspace = context.workspace
         self.allow_video_timeline_mismatch = allow_video_timeline_mismatch
-        self.media_analysis = media_analysis_session
+        self.media_analysis = context.media_analysis
         self._timeline_identity_cache: dict[tuple[str, str], bool] = {}
-        self.input_paths: tuple[str, ...] = ()
 
-    def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
+    def analyze_duplicates(
+        self,
+        duplicates: dict[str, list[str]],
+        *,
+        display_roots: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
         base_plan = self._prepare_duplicates_set(duplicates)
 
         analysis_plan: list[dict[str, Any]] = []
@@ -64,11 +75,12 @@ class MeltAnalyzer:
                 groups_iter = tqdm(groups, desc="Candidates", unit="set", position=1, **generic_utils.get_tqdm_defaults())
             else:
                 groups_iter = groups
+
             for group in groups_iter:
                 files = group["files"]
                 output_name = group["output_name"]
 
-                input_files = MeltInputFiles(files, self.input_paths)
+                input_files = MeltInputFiles(files, display_roots)
                 self._log_group_inputs(title, input_files)
 
                 # analysis for group
@@ -77,6 +89,7 @@ class MeltAnalyzer:
                 except UnsupportedMeltInputError as err:
                     plan_details = None
                     issue = str(err)
+
                 if plan_details is None:
                     self._log_group_issue(issue or "Unknown issue.")
                     skipped_groups.append({
@@ -428,7 +441,7 @@ class MeltAnalyzer:
 
         for path in sorted(stream_paths - {base_path}, key=ids.__getitem__):
             file_id = ids[path]
-            self.logger.info("Checking video alignment: #%d ↔ #%d", base_file_id, file_id)
+            self.logger.info("Checking video alignment: #%d - #%d", base_file_id, file_id)
             length = self._pick_primary_video_track(tracks[path]["video"], file_id).get("length")
 
             if _is_length_mismatch(base_length, length):

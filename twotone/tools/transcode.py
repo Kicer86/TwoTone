@@ -3,14 +3,16 @@ import argparse
 import logging
 import os
 import re
-from dataclasses import dataclass
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+
 from overrides import override
 from tqdm import tqdm
-from typing import Callable
+
+from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
 
 from .tool import EmptyPlan, Plan, Tool, ToolRuntimeContext
-from twotone.tools.utils import files_utils, generic_utils, process_utils, video_utils
 
 
 class Transcoder(generic_utils.InterruptibleProcess):

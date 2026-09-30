@@ -5,13 +5,11 @@ import json
 import logging
 import os
 import re
-
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 from . import generic_utils, media_analysis
-
 
 _CACHE_VERSION = 2
 
@@ -20,6 +18,30 @@ class ValidationMode(enum.Enum):
     OFF = "off"
     FAST = "fast"
     FULL = "full"
+
+
+@dataclass(frozen=True)
+class InputValidationPolicy:
+    """Describe the runtime behavior and dependencies of an input-validation mode."""
+
+    mode: ValidationMode
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != ValidationMode.OFF
+
+    @property
+    def validate_all_streams(self) -> bool:
+        return self.mode == ValidationMode.FULL
+
+    def required_tools(self) -> set[str]:
+        if self.enabled:
+            tools = {"ffprobe"}
+            if self.validate_all_streams:
+                tools.add("ffmpeg")
+        else:
+            tools = set()
+        return tools
 
 
 @dataclass(frozen=True)
@@ -48,19 +70,19 @@ class InputValidator:
 
     def __init__(
         self,
-        mode: ValidationMode,
+        policy: InputValidationPolicy,
         logger: logging.Logger,
         cache_dir: str | None = None,
         *,
         media_analysis_session: media_analysis.MediaAnalysisSession,
     ) -> None:
-        self.mode = mode
+        self.policy = policy
         self.logger = logger
         self.cache_path = Path(cache_dir or generic_utils.get_twotone_config_dir()) / "input_validation.json"
         self.media_analysis = media_analysis_session
 
     def validate(self, paths: Iterable[str]) -> ValidationReport:
-        if self.mode == ValidationMode.OFF:
+        if not self.policy.enabled:
             return ValidationReport((), 0, 0)
 
         cache = self._load_cache()
@@ -69,7 +91,7 @@ class InputValidator:
             self.logger.info(
                 "Validating %d input file(s) with %s validation.",
                 len(unique_paths),
-                self.mode.value,
+                self.policy.mode.value,
             )
         issues: list[ValidationIssue] = []
         checked_count = 0
@@ -118,7 +140,7 @@ class InputValidator:
         if probe.error is not None:
             return ValidationIssue(path, self._summarize_error(probe.error))
 
-        if self.mode == ValidationMode.FULL and probe.has_decodable_stream:
+        if self.policy.validate_all_streams and probe.has_decodable_stream:
             scan = self.media_analysis.validate_streams(path, label=path)
             if scan.decode_error is not None:
                 return ValidationIssue(
@@ -174,7 +196,7 @@ class InputValidator:
         stat = os.stat(path)
         return json.dumps({
             "version": _CACHE_VERSION,
-            "mode": self.mode.value,
+            "mode": self.policy.mode.value,
             "path": path,
             "device": stat.st_dev,
             "inode": stat.st_ino,

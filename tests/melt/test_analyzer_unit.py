@@ -1,13 +1,22 @@
 import os
 import unittest
-
-from parameterized import parameterized
 from unittest.mock import Mock, patch
 
 from common import TwoToneTestCase
+from parameterized import parameterized
+
 from twotone.tools.melt.melt import MeltAnalyzer, StaticSource
-from twotone.tools.melt.melt_analyzer import AlignmentRequirement, UnsupportedMeltInputError
-from twotone.tools.melt.melt_common import AudioStreamRef, MeltInputFiles, SubtitleStreamRef, VideoStreamRef
+from twotone.tools.melt.melt_analyzer import (
+    AlignmentRequirement,
+    UnsupportedMeltInputError,
+)
+from twotone.tools.melt.melt_common import (
+    AudioStreamRef,
+    MeltInputFiles,
+    SubtitleStreamRef,
+    VideoStreamRef,
+)
+from twotone.tools.tool import ToolRuntimeContext
 from twotone.tools.utils import generic_utils, media_analysis, video_utils
 
 
@@ -20,24 +29,27 @@ class MeltAnalyzerTest(TwoToneTestCase):
             self.workspace,
             interruption,
             self.logger.getChild("MediaAnalysis"),
-            validate_all_streams=False,
         )
+        self.context = ToolRuntimeContext(self.workspace, interruption, self.media_analysis)
         self.analyzer = MeltAnalyzer(
             self.logger,
             duplicates,
-            self.workspace,
+            self.context,
             allow_video_timeline_mismatch=False,
-            media_analysis_session=self.media_analysis,
         )
 
     def test_equal_length_matcher_receives_shared_media_session(self):
         session = Mock(spec=media_analysis.MediaAnalysisSession)
+        context = ToolRuntimeContext(
+            self.workspace,
+            self.analyzer.duplicates_source.interruption,
+            session,
+        )
         analyzer = MeltAnalyzer(
             self.logger,
             self.analyzer.duplicates_source,
-            self.workspace,
+            context,
             allow_video_timeline_mismatch=False,
-            media_analysis_session=session,
         )
         base_path = "/base.mkv"
         source_path = "/source.mkv"
@@ -57,6 +69,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
 
         self.assertEqual(requirements, [])
         self.assertIs(matcher.call_args.kwargs["media_analysis_session"], session)
+        matcher.return_value.has_identical_timeline_content.assert_called_once_with()
 
 
     @staticmethod
@@ -401,7 +414,6 @@ class MeltAnalyzerTest(TwoToneTestCase):
     def test_analyze_duplicates_displays_paths_relative_to_input(self):
         input_dir = os.path.join(self.wd.path, "input")
         input_path = os.path.join(input_dir, "nested", "input.mkv")
-        self.analyzer.input_paths = (input_dir,)
         base_plan = [{
             "title": "Title",
             "groups": [{"files": [input_path], "output_name": "input"}],
@@ -410,7 +422,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
         with self.assertLogs(self.logger, level="INFO") as logged, \
              patch.object(self.analyzer, "_prepare_duplicates_set", return_value=base_plan), \
              patch.object(self.analyzer, "_analyze_group", return_value=({}, None, {})):
-            self.analyzer.analyze_duplicates({})
+            self.analyzer.analyze_duplicates({}, display_roots=(input_dir,))
 
         relative_path = os.path.join("nested", "input.mkv")
         self.assertTrue(any(f"#1: {relative_path}" in message for message in logged.output))
@@ -516,7 +528,7 @@ class MeltInputFilesTest(unittest.TestCase):
     def test_assigns_stable_one_based_ids_and_formats_paths_from_inputs(self):
         files = MeltInputFiles(
             ["/media/first.mkv", "/media/input/nested/second.mkv", "/net/library/third.mkv"],
-            input_paths=["/media/first.mkv", "/media/input"],
+            display_roots=["/media/first.mkv", "/media/input"],
         )
 
         self.assertEqual(files.id_for("/media/first.mkv"), 1)

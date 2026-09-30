@@ -2,27 +2,32 @@
 import argparse
 import logging
 import os
-import sys
 import shutil
+import sys
 import time
-
 from importlib import metadata
 
 import argcomplete
 from overrides import override
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from .tools import          \
-    concatenate,            \
-    language_fixer,         \
-    melt,                   \
-    merge,                  \
-    subtitles_fixer,        \
-    transcode,              \
-    utilities
-
+from .tools import (
+    concatenate,
+    language_fixer,
+    melt,
+    merge,
+    subtitles_fixer,
+    transcode,
+    utilities,
+)
 from .tools.tool import ToolRuntimeContext
-from .tools.utils import files_utils, generic_utils, input_validation, media_analysis, process_utils
+from .tools.utils import (
+    files_utils,
+    generic_utils,
+    input_validation,
+    media_analysis,
+    process_utils,
+)
 
 TOOLS = {
     "concatenate": (concatenate.ConcatenateTool(), "Concatenate multifile movies into one file", True),
@@ -244,7 +249,9 @@ def execute(argv: list[str]) -> None:
                  logger=logger,
             ) as workspace:
             tool_logger = logger.getChild(args.tool)
-            validation_mode = input_validation.ValidationMode(args.validate_inputs)
+            validation_policy = input_validation.InputValidationPolicy(
+                input_validation.ValidationMode(args.validate_inputs)
+            )
             interruption = generic_utils.InterruptibleProcess(tool_logger)
             context = ToolRuntimeContext(
                 workspace=workspace,
@@ -253,24 +260,19 @@ def execute(argv: list[str]) -> None:
                     workspace,
                     interruption,
                     tool_logger.getChild("MediaAnalysis"),
-                    validate_all_streams=validation_mode == input_validation.ValidationMode.FULL,
                 ),
             )
-            required_tools = set(tool.required_tools())
-            if validation_mode != input_validation.ValidationMode.OFF:
-                required_tools.add("ffprobe")
-                if validation_mode == input_validation.ValidationMode.FULL:
-                    required_tools.add("ffmpeg")
 
-            if required_tools:
-                process_utils.ensure_tools_exist(sorted(required_tools), tool_logger)
+            required_tools = tool.required_tools() | validation_policy.required_tools()
+            process_utils.ensure_tools_exist(sorted(required_tools), tool_logger)
+
             plan = tool.analyze(
                 args,
                 logger=tool_logger,
                 context=context,
             )
 
-            if args.no_dry_run or args.interactive:
+            def fulfill_media_analysis_requests() -> None:
                 media_analysis_requests = tuple(tool.media_analysis_requests(plan))
                 if media_analysis_requests and "ffmpeg" not in required_tools:
                     process_utils.ensure_tools_exist(["ffmpeg"], tool_logger)
@@ -278,8 +280,11 @@ def execute(argv: list[str]) -> None:
                 for request in media_analysis_requests:
                     context.media_analysis.fulfill(request)
 
-            validation = input_validation.InputValidator(
-                validation_mode,
+            if args.no_dry_run:
+                fulfill_media_analysis_requests()
+
+            validation_report = input_validation.InputValidator(
+                validation_policy,
                 tool_logger,
                 args.validation_cache_dir,
                 media_analysis_session=context.media_analysis,
@@ -287,9 +292,9 @@ def execute(argv: list[str]) -> None:
                 plan.input_files(),
             )
 
-            if not validation.is_valid:
+            if not validation_report.is_valid:
                 plan.render(tool_logger)
-                validation.render(tool_logger)
+                validation_report.render(tool_logger)
                 tool_logger.error("Input validation failed. Skipping perform.")
                 return
 
@@ -322,6 +327,7 @@ def execute(argv: list[str]) -> None:
                         answer = ""
                     if answer in {"y", "yes"}:
                         tool_logger.info("User confirmed. Starting perform.")
+                        fulfill_media_analysis_requests()
                         tool.perform(
                             args,
                             logger=tool_logger,

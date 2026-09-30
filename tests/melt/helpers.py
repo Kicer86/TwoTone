@@ -3,22 +3,23 @@ import logging
 import os
 import tempfile
 import types
-
 from collections.abc import Iterator
 from functools import partial
 from itertools import permutations
 from pathlib import Path
 
-from twotone.tools.utils import generic_utils, media_analysis, video_utils
-from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
-from twotone.tools.utils.files_utils import Workspace
 from common import (
-    TwoToneTestCase,
     FileCache,
+    TwoToneTestCase,
     get_audio,
     get_video,
     run_ffmpeg,
 )
+
+from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
+from twotone.tools.tool import ToolRuntimeContext
+from twotone.tools.utils import generic_utils, media_analysis, video_utils
+from twotone.tools.utils.files_utils import Workspace
 
 
 def normalize(obj):
@@ -51,16 +52,15 @@ def analyze_duplicates_helper(
         workspace,
         duplicates_source.interruption,
         logger.getChild("MediaAnalysis"),
-        validate_all_streams=False,
     )
+    context = ToolRuntimeContext(workspace, duplicates_source.interruption, media_analysis_session)
     duplicates_raw = duplicates_source.collect_duplicates()
     duplicates = {title: list(files) for title, files in duplicates_raw.items()}
     analyzer = MeltAnalyzer(
         logger,
         duplicates_source,
-        workspace,
+        context,
         allow_video_timeline_mismatch,
-        media_analysis_session,
     )
     return analyzer.analyze_duplicates(duplicates)
 
@@ -76,8 +76,8 @@ def process_duplicates_helper(
         workspace,
         interruption,
         logger.getChild("MediaAnalysis"),
-        validate_all_streams=False,
     )
+    context = ToolRuntimeContext(workspace, interruption, media_analysis_session)
     for item in plan:
         for group in item.get("groups", []):
             for request in group.get("media_analysis_requests", []):
@@ -85,10 +85,8 @@ def process_duplicates_helper(
 
     performer = MeltPerformer(
         logger,
-        interruption,
-        workspace,
+        context,
         output_dir,
-        media_analysis_session=media_analysis_session,
     )
     performer.process_duplicates(plan)
 

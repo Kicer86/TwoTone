@@ -3,28 +3,35 @@ import logging
 import os
 import tempfile
 import unittest
-
 from array import array
-from parameterized import parameterized
 from unittest.mock import Mock, patch
 
-from twotone.tools.utils import files_utils, generic_utils, media_analysis, process_utils, video_utils
+from common import run_ffmpeg
+from parameterized import parameterized
+
+from melt.helpers import _FAKE_PROCESS_OK
 from twotone.tools.melt.melt import MeltPerformer, StaticSource, StreamsPicker
 from twotone.tools.melt.melt_common import AttachmentRef, AudioStreamRef, VideoStreamRef
 from twotone.tools.melt.melt_performer import (
-    AudioSourceWindow,
     AudioPatchRequest,
     AudioPatchResult,
+    AudioSourceWindow,
     TimelineInterval,
     VideoToAudioTimeline,
-    _AudioStrategy,
     _AudioPart,
+    _AudioStrategy,
     _PairMatchResult,
     _StreamEntry,
 )
 from twotone.tools.melt.pair_matcher import MappingRelation, SegmentsMappingResult
-from common import run_ffmpeg
-from melt.helpers import _FAKE_PROCESS_OK
+from twotone.tools.tool import ToolRuntimeContext
+from twotone.tools.utils import (
+    files_utils,
+    generic_utils,
+    media_analysis,
+    process_utils,
+    video_utils,
+)
 
 
 class MeltPerformerUnitTest(unittest.TestCase):
@@ -40,14 +47,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
             workspace,
             interruption,
             logging.getLogger("test.MeltPerformer.MediaAnalysis"),
-            validate_all_streams=False,
         )
+        context = ToolRuntimeContext(workspace, interruption, media_analysis_session)
         return MeltPerformer(
             logger=logging.getLogger("test.MeltPerformer"),
-            interruption=interruption,
-            workspace=workspace,
+            context=context,
             output_dir=output.root,
-            media_analysis_session=media_analysis_session,
         )
 
     def _process_single_source_plan(
@@ -87,12 +92,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
         workspace = files_utils.Workspace.temporary()
         self.addCleanup(output.close)
         self.addCleanup(workspace.close)
+        interruption = generic_utils.InterruptibleProcess()
+        context = ToolRuntimeContext(workspace, interruption, media_analysis_session)
         performer = MeltPerformer(
             logger=logging.getLogger("test.MeltPerformer"),
-            interruption=generic_utils.InterruptibleProcess(),
-            workspace=workspace,
+            context=context,
             output_dir=output.root,
-            media_analysis_session=media_analysis_session,
         )
         base_path = "/media/base.mkv"
         source_path = "/media/source.mkv"
