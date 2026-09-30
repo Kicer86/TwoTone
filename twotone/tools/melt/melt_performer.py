@@ -216,6 +216,7 @@ class MeltPerformer(TrackTimelineMixin):
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
         self._media_info_cache: dict[str, dict[str, Any]] = {}
         self._stream_info_cache: dict[tuple[str, str, int], dict[str, Any] | None] = {}
+        self._input_file_ids: dict[str, int] = {}
         self.media_analysis = context.media_analysis
         self.workspace = context.workspace
 
@@ -589,7 +590,8 @@ class MeltPerformer(TrackTimelineMixin):
             ])
 
         self.logger.info(
-            "Audio patch (%s): base=[%d…%d] ms, source=[%d…%d] ms, segments=%d",
+            "Audio patch for %s (%s): base=[%d…%d] ms, source=[%d…%d] ms, segments=%d",
+            self._audio_source_description(request.source_audio),
             strategy.value,
             request.target_interval.start_ms,
             request.target_interval.end_ms,
@@ -630,6 +632,7 @@ class MeltPerformer(TrackTimelineMixin):
                 source_params[1],
                 strategy,
                 label=f"{scaled_label} audio",
+                progress_source=self._audio_source_description(request.source_audio),
             ))
 
         physical_source_interval = self._source_patch_target_interval(
@@ -670,6 +673,10 @@ class MeltPerformer(TrackTimelineMixin):
             os.path.join(working_dir, "concat.txt"),
             request.output_path,
             channel_layout=self._get_audio_channel_layout(request.source_audio),
+            progress_description=(
+                "Encoding aligned audio from "
+                f"{self._audio_source_description(request.source_audio)}: FLAC -> AAC"
+            ),
             logger=self.logger,
         )
 
@@ -898,6 +905,7 @@ class MeltPerformer(TrackTimelineMixin):
         strategy: _AudioStrategy,
         *,
         label: str,
+        progress_source: str | None = None,
     ) -> _AudioPart:
         if source_per_base > 0:
             target_duration_ms = round(source_part.duration_ms / source_per_base)
@@ -927,7 +935,13 @@ class MeltPerformer(TrackTimelineMixin):
                     "-filter:a", filter_arg,
                     "-sample_fmt", "s32", "-c:a", "flac",
                     output_path,
-                ], logger=self.logger)
+                ], show_progress=True,
+                    progress_description=(
+                        f"Time-scaling {progress_source}: FLAC -> FLAC"
+                        if progress_source is not None
+                        else "Time-scaling audio"
+                    ),
+                    logger=self.logger)
             )
             actual_duration_ms = video_utils.get_video_duration(output_path, logger=self.logger)
             if actual_duration_ms is not None:
@@ -1499,6 +1513,7 @@ class MeltPerformer(TrackTimelineMixin):
         concat_list_path: str,
         output_path: str,
         channel_layout: str | None = None,
+        progress_description: str = "Encoding audio to AAC",
         logger: logging.Logger | None = None,
     ) -> None:
         """Concatenate audio parts (head + middle segments + tail) and encode to AAC.
@@ -1539,7 +1554,7 @@ class MeltPerformer(TrackTimelineMixin):
                 *layout_args,
                 "-c:a", "aac",
                 output_path,
-            ], logger=logger)
+            ], show_progress=True, progress_description=progress_description, logger=logger)
         )
 
     def _patch_audio_segment(
@@ -1602,6 +1617,7 @@ class MeltPerformer(TrackTimelineMixin):
         match_result = self._pair_match_cache.get(cache_key)
 
         if match_result is None:
+            self.logger.info("Matching video content: #%d - #%d", lhs_id, rhs_id)
             duration = video_utils.get_video_duration(source_path)
             matcher = PairMatcher(
                 self.interruption, mwd, video_path_base, source_path,
@@ -1633,6 +1649,7 @@ class MeltPerformer(TrackTimelineMixin):
         file_ids: dict[str, int],
     ) -> AudioPatchResult:
         """Run PairMatcher and apply the appropriate audio patching strategy."""
+        self._input_file_ids = dict(file_ids)
         video_path_base = base_video.path
         audio_path = audio_stream.path
         ffprobe_stream_index = audio_stream.ffprobe_stream_index
@@ -2125,7 +2142,13 @@ class MeltPerformer(TrackTimelineMixin):
                     "-y", "-i", flac_path, "-map", "0:a:0",
                     "-filter:a", trim_filter,
                     "-sample_fmt", "s32", "-c:a", "flac", prepared_flac,
-                ], logger=self.logger)
+                ], show_progress=True,
+                    progress_description=(
+                        f"Trimming FLAC from {self._audio_source_description(source_stream)} "
+                        f"to {generic_utils.ms_to_time(window_start_ms)}-"
+                        f"{generic_utils.ms_to_time(window_end_ms)}"
+                    ),
+                    logger=self.logger)
             )
 
         output_path = self._temporary_audio_path("normalized_unscaled_audio", ffprobe_stream_index)
@@ -2138,6 +2161,10 @@ class MeltPerformer(TrackTimelineMixin):
             ),
             output_path,
             channel_layout=channel_layout,
+            progress_description=(
+                "Encoding normalized audio from "
+                f"{self._audio_source_description(source_stream)}: FLAC -> AAC"
+            ),
             logger=self.logger,
         )
 
@@ -2219,6 +2246,7 @@ class MeltPerformer(TrackTimelineMixin):
         audio_streams = [AudioStreamRef(*stream) for stream in audio_streams]
         subtitle_streams = [SubtitleStreamRef(*stream) for stream in subtitle_streams]
         attachments = [AttachmentRef(*attachment) for attachment in attachments]
+        self._input_file_ids = dict(file_ids)
         streams_list: list[_StreamEntry] = []
         base_video = video_streams[0]
         video_path_base = base_video.path
@@ -2274,6 +2302,11 @@ class MeltPerformer(TrackTimelineMixin):
                 # would change timing semantics or the track must be trimmed to
                 # the output timeline.
                 needs_mkvmerge_normalization = self._audio_needs_mkvmerge_normalization(audio_stream)
+                normalization_reason = (
+                    self._audio_mkvmerge_normalization_reason(audio_stream)
+                    if needs_mkvmerge_normalization
+                    else None
+                )
                 trim_end_ms: int | None = None
                 if path != video_path_base and audio_desired_start_ms is not None and base_output_end_ms is not None:
                     audio_end_ms = self._source_stream_end_offset_ms(
@@ -2285,6 +2318,19 @@ class MeltPerformer(TrackTimelineMixin):
                         trim_end_ms = base_output_end_ms
                 needs_unscaled_preparation = needs_mkvmerge_normalization or trim_end_ms is not None
                 if needs_unscaled_preparation:
+                    reasons = []
+                    if needs_mkvmerge_normalization:
+                        reasons.append(normalization_reason or "normalizing AAC timing")
+                    if trim_end_ms is not None:
+                        reasons.append(
+                            "trimming to the output timeline at "
+                            f"{generic_utils.ms_to_time(trim_end_ms)}"
+                        )
+                    self.logger.info(
+                        "Preparing audio track #%d from file #%d for muxing: %s.",
+                        audio_stream.mkvmerge_track_id, file_ids[path],
+                        " and ".join(reasons),
+                    )
                     output_stream = self._prepare_normalized_unscaled_audio(
                         audio_stream,
                         desired_end_ms=trim_end_ms,

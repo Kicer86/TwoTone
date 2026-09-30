@@ -1028,6 +1028,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         priming_exposed,
     ):
         performer = self._make_performer()
+        performer._input_file_ids = {"/tmp/source.mkv": 1}
         calls = []
         source_info = {
             "streams": [
@@ -1043,8 +1044,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
             ]
         }
 
-        def fake_start_process(tool, args, **_kwargs):
-            calls.append((tool, list(args)))
+        def fake_start_process(tool, args, **kwargs):
+            calls.append((tool, list(args), kwargs))
             return _FAKE_PROCESS_OK
 
         with patch.object(video_utils, "get_video_full_info", return_value=source_info), \
@@ -1065,6 +1066,13 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(
             trim_filter,
             "asetpts=PTS-STARTPTS,atrim=start=0.021333:end=62.771333,asetpts=PTS-STARTPTS",
+        )
+        self.assertEqual(
+            [call[2].get("progress_description") for call in calls],
+            [
+                "Extracting AAC bitstream from file #1, audio stream #1",
+                "Decoding file #1, audio stream #1: AAC -> FLAC",
+            ],
         )
 
     def test_non_primed_trim_window_is_anchored_to_content_start(self):
@@ -1497,19 +1505,24 @@ class MeltPerformerUnitTest(unittest.TestCase):
             }
 
         with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info(True)):
-            self.assertTrue(performer._audio_needs_mkvmerge_normalization(
-                AudioStreamRef("/tmp/source.mkv", 1, 1, "eng")
-            ))
+            padded_stream = AudioStreamRef("/tmp/source.mkv", 1, 1, "eng")
+            self.assertTrue(performer._audio_needs_mkvmerge_normalization(padded_stream))
+            self.assertEqual(
+                performer._audio_mkvmerge_normalization_reason(padded_stream),
+                "removing AAC encoder delay (1024 priming samples)",
+            )
         performer._media_info_cache.clear()
         performer._stream_info_cache.clear()
         with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info(False)):
-            self.assertFalse(performer._audio_needs_mkvmerge_normalization(
-                AudioStreamRef("/tmp/source.mkv", 1, 1, "eng")
-            ))
+            unpadded_stream = AudioStreamRef("/tmp/source.mkv", 1, 1, "eng")
+            self.assertFalse(performer._audio_needs_mkvmerge_normalization(unpadded_stream))
+            self.assertIsNone(performer._audio_mkvmerge_normalization_reason(unpadded_stream))
 
     def test_prepare_normalized_unscaled_audio_decodes_via_flac_then_encodes_aac_once(self):
         performer = self._make_performer()
+        performer._input_file_ids = {"/tmp/source.mov": 2}
         calls = []
+        progress_options = []
         source_full_info = {
             "streams": [
                 {"codec_type": "video", "index": 0, "codec_name": "h264"},
@@ -1519,6 +1532,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         def fake_start_process(tool, args, **kwargs):
             calls.append((tool, list(args)))
+            progress_options.append(kwargs)
             return _FAKE_PROCESS_OK
 
         def fake_full_info(path, logger=None):
@@ -1544,6 +1558,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
         # could re-apply encoder-delay priming.  The second call is fully cached.
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(tool == "ffmpeg" for tool, _ in calls))
+        self.assertTrue(all(options.get("show_progress") for options in progress_options))
+        self.assertEqual(
+            [options.get("progress_description") for options in progress_options],
+            [
+                "Decoding file #2, audio track #1: AAC -> FLAC",
+                "Encoding normalized audio from file #2, audio track #1: FLAC -> AAC",
+            ],
+        )
 
         decode_args = calls[0][1]
         self.assertEqual(decode_args[decode_args.index("-map") + 1], "0:1")
@@ -1716,7 +1738,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
         def normalize(stream, **_kwargs):
             return AudioStreamRef(normalized_path, 0, 0, stream.language)
 
-        with patch.object(performer, "_video_track_duration", return_value=6000), \
+        with self.assertLogs(performer.logger, level=logging.INFO) as logs, \
+             patch.object(performer, "_video_track_duration", return_value=6000), \
              patch.object(performer, "_base_output_end_ms", return_value=6000), \
              patch.object(performer, "_base_audio_end_ms", return_value=None), \
              patch.object(performer, "_source_stream_end_offset_ms", return_value=5900), \
@@ -1733,6 +1756,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 file_ids={base_video: 1, source_path: 2},
                 files_details={},
             )
+
+        self.assertIn(
+            "Preparing audio track #1 from file #2 for muxing: "
+            "normalizing AAC timing.",
+            "\n".join(logs.output),
+        )
 
         self.assertEqual(prepared.input_files, {base_video, source_path, normalized_path})
         self.assertIn(_StreamEntry("audio", 0, normalized_path, "eng", None), prepared.entries)
