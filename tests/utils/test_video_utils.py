@@ -17,6 +17,69 @@ from twotone.tools.utils import process_utils, subtitles_utils, video_utils
 
 
 class UtilsTests(TwoToneTestCase):
+    def test_get_video_full_info_requests_ffprobe_error_details(self):
+        result = process_utils.ProcessResult(
+            0,
+            '{"format": {}, "streams": []}',
+            "",
+        )
+
+        with patch.object(process_utils, "start_process", return_value=result) as start:
+            info = video_utils.get_video_full_info(
+                "input.mkv",
+                logger=self.logger,
+                show_progress=True,
+                progress_description="Reading media metadata",
+            )
+
+        self.assertEqual(info, {"format": {}, "streams": []})
+        args = start.call_args.args[1]
+        self.assertEqual(args[:3], ["-v", "error", "-show_error"])
+        self.assertIn("-show_format", args)
+        self.assertIn("-show_streams", args)
+        self.assertEqual(
+            start.call_args.kwargs,
+            {
+                "show_progress": True,
+                "progress_description": "Reading media metadata",
+                "logger": self.logger,
+            },
+        )
+
+    def test_get_video_full_info_reports_structured_ffprobe_error(self):
+        result = process_utils.ProcessResult(
+            1,
+            '{"error": {"code": -2, "string": "No such file or directory"}}',
+            "input.mkv: No such file or directory",
+        )
+
+        with patch.object(process_utils, "start_process", return_value=result):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"ffprobe failed for input\.mkv: No such file or directory",
+            ):
+                video_utils.get_video_full_info("input.mkv", logger=self.logger)
+
+    def test_get_video_full_info_reports_invalid_json(self):
+        result = process_utils.ProcessResult(0, "not JSON", "")
+
+        with patch.object(process_utils, "start_process", return_value=result):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"ffprobe returned invalid JSON for input\.mkv",
+            ):
+                video_utils.get_video_full_info("input.mkv", logger=self.logger)
+
+    def test_get_video_full_info_requires_json_object(self):
+        result = process_utils.ProcessResult(0, "[]", "")
+
+        with patch.object(process_utils, "start_process", return_value=result):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"ffprobe returned invalid metadata for input\.mkv: expected a JSON object",
+            ):
+                video_utils.get_video_full_info("input.mkv", logger=self.logger)
+
     def test_frame_ranges_use_separate_timestamps_when_frame_ids_restart(self):
         frames = {
             0: {"frame_id": 0, "path": None},
@@ -36,20 +99,71 @@ class UtilsTests(TwoToneTestCase):
         self.assertIn(r"between(t\,0.049250\,0.050750)", expression)
         self.assertIn(r"between(t\,0.129250\,0.130750)", expression)
 
-    def test_mkvmerge_parser_reuses_supplied_identification(self):
-        mkvmerge_info = {
-            "tracks": [],
-            "attachments": [],
+    def test_normalize_video_data_uses_container_duration_without_io(self):
+        probe_info = {
+            "format": {"duration": "12.345"},
+            "streams": [{
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "h264",
+                "r_frame_rate": "25/1",
+                "width": 1920,
+                "height": 1080,
+            }],
         }
 
-        with patch.object(video_utils, "get_video_full_info_mkvmerge") as identify:
-            parsed = video_utils.get_video_data_mkvmerge(
-                "already-identified.mkv",
-                _mkvmerge_info=mkvmerge_info,
+        with patch.object(video_utils, "get_video_full_info") as probe, \
+             patch.object(video_utils, "get_video_duration") as duration_probe:
+            parsed = video_utils.normalize_video_data(probe_info)
+
+        self.assertEqual(parsed["video"][0]["length"], 12345)
+        probe.assert_not_called()
+        duration_probe.assert_not_called()
+
+    def test_get_video_data_probes_then_normalizes(self):
+        probe_info = {"format": {}, "streams": []}
+        normalized = {"video": []}
+
+        with patch.object(video_utils, "get_video_full_info", return_value=probe_info) as probe, \
+             patch.object(video_utils, "normalize_video_data", return_value=normalized) as normalize:
+            result = video_utils.get_video_data("input.mkv", logger=self.logger)
+
+        self.assertIs(result, normalized)
+        probe.assert_called_once_with("input.mkv", logger=self.logger)
+        normalize.assert_called_once_with(probe_info)
+
+    def test_get_video_data_mkvmerge_probes_then_normalizes(self):
+        mkvmerge_info = {"tracks": [], "attachments": []}
+        probe_info = {"format": {}, "streams": []}
+        normalized = {"attachments": [], "tracks": {}}
+
+        with patch.object(
+            video_utils,
+            "get_video_full_info_mkvmerge",
+            return_value=mkvmerge_info,
+        ) as identify, patch.object(
+            video_utils,
+            "get_video_full_info",
+            return_value=probe_info,
+        ) as probe, patch.object(
+            video_utils,
+            "normalize_mkvmerge_data",
+            return_value=normalized,
+        ) as normalize:
+            result = video_utils.get_video_data_mkvmerge(
+                "input.mkv",
+                enrich=True,
+                logger=self.logger,
             )
 
-        self.assertEqual({"attachments": [], "tracks": {}}, parsed)
-        identify.assert_not_called()
+        self.assertIs(result, normalized)
+        identify.assert_called_once_with("input.mkv", logger=self.logger)
+        probe.assert_called_once_with("input.mkv", logger=self.logger)
+        normalize.assert_called_once_with(
+            mkvmerge_info,
+            probe_info=probe_info,
+            logger=self.logger,
+        )
 
     def test_mkvmerge_enrichment_preserves_cyclic_native_track_mapping(self):
         mkvmerge_info = {
@@ -73,10 +187,15 @@ class UtilsTests(TwoToneTestCase):
         ]
         original_parsed_audio = [stream.copy() for stream in parsed_audio]
 
-        with patch.object(video_utils, "get_video_full_info_mkvmerge", return_value=mkvmerge_info), \
-             patch.object(video_utils, "get_video_full_info", return_value=probe_info), \
-             patch.object(video_utils, "get_video_data", return_value={"audio": parsed_audio}):
-            enriched = video_utils.get_video_data_mkvmerge("cyclic.mka", enrich=True)
+        with patch.object(
+            video_utils,
+            "normalize_video_data",
+            return_value={"audio": parsed_audio},
+        ):
+            enriched = video_utils.normalize_mkvmerge_data(
+                mkvmerge_info,
+                probe_info=probe_info,
+            )
 
         self.assertEqual(
             [

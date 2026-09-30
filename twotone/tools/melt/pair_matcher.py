@@ -403,19 +403,12 @@ class PairMatcher:
         label: str,
         features: media_analysis.MediaAnalysisFeature,
     ) -> media_analysis.VideoScanResult:
-        if path == self.lhs_path:
-            duration_ms = self.lhs_duration_ms
-            fps = self.lhs_fps
-        else:
-            duration_ms = self.rhs_duration_ms
-            fps = self.rhs_fps
-        return self.media_analysis.scan(
-            path,
-            duration_ms=duration_ms,
-            fps=fps,
+        request = media_analysis.MediaAnalysisRequest(
+            path=path,
             label=label,
             features=features,
         )
+        return self.media_analysis.fulfill(request)
 
     @staticmethod
     def calculate_ratio(pairs: list[tuple[int, int]]) -> float:

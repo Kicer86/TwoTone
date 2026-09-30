@@ -694,22 +694,60 @@ def get_video_duration(video_file, logger: logging.Logger | None = None):
         return None
 
 
-def get_video_full_info(path: str, logger: logging.Logger | None = None) -> dict:
+def get_video_full_info(
+    path: str,
+    logger: logging.Logger | None = None,
+    *,
+    show_progress: bool = False,
+    progress_description: str | None = None,
+) -> dict:
     logger = logger or DEFAULT_LOGGER
-    args = []
-    args.extend(["-v", "quiet"])
-    args.extend(["-print_format", "json"])
-    args.append("-show_format")
-    args.append("-show_streams")
-    args.append(path)
-
-    result = process_utils.start_process("ffprobe", args, logger=logger)
+    result = process_utils.start_process(
+        "ffprobe",
+        [
+            "-v", "error",
+            "-show_error",
+            "-print_format", "json",
+            "-show_format",
+            "-show_streams",
+            path,
+        ],
+        show_progress=show_progress,
+        progress_description=progress_description,
+        logger=logger,
+    )
 
     if result.returncode != 0:
-        raise RuntimeError(f"ffprobe exited with unexpected error:\n{result.stderr}")
+        detail = None
+        try:
+            output = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            output = None
 
-    output_lines = result.stdout
-    output_json = json.loads(output_lines)
+        if isinstance(output, dict):
+            error = output.get("error")
+            if isinstance(error, dict):
+                message = error.get("string")
+                code = error.get("code")
+                if message:
+                    detail = str(message)
+                    if code is not None:
+                        detail += f" (code {code})"
+
+        detail = detail or result.stderr.strip() or result.stdout.strip()
+        if not detail:
+            detail = f"exit code {result.returncode}"
+        raise RuntimeError(f"ffprobe failed for {path}: {detail}")
+
+    try:
+        output_json = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"ffprobe returned invalid JSON for {path}: {error}") from error
+
+    if not isinstance(output_json, dict):
+        raise RuntimeError(
+            f"ffprobe returned invalid metadata for {path}: expected a JSON object"
+        )
 
     return output_json
 
@@ -855,13 +893,17 @@ def validate_media_output(
         )
 
 
-def get_video_data(
-    path: str,
-    logger: logging.Logger | None = None,
-    *,
-    _probe_info: dict[str, Any] | None = None,
-) -> dict:
-    logger = logger or DEFAULT_LOGGER
+def normalize_video_data(probe_info: Mapping[str, Any]) -> dict:
+    """Normalize raw ffprobe metadata without performing any I/O."""
+    media_format = probe_info.get("format")
+    container_duration_ms = None
+    if isinstance(media_format, dict):
+        container_duration = media_format.get("duration")
+        if container_duration is not None:
+            try:
+                container_duration_ms = int(float(container_duration) * 1000)
+            except (TypeError, ValueError):
+                pass
 
     def get_length(stream) -> int | None:
         """Return stream length in milliseconds if available."""
@@ -895,10 +937,8 @@ def get_video_data(
 
         return language
 
-    output_json = _probe_info if _probe_info is not None else get_video_full_info(path, logger=logger)
-
     streams = defaultdict(list)
-    for stream in output_json["streams"]:
+    for stream in probe_info["streams"]:
         stream_type = stream["codec_type"]
         tid = stream["index"]
         codec = stream.get("codec_name", None)
@@ -928,7 +968,7 @@ def get_video_data(
             fps = stream["r_frame_rate"]
             length = get_length(stream)
             if length is None:
-                length = get_video_duration(path, logger=logger)
+                length = container_duration_ms
 
             width = stream["width"]
             height = stream["height"]
@@ -959,6 +999,11 @@ def get_video_data(
     return dict(streams)
 
 
+def get_video_data(path: str, logger: logging.Logger | None = None) -> dict:
+    logger = logger or DEFAULT_LOGGER
+    return normalize_video_data(get_video_full_info(path, logger=logger))
+
+
 def get_video_full_info_mkvmerge(path: str, logger: logging.Logger | None = None) -> dict:
     """Return file information using ``mkvmerge -J``."""
 
@@ -971,21 +1016,17 @@ def get_video_full_info_mkvmerge(path: str, logger: logging.Logger | None = None
     return json.loads(result.stdout)
 
 
-def get_video_data_mkvmerge(
-    path: str,
-    enrich: bool = False,
-    logger: logging.Logger | None = None,
+def normalize_mkvmerge_data(
+    mkvmerge_info: Mapping[str, Any],
     *,
-    _mkvmerge_info: dict[str, Any] | None = None,
+    probe_info: Mapping[str, Any] | None = None,
+    logger: logging.Logger | None = None,
 ) -> dict:
-    """
-        Return stream information parsed from ``mkvmerge -J`` output.
-        For non mkv files, mkvmerge does not provide as much information as ffprobe.
-        Set 'enrich' to True to enrich mkvmerge's output with data from ffprobe.
-        In enriched results, ``tid`` remains the mkvmerge track ID while
-        ``ffprobe_stream_index`` is the absolute ffprobe/ffmpeg stream index.
-        A caller that already ran ``mkvmerge -J`` may provide its result via
-        ``_mkvmerge_info`` to avoid probing the same file twice.
+    """Normalize raw ``mkvmerge -J`` metadata.
+
+    Raw ffprobe metadata may be supplied to enrich mkvmerge's output. In
+    enriched results, ``tid`` remains the mkvmerge track ID while
+    ``ffprobe_stream_index`` is the absolute ffprobe/ffmpeg stream index.
     """
     logger = logger or DEFAULT_LOGGER
 
@@ -1006,7 +1047,10 @@ def get_video_data_mkvmerge(
                 return None
         return None
 
-    def build_track_mapping(mkv_tracks: list[dict], probe_info: dict) -> dict[int, int]:
+    def build_track_mapping(
+        mkv_tracks: list[dict],
+        raw_probe_info: Mapping[str, Any],
+    ) -> dict[int, int]:
         """Map mkvmerge track IDs to absolute ffprobe stream indexes.
 
         The two tools use independent namespaces.  A container-native track
@@ -1021,7 +1065,7 @@ def get_video_data_mkvmerge(
                 if normalized_track_type(track.get("type")) == stream_type
             ]
             typed_streams = [
-                stream for stream in probe_info.get("streams", [])
+                stream for stream in raw_probe_info.get("streams", [])
                 if stream.get("codec_type") == stream_type
                 and not stream.get("disposition", {}).get("attached_pic", 0)
             ]
@@ -1074,7 +1118,7 @@ def get_video_data_mkvmerge(
         ]
         supported_probe_indexes = [
             int(stream["index"])
-            for stream in probe_info.get("streams", [])
+            for stream in raw_probe_info.get("streams", [])
             if normalized_track_type(stream.get("codec_type")) is not None
             and not stream.get("disposition", {}).get("attached_pic", 0)
         ]
@@ -1138,24 +1182,21 @@ def get_video_data_mkvmerge(
 
         return output
 
-    info = (
-        _mkvmerge_info
-        if _mkvmerge_info is not None
-        else get_video_full_info_mkvmerge(path, logger=logger)
-    )
-
     # process streams/tracks
     streams = defaultdict(list)
-    probe_info = get_video_full_info(path, logger=logger) if enrich else None
     ffprobe_info = (
-        get_video_data(path, logger=logger, _probe_info=probe_info)
+        normalize_video_data(probe_info)
         if probe_info is not None
         else None
     )
     ffprobe_streams_by_index = build_ffprobe_stream_lookup(ffprobe_info)
-    track_mapping = build_track_mapping(info.get("tracks", []), probe_info) if probe_info is not None else {}
+    track_mapping = (
+        build_track_mapping(mkvmerge_info.get("tracks", []), probe_info)
+        if probe_info is not None
+        else {}
+    )
 
-    for track in info.get("tracks", []):
+    for track in mkvmerge_info.get("tracks", []):
         track_type = track.get("type")
         tid = track.get("id")
         props = track.get("properties", {})
@@ -1188,7 +1229,7 @@ def get_video_data_mkvmerge(
             "enabled": props.get("enabled_track", track_initial_data.get("enabled", True)),
             "forced": props.get("forced_track", track_initial_data.get("forced", False)),
         }
-        if enrich:
+        if probe_info is not None:
             stream_data["ffprobe_stream_index"] = track_mapping[int(tid)]
 
         if track_type == "video":
@@ -1251,7 +1292,7 @@ def get_video_data_mkvmerge(
 
     # attachments
     attachments = []
-    for attachment in info.get("attachments", []):
+    for attachment in mkvmerge_info.get("attachments", []):
         content_type = attachment.get("content_type", "")
         if content_type[:5] == "image":
             props = attachment.get("properties", {})
@@ -1268,6 +1309,26 @@ def get_video_data_mkvmerge(
         "attachments": attachments,
         "tracks": dict(streams),
     }
+
+
+def get_video_data_mkvmerge(
+    path: str,
+    enrich: bool = False,
+    logger: logging.Logger | None = None,
+) -> dict:
+    """Probe a file with mkvmerge and return normalized stream information.
+
+    For non-MKV files, mkvmerge does not provide as much information as
+    ffprobe. Set ``enrich`` to add ffprobe metadata.
+    """
+    logger = logger or DEFAULT_LOGGER
+    mkvmerge_info = get_video_full_info_mkvmerge(path, logger=logger)
+    probe_info = get_video_full_info(path, logger=logger) if enrich else None
+    return normalize_mkvmerge_data(
+        mkvmerge_info,
+        probe_info=probe_info,
+        logger=logger,
+    )
 
 
 def compare_videos(lhs: list[dict], rhs: list[dict]) -> bool:

@@ -68,7 +68,7 @@ class InputValidatorTest(unittest.TestCase):
             identity_samples=(),
             decode_error=decode_error,
         )
-        self.media_analysis.validate_streams.return_value = result
+        self.media_analysis.fulfill.return_value = result
         return result
 
     def test_full_validation_requests_probe_and_stream_decode_from_media_analysis(self):
@@ -81,9 +81,12 @@ class InputValidatorTest(unittest.TestCase):
         self.assertEqual(report.checked_count, 1)
         self.assertEqual(report.cached_count, 0)
         self.media_analysis.probe.assert_called_once_with(os.path.realpath(self.path))
-        self.media_analysis.validate_streams.assert_called_once_with(
-            os.path.realpath(self.path),
-            label=os.path.realpath(self.path),
+        self.media_analysis.fulfill.assert_called_once_with(
+            media_analysis.MediaAnalysisRequest(
+                path=os.path.realpath(self.path),
+                label=os.path.realpath(self.path),
+                features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+            ),
         )
 
     def test_full_validation_accepts_successful_decode_from_media_analysis(self):
@@ -94,7 +97,7 @@ class InputValidatorTest(unittest.TestCase):
         report = self._validator(input_validation.ValidationMode.FULL).validate([self.path])
 
         self.assertTrue(report.is_valid)
-        self.media_analysis.validate_streams.assert_called_once()
+        self.media_analysis.fulfill.assert_called_once()
 
     def test_full_validation_reports_decode_error_from_media_analysis(self):
         self._scan("Invalid data found when processing input")
@@ -120,7 +123,7 @@ class InputValidatorTest(unittest.TestCase):
         report = self._validator(input_validation.ValidationMode.FULL).validate([self.path])
 
         self.assertTrue(report.is_valid)
-        self.media_analysis.validate_streams.assert_called_once()
+        self.media_analysis.fulfill.assert_called_once()
 
     def test_analysis_decode_error_replaces_stale_cached_success(self):
         successful_scan = self._scan()
@@ -168,7 +171,7 @@ class InputValidatorTest(unittest.TestCase):
         self.assertEqual(second.checked_count, 0)
         self.assertEqual(second.cached_count, 1)
         self.media_analysis.probe.assert_not_called()
-        self.media_analysis.validate_streams.assert_not_called()
+        self.media_analysis.fulfill.assert_not_called()
 
     def test_probe_error_is_reported_without_stream_decode(self):
         self._probe(error="Invalid data found when processing input")
@@ -177,7 +180,7 @@ class InputValidatorTest(unittest.TestCase):
 
         self.assertFalse(report.is_valid)
         self.assertIn("Invalid data found", report.issues[0].message)
-        self.media_analysis.validate_streams.assert_not_called()
+        self.media_analysis.fulfill.assert_not_called()
 
     def test_fast_validation_only_requests_probe(self):
         self._probe()
@@ -186,7 +189,7 @@ class InputValidatorTest(unittest.TestCase):
 
         self.assertTrue(report.is_valid)
         self.media_analysis.probe.assert_called_once()
-        self.media_analysis.validate_streams.assert_not_called()
+        self.media_analysis.fulfill.assert_not_called()
 
     def test_validation_logs_progress_and_summary(self):
         self._probe()
