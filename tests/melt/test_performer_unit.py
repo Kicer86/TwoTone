@@ -1688,6 +1688,31 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertIn(_StreamEntry("audio", 1, source_audio, "eng", None), prepared.entries)
         self.assertEqual(prepared.input_files, {base_video, source_audio})
 
+    def test_base_matroska_audio_with_aac_priming_uses_direct_passthrough(self):
+        performer = self._make_performer()
+        base_video = "/tmp/base.mkv"
+
+        with patch.object(performer, "_video_track_duration", return_value=6000), \
+             patch.object(performer, "_base_output_end_ms", return_value=6000), \
+             patch.object(performer, "_base_audio_end_ms", return_value=5900), \
+             patch.object(performer, "_audio_content_start_ms", return_value=0), \
+             patch.object(performer, "_source_stream_start_offset_ms", return_value=0), \
+             patch.object(performer, "_stream_info", return_value={}), \
+             patch.object(performer, "_track_sync_offset_ms", return_value=None), \
+             patch.object(performer, "_audio_needs_mkvmerge_normalization", return_value=True), \
+             patch.object(performer, "_prepare_normalized_unscaled_audio", side_effect=AssertionError):
+            prepared = performer._prepare_stream_entries(
+                video_streams=[VideoStreamRef(base_video, 0, 0, None)],
+                audio_streams=[AudioStreamRef(base_video, 1, 1, "pol")],
+                subtitle_streams=[],
+                attachments=[],
+                file_ids={base_video: 1},
+                files_details={},
+            )
+
+        self.assertIn(_StreamEntry("audio", 1, base_video, "pol", None), prepared.entries)
+        self.assertEqual(prepared.input_files, {base_video})
+
     def test_prepare_stream_entries_includes_final_attachment_sources(self):
         performer = self._make_performer()
         base_video = "/tmp/base.mkv"
