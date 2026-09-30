@@ -25,6 +25,22 @@ class MeltCacheUnitTest(unittest.TestCase):
 
             self.assertNotEqual(legacy_key, cache._cache_key(video_path))
 
+    def test_cache_key_does_not_reuse_old_timestamp_data(self):
+        with tempfile.TemporaryDirectory() as cache_dir:
+            video_path = os.path.join(cache_dir, "input.avi")
+            with open(video_path, "wb") as file:
+                file.write(b"video")
+
+            stat = os.stat(video_path)
+            cache = MeltCache(cache_dir, logging.getLogger("test.MeltCache"))
+            for version in (2, 3):
+                with self.subTest(version=version):
+                    old_identity = (
+                        f"{version}:{os.path.realpath(video_path)}:{stat.st_size}:{stat.st_mtime_ns}"
+                    )
+                    old_key = hashlib.sha256(old_identity.encode()).hexdigest()[:16]
+                    self.assertNotEqual(old_key, cache._cache_key(video_path))
+
     def test_code_hash_includes_all_media_analysis_implementations(self):
         with tempfile.TemporaryDirectory() as cache_dir:
             cache = MeltCache(cache_dir, logging.getLogger("test.MeltCache"))

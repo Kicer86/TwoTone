@@ -1180,6 +1180,29 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertEqual(path, "/decoded/frame_7.png")
 
+    def test_boundary_prefetch_propagates_extraction_failure(self):
+        pm = self._make_pair_matcher()
+        frames = {501: {"path": None, "frame_id": 12}}
+        with patch.object(video_utils, "extract_frames_at_ranges",
+                          side_effect=RuntimeError("missing frame at 501ms")) as extract:
+            with self.assertRaisesRegex(RuntimeError, "missing frame at 501ms"):
+                pm._prefetch_boundary_images("/fake/video.mkv", "/fake/boundary", frames, [501])
+        extract.assert_called_once()
+
+    def test_boundary_comparison_propagates_extraction_failure(self):
+        pm = self._make_pair_matcher()
+        side = _VerifySide(
+            video_path="/fake/video.mkv", raw_dir="/fake/boundary",
+            all_frames={501: {"path": None, "frame_id": 12}}, normalized={},
+            crop_fn=None, comparison_dir="/fake/comparison", comparison_cache={},
+        )
+        with patch.object(video_utils, "extract_frames_at_ranges",
+                          side_effect=RuntimeError("missing frame at 501ms")) as extract:
+            with self.assertRaisesRegex(RuntimeError, "missing frame at 501ms"):
+                pm._comparison_image(side, 501)
+        extract.assert_called_once()
+        self.assertNotIn(501, side.comparison_cache)
+
     # ---- _look_for_boundaries: look_ahead robustness ----
 
     @staticmethod

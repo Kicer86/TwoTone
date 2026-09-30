@@ -562,13 +562,16 @@ class MediaAnalysisSession:
             args.extend(["-sn", "-dn", "-fps_mode", "vfr"])
             if features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
                 args.extend([
+                    # Keep decoded timestamps instead of quantizing them to nominal FPS.
+                    "-enc_time_base:v:0", "filter",
                     "-stats_enc_pre:v:0", frame_stats_path,
-                    "-stats_enc_pre_fmt:v:0", "{ni} {ptsi} {tbi}",
+                    "-stats_enc_pre_fmt:v:0", "{ni} {pts} {tb}",
                 ])
             if scene_video_stream_index is not None:
                 args.extend([
+                    f"-enc_time_base:v:{scene_video_stream_index}", "filter",
                     f"-stats_enc_pre:v:{scene_video_stream_index}", scene_stats_path,
-                    f"-stats_enc_pre_fmt:v:{scene_video_stream_index}", "{ni} {ptsi} {tbi}",
+                    f"-stats_enc_pre_fmt:v:{scene_video_stream_index}", "{ni} {pts} {tb}",
                 ])
             args.extend(["-f", "null", "-"])
 
@@ -577,8 +580,9 @@ class MediaAnalysisSession:
                 "-map", "[identity]",
                 "-an", "-sn", "-dn",
                 "-fps_mode", "vfr",
+                "-enc_time_base:v:0", "filter",
                 "-stats_enc_pre:v:0", sample_stats_path,
-                "-stats_enc_pre_fmt:v:0", "{ni} {ptsi} {tbi}",
+                "-stats_enc_pre_fmt:v:0", "{ni} {pts} {tb}",
                 sample_pattern,
             ])
 

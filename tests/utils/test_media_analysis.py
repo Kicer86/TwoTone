@@ -500,10 +500,18 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         ]
         self.assertEqual(
             stats_formats,
-            ["{ni} {ptsi} {tbi}", "{ni} {ptsi} {tbi}"],
+            ["{ni} {pts} {tb}", "{ni} {pts} {tb}"],
         )
         scene_stats_format = self._stats_path(args, "-stats_enc_pre_fmt:v:1")
-        self.assertEqual(scene_stats_format, "{ni} {ptsi} {tbi}")
+        self.assertEqual(scene_stats_format, "{ni} {pts} {tb}")
+        self.assertEqual([
+            args[index + 1] for index, value in enumerate(args)
+            if value == "-enc_time_base:v:0"
+        ], ["filter", "filter"])
+        self.assertEqual([
+            args[index + 1] for index, value in enumerate(args)
+            if value == "-enc_time_base:v:1"
+        ], ["filter"])
         self.assertEqual(result.scene_changes, (80,))
         self.assertEqual(list(result.frames), [0, 40, 80])
         self.assertEqual(
@@ -798,6 +806,18 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         entries = self.session._read_frame_entries(stats_path, correction_ms=-21)
 
         self.assertEqual(entries, [(26629, 1110630), (26630, 1110632)])
+
+    def test_frame_stats_discard_missing_timestamp_sentinel(self):
+        stats_path = os.path.join(self.temp_dir.name, "frames.txt")
+        with open(stats_path, "w", encoding="utf-8") as file:
+            file.write(
+                "0 -9223372036854775808 1/25\n"
+                "1 2 1/25\n"
+            )
+
+        entries = self.session._read_frame_entries(stats_path, correction_ms=0)
+
+        self.assertEqual(entries, [(1, 80)])
 
 
 if __name__ == "__main__":

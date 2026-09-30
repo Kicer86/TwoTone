@@ -1363,15 +1363,19 @@ class PairMatcher:
         if ts in side.comparison_cache:
             return side.comparison_cache[ts]
 
+        # Extraction errors invalidate the analysis; they are not content mismatches.
+        norm_info = side.normalized.get(ts)
+        raw_path = None
+        if norm_info is None:
+            raw_path = self._ensure_boundary_image(
+                side.video_path, side.raw_dir, side.all_frames, ts,
+            )
+
         path: str | None = None
         try:
-            norm_info = side.normalized.get(ts)
             if norm_info is not None:
                 norm_path = norm_info["path"]
             else:
-                raw_path = self._ensure_boundary_image(
-                    side.video_path, side.raw_dir, side.all_frames, ts,
-                )
                 if raw_path is None:
                     norm_path = None
                 else:
@@ -1585,14 +1589,11 @@ class PairMatcher:
         })
         if not missing:
             return
-        try:
-            video_utils.extract_frames_at_ranges(
-                video_path, out_dir, [(fid, fid) for fid in missing], frames,
-                scale=(960, -2), format="png", interruption=self.interruption,
-                desc="Verifying boundary gap", logger=self.logger,
-            )
-        except Exception as e:  # pragma: no cover - extraction failure is non-fatal
-            self.logger.debug("Boundary gap extraction failed: %s", e)
+        video_utils.extract_frames_at_ranges(
+            video_path, out_dir, [(fid, fid) for fid in missing], frames,
+            scale=(960, -2), format="png", interruption=self.interruption,
+            desc="Verifying boundary gap", logger=self.logger,
+        )
 
     def _boundary_content_matches(self, ctx: _BoundaryVerifyContext, lhs_ts: int, rhs_ts: int) -> bool:
         """Verify that the extrapolated boundary frames actually share content.
@@ -1653,15 +1654,11 @@ class PairMatcher:
         if info.get("path"):
             return info["path"]
         frame_id = int(info["frame_id"])
-        try:
-            video_utils.extract_frames_at_ranges(
-                video_path, out_dir, [(frame_id, frame_id)], frames,
-                scale=(960, -2), format="png", interruption=self.interruption,
-                desc="Verifying boundary frame", logger=self.logger,
-            )
-        except Exception as e:  # pragma: no cover - extraction failure is non-fatal
-            self.logger.debug("Boundary frame extraction failed for frame %d: %s", frame_id, e)
-            return None
+        video_utils.extract_frames_at_ranges(
+            video_path, out_dir, [(frame_id, frame_id)], frames,
+            scale=(960, -2), format="png", interruption=self.interruption,
+            desc="Verifying boundary frame", logger=self.logger,
+        )
         return PairMatcher._path_or_none(frames, ts)
 
     def snap_to_edges(

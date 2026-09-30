@@ -1,6 +1,8 @@
 
+import json
 import os
 import unittest
+from fractions import Fraction
 from unittest.mock import Mock, patch
 
 from common import (
@@ -13,7 +15,7 @@ from common import (
 )
 from parameterized import parameterized
 
-from twotone.tools.utils import process_utils, subtitles_utils, video_utils
+from twotone.tools.utils import generic_utils, media_analysis, process_utils, subtitles_utils, video_utils
 
 
 class UtilsTests(TwoToneTestCase):
@@ -111,6 +113,9 @@ class UtilsTests(TwoToneTestCase):
             del logger
             output_pattern = args[-1]
             stats_index = args.index("-stats_enc_pre:v:0")
+            stats_format_index = args.index("-stats_enc_pre_fmt:v:0")
+            self.assertEqual(args[stats_format_index + 1], "{ni} {pts} {tb}")
+            self.assertEqual(args[args.index("-enc_time_base:v:0") + 1], "filter")
             with open(args[stats_index + 1], "w", encoding="utf-8") as file:
                 file.write("0 24028008 1/24000\n1 24029016 1/24000\n")
             for index, timestamp in enumerate(("1001.17", "1001.21"), start=1):
@@ -131,6 +136,94 @@ class UtilsTests(TwoToneTestCase):
             )
 
         self.assertTrue(all(info["path"] is not None for info in frames.values()))
+
+    @parameterized.expand([
+        ("missing_frame", "0 0 1/1000\n", 1, "missing.*501"),
+        ("empty_output", "", 0, "missing.*0.*501"),
+        ("wrong_timestamp", "0 0 1/1000\n1 500 1/1000\n", 2, "missing.*501"),
+        ("missing_stats", "0 0 1/1000\n", 2, "Frame count mismatch"),
+        ("missing_image", "0 0 1/1000\n1 501 1/1000\n", 1, "Frame count mismatch"),
+    ])
+    def test_extract_frames_rejects_incomplete_success(self, _name, stats, image_count, message):
+        target_dir = os.path.join(self.wd.path, "incomplete")
+        os.mkdir(target_dir)
+        frames = {
+            0: {"frame_id": 0, "path": None},
+            42: {"frame_id": 1, "path": None},
+            501: {"frame_id": 12, "path": None},
+        }
+
+        def extract(args, _interruption, **_kwargs):
+            with open(args[args.index("-stats_enc_pre:v:0") + 1], "w", encoding="utf-8") as file:
+                file.write(stats)
+            for index in range(1, image_count + 1):
+                with open(args[-1].replace("%08d", f"{index:08d}"), "wb") as file:
+                    file.write(b"frame")
+            return Mock(returncode=0), []
+
+        with patch.object(video_utils, "_showinfo_timestamp_correction_ms", return_value=0), \
+             patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=extract) as start:
+            with self.assertRaisesRegex(RuntimeError, message):
+                video_utils.extract_frames_at_ranges(
+                    "input.mkv", target_dir, [(0, 0), (12, 12)], frames, format="png",
+                )
+
+        start.assert_called_once()
+        self.assertTrue(all(info["path"] is None for info in frames.values()))
+        self.assertEqual(os.listdir(target_dir), [])
+
+    @parameterized.expand([
+        ("matroska", "mkv", "ffv1", []),
+        ("avi_b_frames", "avi", "mpeg4", ["-bf", "2"]),
+    ])
+    def test_scan_and_extraction_preserve_decoded_timestamps(self, _name, extension, codec, options):
+        video_path = os.path.join(self.wd.path, f"fractional_fps.{extension}")
+        run_ffmpeg([
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=24000/1001",
+            "-frames:v", "36", "-c:v", codec, *options, video_path,
+        ], video_path)
+        probe = process_utils.start_process("ffprobe", [
+            "-v", "error", "-select_streams", "v:0", "-show_frames",
+            "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", video_path,
+        ])
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        expected = [
+            round(float(frame["best_effort_timestamp_time"]) * 1000)
+            if "best_effort_timestamp_time" in frame
+            # AVI with B-frames omits the last PTS; the decoder generates it.
+            else round(Fraction((index + 1) * 1001, 24))
+            for index, frame in enumerate(json.loads(probe.stdout)["frames"])
+        ]
+        self.assertEqual(len(expected), 36)
+
+        session = media_analysis.MediaAnalysisSession(
+            self.workspace, generic_utils.InterruptibleProcess(), self.logger,
+        )
+        result = session.fulfill(media_analysis.MediaAnalysisRequest(
+            video_path, "#1", media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS
+            | media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+        ))
+        self.assertEqual(list(result.frames), expected)
+        self.assertTrue(result.identity_samples)
+        self.assertTrue(all(sample.timestamp_ms in expected for sample in result.identity_samples))
+
+        # Sparse extraction exercises select as well as the encoder's time base.
+        selected = [0, 12, 24, 35]
+        frames = {ts: {**info, "path": None} for ts, info in result.frames.items()}
+        target_dir = os.path.join(self.wd.path, "selected")
+        os.mkdir(target_dir)
+        with patch.object(video_utils, "_start_ffmpeg_streaming",
+                          wraps=video_utils._start_ffmpeg_streaming) as start:
+            video_utils.extract_frames_at_ranges(
+                video_path, target_dir, [(index, index) for index in selected], frames,
+                format="png", scale=1.0, logger=self.logger,
+            )
+        start.assert_called_once()
+        self.assertEqual(
+            [ts for ts, info in frames.items() if info["path"] is not None],
+            [expected[index] for index in selected],
+        )
+        self.assertTrue(all(os.path.isfile(frames[expected[index]]["path"]) for index in selected))
 
     def test_normalize_video_data_uses_container_duration_without_io(self):
         probe_info = {
