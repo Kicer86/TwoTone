@@ -186,7 +186,7 @@ class MediaAnalysisSession:
         key = self._file_key(real_path)
         cached = self._probe_cache.get(key)
         if cached is not None:
-            self.logger.info("Media probe restored from this run's cache: %s", path)
+            self.logger.debug("Media probe restored from this run's cache: %s", path)
             self._log_probe_result("Media probe cache hit", cached)
             return cached
 
@@ -249,7 +249,7 @@ class MediaAnalysisSession:
             )
 
         if cached is not None and cached.supports(features):
-            self.logger.info("Media scan for %s restored from cache.", label)
+            self.logger.debug("Media scan for %s restored from cache.", label)
             self._log_scan_result("Media analysis satisfied without FFmpeg", label, cached)
             self._path_results[real_path] = cached
             return cached
@@ -385,6 +385,29 @@ class MediaAnalysisSession:
             stat.st_size,
             stat.st_mtime_ns,
         )
+
+    @staticmethod
+    def _progress_description(
+        label: str,
+        features: MediaAnalysisFeature,
+    ) -> str:
+        purposes = []
+        if features & MediaAnalysisFeature.VALIDATE_STREAMS:
+            purposes.append("decode validation")
+        if features & MediaAnalysisFeature.MATCHING:
+            purposes.append("timeline matching")
+        if features & MediaAnalysisFeature.IDENTITY_SAMPLES:
+            purposes.append("sample comparison")
+
+        if len(purposes) > 1:
+            return f"Analyzing input {label} ({', '.join(purposes)})"
+        if purposes == ["decode validation"]:
+            return f"Checking input {label} for decoding errors"
+        if purposes == ["timeline matching"]:
+            return f"Analyzing input {label} for timeline matching"
+        if purposes == ["sample comparison"]:
+            return f"Sampling input {label} for comparison"
+        return f"Analyzing input {label}"
 
     def _scan(
         self,
@@ -556,7 +579,7 @@ class MediaAnalysisSession:
 
         progress = tqdm(
             total=duration_s,
-            desc=f"Scanning media: {label}",
+            desc=self._progress_description(label, features),
             unit="s",
             **generic_utils.get_tqdm_defaults(),
         )

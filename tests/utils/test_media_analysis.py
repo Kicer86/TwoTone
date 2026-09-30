@@ -85,6 +85,12 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertIn("Running ffprobe", logs)
         self.assertIn("streams=1, video=True, audio=False, error=none", logs)
         self.assertIn("Media probe cache hit", logs)
+        cache_restore = next(
+            record
+            for record in captured.records
+            if "Media probe restored from this run's cache" in record.getMessage()
+        )
+        self.assertEqual(cache_restore.levelno, logging.DEBUG)
 
     def test_probe_caches_error_reported_by_video_utils(self):
         error = RuntimeError("ffprobe failed for input.mkv: corrupt header")
@@ -208,6 +214,41 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertTrue(result.validated_all_streams)
         self.assertIsNone(result.decode_error)
 
+    def test_progress_description_explains_analysis_purpose(self):
+        cases = (
+            (
+                media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+                "Checking input #1 for decoding errors",
+            ),
+            (
+                media_analysis.MediaAnalysisFeature.MATCHING,
+                "Analyzing input #1 for timeline matching",
+            ),
+            (
+                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+                "Sampling input #1 for comparison",
+            ),
+            (
+                media_analysis.MediaAnalysisFeature.NONE,
+                "Analyzing input #1",
+            ),
+            (
+                (
+                    media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
+                    | media_analysis.MediaAnalysisFeature.MATCHING
+                    | media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS
+                ),
+                "Analyzing input #1 (decode validation, timeline matching, sample comparison)",
+            ),
+        )
+
+        for features, expected in cases:
+            with self.subTest(features=features):
+                self.assertEqual(
+                    self.session._progress_description("#1", features),
+                    expected,
+                )
+
     def test_validation_skips_decode_when_probe_reports_no_audio_or_video(self):
         with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
              patch.object(self.session, "probe", return_value=self._probe_result([])), \
@@ -258,7 +299,8 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             decode_error=None,
         )
 
-        with patch.object(self.session, "_scan", return_value=result) as scan:
+        with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
+             patch.object(self.session, "_scan", return_value=result) as scan:
             first = self.session.fulfill(self._request(
                 media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             ))
@@ -269,6 +311,12 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
         self.assertIs(first, second)
         scan.assert_called_once()
+        cache_restore = next(
+            record
+            for record in captured.records
+            if "Media scan for #2 restored from cache" in record.getMessage()
+        )
+        self.assertEqual(cache_restore.levelno, logging.DEBUG)
 
     def test_upgrades_cached_scan_with_only_missing_features(self):
         identity = media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
