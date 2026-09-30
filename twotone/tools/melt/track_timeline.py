@@ -9,9 +9,11 @@ ways: MP4/MOV carry it in an edit list that every ffmpeg build honours on
 decode, while Matroska uses *CodecDelay* — and builds disagree about it.  Some
 builds skip the priming automatically ("absorbing"), others decode it as real
 leading samples and report the stream's ``start_time`` one encoder-delay frame
-(~21 ms for AAC) too early ("exposing").  Every operation that reads, places or
-re-encodes AAC audio must therefore be normalized, or the track shifts by one
-frame depending on which build happens to run:
+(~21 ms for AAC) too early ("exposing").  Every operation that decodes, places
+or re-encodes AAC audio must therefore be normalized, or the track shifts by
+one frame depending on which build happens to run.  Untouched audio remuxed
+together with the base video from the same Matroska container keeps its
+original timestamps and CodecDelay and does not enter this flow:
 
 - ``_aac_priming_exposed`` detects the running build's convention once per run.
 - ``_audio_content_start_ms`` returns a stream's true content start,
@@ -402,7 +404,9 @@ class TrackTimelineMixin:
         placed build-dependently: builds that expose priming shift its decoded
         content by one frame (~21 ms) relative to a priming-stripped base track.
         Route those through the FLAC-domain flow too so the priming is removed
-        deterministically, exactly as for non-Matroska inputs.
+        deterministically, exactly as for non-Matroska inputs.  The caller may
+        preserve an untouched track when its base video comes from the same
+        Matroska container; mkvmerge then keeps their original timing relation.
         """
         return self._audio_mkvmerge_normalization_reason(stream_ref) is not None
 
