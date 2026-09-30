@@ -190,7 +190,7 @@ def _prepare_media_analysis_for_perform(
         process_utils.ensure_tools_exist(["ffmpeg"], logger)
 
     for request in requests:
-        context.media_analysis.fulfill(request)
+        context.media_analysis.fulfill(request, raise_on_error=True)
 
 
 def _warn_before_deleting_inputs(destructive: bool, logger: logging.Logger) -> None:
