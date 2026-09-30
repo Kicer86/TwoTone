@@ -9,6 +9,7 @@ from typing import Protocol, runtime_checkable
 from twotone.tools.utils import (
     files_utils,
     generic_utils,
+    input_validation,
     media_analysis,
     requirements_utils,
 )
@@ -61,6 +62,16 @@ class Tool(ABC):
     ) -> Iterable[media_analysis.MediaAnalysisRequest]:
         """Return media data that must be ready before performing the plan."""
         return ()
+
+    def input_validation_targets(
+        self,
+        plan: Plan,
+    ) -> Iterable[input_validation.InputValidationTarget]:
+        """Return input paths and their user-facing validation references."""
+        return tuple(
+            input_validation.InputValidationTarget(path, path)
+            for path in sorted(plan.input_files())
+        )
 
     @abstractmethod
     def analyze(self, args: argparse.Namespace, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:

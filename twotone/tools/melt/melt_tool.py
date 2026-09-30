@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from overrides import override
 
 from ..tool import EmptyPlan, Plan, Tool, ToolRuntimeContext
-from ..utils import media_analysis
+from ..utils import input_validation, media_analysis
 from .duplicates_source import DuplicatesSource
 from .jellyfin import JellyfinSource
 from .melt_analyzer import MeltAnalyzer
@@ -147,6 +147,15 @@ class MeltTool(Tool):
         if not isinstance(plan, MeltPlan):
             return ()
         return plan.media_analysis_requests()
+
+    @override
+    def input_validation_targets(
+        self,
+        plan: Plan,
+    ) -> Iterable[input_validation.InputValidationTarget]:
+        if not isinstance(plan, MeltPlan):
+            return super().input_validation_targets(plan)
+        return plan.input_validation_targets()
 
     @override
     def analyze(self, args, logger: logging.Logger, context: ToolRuntimeContext) -> Plan:

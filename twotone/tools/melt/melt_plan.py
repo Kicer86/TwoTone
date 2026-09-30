@@ -4,7 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
-from ..utils import language_utils, media_analysis
+from ..utils import input_validation, language_utils, media_analysis
 from .melt_common import MeltInputFiles, StreamType, stream_short_details
 
 
@@ -23,6 +23,33 @@ class MeltPlan:
             for group in item.get("groups", [])
             for path in group.get("files", [])
         }
+
+    def input_validation_targets(
+        self,
+    ) -> tuple[input_validation.InputValidationTarget, ...]:
+        planned_groups = [
+            (item, group_index, group)
+            for item in self.items
+            for group_index, group in enumerate(item.get("groups", []), start=1)
+        ]
+        include_context = len(planned_groups) > 1
+        targets: list[input_validation.InputValidationTarget] = []
+        for item, group_index, group in planned_groups:
+            files = group.get("files", [])
+            input_files = MeltInputFiles(files)
+            title = item.get("title", "<unknown>")
+            multiple_candidates = len(item.get("groups", [])) > 1
+            for path in files:
+                reference = f"#{input_files.id_for(path)}"
+                if include_context:
+                    context = str(title)
+                    if multiple_candidates:
+                        context += f", candidate #{group_index}"
+                    reference += f" ({context})"
+                targets.append(
+                    input_validation.InputValidationTarget(path, reference),
+                )
+        return tuple(targets)
 
     def media_analysis_requests(self) -> tuple[media_analysis.MediaAnalysisRequest, ...]:
         return tuple(

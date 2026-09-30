@@ -365,7 +365,7 @@ def execute(argv: list[str]) -> None:
                 args.validation_cache_dir,
                 media_analysis_session=context.media_analysis,
             ).validate(
-                plan.input_files(),
+                tool.input_validation_targets(plan),
             )
 
             if not validation_report.is_valid:

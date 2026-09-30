@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from twotone import twotone
 from twotone.tools.tool import Tool
-from twotone.tools.utils import media_analysis, process_utils
+from twotone.tools.utils import input_validation, media_analysis, process_utils
 
 
 @dataclass
@@ -51,6 +51,18 @@ class _TestTool(Tool):
     def perform(self, _args, logger, context, plan) -> None:
         self.perform_context = context
         self.performed = True
+
+
+class ToolInputValidationTest(unittest.TestCase):
+    def test_default_targets_keep_paths_as_references(self):
+        plan = _TestPlan({"/media/b.mkv", "/media/a.mkv"})
+
+        targets = tuple(_TestTool(plan).input_validation_targets(plan))
+
+        self.assertEqual(targets, (
+            input_validation.InputValidationTarget("/media/a.mkv", "/media/a.mkv"),
+            input_validation.InputValidationTarget("/media/b.mkv", "/media/b.mkv"),
+        ))
 
 
 class RuntimeVersionTest(unittest.TestCase):
@@ -119,7 +131,9 @@ class RuntimeVersionTest(unittest.TestCase):
                     ])
 
                 validator.assert_called_once()
-                validator.return_value.validate.assert_called_once_with({input_path})
+                validator.return_value.validate.assert_called_once_with((
+                    input_validation.InputValidationTarget(input_path, input_path),
+                ))
                 self.assertTrue(tool.performed)
                 self.assertIs(tool.analyze_context, tool.perform_context)
 
@@ -161,7 +175,9 @@ class RuntimeVersionTest(unittest.TestCase):
                 media_analysis_session,
             )
             media_analysis_session.fulfill.assert_called_once_with(request)
-            validator.return_value.validate.assert_called_once_with({input_path})
+            validator.return_value.validate.assert_called_once_with((
+                input_validation.InputValidationTarget(input_path, input_path),
+            ))
 
     def test_prepare_media_analysis_aggregates_features_for_the_same_file(self):
         first_path = "/media/./first.mkv"
@@ -313,7 +329,9 @@ class RuntimeVersionTest(unittest.TestCase):
                 ])
 
             media_analysis_session.fulfill.assert_not_called()
-            validator.return_value.validate.assert_called_once_with({input_path})
+            validator.return_value.validate.assert_called_once_with((
+                input_validation.InputValidationTarget(input_path, input_path),
+            ))
 
     def test_interactive_run_defers_media_analysis_until_confirmation(self):
         import tempfile
@@ -406,6 +424,7 @@ class DeleteWarningTest(unittest.TestCase):
         tool = Mock()
         tool.required_tools.return_value = set()
         tool.media_analysis_requests.return_value = ()
+        tool.input_validation_targets.return_value = ()
         plan = Mock()
         plan.is_empty.return_value = True
         plan.input_files.return_value = ()

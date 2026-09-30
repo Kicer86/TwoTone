@@ -214,6 +214,48 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertTrue(result.validated_all_streams)
         self.assertIsNone(result.decode_error)
 
+    def test_validation_excludes_attached_pictures_from_video_timeline(self):
+        streams = [
+            {"index": 0, "codec_type": "video"},
+            {
+                "index": 1,
+                "codec_type": "video",
+                "disposition": {"attached_pic": 1},
+            },
+        ]
+
+        with patch.object(self.session, "probe", return_value=self._probe_result(streams)), \
+             patch.object(
+                 video_utils,
+                 "_start_ffmpeg_streaming",
+                 return_value=(SimpleNamespace(returncode=0), []),
+             ) as start:
+            self.session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+            ))
+
+        args = start.call_args.args[0]
+        self.assertIn("0:V?", args)
+        self.assertNotIn("0:v?", args)
+
+    def test_failed_scan_does_not_complete_progress_bar(self):
+        progress = Mock()
+
+        with patch.object(self.session, "probe", return_value=self._probe_result()), \
+             patch.object(media_analysis, "tqdm", return_value=progress), \
+             patch.object(
+                 video_utils,
+                 "_start_ffmpeg_streaming",
+                 return_value=(SimpleNamespace(returncode=-9), []),
+             ):
+            result = self.session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+            ))
+
+        progress.update.assert_not_called()
+        progress.close.assert_called_once_with()
+        self.assertEqual(result.decode_error, "ffmpeg exited with code -9")
+
     def test_progress_description_explains_analysis_purpose(self):
         cases = (
             (
