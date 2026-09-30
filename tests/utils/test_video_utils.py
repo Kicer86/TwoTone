@@ -1,7 +1,7 @@
 
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from common import (
     TwoToneTestCase,
@@ -98,6 +98,39 @@ class UtilsTests(TwoToneTestCase):
         expression = video_utils._balanced_timestamp_select_expr(ranges)
         self.assertIn(r"between(t\,0.049250\,0.050750)", expression)
         self.assertIn(r"between(t\,0.129250\,0.130750)", expression)
+
+    def test_extract_frames_matches_rounded_showinfo_timestamps_to_precise_probes(self):
+        target_dir = os.path.join(self.wd.path, "rounded-showinfo")
+        os.mkdir(target_dir)
+        frames = {
+            1_001_167: {"frame_id": 0, "path": None},
+            1_001_209: {"frame_id": 1, "path": None},
+        }
+
+        def extract_with_legacy_showinfo(args, _interruption, on_line, logger):
+            del logger
+            output_pattern = args[-1]
+            stats_index = args.index("-stats_enc_pre:v:0")
+            with open(args[stats_index + 1], "w", encoding="utf-8") as file:
+                file.write("0 24028008 1/24000\n1 24029016 1/24000\n")
+            for index, timestamp in enumerate(("1001.17", "1001.21"), start=1):
+                with open(output_pattern.replace("%08d", f"{index:08d}"), "wb") as file:
+                    file.write(b"frame")
+                on_line(f"[Parsed_showinfo_1] n: {index - 1} pts: 0 pts_time:{timestamp}\n")
+            return Mock(returncode=0), []
+
+        with patch.object(video_utils, "_showinfo_timestamp_correction_ms", return_value=0), \
+             patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=extract_with_legacy_showinfo):
+            video_utils.extract_frames_at_ranges(
+                "input.mkv",
+                target_dir,
+                [(0, 1)],
+                frames,
+                format="png",
+                logger=self.logger,
+            )
+
+        self.assertTrue(all(info["path"] is not None for info in frames.values()))
 
     def test_normalize_video_data_uses_container_duration_without_io(self):
         probe_info = {
