@@ -2278,9 +2278,25 @@ class MeltPerformer(TrackTimelineMixin):
         for audio_stream in audio_streams:
             path = audio_stream.path
             output_stream = audio_stream
-            audio_desired_start_ms: int | None = self._audio_content_start_ms(
-                self._audio_stream_info(audio_stream)
+            extension = os.path.splitext(path)[1].lower()
+            preserves_base_container_timing = (
+                path == video_path_base
+                and extension in self._MKVMERGE_PRESERVES_START_EXTENSIONS
             )
+            if preserves_base_container_timing:
+                # The selected video and audio remain in their original Matroska
+                # container until mkvmerge reads them together.  Keep its timestamps
+                # and CodecDelay intact instead of decoding AAC merely to remove
+                # encoder priming.
+                audio_desired_start_ms = self._source_stream_start_offset_ms(
+                    path,
+                    "audio",
+                    audio_stream.ffprobe_stream_index,
+                )
+            else:
+                audio_desired_start_ms = self._audio_content_start_ms(
+                    self._audio_stream_info(audio_stream)
+                )
             if path in alignment_paths:
                 assert base_duration is not None
                 source_video = self._primary_video_ref(path, details)
@@ -2301,7 +2317,10 @@ class MeltPerformer(TrackTimelineMixin):
                 # the FLAC-domain normalization flow only when direct mkvmerge
                 # would change timing semantics or the track must be trimmed to
                 # the output timeline.
-                needs_mkvmerge_normalization = self._audio_needs_mkvmerge_normalization(audio_stream)
+                needs_mkvmerge_normalization = (
+                    not preserves_base_container_timing
+                    and self._audio_needs_mkvmerge_normalization(audio_stream)
+                )
                 normalization_reason = (
                     self._audio_mkvmerge_normalization_reason(audio_stream)
                     if needs_mkvmerge_normalization
