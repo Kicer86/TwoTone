@@ -209,7 +209,12 @@ class MediaAnalysisSession:
         self._log_probe_result("Media probe completed", result)
         return result
 
-    def fulfill(self, request: MediaAnalysisRequest) -> VideoScanResult:
+    def fulfill(
+        self,
+        request: MediaAnalysisRequest,
+        *,
+        raise_on_error: bool = True,
+    ) -> VideoScanResult:
         """Collect the requested feature set, reusing all available cached data."""
         path = request.path
         label = request.label
@@ -249,7 +254,7 @@ class MediaAnalysisSession:
             self.logger.debug("Media scan for %s restored from cache.", label)
             self._log_scan_result("Media analysis satisfied without FFmpeg", label, cached)
             self._path_results[real_path] = cached
-            return cached
+            return self._handle_scan_error(cached, label, raise_on_error)
 
         missing_features = features
         if cached is not None:
@@ -267,6 +272,18 @@ class MediaAnalysisSession:
         self._cache[key] = result
         self._path_results[real_path] = result
         self._log_scan_result("Media analysis satisfied", label, result)
+        return self._handle_scan_error(result, label, raise_on_error)
+
+    @staticmethod
+    def _handle_scan_error(
+        result: VideoScanResult,
+        label: str,
+        raise_on_error: bool,
+    ) -> VideoScanResult:
+        if raise_on_error and result.decode_error is not None:
+            raise RuntimeError(
+                f"Media analysis failed for {label}: {result.decode_error}"
+            )
         return result
 
     def _restore_persistent(
@@ -722,20 +739,22 @@ class MediaAnalysisSession:
             for (frame_id, timestamp_ms), path in zip(entries, files)
         ]
         samples: list[VideoSample] = []
-        for target_ms in targets:
-            if not candidates:
+        unmatched_targets = list(targets)
+        for frame_id, timestamp_ms, path in candidates:
+            if not unmatched_targets:
                 break
-            frame_id, timestamp_ms, path = min(
-                candidates,
-                key=lambda candidate: abs(candidate[1] - target_ms),
+            target_ms = min(
+                unmatched_targets,
+                key=lambda target: abs(timestamp_ms - target),
             )
+            unmatched_targets.remove(target_ms)
             if frames:
                 frame_timestamp = min(frames, key=lambda candidate: abs(candidate - timestamp_ms))
                 frame_id = int(frames[frame_timestamp]["frame_id"])
                 frames[frame_timestamp]["path"] = path
                 timestamp_ms = frame_timestamp
             samples.append(VideoSample(target_ms, timestamp_ms, frame_id, path))
-        return tuple(samples)
+        return tuple(sorted(samples, key=lambda sample: sample.target_ms))
 
     @staticmethod
     def _decode_error(returncode: int, stderr_lines: list[str]) -> str | None:

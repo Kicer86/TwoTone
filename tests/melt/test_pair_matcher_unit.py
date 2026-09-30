@@ -124,13 +124,14 @@ class PairMatcherUnitTest(unittest.TestCase):
                 call.args[0].features,
                 media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             )
+            self.assertEqual(call.kwargs, {"raise_on_error": True})
 
     def test_identity_check_requests_only_frame_timestamps_when_frame_rates_differ(self):
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=24.0)
         pm.lhs_duration_ms = 6000
         pm.rhs_duration_ms = 6000
         session = Mock(spec=media_analysis.MediaAnalysisSession)
-        session.fulfill.side_effect = lambda request: media_analysis.VideoScanResult(
+        session.fulfill.side_effect = lambda request, **_kwargs: media_analysis.VideoScanResult(
             path=request.path,
             features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
             frames={0: {"frame_id": 0, "path": None}},
@@ -150,29 +151,55 @@ class PairMatcherUnitTest(unittest.TestCase):
                 media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
             )
 
-    def test_identity_check_ignores_unrelated_validation_error(self):
+    def test_pair_matcher_requests_fail_fast_media_analysis(self):
+        pm = self._make_pair_matcher()
+        scan = media_analysis.VideoScanResult(
+            path=pm.lhs_path,
+            features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            frames={},
+            scene_changes=(),
+            identity_samples=(),
+            decode_error="scan stopped after the first frame",
+        )
+        pm.media_analysis.fulfill.return_value = scan
+
+        result = pm._analysis_result_for(
+            pm.lhs_path,
+            "#1",
+            media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+        )
+
+        self.assertIs(result, scan)
+        pm.media_analysis.fulfill.assert_called_once_with(
+            media_analysis.MediaAnalysisRequest(
+                path=pm.lhs_path,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            ),
+            raise_on_error=True,
+        )
+
+    def test_identity_check_rejects_reused_sample_frame(self):
         pm = self._make_pair_matcher()
         pm.lhs_duration_ms = 6000
         pm.rhs_duration_ms = 6000
         samples = tuple(
-            media_analysis.VideoSample(timestamp, timestamp, index, f"/sample/{timestamp}.png")
-            for index, timestamp in enumerate((0, 1000, 2000, 3000, 4000, 5000, 5960))
+            media_analysis.VideoSample(timestamp, 0, 0, "/sample/first.png")
+            for timestamp in (0, 1000, 2000, 3000, 4000, 5000, 5960)
         )
         scan = media_analysis.VideoScanResult(
             path=pm.lhs_path,
-            features=(
-                media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES
-                | media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS
-            ),
+            features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             frames={},
             scene_changes=(),
             identity_samples=samples,
-            decode_error="audio stream failed validation",
+            decode_error=None,
         )
 
-        with patch.object(PairMatcher, "_normalize_frames", side_effect=lambda frames, *_args, **_kwargs: frames), \
-             patch.object(pm.phash, "get", return_value=0):
-            self.assertTrue(pm._scans_have_identical_timeline_content(scan, scan))
+        with patch.object(PairMatcher, "_normalize_frames") as normalize:
+            self.assertFalse(pm._scans_have_identical_timeline_content(scan, scan))
+
+        normalize.assert_not_called()
 
     # ---- _extrapolate_through_low_entropy ----
 
@@ -816,7 +843,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         with patch.object(
                  pm.media_analysis,
                  "fulfill",
-                 side_effect=lambda request: analyses[request.path],
+                 side_effect=lambda request, **_kwargs: analyses[request.path],
              ) as scan, \
              patch.object(video_utils, 'extract_frames_at_ranges', side_effect=fake_extract), \
              patch('twotone.tools.melt.pair_matcher.DebugRoutines') as debug_cls, \

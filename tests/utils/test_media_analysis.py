@@ -250,11 +250,31 @@ class MediaAnalysisSessionTest(unittest.TestCase):
              ):
             result = self.session.fulfill(self._request(
                 media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
-            ))
+            ), raise_on_error=False)
 
         progress.update.assert_not_called()
         progress.close.assert_called_once_with()
         self.assertEqual(result.decode_error, "ffmpeg exited with code -9")
+
+    def test_required_scan_raises_its_decode_error(self):
+        failed = media_analysis.VideoScanResult(
+            path=os.path.realpath(self.path),
+            features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
+            frames={},
+            scene_changes=(),
+            identity_samples=(),
+            decode_error="scan stopped after the first frame",
+        )
+
+        with patch.object(self.session, "_scan", return_value=failed):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Media analysis failed for #1: scan stopped after the first frame",
+            ):
+                self.session.fulfill(
+                    self._request(media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES),
+                    raise_on_error=True,
+                )
 
     def test_progress_description_explains_analysis_purpose(self):
         cases = (
@@ -475,7 +495,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertEqual(list(result.frames), [0, 40, 80])
         self.assertEqual(
             [(sample.timestamp_ms, sample.frame_id) for sample in result.identity_samples],
-            [(0, 0)] * 4 + [(80, 2)] * 3,
+            [(0, 0), (80, 2)],
         )
         self.assertTrue(result.validated_all_streams)
         self.assertIsNone(result.decode_error)
@@ -518,7 +538,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertEqual(result.scene_changes, ())
         self.assertIsNone(result.decode_error)
 
-    def test_identity_samples_can_reuse_a_sparse_frame(self):
+    def test_identity_samples_do_not_reuse_sparse_frames(self):
         samples = media_analysis.MediaAnalysisSession._build_samples(
             (0, 250, 500, 750, 1000),
             [(0, 0), (1, 1000)],
@@ -526,15 +546,11 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             {},
         )
 
-        self.assertEqual(len(samples), 5)
         self.assertEqual(
-            [(sample.timestamp_ms, sample.path) for sample in samples],
+            [(sample.target_ms, sample.timestamp_ms, sample.path) for sample in samples],
             [
-                (0, "/first.png"),
-                (0, "/first.png"),
-                (0, "/first.png"),
-                (1000, "/last.png"),
-                (1000, "/last.png"),
+                (0, 0, "/first.png"),
+                (1000, 1000, "/last.png"),
             ],
         )
 
@@ -591,7 +607,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         with patch.object(self.session, "_scan", return_value=scanned):
             self.session.fulfill(self._request(
                 media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
-            ))
+            ), raise_on_error=False)
 
         persistent.save_frame_probes.assert_not_called()
         persistent.save_scene_changes.assert_not_called()
@@ -708,7 +724,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         )
         self.assertEqual(result.frames, {})
         self.assertEqual(result.scene_changes, ())
-        self.assertEqual(len(result.identity_samples), 7)
+        self.assertEqual(len(result.identity_samples), 2)
 
     def test_scene_and_identity_scan_does_not_add_an_extra_null_output(self):
         session = media_analysis.MediaAnalysisSession(
