@@ -430,9 +430,9 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             sample_stats = args[stats_options[1] + 1]
 
             with open(frame_stats, "w", encoding="utf-8") as file:
-                file.write("0 0.000\n1 0.040\n2 0.080\n")
+                file.write("0 0 1/1000\n1 40 1/1000\n2 80 1/1000\n")
             with open(sample_stats, "w", encoding="utf-8") as file:
-                file.write("0 0.000\n1 0.080\n")
+                file.write("0 0 1/1000\n1 80 1/1000\n")
 
             output_pattern = next(value for value in args if "identity_%08d.png" in value)
             for index in (1, 2):
@@ -467,7 +467,10 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             for index, value in enumerate(args)
             if value == "-stats_enc_pre_fmt:v:0"
         ]
-        self.assertEqual(stats_formats, ["{ni} {ti}", "{ni} {ti}"])
+        self.assertEqual(
+            stats_formats,
+            ["{ni} {ptsi} {tbi}", "{ni} {ptsi} {tbi}"],
+        )
         self.assertEqual(result.scene_changes, (80,))
         self.assertEqual(list(result.frames), [0, 40, 80])
         self.assertEqual(
@@ -678,7 +681,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             self.assertEqual(len(stats_options), 1)
             sample_stats = args[stats_options[0] + 1]
             with open(sample_stats, "w", encoding="utf-8") as file:
-                file.write("0 0.000\n1 0.080\n")
+                file.write("0 0 1/1000\n1 80 1/1000\n")
 
             output_pattern = next(value for value in args if "identity_%08d.png" in value)
             for index in (1, 2):
@@ -718,7 +721,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             del on_line, logger
             stats_index = args.index("-stats_enc_pre:v:0")
             with open(args[stats_index + 1], "w", encoding="utf-8") as file:
-                file.write("0 0.000\n")
+                file.write("0 0 1/1000\n")
 
             output_pattern = next(value for value in args if "identity_%08d.png" in value)
             with open(output_pattern.replace("%08d", "00000001"), "wb") as file:
@@ -740,6 +743,18 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertNotIn(["-f", "null", "-"], output_triplets)
         self.assertTrue(result.supports(media_analysis.MediaAnalysisFeature.SCENE_CHANGES))
         self.assertTrue(result.supports(media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES))
+
+    def test_frame_stats_preserve_millisecond_precision_for_long_timestamps(self):
+        stats_path = os.path.join(self.temp_dir.name, "frames.txt")
+        with open(stats_path, "w", encoding="utf-8") as file:
+            file.write(
+                "26629 1110651 1/1000\n"
+                "26630 26655664 1/24000\n"
+            )
+
+        entries = self.session._read_frame_entries(stats_path, correction_ms=-21)
+
+        self.assertEqual(entries, [(26629, 1110630), (26630, 1110632)])
 
 
 if __name__ == "__main__":

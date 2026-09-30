@@ -10,6 +10,7 @@ import time
 from bisect import bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from .subtitles_utils import SubtitleFile
 DEFAULT_LOGGER = logging.getLogger("TwoTone.utils.video_utils")
 _SHOWINFO_PTS_TIME_RE = re.compile(r"pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))")
 _SHOWINFO_FRAME_RE = re.compile(r"n: *(\d+).*pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))")
+_STATS_FRAME_RE = re.compile(r"^(\d+)\s+([-+]?\d+)\s+([-+]?\d+/[-+]?\d+)$")
 _MEDIA_STREAM_TYPES = ("video", "audio", "subtitle")
 _OUTPUT_DURATION_TOLERANCE_MS = 1000
 _OUTPUT_END_PACKET_TOLERANCE_MS = 250
@@ -526,6 +528,29 @@ def _balanced_timestamp_select_expr(timestamp_ranges: list[tuple[float, float]])
     return build(parts)
 
 
+def _read_frame_entries(path: str, correction_ms: int) -> list[tuple[int, int]]:
+    """Read exact frame timestamps written by FFmpeg's encoding statistics."""
+    try:
+        with open(path, encoding="utf-8") as file:
+            lines = file.readlines()
+    except OSError:
+        return []
+
+    entries: list[tuple[int, int]] = []
+    for line in lines:
+        match = _STATS_FRAME_RE.match(line.strip())
+        if match is None:
+            continue
+        frame_id = int(match.group(1))
+        pts = int(match.group(2))
+        time_base = Fraction(match.group(3))
+        if pts == 2**63 - 1 or time_base == 0:
+            continue
+        timestamp_ms = max(0, round(pts * time_base * 1000) + correction_ms)
+        entries.append((frame_id, timestamp_ms))
+    return entries
+
+
 def extract_frames_at_ranges(
     video_path: str,
     target_dir: str,
@@ -546,12 +571,13 @@ def extract_frames_at_ranges(
     For each extracted frame, the ``"path"`` value at the matching timestamp
     key is set to the written file on disk.
 
-    Extracted files are named ``frame_<timestamp_ms>.<format>`` — unique and
-    stable across invocations, so paths recorded in *probed_metadata* by
-    earlier extractions into the same directory stay valid, and path-keyed
-    caches never see a path re-used with different content.  ffmpeg itself
-    writes sequentially-numbered files into a private temporary subdirectory,
-    which are renamed once the showinfo timestamps are known.
+    Extracted files are named ``frame_<frame_id>_<timestamp_ms>.<format>`` —
+    unique and stable across invocations, so paths recorded in
+    *probed_metadata* by earlier extractions into the same directory stay
+    valid, and path-keyed caches never see a path re-used with different
+    content. ffmpeg itself writes sequentially-numbered files into a private
+    temporary subdirectory, which are renamed once exact PTS values are read
+    from its encoding statistics.
 
     Uses ffmpeg's ``select='between(t,a,b)+…'`` filter so only the
     requested frames are encoded and written. Frame ranges are translated
@@ -592,8 +618,6 @@ def extract_frames_at_ranges(
     basename = os.path.basename(video_path)
     bar_desc = desc or f"Extracting frames: {basename}"
 
-    showinfo_entries: list[tuple[int, int]] = []  # (output_seq, timestamp_ms)
-
     pbar = tqdm(
         total=total_frames,
         desc=bar_desc,
@@ -602,11 +626,7 @@ def extract_frames_at_ranges(
     )
 
     def _on_line(line: str) -> None:
-        match = _SHOWINFO_FRAME_RE.search(line)
-        if match:
-            output_seq = int(match.group(1))
-            timestamp_ms = _showinfo_timestamp_ms(match.group(2), timestamp_correction_ms)
-            showinfo_entries.append((output_seq, timestamp_ms))
+        if _SHOWINFO_FRAME_RE.search(line):
             pbar.update(1)
 
     fallback_options: list[list[str]] = [
@@ -616,6 +636,7 @@ def extract_frames_at_ranges(
     ]
 
     work_dir = tempfile.mkdtemp(prefix=".extract_", dir=target_dir)
+    frame_stats_path = os.path.join(work_dir, "frames.txt")
     output_pattern = os.path.join(work_dir, f"frame_%08d.{format}")
 
     def _clean_work_dir():
@@ -626,7 +647,6 @@ def extract_frames_at_ranges(
         last_stderr: list[str] = []
         for opts in fallback_options:
             _clean_work_dir()
-            showinfo_entries.clear()
             pbar.reset()
 
             args = [
@@ -636,6 +656,8 @@ def extract_frames_at_ranges(
                 *opts,
                 "-q:v", "2",
                 "-vf", ",".join(vf_parts),
+                "-stats_enc_pre:v:0", frame_stats_path,
+                "-stats_enc_pre_fmt:v:0", "{ni} {ptsi} {tbi}",
                 output_pattern,
             ]
 
@@ -654,18 +676,23 @@ def extract_frames_at_ranges(
 
         pbar.close()
 
-        frame_files = sorted(os.listdir(work_dir))
+        frame_entries = _read_frame_entries(frame_stats_path, timestamp_correction_ms)
+        frame_files = sorted(
+            filename
+            for filename in os.listdir(work_dir)
+            if filename.startswith("frame_") and filename.endswith(f".{format}")
+        )
 
-        usable = min(len(showinfo_entries), len(frame_files))
-        if len(showinfo_entries) != len(frame_files):
+        usable = min(len(frame_entries), len(frame_files))
+        if len(frame_entries) != len(frame_files):
             logger.warning(
-                f"Frame count mismatch for {basename}: showinfo reported "
-                f"{len(showinfo_entries)} frames but {len(frame_files)} files "
+                f"Frame count mismatch for {basename}: FFmpeg statistics reported "
+                f"{len(frame_entries)} frames but {len(frame_files)} files "
                 f"on disk. Using {usable}."
             )
 
         for i in range(usable):
-            _, timestamp_ms = showinfo_entries[i]
+            _, timestamp_ms = frame_entries[i]
             if timestamp_ms not in probed_metadata:
                 logger.warning(
                     f"Extracted frame at {timestamp_ms}ms has no matching "

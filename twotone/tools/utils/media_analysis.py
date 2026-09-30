@@ -17,9 +17,6 @@ _SCENE_FRAME_RE = re.compile(
     r"^frame:\d+\s+pts:\S+\s+pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))"
 )
 _PROGRESS_TIME_RE = re.compile(r"^out_time_ms=(\d+)$")
-_STATS_FRAME_RE = re.compile(
-    r"^(\d+)\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+))$"
-)
 _PROGRESS_PREFIXES = (
     "bitrate=",
     "drop_frames=",
@@ -548,7 +545,7 @@ class MediaAnalysisSession:
             if features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
                 args.extend([
                     "-stats_enc_pre:v:0", frame_stats_path,
-                    "-stats_enc_pre_fmt:v:0", "{ni} {ti}",
+                    "-stats_enc_pre_fmt:v:0", "{ni} {ptsi} {tbi}",
                 ])
             args.extend(["-f", "null", "-"])
 
@@ -558,7 +555,7 @@ class MediaAnalysisSession:
                 "-an", "-sn", "-dn",
                 "-fps_mode", "vfr",
                 "-stats_enc_pre:v:0", sample_stats_path,
-                "-stats_enc_pre_fmt:v:0", "{ni} {ti}",
+                "-stats_enc_pre_fmt:v:0", "{ni} {ptsi} {tbi}",
                 sample_pattern,
             ])
 
@@ -704,24 +701,7 @@ class MediaAnalysisSession:
 
     @staticmethod
     def _read_frame_entries(path: str, correction_ms: int) -> list[tuple[int, int]]:
-        try:
-            with open(path, encoding="utf-8") as file:
-                lines = file.readlines()
-        except OSError:
-            return []
-
-        entries: list[tuple[int, int]] = []
-        for line in lines:
-            match = _STATS_FRAME_RE.match(line.strip())
-            if match is None:
-                continue
-            frame_id = int(match.group(1))
-            timestamp_ms = video_utils._showinfo_timestamp_ms(
-                match.group(2),
-                correction_ms,
-            )
-            entries.append((frame_id, timestamp_ms))
-        return entries
+        return video_utils._read_frame_entries(path, correction_ms)
 
     @classmethod
     def _read_frames(cls, path: str, correction_ms: int) -> dict[int, dict]:

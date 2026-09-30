@@ -9,6 +9,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+_CACHE_FORMAT_VERSION = 2  # v2 stores frame timestamps from exact PTS values.
+
+
 class MeltCache:
     """Persistent cache for expensive per-video PairMatcher operations.
 
@@ -141,7 +144,7 @@ class MeltCache:
     def _cache_key(self, video_path: str) -> str:
         real = os.path.realpath(video_path)
         stat = os.stat(real)
-        raw = f"{real}:{stat.st_size}:{stat.st_mtime_ns}"
+        raw = f"{_CACHE_FORMAT_VERSION}:{real}:{stat.st_size}:{stat.st_mtime_ns}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     def _entry_dir(self, video_path: str) -> str | None:
