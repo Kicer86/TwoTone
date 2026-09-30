@@ -47,6 +47,7 @@ class MeltAnalyzer:
         self.workspace = workspace
         self.allow_video_timeline_mismatch = allow_video_timeline_mismatch
         self.media_analysis = media_analysis_session
+        self._timeline_identity_cache: dict[tuple[str, str], bool] = {}
         self.input_paths: tuple[str, ...] = ()
 
     def analyze_duplicates(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
@@ -352,7 +353,19 @@ class MeltAnalyzer:
             file_id = ids[path]
             source_track = self._pick_primary_video_track(tracks[path]["video"], file_id)
             if source_track.get("length") == base_length:
-                return path
+                if self._videos_have_identical_timeline(
+                    base_path,
+                    path,
+                    ids[base_path],
+                    file_id,
+                ):
+                    return path
+
+                self.logger.debug(
+                    "Not copying chapters from file #%d because its video content differs from the base video.",
+                    file_id,
+                )
+                continue
 
             self.logger.debug(
                 "Not copying chapters from file #%d because its video length differs from the base video.",
@@ -360,6 +373,33 @@ class MeltAnalyzer:
             )
 
         return None
+
+    def _videos_have_identical_timeline(
+        self,
+        base_path: str,
+        source_path: str,
+        base_file_id: int,
+        source_file_id: int,
+    ) -> bool:
+        key = (base_path, source_path)
+        if key in self._timeline_identity_cache:
+            return self._timeline_identity_cache[key]
+
+        with self.workspace.scoped_dir("equal_length_content") as matching_wd:
+            matcher = PairMatcher(
+                self.duplicates_source.interruption,
+                matching_wd,
+                base_path,
+                source_path,
+                self.logger.getChild("PairMatcher"),
+                lhs_label=f"#{base_file_id}",
+                rhs_label=f"#{source_file_id}",
+                media_analysis_session=self.media_analysis,
+            )
+            result = matcher.has_identical_timeline_content()
+
+        self._timeline_identity_cache[key] = result
+        return result
 
     def _log_group_inputs(self, title: str, input_files: MeltInputFiles) -> None:
         self.logger.info("Title %s: input files:", title)
@@ -396,14 +436,13 @@ class MeltAnalyzer:
             elif base_length is None or length is None:
                 continue
             else:
-                with self.workspace.scoped_dir("equal_length_content") as matching_wd:
-                    matcher = PairMatcher(
-                        self.duplicates_source.interruption, matching_wd, base_path, path,
-                        self.logger.getChild("PairMatcher"), lhs_label=f"#{base_file_id}", rhs_label=f"#{file_id}",
-                        media_analysis_session=self.media_analysis,
-                    )
-                    if matcher.has_identical_timeline_content():
-                        continue
+                if self._videos_have_identical_timeline(
+                    base_path,
+                    path,
+                    base_file_id,
+                    file_id,
+                ):
+                    continue
 
                 issue = f"Video content mismatch between #{file_id} and #{base_file_id} (use --allow-video-timeline-mismatch)."
 
