@@ -5,7 +5,6 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from fractions import Fraction
 from typing import Protocol
 
 from tqdm import tqdm
@@ -18,9 +17,6 @@ _SCENE_FRAME_RE = re.compile(
     r"^frame:\d+\s+pts:\S+\s+pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))"
 )
 _PROGRESS_TIME_RE = re.compile(r"^out_time_ms=(\d+)$")
-_STATS_FRAME_RE = re.compile(
-    r"^(\d+)\s+([-+]?\d+)\s+([-+]?\d+/[-+]?\d+)$"
-)
 _PROGRESS_PREFIXES = (
     "bitrate=",
     "drop_frames=",
@@ -705,25 +701,7 @@ class MediaAnalysisSession:
 
     @staticmethod
     def _read_frame_entries(path: str, correction_ms: int) -> list[tuple[int, int]]:
-        try:
-            with open(path, encoding="utf-8") as file:
-                lines = file.readlines()
-        except OSError:
-            return []
-
-        entries: list[tuple[int, int]] = []
-        for line in lines:
-            match = _STATS_FRAME_RE.match(line.strip())
-            if match is None:
-                continue
-            frame_id = int(match.group(1))
-            pts = int(match.group(2))
-            time_base = Fraction(match.group(3))
-            if pts == 2**63 - 1 or time_base == 0:
-                continue
-            timestamp_ms = max(0, round(pts * time_base * 1000) + correction_ms)
-            entries.append((frame_id, timestamp_ms))
-        return entries
+        return video_utils._read_frame_entries(path, correction_ms)
 
     @classmethod
     def _read_frames(cls, path: str, correction_ms: int) -> dict[int, dict]:
