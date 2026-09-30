@@ -1,8 +1,6 @@
 import importlib.util
 import unittest
-
 from pathlib import Path
-
 
 _SPEC = importlib.util.spec_from_file_location(
     "run_tests",
@@ -36,9 +34,11 @@ class TestSharding(unittest.TestCase):
         suite = unittest.TestSuite()
 
         for shard_count, shard_index in ((0, 0), (2, -1), (2, 2)):
-            with self.subTest(shard_count=shard_count, shard_index=shard_index):
-                with self.assertRaises(ValueError):
-                    run_tests.shard_suite(suite, shard_count, shard_index)
+            with (
+                self.subTest(shard_count=shard_count, shard_index=shard_index),
+                self.assertRaises(ValueError),
+            ):
+                run_tests.shard_suite(suite, shard_count, shard_index)
 
 
 if __name__ == "__main__":
