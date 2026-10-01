@@ -84,7 +84,7 @@ class InputValidatorTest(unittest.TestCase):
         self.media_analysis.fulfill.assert_called_once_with(
             media_analysis.MediaAnalysisRequest(
                 path=os.path.realpath(self.path),
-                label=os.path.realpath(self.path),
+                label=self.path,
                 features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
             ),
         )
