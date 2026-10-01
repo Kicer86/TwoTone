@@ -233,11 +233,28 @@ class PairMatcher:
         rhs_samples = rhs_scan.identity_samples
         lhs_expected = len(media_analysis.identity_timestamps(self.lhs_duration_ms or 0, self.lhs_fps))
         rhs_expected = len(media_analysis.identity_timestamps(self.rhs_duration_ms or 0, self.rhs_fps))
-        if len(lhs_samples) != lhs_expected or len(rhs_samples) != rhs_expected:
+
+        def has_complete_distinct_samples(
+            samples: tuple[media_analysis.VideoSample, ...],
+            expected: int,
+        ) -> bool:
+            return (
+                len(samples) == expected
+                and len({sample.timestamp_ms for sample in samples}) == expected
+                and len({sample.path for sample in samples}) == expected
+            )
+
+        if (
+            not has_complete_distinct_samples(lhs_samples, lhs_expected)
+            or not has_complete_distinct_samples(rhs_samples, rhs_expected)
+        ):
             self.logger.debug(
-                "Equal-length identity check could not collect all samples (%d and %d).",
+                "Equal-length identity check could not collect all distinct samples "
+                "(%d/%d and %d/%d).",
                 len(lhs_samples),
+                lhs_expected,
                 len(rhs_samples),
+                rhs_expected,
             )
             return False
 
@@ -408,7 +425,7 @@ class PairMatcher:
             label=label,
             features=features,
         )
-        return self.media_analysis.fulfill(request)
+        return self.media_analysis.fulfill(request, raise_on_error=True)
 
     @staticmethod
     def calculate_ratio(pairs: list[tuple[int, int]]) -> float:

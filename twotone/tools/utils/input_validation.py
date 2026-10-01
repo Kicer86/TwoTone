@@ -219,7 +219,7 @@ class InputValidator:
                 label=target.reference,
                 features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
             )
-            scan = self.media_analysis.fulfill(request)
+            scan = self.media_analysis.fulfill(request, raise_on_error=False)
             if scan.decode_error is not None:
                 return ValidationIssue(
                     path,

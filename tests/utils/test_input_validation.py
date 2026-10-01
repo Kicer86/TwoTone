@@ -87,6 +87,7 @@ class InputValidatorTest(unittest.TestCase):
                 label=self.path,
                 features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
             ),
+            raise_on_error=False,
         )
 
     def test_full_validation_accepts_successful_decode_from_media_analysis(self):
@@ -297,6 +298,7 @@ class InputValidatorTest(unittest.TestCase):
                 label="#7",
                 features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
             ),
+            raise_on_error=False,
         )
 
     def test_uses_the_supplied_reference_in_error_reports(self):

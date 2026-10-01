@@ -174,7 +174,10 @@ class RuntimeVersionTest(unittest.TestCase):
                 validator.call_args.kwargs["media_analysis_session"],
                 media_analysis_session,
             )
-            media_analysis_session.fulfill.assert_called_once_with(request)
+            media_analysis_session.fulfill.assert_called_once_with(
+                request,
+                raise_on_error=True,
+            )
             validator.return_value.validate.assert_called_once_with((
                 input_validation.InputValidationTarget(input_path, input_path),
             ))
@@ -222,6 +225,10 @@ class RuntimeVersionTest(unittest.TestCase):
                 requests[1],
             ],
         )
+        self.assertTrue(all(
+            call.kwargs == {"raise_on_error": True}
+            for call in context.media_analysis.fulfill.call_args_list
+        ))
 
     def test_live_executor_prepares_media_analysis_immediately_before_perform(self):
         import tempfile
@@ -239,7 +246,9 @@ class RuntimeVersionTest(unittest.TestCase):
             report = twotone.input_validation.ValidationReport((), 1, 0)
             media_analysis_session = Mock()
             events = []
-            media_analysis_session.fulfill.side_effect = lambda *_: events.append("prepare")
+            media_analysis_session.fulfill.side_effect = (
+                lambda *_, **__: events.append("prepare")
+            )
             tool.required_tools = Mock(return_value=set())
             tool.perform = Mock(side_effect=lambda *_, **__: events.append("perform"))
 
