@@ -544,7 +544,7 @@ def _read_frame_entries(path: str, correction_ms: int) -> list[tuple[int, int]]:
         frame_id = int(match.group(1))
         pts = int(match.group(2))
         time_base = Fraction(match.group(3))
-        if pts == 2**63 - 1 or time_base == 0:
+        if pts in (-2**63, 2**63 - 1) or time_base == 0:
             continue
         timestamp_ms = max(0, round(pts * time_base * 1000) + correction_ms)
         entries.append((frame_id, timestamp_ms))
@@ -586,6 +586,10 @@ def extract_frames_at_ranges(
     structured as a balanced binary tree of ``+`` operations so that the
     parser stack depth is O(log₂ N) instead of O(N), allowing thousands
     of ranges in a single ffmpeg invocation.
+
+    Raises RuntimeError if the extracted images cannot be matched one-to-one
+    to all requested, known timestamps. Partial extraction must not look like
+    a successful scan to callers.
     """
     if not frame_ranges:
         return
@@ -599,6 +603,13 @@ def extract_frames_at_ranges(
     )
     if not timestamp_ranges:
         return
+    requested_frame_ids = {
+        frame_id for start, end in frame_ranges for frame_id in range(start, end + 1)
+    }
+    expected_timestamps = {
+        timestamp for timestamp, info in probed_metadata.items()
+        if int(info["frame_id"]) in requested_frame_ids
+    }
     select_expr = _balanced_timestamp_select_expr(timestamp_ranges)
 
     scale_filter = ""
@@ -613,7 +624,7 @@ def extract_frames_at_ranges(
     if scale_filter:
         vf_parts.append(scale_filter)
 
-    total_frames = sum(end - start + 1 for start, end in frame_ranges)
+    total_frames = len(expected_timestamps)
 
     basename = os.path.basename(video_path)
     bar_desc = desc or f"Extracting frames: {basename}"
@@ -654,10 +665,12 @@ def extract_frames_at_ranges(
                 "-map", "0:v:0",
                 "-an", "-sn", "-dn",
                 *opts,
+                # Match the filter time base used by MediaAnalysisSession.
+                "-enc_time_base:v:0", "filter",
                 "-q:v", "2",
                 "-vf", ",".join(vf_parts),
                 "-stats_enc_pre:v:0", frame_stats_path,
-                "-stats_enc_pre_fmt:v:0", "{ni} {ptsi} {tbi}",
+                "-stats_enc_pre_fmt:v:0", "{ni} {pts} {tb}",
                 output_pattern,
             ]
 
@@ -683,29 +696,32 @@ def extract_frames_at_ranges(
             if filename.startswith("frame_") and filename.endswith(f".{format}")
         )
 
-        usable = min(len(frame_entries), len(frame_files))
         if len(frame_entries) != len(frame_files):
-            logger.warning(
+            raise RuntimeError(
                 f"Frame count mismatch for {basename}: FFmpeg statistics reported "
                 f"{len(frame_entries)} frames but {len(frame_files)} files "
-                f"on disk. Using {usable}."
+                "on disk."
             )
 
-        for i in range(usable):
-            _, timestamp_ms = frame_entries[i]
-            if timestamp_ms not in probed_metadata:
-                logger.warning(
-                    f"Extracted frame at {timestamp_ms}ms has no matching "
-                    f"entry in probed metadata — skipping."
-                )
-                continue
+        extracted_timestamps = {timestamp for _, timestamp in frame_entries}
+        missing = sorted(expected_timestamps - extracted_timestamps)
+        unexpected = sorted(extracted_timestamps - expected_timestamps)
+        if missing or unexpected or len(extracted_timestamps) != len(frame_entries):
+            raise RuntimeError(
+                f"Incomplete or inconsistent frame extraction for {basename}: "
+                f"expected {len(expected_timestamps)} frames, got {len(frame_entries)}; "
+                f"missing timestamps (ms): {missing[:5]}; "
+                f"unexpected timestamps (ms): {unexpected[:5]}."
+            )
 
+        for (_, timestamp_ms), filename in zip(frame_entries, frame_files):
             frame_no = probed_metadata[timestamp_ms]["frame_id"]
 
             final_path = os.path.join(target_dir, f"frame_{frame_no:06d}_{timestamp_ms:010d}.{format}")
-            os.replace(os.path.join(work_dir, frame_files[i]), final_path)
+            os.replace(os.path.join(work_dir, filename), final_path)
             probed_metadata[timestamp_ms]["path"] = final_path
     finally:
+        pbar.close()
         shutil.rmtree(work_dir, ignore_errors=True)
 
 

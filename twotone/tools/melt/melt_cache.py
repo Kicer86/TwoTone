@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-_CACHE_FORMAT_VERSION = 2  # v2 stores frame timestamps from exact PTS values.
+_CACHE_FORMAT_VERSION = 4  # v4 preserves the filter time base instead of quantizing PTS to FPS.
 
 
 class MeltCache:
