@@ -54,6 +54,11 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             features=features,
         )
 
+    @staticmethod
+    def _stats_path(args: list[str], option: str, occurrence: int = 0) -> str:
+        options = [index for index, value in enumerate(args) if value == option]
+        return args[options[occurrence] + 1]
+
     def test_probe_reuses_result_for_the_same_unchanged_file(self):
         data = {"streams": [{"codec_type": "video", "codec_name": "h264"}]}
         normalized_data = {
@@ -143,9 +148,11 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             }],
         }
 
-        def fake_ffmpeg(_args, _interruption, on_line, logger):
+        def fake_ffmpeg(args, _interruption, on_line, logger):
             del logger
-            on_line("frame:0 pts:2 pts_time:0.080\n")
+            scene_stats = self._stats_path(args, "-stats_enc_pre:v:0")
+            with open(scene_stats, "w", encoding="utf-8") as file:
+                file.write("0 2 1/25\n")
             return Mock(returncode=0), []
 
         with patch.object(video_utils, "get_video_full_info", return_value=probe_result) as probe, \
@@ -448,19 +455,20 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             self.assertEqual(len(stats_options), 2)
             frame_stats = args[stats_options[0] + 1]
             sample_stats = args[stats_options[1] + 1]
+            scene_stats = self._stats_path(args, "-stats_enc_pre:v:1")
 
             with open(frame_stats, "w", encoding="utf-8") as file:
                 file.write("0 0 1/1000\n1 40 1/1000\n2 80 1/1000\n")
             with open(sample_stats, "w", encoding="utf-8") as file:
                 file.write("0 0 1/1000\n1 80 1/1000\n")
+            with open(scene_stats, "w", encoding="utf-8") as file:
+                file.write("0 80 1/1000\n")
 
             output_pattern = next(value for value in args if "identity_%08d.png" in value)
             for index in (1, 2):
                 with open(output_pattern.replace("%08d", f"{index:08d}"), "wb") as file:
                     file.write(b"png")
 
-            on_line("frame:0 pts:2 pts_time:0.080\n")
-            on_line("lavfi.scene_score=0.75\n")
             on_line("out_time_ms=80000\n")
             on_line("progress=end\n")
             return SimpleNamespace(returncode=0), []
@@ -482,6 +490,9 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertIn("-xerror", args)
         self.assertIn("0:a?", args)
         self.assertIn("split=3", " ".join(args))
+        self.assertNotIn("file='pipe\\:2'", " ".join(args))
+        self.assertNotIn("metadata=mode=print", " ".join(args))
+        self.assertIn("[scenes]", args)
         stats_formats = [
             args[index + 1]
             for index, value in enumerate(args)
@@ -491,6 +502,8 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             stats_formats,
             ["{ni} {ptsi} {tbi}", "{ni} {ptsi} {tbi}"],
         )
+        scene_stats_format = self._stats_path(args, "-stats_enc_pre_fmt:v:1")
+        self.assertEqual(scene_stats_format, "{ni} {ptsi} {tbi}")
         self.assertEqual(result.scene_changes, (80,))
         self.assertEqual(list(result.frames), [0, 40, 80])
         self.assertEqual(
@@ -520,8 +533,11 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
         def fake_start(args, _interruption, on_line, logger):
             del on_line, logger
-            self.assertIn("[scanout]", args)
-            self.assertIn("split=2[vscenes][voutput]", " ".join(args))
+            self.assertIn("[scenes]", args)
+            self.assertNotIn("voutput", " ".join(args))
+            scene_stats = self._stats_path(args, "-stats_enc_pre:v:0")
+            with open(scene_stats, "w", encoding="utf-8"):
+                pass
             return Mock(returncode=0), []
 
         probe = media_analysis.MediaProbeResult(
@@ -726,7 +742,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertEqual(result.scene_changes, ())
         self.assertEqual(len(result.identity_samples), 2)
 
-    def test_scene_and_identity_scan_does_not_add_an_extra_null_output(self):
+    def test_scene_and_identity_scan_maps_scenes_to_a_null_output(self):
         session = media_analysis.MediaAnalysisSession(
             self.workspace,
             generic_utils.InterruptibleProcess(),
@@ -735,8 +751,16 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
         def fake_start(args, _interruption, on_line, logger):
             del on_line, logger
-            stats_index = args.index("-stats_enc_pre:v:0")
-            with open(args[stats_index + 1], "w", encoding="utf-8") as file:
+            stats_options = [
+                index for index, value in enumerate(args)
+                if value == "-stats_enc_pre:v:0"
+            ]
+            self.assertEqual(len(stats_options), 2)
+            scene_stats = args[stats_options[0] + 1]
+            sample_stats = args[stats_options[1] + 1]
+            with open(scene_stats, "w", encoding="utf-8") as file:
+                file.write("0 0 1/1000\n")
+            with open(sample_stats, "w", encoding="utf-8") as file:
                 file.write("0 0 1/1000\n")
 
             output_pattern = next(value for value in args if "identity_%08d.png" in value)
@@ -756,9 +780,12 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
         args = start.call_args.args[0]
         output_triplets = [args[index:index + 3] for index in range(len(args) - 2)]
-        self.assertNotIn(["-f", "null", "-"], output_triplets)
+        self.assertIn(["-f", "null", "-"], output_triplets)
+        self.assertIn("[scenes]", args)
         self.assertTrue(result.supports(media_analysis.MediaAnalysisFeature.SCENE_CHANGES))
         self.assertTrue(result.supports(media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES))
+        self.assertEqual(result.scene_changes, (0,))
+        self.assertEqual(len(result.identity_samples), 1)
 
     def test_frame_stats_preserve_millisecond_precision_for_long_timestamps(self):
         stats_path = os.path.join(self.temp_dir.name, "frames.txt")
