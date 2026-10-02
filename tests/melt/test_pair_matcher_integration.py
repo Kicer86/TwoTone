@@ -293,6 +293,18 @@ class PairMatcherIntegrationTest(MeltTestBase):
         )
         self.assertTrue(coverage["full_coverage"])
 
+    def test_sparse_gap_verification_accepts_degraded_continuous_video(self):
+        lhs_path, rhs_path = self.edge_fixtures["no_speed"]
+        pm = self._make_pair_matcher(generic_utils.InterruptibleProcess(), lhs_path, rhs_path)
+        result = pm.create_segments_mapping()
+        # Remove the interior anchors deliberately, exercising the additional
+        # content checks even when scene detection normally supplies them.
+        pairs = [result.mapping[0], result.mapping[-1]]
+        self.assertGreater(pairs[-1][0] - pairs[0][0], pm._MAX_UNVERIFIED_GAP_MS)
+        lhs = pm._normalize_frames(pm._extracted_subset(pm.lhs_all_frames), pm.lhs_normalized_wd)
+        rhs = pm._normalize_frames(pm._extracted_subset(pm.rhs_all_frames), pm.rhs_normalized_wd)
+        pm._verify_sparse_mapping_gaps(pairs, lhs, rhs)
+
     def test_pair_matcher_different_intro_same_length(self):
         """Files have different high-entropy intros of similar length, then shared content."""
         file1_path, file2_path = self.edge_fixtures["diff_intro_same"]

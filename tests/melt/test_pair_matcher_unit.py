@@ -873,6 +873,121 @@ class PairMatcherUnitTest(unittest.TestCase):
 
     # ---- _extrapolate_and_verify_global_linear ----
 
+    def test_sparse_gap_verification_rejects_hidden_content_cut(self):
+        pm = self._make_pm_with_frames(list(range(0, 300041, 40)), list(range(0, 300041, 40)))
+        # A 720ms cut fits under the old 6s tolerance for this 300s gap.
+        pairs = [(0, 0), (300000, 299280)]
+
+        def same_content(_ctx, lhs, rhs):
+            observed_rhs = lhs if lhs < 150000 else lhs - 720
+            return abs(rhs - observed_rhs) <= 40
+
+        with self._patch_verify_ctx(), \
+             patch.object(pm, '_better_displaced_match', return_value=False), \
+             patch.object(pm, '_boundary_content_matches', side_effect=same_content):
+            with self.assertRaisesRegex(RuntimeError, 'Cannot verify content continuity'):
+                pm._verify_sparse_mapping_gaps(pairs, {}, {})
+
+    def test_sparse_gap_verification_accepts_continuous_speed_change(self):
+        pm = self._make_pm_with_frames(list(range(0, 300041, 40)), list(range(0, 288041, 40)))
+        pairs = [(0, 0), (300000, 288000)]
+        checked = []
+
+        def same_content(_ctx, lhs, rhs):
+            checked.append(lhs)
+            return abs(rhs - lhs * 0.96) <= 40
+
+        with self._patch_verify_ctx(), \
+             patch.object(pm, '_better_displaced_match', return_value=False), \
+             patch.object(pm, '_boundary_content_matches', side_effect=same_content):
+            pm._verify_sparse_mapping_gaps(pairs, {}, {})
+
+        self.assertLessEqual(min(checked), 10000)
+        self.assertGreaterEqual(max(checked), 290000)
+        self.assertEqual(pairs, [(0, 0), (300000, 288000)])
+
+    def test_sparse_gap_verification_tolerates_one_isolated_miss(self):
+        pm = self._make_pm_with_frames(list(range(0, 60041, 40)), list(range(0, 60041, 40)))
+        with self._patch_verify_ctx(), \
+             patch.object(pm, '_better_displaced_match', return_value=False), \
+             patch.object(pm, '_boundary_content_matches', side_effect=lambda ctx, lhs, rhs: lhs != 30000):
+            pm._verify_sparse_mapping_gaps([(0, 0), (60000, 60000)], {}, {})
+
+    def test_sparse_gap_verification_skips_dense_mapping(self):
+        pm = self._make_pair_matcher()
+        with patch.object(pm, '_build_boundary_verify_context') as build:
+            pm._verify_sparse_mapping_gaps([(0, 0), (10000, 10000)], {}, {})
+        build.assert_not_called()
+
+    def test_interior_verification_does_not_use_extrapolation_cutoff(self):
+        pm = self._make_pair_matcher()
+        lhs = self._make_frames([0, 40000])
+        rhs = self._make_frames([0, 40000])
+        pairs = [(0, 0), (40000, 40000)]
+        with patch.object(pm, '_find_interpolated_crop', return_value=None), \
+             patch.object(pm, '_comparison_image', return_value='/fake.png'), \
+             patch.object(pm, '_calculate_cutoff', return_value=20):
+            interior = pm._build_boundary_verify_context(pairs, lhs, rhs, extrapolating=False)
+            boundary = pm._build_boundary_verify_context(pairs, lhs, rhs)
+        self.assertEqual(interior.cutoff, 20)
+        self.assertEqual(boundary.cutoff, pm._MIN_BOUNDARY_GAP_PHASH_CUTOFF)
+
+    def test_sparse_gap_rejects_similar_shots_with_better_displaced_matches(self):
+        pm = self._make_pm_with_frames(list(range(0, 60041, 40)), list(range(0, 60041, 40)))
+        with self._patch_verify_ctx(), \
+            patch.object(pm, '_boundary_content_matches', return_value=True), \
+             patch.object(pm, '_better_displaced_match', return_value=True):
+            with self.assertRaisesRegex(RuntimeError, 'Cannot verify content continuity'):
+                pm._verify_sparse_mapping_gaps(
+                    [(0, 0), (60000, 60000)], {}, {}, [], [20000],
+                )
+
+    def test_sparse_gap_checks_cuts_detected_on_only_one_side(self):
+        pm = self._make_pm_with_frames(list(range(0, 60041, 40)), list(range(0, 60041, 40)))
+        # Periodic 10s samples miss the differing content near this cut.
+        with self._patch_verify_ctx(), \
+             patch.object(pm, '_better_displaced_match', return_value=False), \
+             patch.object(pm, '_boundary_content_matches',
+                          side_effect=lambda ctx, lhs, rhs: not 11600 <= lhs <= 12400):
+            with self.assertRaisesRegex(RuntimeError, 'Cannot verify content continuity'):
+                pm._verify_sparse_mapping_gaps([(0, 0), (60000, 60000)], {}, {}, [], [12000])
+
+    def test_sparse_gap_limits_noisy_one_sided_cut_candidates(self):
+        pm = self._make_pm_with_frames(list(range(0, 60041, 40)), list(range(0, 60041, 40)))
+        checked = []
+        with self._patch_verify_ctx(), \
+             patch.object(pm, '_better_displaced_match', return_value=False), \
+             patch.object(pm, '_boundary_content_matches',
+                          side_effect=lambda ctx, lhs, rhs: checked.append(lhs) or True):
+            pm._verify_sparse_mapping_gaps(
+                [(0, 0), (60000, 60000)], {}, {}, [], list(range(1000, 60000, 1000)),
+            )
+
+        self.assertGreater(len(checked), 5)
+        self.assertLessEqual(len(checked), 17)
+
+    def test_boundary_prefetch_batches_large_argument_lists(self):
+        pm = self._make_pair_matcher()
+        frames = {
+            timestamp: {"path": None, "frame_id": timestamp}
+            for timestamp in range(9000)
+        }
+        with patch.object(video_utils, 'extract_frames_at_ranges') as extract:
+            pm._prefetch_boundary_images('/fake/video.mkv', '/fake/out', frames, list(frames))
+
+        self.assertEqual(extract.call_count, 2)
+        self.assertEqual(len(extract.call_args_list[0].args[2]), 8192)
+        self.assertEqual(len(extract.call_args_list[1].args[2]), 808)
+
+    def test_displaced_match_requires_clear_improvement_over_prediction(self):
+        pm = self._make_pair_matcher()
+        ctx = self._make_verify_ctx({'lhs': 0, 'near': 30, 'far': 10}, 40, {}, {})
+        with patch.object(pm, '_comparison_image', side_effect=['lhs', 'near', 'far']):
+            self.assertTrue(pm._better_displaced_match(ctx, 0, 100, {100: (0, 0), 120: (800, 800)}, [0, 20]))
+        ctx = self._make_verify_ctx({'lhs': 0, 'near': 30, 'far': 26}, 40, {}, {})
+        with patch.object(pm, '_comparison_image', side_effect=['lhs', 'near', 'far']):
+            self.assertFalse(pm._better_displaced_match(ctx, 0, 100, {100: (0, 0), 120: (800, 800)}, [0, 20]))
+
     def _make_pm_with_frames(self, lhs_ts, rhs_ts):
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
         pm.lhs_all_frames = self._make_frames(lhs_ts, prefix="lhs")
