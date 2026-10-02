@@ -530,24 +530,16 @@ class MediaAnalysisSession:
         if filter_parts:
             args.extend(["-filter_complex", ";".join(filter_parts)])
 
-        needs_null_output = bool(features & (
+        needs_primary_null_output = bool(features & (
             MediaAnalysisFeature.FRAME_TIMESTAMPS
-            | MediaAnalysisFeature.SCENE_CHANGES
             | MediaAnalysisFeature.VALIDATE_STREAMS
         ))
 
-        scene_video_stream_index: int | None = None
-        if needs_null_output:
-            mapped_video_streams = 0
+        if needs_primary_null_output:
             if features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
                 args.extend(["-map", "[vframes]"])
-                mapped_video_streams += 1
             elif "vvalidate" in branches:
                 args.extend(["-map", "[vvalidate]"])
-                mapped_video_streams += 1
-            if features & MediaAnalysisFeature.SCENE_CHANGES:
-                scene_video_stream_index = mapped_video_streams
-                args.extend(["-map", "[scenes]"])
 
         if features & MediaAnalysisFeature.VALIDATE_STREAMS:
             if has_primary_video:
@@ -555,10 +547,10 @@ class MediaAnalysisSession:
                 if "vframes" in branches or "vvalidate" in branches:
                     args.extend(["-map", "-0:v:0?"])
             args.extend(["-map", "0:a?"])
-        elif needs_null_output:
+        elif needs_primary_null_output:
             args.append("-an")
 
-        if needs_null_output:
+        if needs_primary_null_output:
             args.extend(["-sn", "-dn", "-fps_mode", "vfr"])
             if features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
                 args.extend([
@@ -567,13 +559,21 @@ class MediaAnalysisSession:
                     "-stats_enc_pre:v:0", frame_stats_path,
                     "-stats_enc_pre_fmt:v:0", "{ni} {pts} {tb}",
                 ])
-            if scene_video_stream_index is not None:
-                args.extend([
-                    f"-enc_time_base:v:{scene_video_stream_index}", "filter",
-                    f"-stats_enc_pre:v:{scene_video_stream_index}", scene_stats_path,
-                    f"-stats_enc_pre_fmt:v:{scene_video_stream_index}", "{ni} {pts} {tb}",
-                ])
             args.extend(["-f", "null", "-"])
+
+        if features & MediaAnalysisFeature.SCENE_CHANGES:
+            args.extend([
+                # Keep sparse scene packets out of the primary null muxer. Otherwise
+                # it may retain every full-resolution frame while waiting to
+                # interleave the next scene packet.
+                "-map", "[scenes]",
+                "-an", "-sn", "-dn",
+                "-fps_mode", "vfr",
+                "-enc_time_base:v:0", "filter",
+                "-stats_enc_pre:v:0", scene_stats_path,
+                "-stats_enc_pre_fmt:v:0", "{ni} {pts} {tb}",
+                "-f", "null", "-",
+            ])
 
         if features & MediaAnalysisFeature.IDENTITY_SAMPLES:
             args.extend([

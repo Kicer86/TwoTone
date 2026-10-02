@@ -448,14 +448,20 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
     def test_collects_frames_scenes_samples_and_validation_in_one_ffmpeg_call(self):
         def fake_start(args, _interruption, on_line, logger):
-            stats_options = [
-                index for index, value in enumerate(args)
-                if value == "-stats_enc_pre:v:0"
+            stats_paths = [
+                args[index + 1]
+                for index, value in enumerate(args)
+                if value.startswith("-stats_enc_pre:v:")
             ]
-            self.assertEqual(len(stats_options), 2)
-            frame_stats = args[stats_options[0] + 1]
-            sample_stats = args[stats_options[1] + 1]
-            scene_stats = self._stats_path(args, "-stats_enc_pre:v:1")
+            frame_stats = next(
+                path for path in stats_paths if path.endswith("frames.txt")
+            )
+            scene_stats = next(
+                path for path in stats_paths if path.endswith("scenes.txt")
+            )
+            sample_stats = next(
+                path for path in stats_paths if path.endswith("identity.txt")
+            )
 
             with open(frame_stats, "w", encoding="utf-8") as file:
                 file.write("0 0 1/1000\n1 40 1/1000\n2 80 1/1000\n")
@@ -493,25 +499,18 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertNotIn("file='pipe\\:2'", " ".join(args))
         self.assertNotIn("metadata=mode=print", " ".join(args))
         self.assertIn("[scenes]", args)
-        stats_formats = [
-            args[index + 1]
-            for index, value in enumerate(args)
-            if value == "-stats_enc_pre_fmt:v:0"
-        ]
         self.assertEqual(
-            stats_formats,
-            ["{ni} {pts} {tb}", "{ni} {pts} {tb}"],
+            [
+                args[index + 1] for index, value in enumerate(args)
+                if value == "-stats_enc_pre_fmt:v:0"
+            ],
+            ["{ni} {pts} {tb}", "{ni} {pts} {tb}", "{ni} {pts} {tb}"],
         )
-        scene_stats_format = self._stats_path(args, "-stats_enc_pre_fmt:v:1")
-        self.assertEqual(scene_stats_format, "{ni} {pts} {tb}")
         self.assertEqual([
             args[index + 1] for index, value in enumerate(args)
             if value == "-enc_time_base:v:0"
-        ], ["filter", "filter"])
-        self.assertEqual([
-            args[index + 1] for index, value in enumerate(args)
-            if value == "-enc_time_base:v:1"
-        ], ["filter"])
+        ], ["filter", "filter", "filter"])
+        self.assertNotIn("-enc_time_base:v:1", args)
         self.assertEqual(result.scene_changes, (80,))
         self.assertEqual(list(result.frames), [0, 40, 80])
         self.assertEqual(
@@ -561,6 +560,36 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
         self.assertEqual(result.scene_changes, ())
         self.assertIsNone(result.decode_error)
+
+    def test_matching_scan_keeps_sparse_scenes_in_a_separate_null_output(self):
+        def fake_start(args, _interruption, on_line, logger):
+            del on_line, logger
+            stats_paths = [
+                args[index + 1]
+                for index, value in enumerate(args)
+                if value == "-stats_enc_pre:v:0"
+            ]
+            self.assertEqual(len(stats_paths), 2)
+            for path in stats_paths:
+                with open(path, "w", encoding="utf-8"):
+                    pass
+            return Mock(returncode=0), []
+
+        with patch.object(self.session, "probe", return_value=self._probe_result()), \
+             patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start) as start:
+            self.session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.MATCHING,
+            ))
+
+        args = start.call_args.args[0]
+        null_outputs = [
+            index for index in range(len(args) - 2)
+            if args[index:index + 3] == ["-f", "null", "-"]
+        ]
+        self.assertEqual(len(null_outputs), 2)
+        self.assertLess(args.index("[vframes]"), null_outputs[0])
+        self.assertGreater(args.index("[scenes]"), null_outputs[0] + 2)
+        self.assertLess(args.index("[scenes]"), null_outputs[1])
 
     def test_identity_samples_do_not_reuse_sparse_frames(self):
         samples = media_analysis.MediaAnalysisSession._build_samples(
