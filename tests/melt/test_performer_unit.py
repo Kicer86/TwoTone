@@ -1915,6 +1915,45 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(patch_outputs, [first.stream.path, second.stream.path])
         self.assertNotEqual(first.stream.path, second.stream.path)
 
+    def test_patch_mismatched_audio_rejects_absolute_global_linear_frame_step(self):
+        performer = self._make_performer()
+        base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
+        source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
+        source_audio = AudioStreamRef(source_video.path, 1, 1, "pol")
+        mapping = [(0, 0), (300000, 299400), (600000, 599400)]
+        lhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (300000, 7500), (600000, 15000)]
+        }
+        rhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (299400, 7485), (599400, 14985)]
+        }
+        performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
+            matching=SegmentsMappingResult(
+                mapping=mapping,
+                lhs_all_frames=lhs_frames,
+                rhs_all_frames=rhs_frames,
+                relation=MappingRelation.GLOBAL_LINEAR,
+                lhs_fps=25.0,
+                rhs_fps=25.0,
+                frame_slope=1.0,
+            ),
+            source_duration=600000,
+        )
+
+        with patch.object(performer, "_log_coverage"), \
+             self.assertRaisesRegex(RuntimeError, "holes in the scene sequence"):
+            performer._patch_mismatched_audio(
+                base_video,
+                source_video,
+                source_audio,
+                None,
+                600000,
+                None,
+                {base_video.path: 1, source_video.path: 2},
+            )
+
     def test_unscaled_audio_patch_routes_through_shared_executor(self):
         performer = self._make_performer()
         base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)

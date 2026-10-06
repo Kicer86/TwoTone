@@ -67,6 +67,7 @@ class SegmentsMappingResult(NamedTuple):
     relation: MappingRelation
     lhs_fps: float
     rhs_fps: float
+    frame_slope: float | None = None
 
 
 class _BoundarySearchContext(NamedTuple):
@@ -151,13 +152,6 @@ class PairMatcher:
     # verified sample, never on a tolerated miss.
     _MAX_BOUNDARY_GAP_MISSES = 1
     _BOUNDARY_PREDICTION_JITTER_FRAMES = 2
-    # Bound the number of extra images while checking multi-minute scene gaps
-    # at several independent positions. These are sampling intervals, not
-    # tolerances for how much content may be missing.
-    _MAX_UNVERIFIED_GAP_MS = 30000
-    _GAP_VERIFY_INTERVAL_MS = 10000
-    _MAX_CUT_PROBES_PER_GAP = 3
-    _FRAME_EXTRACTION_BATCH_SIZE = 8192
     # Entropy below which a boundary-gap frame counts as decisively black for
     # the black-vs-content rejection.  _RICH_FRAME_ENTROPY marks frames too
     # flat for reliable phash matching, but flat-yet-lit content (title
@@ -488,6 +482,12 @@ class PairMatcher:
     # a content cut (e.g. a commercial break) is one-sided and multi-second.
     _MAX_GAP_TIME_DEFICIT_MS = 2000
     _MAX_GAP_TIME_DEFICIT_RATIO = 0.02
+    # A GLOBAL_LINEAR mapping promises frame-accurate progression. Each
+    # endpoint may be uncertain by at most two frames, so the advance between
+    # two anchors may differ from the fitted relation by at most four frames.
+    # Unlike the GENERIC time-domain tolerance below, this limit must not grow
+    # with gap length: a content cut is a step in frame offset, not drift.
+    _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 4.0
 
     @staticmethod
     def _flagged_gap_deficits(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -549,6 +549,56 @@ class PairMatcher:
             (pairs[i][0], pairs[i + 1][0], pairs[i][1], pairs[i + 1][1], deficit)
             for i, deficit in PairMatcher._flagged_gap_deficits(pairs)
         ]
+
+    @staticmethod
+    def find_global_linear_content_discontinuities(
+        mapping: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+        *,
+        frame_slope: float,
+        lhs_fps: float,
+        rhs_fps: float,
+    ) -> list[tuple[int, int, int, int, int]]:
+        """Locate absolute frame-step errors in a GLOBAL_LINEAR mapping.
+
+        The fitted relation predicts ``rhs_advance = frame_slope *
+        lhs_advance`` between every two matched anchors. A content removal or
+        insertion changes that advance by a fixed number of frames; scaling
+        the tolerance with the time between sparse anchors would hide exactly
+        such edits. The returned deficit remains milliseconds for the common
+        performer error-reporting API.
+        """
+        pairs = sorted(mapping)
+        if len(pairs) < 2 or frame_slope <= 0 or lhs_fps <= 0 or rhs_fps <= 0:
+            return []
+
+        lhs_ids = PairMatcher._timeline_frame_ids(lhs_all_frames, lhs_fps)
+        rhs_ids = PairMatcher._timeline_frame_ids(rhs_all_frames, rhs_fps)
+        try:
+            frame_pairs = [
+                (lhs_ids[lhs_ts], rhs_ids[rhs_ts])
+                for lhs_ts, rhs_ts in pairs
+            ]
+        except KeyError:
+            return PairMatcher.find_content_discontinuities(pairs)
+
+        result = []
+        for index, ((lhs1, rhs1), (lhs2, rhs2)) in enumerate(
+            zip(frame_pairs, frame_pairs[1:])
+        ):
+            lhs_advance = lhs2 - lhs1
+            rhs_advance = rhs2 - rhs1
+            if lhs_advance <= 0 or rhs_advance <= 0:
+                continue
+            deficit_frames = lhs_advance * frame_slope - rhs_advance
+            if abs(deficit_frames) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:
+                deficit_ms = round(deficit_frames * 1000 / rhs_fps)
+                result.append((
+                    pairs[index][0], pairs[index + 1][0],
+                    pairs[index][1], pairs[index + 1][1], deficit_ms,
+                ))
+        return result
 
     def _drop_pairs_breaking_local_linearity(
         self, pairs: list[tuple[int, int]]
@@ -1292,8 +1342,6 @@ class PairMatcher:
         matching_pairs: list[tuple[int, int]],
         lhs_normalized_frames: FramesInfo,
         rhs_normalized_frames: FramesInfo,
-        *,
-        extrapolating: bool = True,
     ) -> _BoundaryVerifyContext:
         """Build the comparison engine used to content-verify boundary-gap frames.
 
@@ -1306,9 +1354,7 @@ class PairMatcher:
         differences between the two transfers — letterboxing, an open-matte
         master vs a widescreen crop, different grading — from failing
         genuinely shared frames, which is exactly what a fixed cutoff on raw
-        extractions did. Interior checks set ``extrapolating=False`` to use
-        the matching-core floor: the permissive extrapolation floor can
-        conceal timing errors between different instants of the same shot.
+        extractions did.
         """
         crop_fns = PairMatcher._find_interpolated_crop(
             matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
@@ -1353,7 +1399,7 @@ class PairMatcher:
         # transfers differ more than that noise.
         cutoff = max(
             self._calculate_cutoff(phash, usable_pairs, lhs_cmp, rhs_cmp),
-            self._MIN_BOUNDARY_GAP_PHASH_CUTOFF if extrapolating else self._MIN_PHASH_CUTOFF,
+            self._MIN_BOUNDARY_GAP_PHASH_CUTOFF,
         )
         self.logger.debug(
             f"Boundary verification cutoff: {cutoff:.1f} "
@@ -1431,174 +1477,6 @@ class PairMatcher:
                                       * (frame_id - previous) / (following - previous))
                     samples[frame_id] = (sample_ts, image_ts)
         return samples
-
-    def _verify_sparse_mapping_gaps(
-        self,
-        pairs: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
-        lhs_scene_changes: list[int] | None = None,
-        rhs_scene_changes: list[int] | None = None,
-    ) -> None:
-        """Content-check long unsampled intervals before accepting a relation.
-
-        Scene matches are anchors, not evidence that the content between them
-        is continuous. Sample gaps over 30 seconds every 10 seconds using the
-        observed timestamp relation of their endpoints, also probing around
-        cuts detected on either side. Compare nearby alternative positions to
-        distinguish similar shots from correctly timed frames. Two consecutive
-        failed checks make the mapping uncertain and stop execution. Do not insert
-        predicted timestamps as if they were measured matches, or move edges.
-
-        This bounded check can miss short differences between samples; it is
-        not a certification of every frame. It also conservatively rejects
-        speed variations that cannot be verified within the existing jitter.
-        """
-        ordered = sorted(pairs)
-        gaps = [
-            (a, b) for a, b in zip(ordered, ordered[1:])
-            if b[0] - a[0] > self._MAX_UNVERIFIED_GAP_MS
-        ]
-        if not gaps:
-            return
-
-        lhs_keys = sorted(self.lhs_all_frames)
-        rhs_keys = sorted(self.rhs_all_frames)
-        rhs_ids = self._timeline_frame_ids(self.rhs_all_frames, self.rhs_fps)
-        rhs_by_frame = {frame: ts for ts, frame in rhs_ids.items()}
-        samples_by_gap: list[list[tuple[int, int, bool]]] = []
-        for (lhs_start, rhs_start), (lhs_end, rhs_end) in gaps:
-            samples = []
-            targets = set(range(lhs_start + self._GAP_VERIFY_INTERVAL_MS, lhs_end, self._GAP_VERIFY_INTERVAL_MS))
-            lhs_cuts = [ts for ts in (lhs_scene_changes or []) if lhs_start < ts < lhs_end]
-            rhs_cuts = [ts for ts in (rhs_scene_changes or []) if rhs_start < ts < rhs_end]
-            cut_candidates: list[tuple[int, int]] = []
-            if rhs_end > rhs_start:
-                for rhs_cut in rhs_cuts:
-                    lhs_cut = round(
-                        lhs_start + (rhs_cut - rhs_start) * (lhs_end - lhs_start)
-                        / (rhs_end - rhs_start)
-                    )
-                    distance = min((abs(lhs_cut - cut) for cut in lhs_cuts), default=lhs_end - lhs_start)
-                    cut_candidates.append((distance, lhs_cut))
-            if lhs_end > lhs_start and rhs_end > rhs_start:
-                for lhs_cut in lhs_cuts:
-                    rhs_cut = round(
-                        rhs_start + (lhs_cut - lhs_start) * (rhs_end - rhs_start)
-                        / (lhs_end - lhs_start)
-                    )
-                    distance_rhs = min((abs(rhs_cut - cut) for cut in rhs_cuts), default=rhs_end - rhs_start)
-                    distance_lhs = round(distance_rhs * (lhs_end - lhs_start) / (rhs_end - rhs_start))
-                    cut_candidates.append((distance_lhs, lhs_cut))
-
-            # Probe only the most asymmetric cuts. Feeding every noisy scene
-            # candidate into the verifier multiplies into tens of thousands of
-            # frame extractions on low-quality sources.
-            selected_cuts: list[int] = []
-            for _, cut in sorted(cut_candidates, reverse=True):
-                if all(abs(cut - selected) >= 1000 for selected in selected_cuts):
-                    selected_cuts.append(cut)
-                    if len(selected_cuts) == self._MAX_CUT_PROBES_PER_GAP:
-                        break
-            cut_targets = {
-                cut + delta
-                for cut in selected_cuts
-                for delta in (120, 240)
-                if lhs_start < cut + delta < lhs_end
-            }
-            targets.update(cut_targets)
-            for target in sorted(targets):
-                lhs_ts = self._snap_to_nearest_frame(lhs_keys, target)
-                rhs_target = round(rhs_start + (lhs_ts - lhs_start) * (rhs_end - rhs_start)
-                                   / (lhs_end - lhs_start))
-                rhs_ts = self._snap_to_nearest_frame(rhs_keys, rhs_target)
-                samples.append((lhs_ts, rhs_ids[rhs_ts], target in cut_targets))
-            samples_by_gap.append(samples)
-
-        jitter = self._BOUNDARY_PREDICTION_JITTER_FRAMES
-        # Look for a substantially better picture up to two seconds away.
-        # Coarse alternatives keep extraction bounded; they are evidence of
-        # uncertainty only, never new frame-exact mapping anchors.
-        search_step = max(1, round(self.rhs_fps * 0.2))
-        search_radius = max(search_step, round(self.rhs_fps * 2))
-        offsets = sorted(set(range(-jitter, jitter + 1)) | set(
-            range(-search_radius, search_radius + 1, search_step)
-        ))
-        rhs_samples = self._resolve_timeline_samples(rhs_by_frame, [
-            rhs_frame + delta
-            for samples in samples_by_gap for _, rhs_frame, search_displaced in samples
-            for delta in (offsets if search_displaced else range(-jitter, jitter + 1))
-        ])
-        self.logger.info(
-            "Verifying content inside %d sparse mapping gap(s): %d additional samples",
-            len(gaps), sum(len(samples) for samples in samples_by_gap),
-        )
-        self._prefetch_boundary_images(
-            self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames,
-            [lhs for samples in samples_by_gap for lhs, _, _ in samples],
-        )
-        self._prefetch_boundary_images(
-            self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames,
-            [image_ts for _, image_ts in rhs_samples.values()],
-        )
-        # Interior crops are interpolated between measured anchors. They do
-        # not need the loose floor used for extrapolation beyond those anchors:
-        # that floor can accept different instants of the same shot.
-        ctx = self._build_boundary_verify_context(
-            pairs, lhs_normalized_frames, rhs_normalized_frames, extrapolating=False,
-        )
-        for samples in samples_by_gap:
-            misses = 0
-            for lhs_ts, rhs_frame, search_displaced in samples:
-                self.interruption.check_for_stop()
-                matches = self._shared_content_at_prediction(ctx, rhs_frame, lhs_ts, rhs_samples)
-                displaced = (
-                    matches and search_displaced
-                    and self._better_displaced_match(ctx, lhs_ts, rhs_frame, rhs_samples, offsets)
-                )
-                if matches and not displaced:
-                    misses = 0
-                else:
-                    misses += 1
-                    if misses > self._MAX_BOUNDARY_GAP_MISSES:
-                        raise RuntimeError(
-                            "Cannot verify content continuity inside a sparse mapping gap "
-                            f"near {self.lhs_label} {generic_utils.ms_to_time(lhs_ts)} "
-                            f"and {self.rhs_label} {generic_utils.ms_to_time(rhs_by_frame[rhs_frame])}: "
-                            "consecutive samples do not support the predicted alignment. Possible content cut "
-                            "or non-linear timing; refusing to align audio across an uncertain mapping."
-                        )
-
-    def _better_displaced_match(
-        self, ctx: _BoundaryVerifyContext, lhs_ts: int, rhs_frame: int,
-        rhs_samples: dict[int, tuple[int, int]], offsets: list[int],
-    ) -> bool:
-        """Reject a prediction when a displaced image is substantially closer.
-
-        The relative and absolute margins avoid selecting a different moment
-        on the basis of hash noise or tied images in static shots. This reports
-        uncertainty, not the size or location of a confirmed content cut.
-        """
-        lhs_image = self._comparison_image(ctx.lhs, lhs_ts)
-        if lhs_image is None:
-            return False
-        lhs_hash = ctx.phash.get(lhs_image)
-        near, displaced = [], []
-        for offset in offsets:
-            sample = rhs_samples.get(rhs_frame + offset)
-            if sample is None:
-                continue
-            rhs_image = self._comparison_image(ctx.rhs, sample[1])
-            if rhs_image is not None:
-                distance = abs(lhs_hash - ctx.phash.get(rhs_image))
-                if abs(offset) <= self._BOUNDARY_PREDICTION_JITTER_FRAMES:
-                    near.append(distance)
-                else:
-                    displaced.append(distance)
-        if near and displaced:
-            expected, alternative = min(near), min(displaced)
-            return alternative <= ctx.cutoff and expected - alternative >= 8 and alternative < expected * 0.75
-        return False
 
     def _maybe_insert_verified_boundary(
         self,
@@ -1760,7 +1638,7 @@ class PairMatcher:
     def _prefetch_boundary_images(
         self, video_path: str, out_dir: str, frames: FramesInfo, timestamps: list[int],
     ) -> None:
-        """Extract missing timestamps in bounded FFmpeg argument batches."""
+        """Extract any not-yet-extracted timestamps in a single ffmpeg pass."""
         missing = sorted({
             int(frames[ts]["frame_id"])
             for ts in timestamps
@@ -1768,13 +1646,11 @@ class PairMatcher:
         })
         if not missing:
             return
-        for start in range(0, len(missing), self._FRAME_EXTRACTION_BATCH_SIZE):
-            batch = missing[start:start + self._FRAME_EXTRACTION_BATCH_SIZE]
-            video_utils.extract_frames_at_ranges(
-                video_path, out_dir, [(fid, fid) for fid in batch], frames,
-                scale=(960, -2), format="png", interruption=self.interruption,
-                desc="Verifying boundary gap", logger=self.logger,
-            )
+        video_utils.extract_frames_at_ranges(
+            video_path, out_dir, [(fid, fid) for fid in missing], frames,
+            scale=(960, -2), format="png", interruption=self.interruption,
+            desc="Verifying boundary gap", logger=self.logger,
+        )
 
     def _boundary_content_matches(self, ctx: _BoundaryVerifyContext, lhs_ts: int, rhs_ts: int) -> bool:
         """Verify that the extrapolated boundary frames actually share content.
@@ -1935,11 +1811,6 @@ class PairMatcher:
             lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames, debug,
         )
 
-        self._verify_sparse_mapping_gaps(
-            matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
-            lhs_scene_changes, rhs_scene_changes,
-        )
-
         # Diagnostic summary of the frame-space relationship.  Logged at INFO so
         # the chosen relation (and the audio strategy that follows) can be
         # understood without enabling --verbose.
@@ -1955,6 +1826,35 @@ class PairMatcher:
 
         if global_linear_fit is not None:
             relation = MappingRelation.GLOBAL_LINEAR
+            frame_slope = global_linear_fit.slope
+            discontinuities = self.find_global_linear_content_discontinuities(
+                matching_pairs,
+                self.lhs_all_frames,
+                self.rhs_all_frames,
+                frame_slope=frame_slope,
+                lhs_fps=self.lhs_fps,
+                rhs_fps=self.rhs_fps,
+            )
+            if discontinuities:
+                for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in discontinuities:
+                    self.logger.error(
+                        "Content discontinuity: %s-%s in %s ↔ %s-%s in %s "
+                        "(%+d ms, %+.1f frames)",
+                        generic_utils.ms_to_time(lhs_from),
+                        generic_utils.ms_to_time(lhs_to),
+                        self.lhs_label,
+                        generic_utils.ms_to_time(rhs_from),
+                        generic_utils.ms_to_time(rhs_to),
+                        self.rhs_label,
+                        deficit_ms,
+                        deficit_ms * self.rhs_fps / 1000,
+                    )
+                raise RuntimeError(
+                    "Inputs share content with holes in the scene sequence "
+                    f"(absolute frame-step error exceeds "
+                    f"{self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:g} frames) — patching "
+                    "audio across such discontinuities is not supported yet"
+                )
             # Use the fit as a precise predictor of where identical frames should
             # be, extend each boundary toward the video edge, and keep the
             # extension only where the predicted pair is content-verified (same
@@ -1969,6 +1869,7 @@ class PairMatcher:
             debug.dump_matches(matching_pairs, "after verified global-linear extrapolation")
         else:
             relation = MappingRelation.GENERIC
+            frame_slope = None
             # No global relation — fall back to the content/entropy-aware
             # iterative boundary search.
             matching_pairs = self._extract_and_refine_boundaries(
@@ -2003,6 +1904,7 @@ class PairMatcher:
             relation=relation,
             lhs_fps=self.lhs_fps,
             rhs_fps=self.rhs_fps,
+            frame_slope=frame_slope,
         )
 
     def _log_relation_diagnostics(self, matching_pairs: list[tuple[int, int]]) -> None:

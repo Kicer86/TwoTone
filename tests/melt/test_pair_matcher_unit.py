@@ -873,121 +873,6 @@ class PairMatcherUnitTest(unittest.TestCase):
 
     # ---- _extrapolate_and_verify_global_linear ----
 
-    def test_sparse_gap_verification_rejects_hidden_content_cut(self):
-        pm = self._make_pm_with_frames(list(range(0, 300041, 40)), list(range(0, 300041, 40)))
-        # A 720ms cut fits under the old 6s tolerance for this 300s gap.
-        pairs = [(0, 0), (300000, 299280)]
-
-        def same_content(_ctx, lhs, rhs):
-            observed_rhs = lhs if lhs < 150000 else lhs - 720
-            return abs(rhs - observed_rhs) <= 40
-
-        with self._patch_verify_ctx(), \
-             patch.object(pm, '_better_displaced_match', return_value=False), \
-             patch.object(pm, '_boundary_content_matches', side_effect=same_content):
-            with self.assertRaisesRegex(RuntimeError, 'Cannot verify content continuity'):
-                pm._verify_sparse_mapping_gaps(pairs, {}, {})
-
-    def test_sparse_gap_verification_accepts_continuous_speed_change(self):
-        pm = self._make_pm_with_frames(list(range(0, 300041, 40)), list(range(0, 288041, 40)))
-        pairs = [(0, 0), (300000, 288000)]
-        checked = []
-
-        def same_content(_ctx, lhs, rhs):
-            checked.append(lhs)
-            return abs(rhs - lhs * 0.96) <= 40
-
-        with self._patch_verify_ctx(), \
-             patch.object(pm, '_better_displaced_match', return_value=False), \
-             patch.object(pm, '_boundary_content_matches', side_effect=same_content):
-            pm._verify_sparse_mapping_gaps(pairs, {}, {})
-
-        self.assertLessEqual(min(checked), 10000)
-        self.assertGreaterEqual(max(checked), 290000)
-        self.assertEqual(pairs, [(0, 0), (300000, 288000)])
-
-    def test_sparse_gap_verification_tolerates_one_isolated_miss(self):
-        pm = self._make_pm_with_frames(list(range(0, 60041, 40)), list(range(0, 60041, 40)))
-        with self._patch_verify_ctx(), \
-             patch.object(pm, '_better_displaced_match', return_value=False), \
-             patch.object(pm, '_boundary_content_matches', side_effect=lambda ctx, lhs, rhs: lhs != 30000):
-            pm._verify_sparse_mapping_gaps([(0, 0), (60000, 60000)], {}, {})
-
-    def test_sparse_gap_verification_skips_dense_mapping(self):
-        pm = self._make_pair_matcher()
-        with patch.object(pm, '_build_boundary_verify_context') as build:
-            pm._verify_sparse_mapping_gaps([(0, 0), (10000, 10000)], {}, {})
-        build.assert_not_called()
-
-    def test_interior_verification_does_not_use_extrapolation_cutoff(self):
-        pm = self._make_pair_matcher()
-        lhs = self._make_frames([0, 40000])
-        rhs = self._make_frames([0, 40000])
-        pairs = [(0, 0), (40000, 40000)]
-        with patch.object(pm, '_find_interpolated_crop', return_value=None), \
-             patch.object(pm, '_comparison_image', return_value='/fake.png'), \
-             patch.object(pm, '_calculate_cutoff', return_value=20):
-            interior = pm._build_boundary_verify_context(pairs, lhs, rhs, extrapolating=False)
-            boundary = pm._build_boundary_verify_context(pairs, lhs, rhs)
-        self.assertEqual(interior.cutoff, 20)
-        self.assertEqual(boundary.cutoff, pm._MIN_BOUNDARY_GAP_PHASH_CUTOFF)
-
-    def test_sparse_gap_rejects_similar_shots_with_better_displaced_matches(self):
-        pm = self._make_pm_with_frames(list(range(0, 60041, 40)), list(range(0, 60041, 40)))
-        with self._patch_verify_ctx(), \
-            patch.object(pm, '_boundary_content_matches', return_value=True), \
-             patch.object(pm, '_better_displaced_match', return_value=True):
-            with self.assertRaisesRegex(RuntimeError, 'Cannot verify content continuity'):
-                pm._verify_sparse_mapping_gaps(
-                    [(0, 0), (60000, 60000)], {}, {}, [], [20000],
-                )
-
-    def test_sparse_gap_checks_cuts_detected_on_only_one_side(self):
-        pm = self._make_pm_with_frames(list(range(0, 60041, 40)), list(range(0, 60041, 40)))
-        # Periodic 10s samples miss the differing content near this cut.
-        with self._patch_verify_ctx(), \
-             patch.object(pm, '_better_displaced_match', return_value=False), \
-             patch.object(pm, '_boundary_content_matches',
-                          side_effect=lambda ctx, lhs, rhs: not 11600 <= lhs <= 12400):
-            with self.assertRaisesRegex(RuntimeError, 'Cannot verify content continuity'):
-                pm._verify_sparse_mapping_gaps([(0, 0), (60000, 60000)], {}, {}, [], [12000])
-
-    def test_sparse_gap_limits_noisy_one_sided_cut_candidates(self):
-        pm = self._make_pm_with_frames(list(range(0, 60041, 40)), list(range(0, 60041, 40)))
-        checked = []
-        with self._patch_verify_ctx(), \
-             patch.object(pm, '_better_displaced_match', return_value=False), \
-             patch.object(pm, '_boundary_content_matches',
-                          side_effect=lambda ctx, lhs, rhs: checked.append(lhs) or True):
-            pm._verify_sparse_mapping_gaps(
-                [(0, 0), (60000, 60000)], {}, {}, [], list(range(1000, 60000, 1000)),
-            )
-
-        self.assertGreater(len(checked), 5)
-        self.assertLessEqual(len(checked), 17)
-
-    def test_boundary_prefetch_batches_large_argument_lists(self):
-        pm = self._make_pair_matcher()
-        frames = {
-            timestamp: {"path": None, "frame_id": timestamp}
-            for timestamp in range(9000)
-        }
-        with patch.object(video_utils, 'extract_frames_at_ranges') as extract:
-            pm._prefetch_boundary_images('/fake/video.mkv', '/fake/out', frames, list(frames))
-
-        self.assertEqual(extract.call_count, 2)
-        self.assertEqual(len(extract.call_args_list[0].args[2]), 8192)
-        self.assertEqual(len(extract.call_args_list[1].args[2]), 808)
-
-    def test_displaced_match_requires_clear_improvement_over_prediction(self):
-        pm = self._make_pair_matcher()
-        ctx = self._make_verify_ctx({'lhs': 0, 'near': 30, 'far': 10}, 40, {}, {})
-        with patch.object(pm, '_comparison_image', side_effect=['lhs', 'near', 'far']):
-            self.assertTrue(pm._better_displaced_match(ctx, 0, 100, {100: (0, 0), 120: (800, 800)}, [0, 20]))
-        ctx = self._make_verify_ctx({'lhs': 0, 'near': 30, 'far': 26}, 40, {}, {})
-        with patch.object(pm, '_comparison_image', side_effect=['lhs', 'near', 'far']):
-            self.assertFalse(pm._better_displaced_match(ctx, 0, 100, {100: (0, 0), 120: (800, 800)}, [0, 20]))
-
     def _make_pm_with_frames(self, lhs_ts, rhs_ts):
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
         pm.lhs_all_frames = self._make_frames(lhs_ts, prefix="lhs")
@@ -1553,6 +1438,77 @@ class PairMatcherUnitTest(unittest.TestCase):
             PairMatcher.find_content_discontinuities(dense),
             [(last_lhs, last_lhs + 20000, last_rhs, last_rhs + 17500, 2500)],
         )
+
+    def test_global_linear_discontinuity_uses_absolute_frame_error(self):
+        # Real matched anchors from Le Gendarme de Saint-Tropez (24 fps 4K
+        # master vs 25 fps PAL transfer). The global fit accepts the mapping
+        # because its later 20 gaps are within 3.01 frames, but the first three
+        # advances miss that same fit by 15.23, 6.02 and 13.84 frames. The
+        # first gap contains the reported 06:36 / 06:05 edit.
+        rows = [
+            (182126, 159080, 4371, 3976),
+            (484418, 448600, 11626, 11214),
+            (1333626, 1263400, 32007, 31584),
+            (2214126, 2107920, 53139, 52697),
+            (2245626, 2138200, 53895, 53454),
+            (2262668, 2154560, 54304, 53863),
+            (2409335, 2295360, 57824, 57383),
+            (2556460, 2436600, 61355, 60914),
+            (3668168, 3503480, 88036, 87586),
+            (3728668, 3561560, 89488, 89038),
+            (3762501, 3594040, 90300, 89850),
+            (3872210, 3699360, 92933, 92483),
+            (3895626, 3721840, 93495, 93045),
+            (3923335, 3748440, 94160, 93710),
+            (3930001, 3754840, 94320, 93870),
+            (3975543, 3798440, 95413, 94960),
+            (3980710, 3803360, 95537, 95083),
+            (3987335, 3809720, 95696, 95242),
+            (4006710, 3828320, 96161, 95707),
+            (4349043, 4157000, 104377, 103924),
+            (4528835, 4329560, 108692, 108238),
+            (4936668, 4721000, 118480, 118024),
+            (5182126, 4956600, 124371, 123914),
+            (5205210, 4978720, 124925, 124467),
+        ]
+        mapping = [(lhs_ts, rhs_ts) for lhs_ts, rhs_ts, _, _ in rows]
+        lhs_frames = {
+            lhs_ts: {"frame_id": lhs_frame, "path": None}
+            for lhs_ts, _, lhs_frame, _ in rows
+        }
+        rhs_frames = {
+            rhs_ts: {"frame_id": rhs_frame, "path": None}
+            for _, rhs_ts, _, rhs_frame in rows
+        }
+
+        result = PairMatcher.find_global_linear_content_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=0.999755636, lhs_fps=24.0, rhs_fps=25.0,
+        )
+
+        self.assertEqual(result, [
+            (182126, 484418, 159080, 448600, 609),
+            (484418, 1333626, 448600, 1263400, 241),
+            (1333626, 2214126, 1263400, 2107920, 553),
+        ])
+
+    def test_global_linear_discontinuity_tolerates_four_frame_endpoint_error(self):
+        mapping = [(0, 0), (10000, 9840), (20000, 19840)]
+        lhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (10000, 250), (20000, 500)]
+        }
+        rhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (9840, 246), (19840, 496)]
+        }
+
+        result = PairMatcher.find_global_linear_content_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+        )
+
+        self.assertEqual(result, [])
 
     # ---- _drop_pairs_breaking_local_linearity ----
 
