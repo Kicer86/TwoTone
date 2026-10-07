@@ -571,6 +571,34 @@ class UtilsTests(TwoToneTestCase):
 
         self.assertEqual(expected_correction_ms, correction)
 
+    def test_detect_scene_changes_limits_scan_and_restores_absolute_timestamps(self):
+        stderr_lines = [
+            "[Parsed_showinfo_0] n: 0 pts: 25 pts_time:1.000\n",
+            "[Parsed_showinfo_0] n: 1 pts: 50 pts_time:2.000\n",
+        ]
+        proc = unittest.mock.Mock(returncode=0)
+
+        def fake_start(args, interruption=None, on_line=None, logger=None):
+            for line in stderr_lines:
+                on_line(line)
+            return proc, stderr_lines
+
+        with patch.object(video_utils, "_showinfo_timestamp_correction_ms", return_value=0), \
+             patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start) as start:
+            scenes = video_utils.detect_scene_changes(
+                "input.mkv", threshold=0.15, logger=self.logger,
+                start_ms=10000, end_ms=20000,
+            )
+
+        args = start.call_args.args[0]
+        self.assertEqual(
+            args[:6],
+            ["-ss", "10.000", "-t", "10.000", "-i", "input.mkv"],
+        )
+        self.assertEqual(args[args.index("-t") + 1], "10.000")
+        self.assertIn("gt(scene,0.15)", args[args.index("-filter_complex") + 1])
+        self.assertEqual(scenes, [11000, 12000])
+
     def test_probe_frame_timestamps_corrects_negative_container_start(self):
         stderr_lines = [
             "[Parsed_showinfo_0] n:   0 pts:     21 pts_time:0.021\n",

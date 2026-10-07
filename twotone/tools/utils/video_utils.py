@@ -162,6 +162,8 @@ def detect_scene_changes(
     logger: logging.Logger | None = None,
     interruption: InterruptibleProcess | None = None,
     desc: str | None = None,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
 ) -> list[int]:
     """
         Run ffmpeg with a scene detection filter and extract scene change times.
@@ -170,23 +172,40 @@ def detect_scene_changes(
         When *desc* is given, it is used as the progress bar description.
         When *logger* is given (and no *desc*), an info message is emitted.
         When *interruption* is given, ctrl+c can cleanly stop the process.
+        ``start_ms``/``end_ms`` restrict decoding to a local interval while
+        returned timestamps remain on the original file timeline.
     """
     logger = logger or DEFAULT_LOGGER
 
-    args = [
+    interval_start_ms = max(0, start_ms or 0)
+    if end_ms is not None and end_ms <= interval_start_ms:
+        return []
+
+    args = []
+    if interval_start_ms:
+        args.extend(["-ss", f"{interval_start_ms / 1000:.3f}"])
+    if end_ms is not None:
+        args.extend(["-t", f"{(end_ms - interval_start_ms) / 1000:.3f}"])
+    args.extend([
         "-i", file_path,
+    ])
+    args.extend([
         "-an",                                              # Ignore all audio streams
         "-sn",                                              # Ignore subtitle streams
         "-dn",                                              # Ignore data streams
         "-fps_mode", "auto",
         "-filter_complex", f"select='gt(scene,{threshold})',showinfo",
         "-f", "null", "-"
-    ]
+    ])
 
     basename = os.path.basename(file_path)
     bar_desc = desc or f"Detecting scenes: {basename}"
 
-    duration_ms = get_video_duration(file_path, logger=logger)
+    duration_ms = (
+        end_ms - interval_start_ms
+        if end_ms is not None
+        else max(0, get_video_duration(file_path, logger=logger) - interval_start_ms)
+    )
     duration_s = (duration_ms / 1000.0) if duration_ms else None
     timestamp_correction_ms = _showinfo_timestamp_correction_ms(file_path, logger=logger)
 
@@ -221,7 +240,10 @@ def detect_scene_changes(
     for line in stderr_lines:
         match = _SHOWINFO_PTS_TIME_RE.search(line)
         if match:
-            time_ms = _showinfo_timestamp_ms(match.group(1), timestamp_correction_ms)
+            time_ms = (
+                _showinfo_timestamp_ms(match.group(1), timestamp_correction_ms)
+                + interval_start_ms
+            )
             scene_times.append(time_ms)
 
     logger.debug(f"Detected {len(scene_times)} scene changes in {basename}")
