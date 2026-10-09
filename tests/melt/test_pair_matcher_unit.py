@@ -1510,6 +1510,179 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertEqual(result, [])
 
+    def test_scene_extraction_completes_cached_ranges_without_reextracting(self):
+        pm = self._make_pm_with_frames([0, 40, 80, 120], [0])
+        for info in pm.lhs_all_frames.values():
+            info["path"] = None
+        pm.cache = Mock()
+
+        def restore(*_args):
+            pm.lhs_all_frames[0]["path"] = "/cached/0.png"
+            return True
+
+        def extract(_path, _directory, ranges, frames, **_kwargs):
+            for ts, info in frames.items():
+                if any(start <= info["frame_id"] <= end for start, end in ranges):
+                    info["path"] = f"/extracted/{ts}.png"
+
+        pm.cache.load_scene_frames.side_effect = restore
+        with patch.object(video_utils, "extract_frames_at_ranges", side_effect=extract) as extraction:
+            for ranges in ([(0, 2)], [(0, 3)], [(0, 3)]):
+                pm._extract_scene_frames_for(
+                    pm.lhs_path, pm.lhs_all_wd, ranges, pm.lhs_all_frames, pm.lhs_label,
+                )
+
+        self.assertEqual([call.args[2] for call in extraction.call_args_list], [
+            [(1, 2)], [(3, 3)],
+        ])
+        self.assertEqual(pm.lhs_all_frames[0]["path"], "/cached/0.png")
+        pm.cache.load_scene_frames.assert_called_once()
+        pm.cache.save_scene_frames.assert_not_called()
+
+    def test_scene_normalization_preserves_existing_frames_and_only_adds_missing(self):
+        pm = self._make_pm_with_frames([0, 40, 80], [0])
+        pm.lhs_all_frames[80]["path"] = None
+        lhs: dict = {}
+        rhs: dict = {}
+
+        with patch.object(pm, "_normalize_frames", side_effect=lambda frames, *_a, **_kw: {
+            ts: {**info, "path": f"/normalized/{ts}.png"} for ts, info in frames.items()
+        }) as normalize:
+            first = pm._normalize_extracted([0, 40], [0], lhs, rhs)
+            existing = lhs[0]
+            pm.lhs_all_frames[80]["path"] = "/extracted/80.png"
+            second = pm._normalize_extracted([40, 80], [0], lhs, rhs)
+            pm._normalize_extracted([40, 80], [0], lhs, rhs)
+
+        self.assertIs(first[0], lhs)
+        self.assertIs(second[0], lhs)
+        self.assertIs(lhs[0], existing)
+        self.assertEqual(set(second[2]), {40, 80})
+        self.assertEqual([set(call.args[0]) for call in normalize.call_args_list], [
+            {0, 40}, {0}, {80},
+        ])
+
+    def test_local_scene_refinement_scans_only_sparser_side(self):
+        timestamps = list(range(0, 60001, 40))
+        pm = self._make_pm_with_frames(timestamps, timestamps)
+        lhs_normalized = {
+            timestamp: pm.lhs_all_frames[timestamp].copy()
+            for timestamp in (0, 60000)
+        }
+        rhs_normalized = {
+            timestamp: pm.rhs_all_frames[timestamp].copy()
+            for timestamp in (0, 10000, 20000, 59600)
+        }
+        lhs_scenes: list[int] = []
+        rhs_scenes = [10000, 20000]
+        original = [(0, 0), (60000, 59600)]
+
+        with patch.object(video_utils, 'detect_scene_changes', return_value=[15000]) as detect, \
+             patch.object(pm, '_extract_scene_frames_for'), \
+             patch.object(pm, '_normalize_frames', return_value={
+                 15000: pm.lhs_all_frames[15000].copy(),
+             }), \
+             patch.object(pm, '_make_pairs', return_value=[
+                 (0, 0), (15000, 10000), (60000, 59600),
+             ]):
+            refined, _ = pm._match_key_frames(
+                {},
+                {},
+                lhs_normalized,
+                rhs_normalized,
+                lhs_scenes,
+                rhs_scenes,
+                matching_pairs=original,
+                frame_slope=1.0,
+                thresholds=(0.15,),
+            )
+
+        self.assertIn((15000, 10000), refined)
+        self.assertEqual(lhs_scenes, [15000])
+        detect.assert_called_once_with(
+            pm.lhs_path,
+            threshold=0.15,
+            logger=pm.logger,
+            interruption=pm.interruption,
+            desc='Local scene scan #1 (threshold 0.15)',
+            start_ms=0,
+            end_ms=60000,
+        )
+
+    def test_local_scene_refinement_revisits_only_narrowed_gaps(self):
+        timestamps = list(range(0, 40001, 40))
+        pm = self._make_pm_with_frames(timestamps, timestamps)
+        original = [(0, 0), (40000, 39600)]
+        matches = [
+            [(0, 0), (16000, 16000), (24000, 23600), (40000, 39600)],
+            [(16000, 16000), (19600, 19600), (20400, 20000), (24000, 23600)],
+        ]
+        detected = [[16000, 24000], [19600, 20400], []]
+        lhs_normalized = dict(pm.lhs_all_frames)
+        rhs_normalized = dict(pm.rhs_all_frames)
+
+        with patch.object(video_utils, 'detect_scene_changes', side_effect=detected) as scan, \
+             patch.object(pm, '_extract_scene_frames_for'), \
+             patch.object(pm, '_make_pairs', side_effect=matches), \
+             patch.object(pm, '_match_key_frames', wraps=pm._match_key_frames) as match:
+            refined, remaining = pm._match_key_frames(
+                {},
+                {},
+                lhs_normalized,
+                rhs_normalized,
+                [],
+                [],
+                matching_pairs=original,
+                frame_slope=1.0,
+                thresholds=pm._LOCAL_SCENE_THRESHOLDS,
+            )
+
+        self.assertEqual(
+            [call.kwargs.get('region') for call in match.call_args_list],
+            [
+                None,
+                (0, 40000, 0, 39600, 400),
+                (16000, 24000, 16000, 23600, 400),
+            ],
+        )
+        self.assertEqual(
+            refined,
+            sorted(set(original + matches[0] + matches[1])),
+        )
+        self.assertEqual(remaining, [(19600, 20400, 19600, 20000, 400)])
+        self.assertEqual(
+            [(call.kwargs['start_ms'], call.kwargs['end_ms']) for call in scan.call_args_list],
+            [(0, 40000), (16000, 24000), (19600, 20400)],
+        )
+
+    def test_local_scene_refinement_without_new_scenes_keeps_original_gap(self):
+        timestamps = list(range(0, 40001, 40))
+        pm = self._make_pm_with_frames(timestamps, timestamps)
+        original = [(0, 0), (40000, 39600)]
+
+        with patch.object(video_utils, 'detect_scene_changes', return_value=[]) as scan, \
+             patch.object(pm, '_make_pairs') as match, \
+             self.assertLogs(pm.logger, level='INFO') as logs:
+            refined, remaining = pm._match_key_frames(
+                {},
+                {},
+                dict(pm.lhs_all_frames),
+                dict(pm.rhs_all_frames),
+                [],
+                [],
+                matching_pairs=original,
+                frame_slope=1.0,
+                thresholds=pm._LOCAL_SCENE_THRESHOLDS,
+            )
+
+        self.assertEqual(refined, original)
+        self.assertEqual(remaining, [(0, 40000, 0, 39600, 400)])
+        match.assert_not_called()
+        self.assertEqual(scan.call_count, 3)
+        self.assertTrue(any('Refining suspicious region:' in line for line in logs.output))
+        self.assertTrue(any('no new scenes' in line for line in logs.output))
+        self.assertTrue(any('Local scene refinement complete:' in line for line in logs.output))
+
     # ---- _drop_pairs_breaking_local_linearity ----
 
     def test_local_linearity_filter_drops_mismatched_gendarme_pair(self):
