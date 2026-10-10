@@ -1569,6 +1569,44 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertEqual(result, [])
 
+    def test_global_linear_discontinuity_ignores_media_edge_step(self):
+        mapping = [(0, 0), (10000, 9600), (20000, 19600)]
+        lhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (10000, 250), (20000, 500)]
+        }
+        rhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (9600, 240), (19600, 490)]
+        }
+
+        result = PairMatcher.find_global_linear_content_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+            include_boundary_steps=False,
+        )
+
+        self.assertEqual(result, [])
+
+    def test_global_linear_discontinuity_ignores_media_end_step(self):
+        mapping = [(0, 0), (10000, 10000), (20000, 19600)]
+        lhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (10000, 250), (20000, 500)]
+        }
+        rhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (10000, 250), (19600, 490)]
+        }
+
+        result = PairMatcher.find_global_linear_content_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+            include_boundary_steps=False,
+        )
+
+        self.assertEqual(result, [])
+
     def test_scene_extraction_completes_cached_ranges_without_reextracting(self):
         pm = self._make_pm_with_frames([0, 40, 80, 120], [0])
         for info in pm.lhs_all_frames.values():

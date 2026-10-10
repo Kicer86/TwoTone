@@ -1920,14 +1920,29 @@ class MeltPerformerUnitTest(unittest.TestCase):
         base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
         source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
         source_audio = AudioStreamRef(source_video.path, 1, 1, "pol")
-        mapping = [(0, 0), (300000, 299400), (600000, 599400)]
+        mapping = [
+            (0, 0),
+            (200000, 200000),
+            (400000, 399400),
+            (600000, 599400),
+        ]
         lhs_frames = {
             timestamp: {"frame_id": frame, "path": None}
-            for timestamp, frame in [(0, 0), (300000, 7500), (600000, 15000)]
+            for timestamp, frame in [
+                (0, 0),
+                (200000, 5000),
+                (400000, 10000),
+                (600000, 15000),
+            ]
         }
         rhs_frames = {
             timestamp: {"frame_id": frame, "path": None}
-            for timestamp, frame in [(0, 0), (299400, 7485), (599400, 14985)]
+            for timestamp, frame in [
+                (0, 0),
+                (200000, 5000),
+                (399400, 9985),
+                (599400, 14985),
+            ]
         }
         performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
             matching=SegmentsMappingResult(
