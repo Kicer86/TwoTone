@@ -105,7 +105,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(frames, {0: {"frame_id": 0, "path": None}})
         pm.media_analysis.fulfill.assert_not_called()
 
-    def test_scene_detection_lowers_threshold_only_for_sparser_video(self):
+    def test_scene_detection_does_not_compare_scores_between_videos(self):
         pm = self._make_pair_matcher()
         lhs_analysis = media_analysis.VideoScanResult(
             path=pm.lhs_path,
@@ -144,7 +144,7 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         lhs_scenes, rhs_scenes = pm._detect_scenes(lhs_analysis, rhs_analysis)
 
-        self.assertEqual(lhs_scenes, [100, 200, 300, 400])
+        self.assertEqual(lhs_scenes, [100])
         self.assertEqual(rhs_scenes, [100, 200, 300, 400, 500])
 
 
