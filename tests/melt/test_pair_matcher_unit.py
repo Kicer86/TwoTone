@@ -88,6 +88,50 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(frames, {0: {"frame_id": 0, "path": None}})
         pm.media_analysis.fulfill.assert_not_called()
 
+    def test_scene_detection_lowers_threshold_only_for_sparser_video(self):
+        pm = self._make_pair_matcher()
+        lhs_analysis = media_analysis.VideoScanResult(
+            path=pm.lhs_path,
+            features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            frames={},
+            scene_changes=(100,),
+            identity_samples=(),
+            decode_error=None,
+            scene_candidates=tuple(
+                media_analysis.SceneCandidate(timestamp, score)
+                for timestamp, score in (
+                    (100, 0.4),
+                    (200, 0.25),
+                    (300, 0.2),
+                    (400, 0.15),
+                )
+            ),
+        )
+        rhs_analysis = media_analysis.VideoScanResult(
+            path=pm.rhs_path,
+            features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            frames={},
+            scene_changes=(100, 200, 300, 400, 500),
+            identity_samples=(),
+            decode_error=None,
+            scene_candidates=tuple(
+                media_analysis.SceneCandidate(timestamp, score)
+                for timestamp, score in (
+                    (100, 0.6),
+                    (200, 0.5),
+                    (300, 0.45),
+                    (400, 0.4),
+                    (500, 0.35),
+                    (600, 0.2),
+                )
+            ),
+        )
+
+        lhs_scenes, rhs_scenes = pm._detect_scenes(lhs_analysis, rhs_analysis)
+
+        self.assertEqual(lhs_scenes, [100, 200, 300, 400])
+        self.assertEqual(rhs_scenes, [100, 200, 300, 400, 500])
+
 
     def test_identical_timeline_uses_shared_media_scans(self):
         pm = self._make_pair_matcher()

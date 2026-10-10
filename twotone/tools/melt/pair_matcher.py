@@ -1,6 +1,7 @@
 
 import enum
 import logging
+import math
 import os
 from bisect import bisect_right
 from collections.abc import Callable
@@ -489,6 +490,7 @@ class PairMatcher:
     # with gap length: a content cut is a step in frame offset, not drift.
     _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 4.0
     _SCENE_THRESHOLD = 0.30
+    _MIN_SCENE_COUNT_RATIO = 0.80
     _LOCAL_SCENE_THRESHOLDS = (0.20, 0.15, 0.10)
 
     @staticmethod
@@ -2838,8 +2840,37 @@ class PairMatcher:
         rhs_analysis: media_analysis.VideoScanResult,
     ) -> tuple[list[int], list[int]]:
         """Phase 1: Detect scene changes in both files."""
-        lhs_scene_changes = self._detect_scenes_for(lhs_analysis, self.lhs_label)
-        rhs_scene_changes = self._detect_scenes_for(rhs_analysis, self.rhs_label)
+        lhs_base_count = len(lhs_analysis.scene_changes_at(self._SCENE_THRESHOLD))
+        rhs_base_count = len(rhs_analysis.scene_changes_at(self._SCENE_THRESHOLD))
+        minimum_count = math.ceil(
+            max(lhs_base_count, rhs_base_count) * self._MIN_SCENE_COUNT_RATIO
+        )
+
+        lhs_minimum = minimum_count if lhs_base_count < minimum_count else 0
+        rhs_minimum = minimum_count if rhs_base_count < minimum_count else 0
+        if lhs_minimum or rhs_minimum:
+            refined_label = self.lhs_label if lhs_minimum else self.rhs_label
+            self.logger.info(
+                "[1/6] Scene count imbalance: %s has %d, %s has %d; "
+                "lowering the threshold for %s to select at least %d scenes",
+                self.lhs_label,
+                lhs_base_count,
+                self.rhs_label,
+                rhs_base_count,
+                refined_label,
+                minimum_count,
+            )
+
+        lhs_scene_changes = self._detect_scenes_for(
+            lhs_analysis,
+            self.lhs_label,
+            minimum_count=lhs_minimum,
+        )
+        rhs_scene_changes = self._detect_scenes_for(
+            rhs_analysis,
+            self.rhs_label,
+            minimum_count=rhs_minimum,
+        )
 
         if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
             raise RuntimeError("Not enough scene changes detected")
@@ -2850,13 +2881,29 @@ class PairMatcher:
         self,
         analysis: media_analysis.VideoScanResult,
         label: str,
+        *,
+        minimum_count: int = 0,
     ) -> list[int]:
-        scene_changes = analysis.scene_changes_at(self._SCENE_THRESHOLD)
+        threshold = self._SCENE_THRESHOLD
+        scene_changes = analysis.scene_changes_at(threshold)
+        if len(scene_changes) < minimum_count and analysis.scene_candidates:
+            candidates_by_score = sorted(
+                analysis.scene_candidates,
+                key=lambda candidate: candidate.score,
+                reverse=True,
+            )
+            cutoff_index = min(minimum_count, len(candidates_by_score)) - 1
+            threshold = math.nextafter(
+                candidates_by_score[cutoff_index].score,
+                -math.inf,
+            )
+            scene_changes = analysis.scene_changes_at(threshold)
+
         self.logger.info(
             "[1/6] Scene changes for %s selected from media scan at threshold "
-            "%.2f (%d scenes)",
+            "%.6f (%d scenes)",
             label,
-            self._SCENE_THRESHOLD,
+            threshold,
             len(scene_changes),
         )
         return list(scene_changes)
