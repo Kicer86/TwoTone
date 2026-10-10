@@ -74,6 +74,10 @@ class PairMatcherUnitTest(unittest.TestCase):
             scene_changes=(120,),
             identity_samples=(),
             decode_error=None,
+            scene_candidates=(
+                media_analysis.SceneCandidate(80, 0.2),
+                media_analysis.SceneCandidate(120, 0.4),
+            ),
         )
         with patch.object(video_utils, "detect_scene_changes", side_effect=AssertionError("legacy scene scan")), \
              patch.object(video_utils, "probe_frame_timestamps", side_effect=AssertionError("legacy frame probe")):
@@ -817,6 +821,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                 (40,),
                 (),
                 None,
+                (media_analysis.SceneCandidate(40, 0.4),),
             ),
             pm.rhs_path: media_analysis.VideoScanResult(
                 pm.rhs_path,
@@ -825,6 +830,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                 (40,),
                 (),
                 None,
+                (media_analysis.SceneCandidate(40, 0.4),),
             ),
         }
         extrapolated_pairs = [(0, 0), (10000, 9880)]
