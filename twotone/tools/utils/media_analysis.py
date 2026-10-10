@@ -77,6 +77,12 @@ class VideoSample:
 
 
 @dataclass(frozen=True)
+class SceneCandidate:
+    timestamp_ms: int
+    score: float
+
+
+@dataclass(frozen=True)
 class MediaAnalysisRequest:
     path: str
     label: str
@@ -128,6 +134,7 @@ class VideoScanResult:
     scene_changes: tuple[int, ...]
     identity_samples: tuple[VideoSample, ...]
     decode_error: str | None
+    scene_candidates: tuple[SceneCandidate, ...] = ()
 
     def supports(self, features: MediaAnalysisFeature) -> bool:
         return self.features & features == features
@@ -139,6 +146,13 @@ class VideoScanResult:
     def frames_copy(self) -> dict[int, dict]:
         """Return mutable frame metadata isolated from other consumers."""
         return {timestamp: info.copy() for timestamp, info in self.frames.items()}
+
+    def scene_changes_at(self, threshold: float) -> tuple[int, ...]:
+        return tuple(
+            candidate.timestamp_ms
+            for candidate in self.scene_candidates
+            if candidate.score > threshold
+        )
 
 
 class PersistentMediaAnalysisCache(Protocol):
