@@ -560,6 +560,7 @@ class PairMatcher:
         frame_slope: float,
         lhs_fps: float,
         rhs_fps: float,
+        include_boundary_steps: bool = True,
     ) -> list[tuple[int, int, int, int, int]]:
         """Locate absolute frame-step errors in a GLOBAL_LINEAR mapping.
 
@@ -567,8 +568,9 @@ class PairMatcher:
         lhs_advance`` between every two matched anchors. A content removal or
         insertion changes that advance by a fixed number of frames; scaling
         the tolerance with the time between sparse anchors would hide exactly
-        such edits. The returned deficit remains milliseconds for the common
-        performer error-reporting API.
+        such edits. With ``include_boundary_steps=False``, gaps touching a
+        media edge are left to boundary handling. The returned deficit remains
+        milliseconds for the common performer error-reporting API.
         """
         pairs = sorted(mapping)
         if len(pairs) < 2 or frame_slope <= 0 or lhs_fps <= 0 or rhs_fps <= 0:
@@ -584,10 +586,20 @@ class PairMatcher:
         except KeyError:
             return PairMatcher.find_content_discontinuities(pairs)
 
+        lhs_last = max(lhs_ids.values())
+        rhs_last = max(rhs_ids.values())
         result = []
         for index, ((lhs1, rhs1), (lhs2, rhs2)) in enumerate(
             zip(frame_pairs, frame_pairs[1:])
         ):
+            # A step touching either media edge describes an intro/outro
+            # boundary, not a hole proven to have shared content on both
+            # sides.  The boundary matcher handles those regions separately.
+            if not include_boundary_steps and (
+                lhs1 == 0 or rhs1 == 0
+                or lhs2 == lhs_last or rhs2 == rhs_last
+            ):
+                continue
             lhs_advance = lhs2 - lhs1
             rhs_advance = rhs2 - rhs1
             if lhs_advance <= 0 or rhs_advance <= 0:
@@ -1920,16 +1932,26 @@ class PairMatcher:
                 frame_slope=frame_slope,
                 lhs_fps=self.lhs_fps,
                 rhs_fps=self.rhs_fps,
+                include_boundary_steps=False,
             )
             if discontinuities:
                 original_discontinuities = discontinuities
-                refined_pairs, discontinuities = self._match_key_frames(
+                refined_pairs, _ = self._match_key_frames(
                     lhs_key_frames, rhs_key_frames,
                     lhs_normalized_frames, rhs_normalized_frames,
                     list(lhs_scene_changes), list(rhs_scene_changes),
                     matching_pairs=matching_pairs,
                     frame_slope=frame_slope,
                     refine_discontinuities=True,
+                )
+                discontinuities = self.find_global_linear_content_discontinuities(
+                    refined_pairs,
+                    self.lhs_all_frames,
+                    self.rhs_all_frames,
+                    frame_slope=frame_slope,
+                    lhs_fps=self.lhs_fps,
+                    rhs_fps=self.rhs_fps,
+                    include_boundary_steps=False,
                 )
 
                 if discontinuities:
