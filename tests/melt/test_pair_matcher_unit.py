@@ -78,7 +78,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             path=path,
             features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             frames={},
-            scene_changes=(),
             identity_samples=(),
             decode_error=None,
             scene_candidates=scene_candidates,
@@ -90,7 +89,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             path=pm.lhs_path,
             features=media_analysis.MediaAnalysisFeature.MATCHING,
             frames={0: {"frame_id": 0, "path": None}},
-            scene_changes=(120,),
             identity_samples=(),
             decode_error=None,
             scene_candidates=(
@@ -113,7 +111,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             path=pm.lhs_path,
             features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             frames={},
-            scene_changes=(100,),
             identity_samples=(),
             decode_error=None,
             scene_candidates=tuple(
@@ -130,7 +127,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             path=pm.rhs_path,
             features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             frames={},
-            scene_changes=(100, 200, 300, 400, 500),
             identity_samples=(),
             decode_error=None,
             scene_candidates=tuple(
@@ -166,7 +162,6 @@ class PairMatcherUnitTest(unittest.TestCase):
                 path=path,
                 features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
                 frames={},
-                scene_changes=(),
                 identity_samples=samples,
                 decode_error=None,
             )
@@ -202,7 +197,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             path=request.path,
             features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
             frames={0: {"frame_id": 0, "path": None}},
-            scene_changes=(),
             identity_samples=(),
             decode_error=None,
         )
@@ -224,7 +218,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             path=pm.lhs_path,
             features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             frames={},
-            scene_changes=(),
             identity_samples=(),
             decode_error="scan stopped after the first frame",
         )
@@ -258,7 +251,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             path=pm.lhs_path,
             features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             frames={},
-            scene_changes=(),
             identity_samples=samples,
             decode_error=None,
         )
@@ -881,7 +873,6 @@ class PairMatcherUnitTest(unittest.TestCase):
                 pm.lhs_path,
                 media_analysis.MediaAnalysisFeature.MATCHING,
                 lhs_probed,
-                (40,),
                 (),
                 None,
                 (media_analysis.SceneCandidate(40, 0.4),),
@@ -890,7 +881,6 @@ class PairMatcherUnitTest(unittest.TestCase):
                 pm.rhs_path,
                 media_analysis.MediaAnalysisFeature.MATCHING,
                 rhs_probed,
-                (40,),
                 (),
                 None,
                 (media_analysis.SceneCandidate(40, 0.4),),
