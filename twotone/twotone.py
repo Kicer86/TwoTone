@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import sys
+import tempfile
 import time
 from collections.abc import Iterable
 from importlib import metadata
@@ -11,7 +12,7 @@ from importlib import metadata
 from overrides import override
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from .completion import build_bash_completion
+from .completion import build_bash_completion, is_bash_completion_current
 from .tools import (
     concatenate,
     language_fixer,
@@ -41,12 +42,36 @@ TOOLS = {
 }
 
 
-def _runtime_version_report() -> str:
+def _runtime_version_details() -> tuple[str, str | None]:
     try:
         version = metadata.version("twotone")
     except metadata.PackageNotFoundError:
         version = "unknown"
 
+    source_dir = os.path.dirname(os.path.abspath(__file__))
+    revision = None
+    if shutil.which("git"):
+        result = process_utils.start_process(
+            "git",
+            ["describe", "--always", "--dirty", "--long"],
+            cwd=source_dir,
+        )
+        detected_revision = result.stdout.strip()
+        if result.returncode == 0 and detected_revision:
+            revision = detected_revision
+
+    return version, revision
+
+
+def _completion_version() -> str:
+    version, revision = _runtime_version_details()
+    if revision:
+        return f"{version}+{revision}"
+    return version
+
+
+def _runtime_version_report() -> str:
+    version, revision = _runtime_version_details()
     source_dir = os.path.dirname(os.path.abspath(__file__))
     launcher = os.path.abspath(os.path.expanduser(sys.argv[0]))
     lines = [
@@ -55,16 +80,8 @@ def _runtime_version_report() -> str:
         f"Source: {source_dir}",
         f"Python: {sys.executable}",
     ]
-
-    if shutil.which("git"):
-        result = process_utils.start_process(
-            "git",
-            ["describe", "--always", "--dirty", "--long"],
-            cwd=source_dir,
-        )
-        revision = result.stdout.strip()
-        if result.returncode == 0 and revision:
-            lines.append(f"Git: {revision}")
+    if revision:
+        lines.append(f"Git: {revision}")
 
     return "\n".join(lines)
 
@@ -73,17 +90,50 @@ def _get_completion_dir() -> str:
     return os.path.join(data_dir, "bash-completion", "completions")
 
 
+def _write_completion(path: str, script: str) -> None:
+    temporary_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=os.path.dirname(path),
+            prefix=".twotone-completion-",
+            delete=False,
+        ) as temporary_file:
+            temporary_file.write(script)
+            temporary_path = temporary_file.name
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.remove(temporary_path)
+
+
 def _install_completion(parser: argparse.ArgumentParser) -> None:
     completion_dir = _get_completion_dir()
     os.makedirs(completion_dir, exist_ok=True)
-    dest = os.path.join(completion_dir, "twotone")
+    destination = os.path.join(completion_dir, "twotone")
 
-    script = build_bash_completion(parser)
+    script = build_bash_completion(parser, _completion_version())
+    _write_completion(destination, script)
 
-    with open(dest, "w", encoding="utf-8") as f:
-        f.write(script)
-    print(f"Completion installed: {dest}")
+    print(f"Completion installed: {destination}")
     print("Open a new terminal for it to take effect.")
+
+
+def _refresh_completion_if_installed(parser: argparse.ArgumentParser) -> None:
+    destination = os.path.join(_get_completion_dir(), "twotone")
+    if not os.path.exists(destination):
+        return
+
+    try:
+        with open(destination, encoding="utf-8") as completion_file:
+            header = completion_file.readline()
+        version = _completion_version()
+        if not is_bash_completion_current(header, version):
+            _write_completion(destination, build_bash_completion(parser, version))
+    except OSError:
+        # Completion maintenance must never prevent the requested CLI operation.
+        return
 
 
 def _uninstall_completion() -> None:
@@ -303,6 +353,9 @@ def _create_parser() -> argparse.ArgumentParser:
 
 def execute(argv: list[str]) -> None:
     parser = _create_parser()
+    completion_actions = {"--install-completion", "--uninstall-completion"}
+    if completion_actions.isdisjoint(argv):
+        _refresh_completion_if_installed(parser)
     args = parser.parse_args(args = argv)
 
     if args.version:

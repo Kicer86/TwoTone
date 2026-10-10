@@ -34,7 +34,7 @@ twotone merge --<TAB>   → merge-specific arguments
 
 To remove: `twotone --uninstall-completion`
 
-Run `twotone --install-completion` again after upgrading TwoTone to refresh the available commands and options.
+After upgrading TwoTone, the next regular `twotone` invocation refreshes the installed completion automatically. Existing shells load the refreshed commands on the next completion request.
 
 ### Getting Help
 
