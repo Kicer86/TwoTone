@@ -167,11 +167,11 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         }
 
         def fake_ffmpeg(args, _interruption, on_line, logger):
-            del logger
-            scene_stats = self._stats_path(args, "-stats_enc_pre:v:0")
-            with open(scene_stats, "w", encoding="utf-8") as file:
-                file.write("0 2 1/25\n")
-            return Mock(returncode=0), []
+            del args, on_line, logger
+            return Mock(returncode=0), [
+                "frame:0 pts:2 pts_time:0.08\n",
+                "lavfi.scene_score=0.400000\n",
+            ]
 
         with patch.object(video_utils, "get_video_full_info", return_value=probe_result) as probe, \
              patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_ffmpeg), \
@@ -474,9 +474,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             frame_stats = next(
                 path for path in stats_paths if path.endswith("frames.txt")
             )
-            scene_stats = next(
-                path for path in stats_paths if path.endswith("scenes.txt")
-            )
             sample_stats = next(
                 path for path in stats_paths if path.endswith("identity.txt")
             )
@@ -485,9 +482,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 file.write("0 0 1/1000\n1 40 1/1000\n2 80 1/1000\n")
             with open(sample_stats, "w", encoding="utf-8") as file:
                 file.write("0 0 1/1000\n1 80 1/1000\n")
-            with open(scene_stats, "w", encoding="utf-8") as file:
-                file.write("0 80 1/1000\n")
-
             output_pattern = next(value for value in args if "identity_%08d.png" in value)
             for index in (1, 2):
                 with open(output_pattern.replace("%08d", f"{index:08d}"), "wb") as file:
@@ -495,7 +489,10 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
             on_line("out_time_ms=80000\n")
             on_line("progress=end\n")
-            return SimpleNamespace(returncode=0), []
+            return SimpleNamespace(returncode=0), [
+                "frame:0 pts:80 pts_time:0.08\n",
+                "lavfi.scene_score=0.400000\n",
+            ]
 
         with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
              patch.object(self.session, "probe", return_value=self._probe_result()), \
@@ -514,22 +511,27 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertIn("-xerror", args)
         self.assertIn("0:a?", args)
         self.assertIn("split=3", " ".join(args))
-        self.assertNotIn("file='pipe\\:2'", " ".join(args))
-        self.assertNotIn("metadata=mode=print", " ".join(args))
+        self.assertIn("file='pipe\\:2'", " ".join(args))
+        self.assertIn("metadata=mode=print", " ".join(args))
+        self.assertIn("gt(scene,0.1)", " ".join(args))
         self.assertIn("[scenes]", args)
         self.assertEqual(
             [
                 args[index + 1] for index, value in enumerate(args)
                 if value == "-stats_enc_pre_fmt:v:0"
             ],
-            ["{ni} {pts} {tb}", "{ni} {pts} {tb}", "{ni} {pts} {tb}"],
+            ["{ni} {pts} {tb}", "{ni} {pts} {tb}"],
         )
         self.assertEqual([
             args[index + 1] for index, value in enumerate(args)
             if value == "-enc_time_base:v:0"
-        ], ["filter", "filter", "filter"])
+        ], ["filter", "filter"])
         self.assertNotIn("-enc_time_base:v:1", args)
         self.assertEqual(result.scene_changes, (80,))
+        self.assertEqual(
+            result.scene_candidates,
+            (media_analysis.SceneCandidate(80, 0.4),),
+        )
         self.assertEqual(list(result.frames), [0, 40, 80])
         self.assertEqual(
             [(sample.timestamp_ms, sample.frame_id) for sample in result.identity_samples],
@@ -560,9 +562,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             del on_line, logger
             self.assertIn("[scenes]", args)
             self.assertNotIn("voutput", " ".join(args))
-            scene_stats = self._stats_path(args, "-stats_enc_pre:v:0")
-            with open(scene_stats, "w", encoding="utf-8"):
-                pass
             return Mock(returncode=0), []
 
         probe = media_analysis.MediaProbeResult(
@@ -587,7 +586,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 for index, value in enumerate(args)
                 if value == "-stats_enc_pre:v:0"
             ]
-            self.assertEqual(len(stats_paths), 2)
+            self.assertEqual(len(stats_paths), 1)
             for path in stats_paths:
                 with open(path, "w", encoding="utf-8"):
                     pass
@@ -810,18 +809,18 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 index for index, value in enumerate(args)
                 if value == "-stats_enc_pre:v:0"
             ]
-            self.assertEqual(len(stats_options), 2)
-            scene_stats = args[stats_options[0] + 1]
-            sample_stats = args[stats_options[1] + 1]
-            with open(scene_stats, "w", encoding="utf-8") as file:
-                file.write("0 0 1/1000\n")
+            self.assertEqual(len(stats_options), 1)
+            sample_stats = args[stats_options[0] + 1]
             with open(sample_stats, "w", encoding="utf-8") as file:
                 file.write("0 0 1/1000\n")
 
             output_pattern = next(value for value in args if "identity_%08d.png" in value)
             with open(output_pattern.replace("%08d", "00000001"), "wb") as file:
                 file.write(b"png")
-            return SimpleNamespace(returncode=0), []
+            return SimpleNamespace(returncode=0), [
+                "frame:0 pts:0 pts_time:0\n",
+                "lavfi.scene_score=0.400000\n",
+            ]
 
         with patch.object(session, "probe", return_value=self._probe_result()), \
              patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start) as start, \
@@ -840,6 +839,10 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertTrue(result.supports(media_analysis.MediaAnalysisFeature.SCENE_CHANGES))
         self.assertTrue(result.supports(media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES))
         self.assertEqual(result.scene_changes, (0,))
+        self.assertEqual(
+            result.scene_candidates,
+            (media_analysis.SceneCandidate(0, 0.4),),
+        )
         self.assertEqual(len(result.identity_samples), 1)
 
     def test_frame_stats_preserve_millisecond_precision_for_long_timestamps(self):
