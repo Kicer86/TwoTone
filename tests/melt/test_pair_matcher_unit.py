@@ -1655,15 +1655,18 @@ class PairMatcherUnitTest(unittest.TestCase):
                 rhs_scenes,
                 matching_pairs=original,
                 frame_slope=1.0,
-                thresholds=(0.15,),
+                refine_discontinuities=True,
             )
 
         self.assertIn((15000, 10000), refined)
         self.assertEqual(lhs_scenes, [15000])
-        select.assert_called_once_with(
-            pm.lhs_path,
-            pm.lhs_label,
-            media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+        self.assertEqual(
+            {call.args for call in select.call_args_list},
+            {(
+                pm.lhs_path,
+                pm.lhs_label,
+                media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            )},
         )
 
     def test_local_scene_refinement_revisits_only_narrowed_gaps(self):
@@ -1706,7 +1709,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                 [],
                 matching_pairs=original,
                 frame_slope=1.0,
-                thresholds=pm._LOCAL_SCENE_THRESHOLDS,
+                refine_discontinuities=True,
             )
 
         self.assertEqual(
@@ -1746,15 +1749,15 @@ class PairMatcherUnitTest(unittest.TestCase):
                 [],
                 matching_pairs=original,
                 frame_slope=1.0,
-                thresholds=pm._LOCAL_SCENE_THRESHOLDS,
+                refine_discontinuities=True,
             )
 
         self.assertEqual(refined, original)
         self.assertEqual(remaining, [(0, 40000, 0, 39600, 400)])
         match.assert_not_called()
-        self.assertEqual(select.call_count, 3)
+        select.assert_called_once()
         self.assertTrue(any('Refining suspicious region:' in line for line in logs.output))
-        self.assertTrue(any('no new scenes' in line for line in logs.output))
+        self.assertTrue(any('found no new candidates' in line for line in logs.output))
         self.assertTrue(any('Local scene refinement complete:' in line for line in logs.output))
 
     # ---- _drop_pairs_breaking_local_linearity ----

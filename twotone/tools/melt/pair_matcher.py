@@ -491,7 +491,6 @@ class PairMatcher:
     _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 4.0
     _SCENE_THRESHOLD = 0.30
     _MIN_SCENE_COUNT_RATIO = 0.80
-    _LOCAL_SCENE_THRESHOLDS = (0.20, 0.15, 0.10)
 
     @staticmethod
     def _flagged_gap_deficits(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -607,7 +606,6 @@ class PairMatcher:
     def _refine_scenes_in_region(
         self,
         gap: tuple[int, int, int, int, int],
-        threshold: float,
         lhs_scene_changes: list[int],
         rhs_scene_changes: list[int],
     ) -> tuple[list[int], list[int], bool]:
@@ -629,12 +627,11 @@ class PairMatcher:
 
         self.logger.info(
             "Refining suspicious region: %s %s-%s (%d scene(s)) "
-            "↔ %s %s-%s (%d scene(s)); selecting cached candidates for %s "
-            "at threshold %.2f",
+            "↔ %s %s-%s (%d scene(s)); selecting cached candidates for %s",
             self.lhs_label, generic_utils.ms_to_time(lhs_from),
             generic_utils.ms_to_time(lhs_to), len(lhs_local),
             self.rhs_label, generic_utils.ms_to_time(rhs_from),
-            generic_utils.ms_to_time(rhs_to), len(rhs_local), label, threshold,
+            generic_utils.ms_to_time(rhs_to), len(rhs_local), label,
         )
         analysis = self._analysis_result_for(
             path,
@@ -642,23 +639,44 @@ class PairMatcher:
             media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
         )
         frame_timestamps = sorted(all_frames)
-        new_scenes = sorted({
-            self._snap_to_nearest_frame(frame_timestamps, timestamp)
-            for timestamp in analysis.scene_changes_at(threshold)
-            if start_ms < timestamp < end_ms
-        } - set(scenes))
+        candidates: dict[int, float] = {}
+        for candidate in analysis.scene_candidates:
+            if not start_ms < candidate.timestamp_ms < end_ms:
+                continue
+            timestamp = self._snap_to_nearest_frame(
+                frame_timestamps,
+                candidate.timestamp_ms,
+            )
+            if start_ms < timestamp < end_ms and timestamp not in scenes:
+                candidates[timestamp] = max(
+                    candidates.get(timestamp, 0.0),
+                    candidate.score,
+                )
+
+        desired_count = max(1, abs(len(lhs_local) - len(rhs_local)))
+        ranked_scores = sorted(candidates.values(), reverse=True)
+        if ranked_scores:
+            cutoff = ranked_scores[min(desired_count, len(ranked_scores)) - 1]
+            new_scenes = sorted(
+                timestamp
+                for timestamp, score in candidates.items()
+                if score >= cutoff
+            )
+        else:
+            cutoff = None
+            new_scenes = []
 
         if new_scenes:
             scenes.extend(new_scenes)
             self.logger.info(
-                "Local scene refinement %s at threshold %.2f: %d new scene(s)",
-                label, threshold, len(new_scenes),
+                "Local scene refinement %s selected %d scene(s) at score %.6f",
+                label, len(new_scenes), cutoff,
             )
         else:
             self.logger.info(
-                "Local scene refinement %s at threshold %.2f: no new scenes; "
+                "Local scene refinement %s found no new candidates; "
                 "region remains unresolved",
-                label, threshold,
+                label,
             )
 
         return (
@@ -1913,7 +1931,7 @@ class PairMatcher:
                     list(lhs_scene_changes), list(rhs_scene_changes),
                     matching_pairs=matching_pairs,
                     frame_slope=frame_slope,
-                    thresholds=self._LOCAL_SCENE_THRESHOLDS,
+                    refine_discontinuities=True,
                 )
 
                 if discontinuities:
@@ -3058,7 +3076,7 @@ class PairMatcher:
         debug: DebugRoutines | None = None,
         matching_pairs: list[tuple[int, int]] | None = None,
         frame_slope: float | None = None,
-        thresholds: tuple[float, ...] = (),
+        refine_discontinuities: bool = False,
         region: tuple[int, int, int, int, int] | None = None,
     ) -> tuple[
         list[tuple[int, int]],
@@ -3117,10 +3135,9 @@ class PairMatcher:
             )
 
         discontinuities = find_discontinuities(matching_pairs)
-        if not discontinuities or not thresholds:
+        if not discontinuities or not refine_discontinuities:
             return matching_pairs, discontinuities
 
-        threshold = thresholds[0]
         if region is None:
             self.logger.info(
                 "Starting local scene refinement for suspicious timing regions: %s ↔ %s",
@@ -3128,9 +3145,8 @@ class PairMatcher:
                 self.rhs_label,
             )
         self.logger.info(
-            "Refining %d suspicious region(s) at scene threshold %.2f",
+            "Refining %d suspicious region(s) using cached scene scores",
             len(discontinuities),
-            threshold,
         )
 
         refined = set(matching_pairs)
@@ -3138,7 +3154,7 @@ class PairMatcher:
             lhs_from, lhs_to, rhs_from, rhs_to, _ = gap
             lhs_scenes, rhs_scenes, scenes_added = (
                 self._refine_scenes_in_region(
-                    gap, threshold,
+                    gap,
                     lhs_scene_changes, rhs_scene_changes,
                 )
             )
@@ -3147,14 +3163,14 @@ class PairMatcher:
                 lhs_scenes, rhs_scenes, lhs_normalized_frames, rhs_normalized_frames,
             )
             anchors = [(lhs_from, rhs_from), (lhs_to, rhs_to)]
-            if scenes_added or thresholds[1:]:
+            if scenes_added:
                 local_pairs, _ = self._match_key_frames(
                     lhs_candidates, rhs_candidates,
                     lhs_normalized_frames, rhs_normalized_frames,
                     lhs_scene_changes, rhs_scene_changes,
-                    matching_pairs=None if scenes_added else anchors,
+                    matching_pairs=None,
                     frame_slope=frame_slope,
-                    thresholds=thresholds[1:],
+                    refine_discontinuities=True,
                     region=gap,
                 )
             else:
