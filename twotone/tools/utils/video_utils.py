@@ -619,12 +619,13 @@ def extract_frames_at_ranges(
     from its encoding statistics.
 
     Uses ffmpeg's ``select='between(t,a,b)+…'`` filter so only the
-    requested frames are encoded and written. Frame ranges are translated
-    to timestamp ranges first because FFmpeg's filter-local ``n`` counter can
-    restart when video parameters change mid-file. The select expression is
-    structured as a balanced binary tree of ``+`` operations so that the
-    parser stack depth is O(log₂ N) instead of O(N), allowing thousands
-    of ranges in a single ffmpeg invocation.
+    requested frames are encoded and written, and ends the filter graph at
+    the following known frame so decoding does not continue through the rest
+    of the video. Frame ranges are translated to timestamp ranges first because
+    FFmpeg's filter-local ``n`` counter can restart when video parameters change
+    mid-file. The select expression is structured as a balanced binary tree of
+    ``+`` operations so that the parser stack depth is O(log₂ N) instead of
+    O(N), allowing thousands of ranges in a single ffmpeg invocation.
 
     Raises RuntimeError if the extracted images cannot be matched one-to-one
     to all requested, known timestamps. Partial extraction must not look like
@@ -659,7 +660,20 @@ def extract_frames_at_ranges(
     elif isinstance(scale, tuple):
         scale_filter = f"scale={scale[0]}:{scale[1]}"
 
-    vf_parts = [f"select='{select_expr}'", "showinfo"]
+    vf_parts = []
+    last_requested_timestamp = max(expected_timestamps)
+    next_timestamp = next(
+        (
+            timestamp
+            for timestamp in sorted(probed_metadata)
+            if timestamp > last_requested_timestamp
+        ),
+        None,
+    )
+    if next_timestamp is not None:
+        extraction_end = (next_timestamp - timestamp_correction_ms) / 1000
+        vf_parts.append(f"trim=end={extraction_end:.6f}")
+    vf_parts.extend([f"select='{select_expr}'", "showinfo"])
     if scale_filter:
         vf_parts.append(scale_filter)
 
