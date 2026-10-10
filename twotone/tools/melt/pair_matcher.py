@@ -67,6 +67,7 @@ class SegmentsMappingResult(NamedTuple):
     relation: MappingRelation
     lhs_fps: float
     rhs_fps: float
+    frame_slope: float | None = None
 
 
 class _BoundarySearchContext(NamedTuple):
@@ -481,6 +482,13 @@ class PairMatcher:
     # a content cut (e.g. a commercial break) is one-sided and multi-second.
     _MAX_GAP_TIME_DEFICIT_MS = 2000
     _MAX_GAP_TIME_DEFICIT_RATIO = 0.02
+    # A GLOBAL_LINEAR mapping promises frame-accurate progression. Each
+    # endpoint may be uncertain by at most two frames, so the advance between
+    # two anchors may differ from the fitted relation by at most four frames.
+    # Unlike the GENERIC time-domain tolerance below, this limit must not grow
+    # with gap length: a content cut is a step in frame offset, not drift.
+    _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 4.0
+    _SCENE_THRESHOLD = 0.30
 
     @staticmethod
     def _flagged_gap_deficits(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -542,6 +550,150 @@ class PairMatcher:
             (pairs[i][0], pairs[i + 1][0], pairs[i][1], pairs[i + 1][1], deficit)
             for i, deficit in PairMatcher._flagged_gap_deficits(pairs)
         ]
+
+    @staticmethod
+    def find_global_linear_content_discontinuities(
+        mapping: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+        *,
+        frame_slope: float,
+        lhs_fps: float,
+        rhs_fps: float,
+        include_boundary_steps: bool = True,
+    ) -> list[tuple[int, int, int, int, int]]:
+        """Locate absolute frame-step errors in a GLOBAL_LINEAR mapping.
+
+        The fitted relation predicts ``rhs_advance = frame_slope *
+        lhs_advance`` between every two matched anchors. A content removal or
+        insertion changes that advance by a fixed number of frames; scaling
+        the tolerance with the time between sparse anchors would hide exactly
+        such edits. With ``include_boundary_steps=False``, gaps touching a
+        media edge are left to boundary handling. The returned deficit remains
+        milliseconds for the common performer error-reporting API.
+        """
+        pairs = sorted(mapping)
+        if len(pairs) < 2 or frame_slope <= 0 or lhs_fps <= 0 or rhs_fps <= 0:
+            return []
+
+        lhs_ids = PairMatcher._timeline_frame_ids(lhs_all_frames, lhs_fps)
+        rhs_ids = PairMatcher._timeline_frame_ids(rhs_all_frames, rhs_fps)
+        try:
+            frame_pairs = [
+                (lhs_ids[lhs_ts], rhs_ids[rhs_ts])
+                for lhs_ts, rhs_ts in pairs
+            ]
+        except KeyError:
+            return PairMatcher.find_content_discontinuities(pairs)
+
+        lhs_last = max(lhs_ids.values())
+        rhs_last = max(rhs_ids.values())
+        result = []
+        for index, ((lhs1, rhs1), (lhs2, rhs2)) in enumerate(
+            zip(frame_pairs, frame_pairs[1:])
+        ):
+            # A step touching either media edge describes an intro/outro
+            # boundary, not a hole proven to have shared content on both
+            # sides.  The boundary matcher handles those regions separately.
+            if not include_boundary_steps and (
+                lhs1 == 0 or rhs1 == 0
+                or lhs2 == lhs_last or rhs2 == rhs_last
+            ):
+                continue
+            lhs_advance = lhs2 - lhs1
+            rhs_advance = rhs2 - rhs1
+            if lhs_advance <= 0 or rhs_advance <= 0:
+                continue
+            deficit_frames = lhs_advance * frame_slope - rhs_advance
+            if abs(deficit_frames) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:
+                deficit_ms = round(deficit_frames * 1000 / rhs_fps)
+                result.append((
+                    pairs[index][0], pairs[index + 1][0],
+                    pairs[index][1], pairs[index + 1][1], deficit_ms,
+                ))
+        return result
+
+    def _refine_scenes_in_region(
+        self,
+        gap: tuple[int, int, int, int, int],
+        lhs_scene_changes: list[int],
+        rhs_scene_changes: list[int],
+    ) -> tuple[list[int], list[int], bool]:
+        """Extend the sparser scene list and return timestamps within the region."""
+        lhs_from, lhs_to, rhs_from, rhs_to, _ = gap
+        lhs_local = [ts for ts in lhs_scene_changes if lhs_from < ts < lhs_to]
+        rhs_local = [ts for ts in rhs_scene_changes if rhs_from < ts < rhs_to]
+
+        if len(lhs_local) <= len(rhs_local):
+            path, label = self.lhs_path, self.lhs_label
+            start_ms, end_ms = lhs_from, lhs_to
+            all_frames = self.lhs_all_frames
+            scenes = lhs_scene_changes
+        else:
+            path, label = self.rhs_path, self.rhs_label
+            start_ms, end_ms = rhs_from, rhs_to
+            all_frames = self.rhs_all_frames
+            scenes = rhs_scene_changes
+
+        self.logger.info(
+            "Refining suspicious region: %s %s-%s (%d scene(s)) "
+            "↔ %s %s-%s (%d scene(s)); selecting cached candidates for %s",
+            self.lhs_label, generic_utils.ms_to_time(lhs_from),
+            generic_utils.ms_to_time(lhs_to), len(lhs_local),
+            self.rhs_label, generic_utils.ms_to_time(rhs_from),
+            generic_utils.ms_to_time(rhs_to), len(rhs_local), label,
+        )
+        analysis = self._analysis_result_for(
+            path,
+            label,
+            media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+        )
+        frame_timestamps = sorted(all_frames)
+        candidates: dict[int, float] = {}
+        for candidate in analysis.scene_candidates:
+            if not start_ms < candidate.timestamp_ms < end_ms:
+                continue
+            timestamp = self._snap_to_nearest_frame(
+                frame_timestamps,
+                candidate.timestamp_ms,
+            )
+            if start_ms < timestamp < end_ms and timestamp not in scenes:
+                candidates[timestamp] = max(
+                    candidates.get(timestamp, 0.0),
+                    candidate.score,
+                )
+
+        desired_count = max(1, abs(len(lhs_local) - len(rhs_local)))
+        ranked_scores = sorted(candidates.values(), reverse=True)
+        if ranked_scores:
+            cutoff = ranked_scores[min(desired_count, len(ranked_scores)) - 1]
+            new_scenes = sorted(
+                timestamp
+                for timestamp, score in candidates.items()
+                if score >= cutoff
+            )
+        else:
+            cutoff = None
+            new_scenes = []
+
+        if new_scenes:
+            scenes.extend(new_scenes)
+            self.logger.info(
+                "Local scene refinement %s selected %d scene(s) at score %.6f",
+                label, len(new_scenes), cutoff,
+            )
+        else:
+            self.logger.info(
+                "Local scene refinement %s found no new candidates; "
+                "region remains unresolved",
+                label,
+            )
+
+        return (
+            sorted({lhs_from, lhs_to, *(ts for ts in lhs_scene_changes if lhs_from < ts < lhs_to)}),
+            sorted({rhs_from, rhs_to, *(ts for ts in rhs_scene_changes if rhs_from < ts < rhs_to)}),
+            bool(new_scenes),
+        )
 
     def _drop_pairs_breaking_local_linearity(
         self, pairs: list[tuple[int, int]]
@@ -1750,8 +1902,11 @@ class PairMatcher:
         debug.dump_frames(lhs_key_frames, f"{self.lhs_label} key frames")
         debug.dump_frames(rhs_key_frames, f"{self.rhs_label} key frames")
 
-        matching_pairs = self._match_key_frames(
-            lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames, debug,
+        matching_pairs, _ = self._match_key_frames(
+            lhs_key_frames, rhs_key_frames,
+            lhs_normalized_frames, rhs_normalized_frames,
+            lhs_scene_changes, rhs_scene_changes,
+            debug=debug,
         )
 
         # Diagnostic summary of the frame-space relationship.  Logged at INFO so
@@ -1769,6 +1924,71 @@ class PairMatcher:
 
         if global_linear_fit is not None:
             relation = MappingRelation.GLOBAL_LINEAR
+            frame_slope = global_linear_fit.slope
+            discontinuities = self.find_global_linear_content_discontinuities(
+                matching_pairs,
+                self.lhs_all_frames,
+                self.rhs_all_frames,
+                frame_slope=frame_slope,
+                lhs_fps=self.lhs_fps,
+                rhs_fps=self.rhs_fps,
+                include_boundary_steps=False,
+            )
+            if discontinuities:
+                original_discontinuities = discontinuities
+                refined_pairs, _ = self._match_key_frames(
+                    lhs_key_frames, rhs_key_frames,
+                    lhs_normalized_frames, rhs_normalized_frames,
+                    list(lhs_scene_changes), list(rhs_scene_changes),
+                    matching_pairs=matching_pairs,
+                    frame_slope=frame_slope,
+                    refine_discontinuities=True,
+                )
+                discontinuities = self.find_global_linear_content_discontinuities(
+                    refined_pairs,
+                    self.lhs_all_frames,
+                    self.rhs_all_frames,
+                    frame_slope=frame_slope,
+                    lhs_fps=self.lhs_fps,
+                    rhs_fps=self.rhs_fps,
+                    include_boundary_steps=False,
+                )
+
+                if discontinuities:
+                    debug.dump_matches(refined_pairs, "localized discontinuities")
+                else:
+                    # The total offset still changed by more than four frames,
+                    # but denser anchors distributed it across smaller steps.
+                    # That is non-linear timing rather than proof of one cut;
+                    # keep the original interval and refuse the global audio
+                    # transform instead of silently accepting accumulated drift.
+                    self.logger.warning(
+                        "Local scene refinement found distributed timing drift, "
+                        "not one persistent frame step."
+                    )
+                    discontinuities = original_discontinuities
+
+                for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in discontinuities:
+                    self.logger.error(
+                        "Suspected timing discontinuity between matched anchors: %s-%s in %s "
+                        "↔ %s-%s in %s "
+                        "(%+d ms, %+.1f frames)",
+                        generic_utils.ms_to_time(lhs_from),
+                        generic_utils.ms_to_time(lhs_to),
+                        self.lhs_label,
+                        generic_utils.ms_to_time(rhs_from),
+                        generic_utils.ms_to_time(rhs_to),
+                        self.rhs_label,
+                        deficit_ms,
+                        deficit_ms * self.rhs_fps / 1000,
+                    )
+
+                raise RuntimeError(
+                    "Inputs share content with holes in the scene sequence "
+                    f"(absolute frame-step error exceeds "
+                    f"{self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:g} frames) — patching "
+                    "audio across such discontinuities is not supported yet"
+                )
             # Use the fit as a precise predictor of where identical frames should
             # be, extend each boundary toward the video edge, and keep the
             # extension only where the predicted pair is content-verified (same
@@ -1783,6 +2003,7 @@ class PairMatcher:
             debug.dump_matches(matching_pairs, "after verified global-linear extrapolation")
         else:
             relation = MappingRelation.GENERIC
+            frame_slope = None
             # No global relation — fall back to the content/entropy-aware
             # iterative boundary search.
             matching_pairs = self._extract_and_refine_boundaries(
@@ -1817,6 +2038,7 @@ class PairMatcher:
             relation=relation,
             lhs_fps=self.lhs_fps,
             rhs_fps=self.rhs_fps,
+            frame_slope=frame_slope,
         )
 
     def _log_relation_diagnostics(self, matching_pairs: list[tuple[int, int]]) -> None:
@@ -2666,12 +2888,16 @@ class PairMatcher:
         analysis: media_analysis.VideoScanResult,
         label: str,
     ) -> list[int]:
+        scene_changes = analysis.scene_changes_at(self._SCENE_THRESHOLD)
+
         self.logger.info(
-            "[1/6] Scene changes for %s restored from media scan (%d scenes)",
+            "[1/6] Scene changes for %s selected from media scan at threshold "
+            "%.6f (%d scenes)",
             label,
-            len(analysis.scene_changes),
+            self._SCENE_THRESHOLD,
+            len(scene_changes),
         )
-        return list(analysis.scene_changes)
+        return list(scene_changes)
 
     def _probe_frames(
         self,
@@ -2754,40 +2980,60 @@ class PairMatcher:
         probed_metadata: FramesInfo,
         label: str,
     ) -> None:
-        if self.cache and self.cache.load_scene_frames(video_path, target_dir, probed_metadata):
-            self.logger.info("[3/6] Scene frames for %s restored from cache", label)
-            return
+        """Restore initial cached frames, then extract only missing requested frames."""
+        initial = not any(info.get("path") for info in probed_metadata.values())
+        restored = False
+        if initial and self.cache:
+            restored = self.cache.load_scene_frames(video_path, target_dir, probed_metadata)
+            if restored:
+                self.logger.info("[3/6] Scene frames for %s restored from cache", label)
 
-        video_utils.extract_frames_at_ranges(
-            video_path, target_dir, scene_ranges, probed_metadata,
-            scale=(960, -2), format="png", interruption=self.interruption,
-            desc=f"[3/6] Extracting scene frames: {label}",
-            logger=self.logger,
-        )
+        requested = {frame for start, end in scene_ranges for frame in range(start, end + 1)}
+        missing = [
+            ts for ts, info in probed_metadata.items()
+            if int(info["frame_id"]) in requested and not info.get("path")
+        ]
+        if missing:
+            video_utils.extract_frames_at_ranges(
+                video_path, target_dir,
+                self._compute_frame_ranges(missing, probed_metadata, margin=0),
+                probed_metadata,
+                scale=(960, -2), format="png", interruption=self.interruption,
+                desc=f"[3/6] Extracting scene frames: {label}", logger=self.logger,
+            )
 
-        if self.cache:
-            self.cache.save_scene_frames(video_path, target_dir, probed_metadata)
+            # Restored frames may be symlinks into the cache; replacing that
+            # cache would invalidate the files currently used by this run.
+            if initial and not restored and self.cache:
+                self.cache.save_scene_frames(video_path, target_dir, probed_metadata)
 
     def _normalize_extracted(
         self,
         lhs_scene_changes: list[int],
         rhs_scene_changes: list[int],
+        lhs_normalized_frames: FramesInfo | None = None,
+        rhs_normalized_frames: FramesInfo | None = None,
     ) -> tuple[FramesInfo, FramesInfo, FramesInfo, FramesInfo]:
-        """Phase 4: Normalize extracted frames and identify key frames.
+        """Phase 4: Normalize missing frames in-place and identify key frames.
 
         Returns (lhs_normalized, rhs_normalized, lhs_key_frames, rhs_key_frames).
         """
-        lhs_extracted = self._extracted_subset(self.lhs_all_frames)
-        rhs_extracted = self._extracted_subset(self.rhs_all_frames)
-
-        lhs_normalized_frames = self._normalize_frames(
-            lhs_extracted, self.lhs_normalized_wd,
-            desc=f"[4/6] Normalizing: {self.lhs_label}",
-        )
-        rhs_normalized_frames = self._normalize_frames(
-            rhs_extracted, self.rhs_normalized_wd,
-            desc=f"[4/6] Normalizing: {self.rhs_label}",
-        )
+        if lhs_normalized_frames is None:
+            lhs_normalized_frames = {}
+        if rhs_normalized_frames is None:
+            rhs_normalized_frames = {}
+        for all_frames, normalized, directory, label in (
+            (self.lhs_all_frames, lhs_normalized_frames, self.lhs_normalized_wd, self.lhs_label),
+            (self.rhs_all_frames, rhs_normalized_frames, self.rhs_normalized_wd, self.rhs_label),
+        ):
+            missing = {
+                ts: info for ts, info in self._extracted_subset(all_frames).items()
+                if ts not in normalized
+            }
+            if missing:
+                normalized.update(self._normalize_frames(
+                    missing, directory, desc=f"[4/6] Normalizing: {label}",
+                ))
 
         lhs_key_frames = PairMatcher._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_frames)
         rhs_key_frames = PairMatcher._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
@@ -2800,22 +3046,123 @@ class PairMatcher:
         rhs_key_frames: FramesInfo,
         lhs_normalized_frames: FramesInfo,
         rhs_normalized_frames: FramesInfo,
-        debug: DebugRoutines,
-    ) -> list[tuple[int, int]]:
-        """Phase 5: Match key frames between the two files."""
-        lhs_extracted = self._extracted_subset(self.lhs_all_frames)
-        rhs_extracted = self._extracted_subset(self.rhs_all_frames)
+        lhs_scene_changes: list[int],
+        rhs_scene_changes: list[int],
+        *,
+        debug: DebugRoutines | None = None,
+        matching_pairs: list[tuple[int, int]] | None = None,
+        frame_slope: float | None = None,
+        refine_discontinuities: bool = False,
+        region: tuple[int, int, int, int, int] | None = None,
+    ) -> tuple[
+        list[tuple[int, int]],
+        list[tuple[int, int, int, int, int]],
+    ]:
+        """Match key frames and recursively densify discontinuous regions."""
+        if matching_pairs is None:
+            if region is None:
+                self.logger.info("[5/6] Matching key frames")
+            matching_pairs = self._make_pairs(
+                lhs_key_frames,
+                rhs_key_frames,
+                lhs_normalized_frames,
+                rhs_normalized_frames,
+            )
+            if region is not None:
+                lhs_from, lhs_to, rhs_from, rhs_to, _ = region
+                matching_pairs = [
+                    pair for pair in matching_pairs
+                    if lhs_from < pair[0] < lhs_to
+                    and rhs_from < pair[1] < rhs_to
+                ]
+                matching_pairs.extend([
+                    (lhs_from, rhs_from),
+                    (lhs_to, rhs_to),
+                ])
 
-        self.logger.info("[5/6] Matching key frames")
-        matching_pairs = self._make_pairs(lhs_key_frames, rhs_key_frames, lhs_normalized_frames, rhs_normalized_frames)
-        debug.dump_matches(matching_pairs, "initial matching")
-        self.logger.debug("Pairs summary after initial matching:")
-        self.logger.debug(PairMatcher.summarize_pairs(self.phash, matching_pairs, lhs_extracted, rhs_extracted, verbose = True))
+            if debug is not None:
+                lhs_extracted = self._extracted_subset(self.lhs_all_frames)
+                rhs_extracted = self._extracted_subset(self.rhs_all_frames)
+                debug.dump_matches(matching_pairs, "initial matching")
+                self.logger.debug("Pairs summary after initial matching:")
+                self.logger.debug(PairMatcher.summarize_pairs(
+                    self.phash,
+                    matching_pairs,
+                    lhs_extracted,
+                    rhs_extracted,
+                    verbose=True,
+                ))
+        else:
+            matching_pairs = list(matching_pairs)
 
+        matching_pairs = sorted(set(matching_pairs))
         if not matching_pairs:
             raise RuntimeError("No matching pairs found between the two files")
+        if frame_slope is None:
+            return matching_pairs, []
 
-        return matching_pairs
+        def find_discontinuities(
+            pairs: list[tuple[int, int]],
+        ) -> list[tuple[int, int, int, int, int]]:
+            return self.find_global_linear_content_discontinuities(
+                pairs, self.lhs_all_frames, self.rhs_all_frames,
+                frame_slope=frame_slope,
+                lhs_fps=self.lhs_fps, rhs_fps=self.rhs_fps,
+            )
+
+        discontinuities = find_discontinuities(matching_pairs)
+        if not discontinuities or not refine_discontinuities:
+            return matching_pairs, discontinuities
+
+        if region is None:
+            self.logger.info(
+                "Starting local scene refinement for suspicious timing regions: %s ↔ %s",
+                self.lhs_label,
+                self.rhs_label,
+            )
+        self.logger.info(
+            "Refining %d suspicious region(s) using cached scene scores",
+            len(discontinuities),
+        )
+
+        refined = set(matching_pairs)
+        for gap in discontinuities:
+            lhs_from, lhs_to, rhs_from, rhs_to, _ = gap
+            lhs_scenes, rhs_scenes, scenes_added = (
+                self._refine_scenes_in_region(
+                    gap,
+                    lhs_scene_changes, rhs_scene_changes,
+                )
+            )
+            self._extract_scene_frames(lhs_scenes, rhs_scenes)
+            _, _, lhs_candidates, rhs_candidates = self._normalize_extracted(
+                lhs_scenes, rhs_scenes, lhs_normalized_frames, rhs_normalized_frames,
+            )
+            anchors = [(lhs_from, rhs_from), (lhs_to, rhs_to)]
+            if scenes_added:
+                local_pairs, _ = self._match_key_frames(
+                    lhs_candidates, rhs_candidates,
+                    lhs_normalized_frames, rhs_normalized_frames,
+                    lhs_scene_changes, rhs_scene_changes,
+                    matching_pairs=None,
+                    frame_slope=frame_slope,
+                    refine_discontinuities=True,
+                    region=gap,
+                )
+            else:
+                local_pairs = anchors
+            refined.update(local_pairs)
+
+        refined_pairs = sorted(refined)
+        discontinuities = find_discontinuities(refined_pairs)
+        if region is None:
+            self.logger.info(
+                "Local scene refinement complete: %d additional matched pair(s), "
+                "%d remaining suspicious region(s)",
+                len(refined - set(matching_pairs)),
+                len(discontinuities),
+            )
+        return refined_pairs, discontinuities
 
     def _extract_and_refine_boundaries(
         self,

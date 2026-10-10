@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-_CACHE_FORMAT_VERSION = 4  # v4 preserves the filter time base instead of quantizing PTS to FPS.
+_CACHE_FORMAT_VERSION = 5  # v5 stores scene scores for in-memory threshold selection.
 
 
 class MeltCache:
@@ -28,14 +28,21 @@ class MeltCache:
 
     # -- public API ----------------------------------------------------------
 
-    def load_scene_changes(self, video_path: str) -> list[int] | None:
-        data = self._load_json(video_path, "scene_changes.json")
+    def load_scene_candidates(
+        self,
+        video_path: str,
+    ) -> list[tuple[int, float]] | None:
+        data = self._load_json(video_path, "scene_candidates.json")
         if data is None:
             return None
-        return [int(v) for v in data]
+        return [(int(timestamp), float(score)) for timestamp, score in data]
 
-    def save_scene_changes(self, video_path: str, scenes: list[int]) -> None:
-        self._save_json(video_path, "scene_changes.json", scenes, indent=2)
+    def save_scene_candidates(
+        self,
+        video_path: str,
+        candidates: list[tuple[int, float]],
+    ) -> None:
+        self._save_json(video_path, "scene_candidates.json", candidates, indent=2)
 
     def load_frame_probes(self, video_path: str) -> dict[int, Any] | None:
         data = self._load_json(video_path, "frame_probes.json")

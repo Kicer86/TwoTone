@@ -41,6 +41,7 @@ def _start_ffmpeg_streaming(
     interruption: InterruptibleProcess | None = None,
     on_line: "Callable[[str], None] | None" = None,
     logger: logging.Logger | None = None,
+    stdout_path: str | None = None,
 ) -> tuple[subprocess.Popen, list[str]]:
     """Start an ffmpeg subprocess and read its stderr line-by-line.
 
@@ -49,6 +50,8 @@ def _start_ffmpeg_streaming(
     Terminates the subprocess on interruption.
     When *on_line* is given, it is called with each stderr line (e.g. for
     progress updates).
+    When *stdout_path* is given, stdout is redirected there for the process's
+    whole lifetime instead of being buffered in memory.
     """
     defaults = process_utils.DEFAULT_TOOL_OPTIONS.get("ffmpeg", [])
     full_args = list(args)
@@ -60,8 +63,13 @@ def _start_ffmpeg_streaming(
     command = ["ffmpeg"] + full_args
     logger.debug(f"Starting ffmpeg {' '.join(full_args)}")
 
+    stdout_file = (
+        open(stdout_path, "w", encoding="utf-8")  # noqa: SIM115 - closed below
+        if stdout_path is not None
+        else None
+    )
     popen_kwargs: dict[str, Any] = {
-        "stdout": subprocess.PIPE,
+        "stdout": stdout_file or subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
         "encoding": "utf-8",
@@ -73,7 +81,12 @@ def _start_ffmpeg_streaming(
     else:
         popen_kwargs["preexec_fn"] = os.setsid
 
-    proc = subprocess.Popen(command, **popen_kwargs)
+    try:
+        proc = subprocess.Popen(command, **popen_kwargs)
+    except Exception:
+        if stdout_file is not None:
+            stdout_file.close()
+        raise
 
     stderr_lines: list[str] = []
     try:
@@ -86,9 +99,11 @@ def _start_ffmpeg_streaming(
                 proc.terminate()
                 proc.wait()
                 interruption.check_for_stop()  # raises SystemExit
-    except Exception:
+    except (Exception, SystemExit):
         proc.terminate()
         proc.wait()
+        if stdout_file is not None:
+            stdout_file.close()
         raise
 
     # Drain stdout (ffmpeg sends everything to stderr, but be safe)
@@ -100,6 +115,8 @@ def _start_ffmpeg_streaming(
         proc.stderr.close()
 
     proc.wait()
+    if stdout_file is not None:
+        stdout_file.close()
     return proc, stderr_lines
 
 
@@ -162,6 +179,8 @@ def detect_scene_changes(
     logger: logging.Logger | None = None,
     interruption: InterruptibleProcess | None = None,
     desc: str | None = None,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
 ) -> list[int]:
     """
         Run ffmpeg with a scene detection filter and extract scene change times.
@@ -170,23 +189,40 @@ def detect_scene_changes(
         When *desc* is given, it is used as the progress bar description.
         When *logger* is given (and no *desc*), an info message is emitted.
         When *interruption* is given, ctrl+c can cleanly stop the process.
+        ``start_ms``/``end_ms`` restrict decoding to a local interval while
+        returned timestamps remain on the original file timeline.
     """
     logger = logger or DEFAULT_LOGGER
 
-    args = [
+    interval_start_ms = max(0, start_ms or 0)
+    if end_ms is not None and end_ms <= interval_start_ms:
+        return []
+
+    args = []
+    if interval_start_ms:
+        args.extend(["-ss", f"{interval_start_ms / 1000:.3f}"])
+    if end_ms is not None:
+        args.extend(["-t", f"{(end_ms - interval_start_ms) / 1000:.3f}"])
+    args.extend([
         "-i", file_path,
+    ])
+    args.extend([
         "-an",                                              # Ignore all audio streams
         "-sn",                                              # Ignore subtitle streams
         "-dn",                                              # Ignore data streams
         "-fps_mode", "auto",
         "-filter_complex", f"select='gt(scene,{threshold})',showinfo",
         "-f", "null", "-"
-    ]
+    ])
 
     basename = os.path.basename(file_path)
     bar_desc = desc or f"Detecting scenes: {basename}"
 
-    duration_ms = get_video_duration(file_path, logger=logger)
+    duration_ms = (
+        end_ms - interval_start_ms
+        if end_ms is not None
+        else max(0, get_video_duration(file_path, logger=logger) - interval_start_ms)
+    )
     duration_s = (duration_ms / 1000.0) if duration_ms else None
     timestamp_correction_ms = _showinfo_timestamp_correction_ms(file_path, logger=logger)
 
@@ -221,7 +257,10 @@ def detect_scene_changes(
     for line in stderr_lines:
         match = _SHOWINFO_PTS_TIME_RE.search(line)
         if match:
-            time_ms = _showinfo_timestamp_ms(match.group(1), timestamp_correction_ms)
+            time_ms = (
+                _showinfo_timestamp_ms(match.group(1), timestamp_correction_ms)
+                + interval_start_ms
+            )
             scene_times.append(time_ms)
 
     logger.debug(f"Detected {len(scene_times)} scene changes in {basename}")
@@ -580,12 +619,13 @@ def extract_frames_at_ranges(
     from its encoding statistics.
 
     Uses ffmpeg's ``select='between(t,a,b)+…'`` filter so only the
-    requested frames are encoded and written. Frame ranges are translated
-    to timestamp ranges first because FFmpeg's filter-local ``n`` counter can
-    restart when video parameters change mid-file. The select expression is
-    structured as a balanced binary tree of ``+`` operations so that the
-    parser stack depth is O(log₂ N) instead of O(N), allowing thousands
-    of ranges in a single ffmpeg invocation.
+    requested frames are encoded and written, and ends the filter graph at
+    the following known frame so decoding does not continue through the rest
+    of the video. Frame ranges are translated to timestamp ranges first because
+    FFmpeg's filter-local ``n`` counter can restart when video parameters change
+    mid-file. The select expression is structured as a balanced binary tree of
+    ``+`` operations so that the parser stack depth is O(log₂ N) instead of
+    O(N), allowing thousands of ranges in a single ffmpeg invocation.
 
     Raises RuntimeError if the extracted images cannot be matched one-to-one
     to all requested, known timestamps. Partial extraction must not look like
@@ -620,7 +660,20 @@ def extract_frames_at_ranges(
     elif isinstance(scale, tuple):
         scale_filter = f"scale={scale[0]}:{scale[1]}"
 
-    vf_parts = [f"select='{select_expr}'", "showinfo"]
+    vf_parts = []
+    last_requested_timestamp = max(expected_timestamps)
+    next_timestamp = next(
+        (
+            timestamp
+            for timestamp in sorted(probed_metadata)
+            if timestamp > last_requested_timestamp
+        ),
+        None,
+    )
+    if next_timestamp is not None:
+        extraction_end = (next_timestamp - timestamp_correction_ms) / 1000
+        vf_parts.append(f"trim=end={extraction_end:.6f}")
+    vf_parts.extend([f"select='{select_expr}'", "showinfo"])
     if scale_filter:
         vf_parts.append(scale_filter)
 

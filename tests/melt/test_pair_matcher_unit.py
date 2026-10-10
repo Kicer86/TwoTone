@@ -65,15 +65,36 @@ class PairMatcherUnitTest(unittest.TestCase):
     def _timestamp_for_frame(frame_id: int, fps: float) -> int:
         return round(frame_id * 1000 / fps)
 
+    @staticmethod
+    def _scene_analysis(
+        path: str,
+        candidates: list[tuple[int, float]],
+    ) -> media_analysis.VideoScanResult:
+        scene_candidates = tuple(
+            media_analysis.SceneCandidate(timestamp, score)
+            for timestamp, score in candidates
+        )
+        return media_analysis.VideoScanResult(
+            path=path,
+            features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            frames={},
+            identity_samples=(),
+            decode_error=None,
+            scene_candidates=scene_candidates,
+        )
+
     def test_scene_and_frame_stages_consume_one_shared_media_scan(self):
         pm = self._make_pair_matcher()
         analysis = media_analysis.VideoScanResult(
             path=pm.lhs_path,
             features=media_analysis.MediaAnalysisFeature.MATCHING,
             frames={0: {"frame_id": 0, "path": None}},
-            scene_changes=(120,),
             identity_samples=(),
             decode_error=None,
+            scene_candidates=(
+                media_analysis.SceneCandidate(80, 0.2),
+                media_analysis.SceneCandidate(120, 0.4),
+            ),
         )
         with patch.object(video_utils, "detect_scene_changes", side_effect=AssertionError("legacy scene scan")), \
              patch.object(video_utils, "probe_frame_timestamps", side_effect=AssertionError("legacy frame probe")):
@@ -83,6 +104,48 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(scenes, [120])
         self.assertEqual(frames, {0: {"frame_id": 0, "path": None}})
         pm.media_analysis.fulfill.assert_not_called()
+
+    def test_scene_detection_does_not_compare_scores_between_videos(self):
+        pm = self._make_pair_matcher()
+        lhs_analysis = media_analysis.VideoScanResult(
+            path=pm.lhs_path,
+            features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            frames={},
+            identity_samples=(),
+            decode_error=None,
+            scene_candidates=tuple(
+                media_analysis.SceneCandidate(timestamp, score)
+                for timestamp, score in (
+                    (100, 0.4),
+                    (200, 0.25),
+                    (300, 0.2),
+                    (400, 0.15),
+                )
+            ),
+        )
+        rhs_analysis = media_analysis.VideoScanResult(
+            path=pm.rhs_path,
+            features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            frames={},
+            identity_samples=(),
+            decode_error=None,
+            scene_candidates=tuple(
+                media_analysis.SceneCandidate(timestamp, score)
+                for timestamp, score in (
+                    (100, 0.6),
+                    (200, 0.5),
+                    (300, 0.45),
+                    (400, 0.4),
+                    (500, 0.35),
+                    (600, 0.2),
+                )
+            ),
+        )
+
+        lhs_scenes, rhs_scenes = pm._detect_scenes(lhs_analysis, rhs_analysis)
+
+        self.assertEqual(lhs_scenes, [100])
+        self.assertEqual(rhs_scenes, [100, 200, 300, 400, 500])
 
 
     def test_identical_timeline_uses_shared_media_scans(self):
@@ -99,7 +162,6 @@ class PairMatcherUnitTest(unittest.TestCase):
                 path=path,
                 features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
                 frames={},
-                scene_changes=(),
                 identity_samples=samples,
                 decode_error=None,
             )
@@ -135,7 +197,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             path=request.path,
             features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
             frames={0: {"frame_id": 0, "path": None}},
-            scene_changes=(),
             identity_samples=(),
             decode_error=None,
         )
@@ -157,7 +218,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             path=pm.lhs_path,
             features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             frames={},
-            scene_changes=(),
             identity_samples=(),
             decode_error="scan stopped after the first frame",
         )
@@ -191,7 +251,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             path=pm.lhs_path,
             features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             frames={},
-            scene_changes=(),
             identity_samples=samples,
             decode_error=None,
         )
@@ -814,17 +873,17 @@ class PairMatcherUnitTest(unittest.TestCase):
                 pm.lhs_path,
                 media_analysis.MediaAnalysisFeature.MATCHING,
                 lhs_probed,
-                (40,),
                 (),
                 None,
+                (media_analysis.SceneCandidate(40, 0.4),),
             ),
             pm.rhs_path: media_analysis.VideoScanResult(
                 pm.rhs_path,
                 media_analysis.MediaAnalysisFeature.MATCHING,
                 rhs_probed,
-                (40,),
                 (),
                 None,
+                (media_analysis.SceneCandidate(40, 0.4),),
             ),
         }
         extrapolated_pairs = [(0, 0), (10000, 9880)]
@@ -1438,6 +1497,306 @@ class PairMatcherUnitTest(unittest.TestCase):
             PairMatcher.find_content_discontinuities(dense),
             [(last_lhs, last_lhs + 20000, last_rhs, last_rhs + 17500, 2500)],
         )
+
+    def test_global_linear_discontinuity_uses_absolute_frame_error(self):
+        # Real matched anchors from Le Gendarme de Saint-Tropez (24 fps 4K
+        # master vs 25 fps PAL transfer). The global fit accepts the mapping
+        # because its later 20 gaps are within 3.01 frames, but the first three
+        # advances miss that same fit by 15.23, 6.02 and 13.84 frames. The
+        # first gap contains the reported 06:36 / 06:05 edit.
+        rows = [
+            (182126, 159080, 4371, 3976),
+            (484418, 448600, 11626, 11214),
+            (1333626, 1263400, 32007, 31584),
+            (2214126, 2107920, 53139, 52697),
+            (2245626, 2138200, 53895, 53454),
+            (2262668, 2154560, 54304, 53863),
+            (2409335, 2295360, 57824, 57383),
+            (2556460, 2436600, 61355, 60914),
+            (3668168, 3503480, 88036, 87586),
+            (3728668, 3561560, 89488, 89038),
+            (3762501, 3594040, 90300, 89850),
+            (3872210, 3699360, 92933, 92483),
+            (3895626, 3721840, 93495, 93045),
+            (3923335, 3748440, 94160, 93710),
+            (3930001, 3754840, 94320, 93870),
+            (3975543, 3798440, 95413, 94960),
+            (3980710, 3803360, 95537, 95083),
+            (3987335, 3809720, 95696, 95242),
+            (4006710, 3828320, 96161, 95707),
+            (4349043, 4157000, 104377, 103924),
+            (4528835, 4329560, 108692, 108238),
+            (4936668, 4721000, 118480, 118024),
+            (5182126, 4956600, 124371, 123914),
+            (5205210, 4978720, 124925, 124467),
+        ]
+        mapping = [(lhs_ts, rhs_ts) for lhs_ts, rhs_ts, _, _ in rows]
+        lhs_frames = {
+            lhs_ts: {"frame_id": lhs_frame, "path": None}
+            for lhs_ts, _, lhs_frame, _ in rows
+        }
+        rhs_frames = {
+            rhs_ts: {"frame_id": rhs_frame, "path": None}
+            for _, rhs_ts, _, rhs_frame in rows
+        }
+
+        result = PairMatcher.find_global_linear_content_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=0.999755636, lhs_fps=24.0, rhs_fps=25.0,
+        )
+
+        self.assertEqual(result, [
+            (182126, 484418, 159080, 448600, 609),
+            (484418, 1333626, 448600, 1263400, 241),
+            (1333626, 2214126, 1263400, 2107920, 553),
+        ])
+
+    def test_global_linear_discontinuity_tolerates_four_frame_endpoint_error(self):
+        mapping = [(0, 0), (10000, 9840), (20000, 19840)]
+        lhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (10000, 250), (20000, 500)]
+        }
+        rhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (9840, 246), (19840, 496)]
+        }
+
+        result = PairMatcher.find_global_linear_content_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+        )
+
+        self.assertEqual(result, [])
+
+    def test_global_linear_discontinuity_ignores_media_edge_step(self):
+        mapping = [(0, 0), (10000, 9600), (20000, 19600)]
+        lhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (10000, 250), (20000, 500)]
+        }
+        rhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (9600, 240), (19600, 490)]
+        }
+
+        result = PairMatcher.find_global_linear_content_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+            include_boundary_steps=False,
+        )
+
+        self.assertEqual(result, [])
+
+    def test_global_linear_discontinuity_ignores_media_end_step(self):
+        mapping = [(0, 0), (10000, 10000), (20000, 19600)]
+        lhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (10000, 250), (20000, 500)]
+        }
+        rhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (10000, 250), (19600, 490)]
+        }
+
+        result = PairMatcher.find_global_linear_content_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+            include_boundary_steps=False,
+        )
+
+        self.assertEqual(result, [])
+
+    def test_scene_extraction_completes_cached_ranges_without_reextracting(self):
+        pm = self._make_pm_with_frames([0, 40, 80, 120], [0])
+        for info in pm.lhs_all_frames.values():
+            info["path"] = None
+        pm.cache = Mock()
+
+        def restore(*_args):
+            pm.lhs_all_frames[0]["path"] = "/cached/0.png"
+            return True
+
+        def extract(_path, _directory, ranges, frames, **_kwargs):
+            for ts, info in frames.items():
+                if any(start <= info["frame_id"] <= end for start, end in ranges):
+                    info["path"] = f"/extracted/{ts}.png"
+
+        pm.cache.load_scene_frames.side_effect = restore
+        with patch.object(video_utils, "extract_frames_at_ranges", side_effect=extract) as extraction:
+            for ranges in ([(0, 2)], [(0, 3)], [(0, 3)]):
+                pm._extract_scene_frames_for(
+                    pm.lhs_path, pm.lhs_all_wd, ranges, pm.lhs_all_frames, pm.lhs_label,
+                )
+
+        self.assertEqual([call.args[2] for call in extraction.call_args_list], [
+            [(1, 2)], [(3, 3)],
+        ])
+        self.assertEqual(pm.lhs_all_frames[0]["path"], "/cached/0.png")
+        pm.cache.load_scene_frames.assert_called_once()
+        pm.cache.save_scene_frames.assert_not_called()
+
+    def test_scene_normalization_preserves_existing_frames_and_only_adds_missing(self):
+        pm = self._make_pm_with_frames([0, 40, 80], [0])
+        pm.lhs_all_frames[80]["path"] = None
+        lhs: dict = {}
+        rhs: dict = {}
+
+        with patch.object(pm, "_normalize_frames", side_effect=lambda frames, *_a, **_kw: {
+            ts: {**info, "path": f"/normalized/{ts}.png"} for ts, info in frames.items()
+        }) as normalize:
+            first = pm._normalize_extracted([0, 40], [0], lhs, rhs)
+            existing = lhs[0]
+            pm.lhs_all_frames[80]["path"] = "/extracted/80.png"
+            second = pm._normalize_extracted([40, 80], [0], lhs, rhs)
+            pm._normalize_extracted([40, 80], [0], lhs, rhs)
+
+        self.assertIs(first[0], lhs)
+        self.assertIs(second[0], lhs)
+        self.assertIs(lhs[0], existing)
+        self.assertEqual(set(second[2]), {40, 80})
+        self.assertEqual([set(call.args[0]) for call in normalize.call_args_list], [
+            {0, 40}, {0}, {80},
+        ])
+
+    def test_local_scene_refinement_uses_cached_candidates_only_for_sparser_side(self):
+        timestamps = list(range(0, 60001, 40))
+        pm = self._make_pm_with_frames(timestamps, timestamps)
+        lhs_normalized = {
+            timestamp: pm.lhs_all_frames[timestamp].copy()
+            for timestamp in (0, 60000)
+        }
+        rhs_normalized = {
+            timestamp: pm.rhs_all_frames[timestamp].copy()
+            for timestamp in (0, 10000, 20000, 59600)
+        }
+        lhs_scenes: list[int] = []
+        rhs_scenes = [10000, 20000]
+        original = [(0, 0), (60000, 59600)]
+        analysis = self._scene_analysis(pm.lhs_path, [(15000, 0.2)])
+
+        with patch.object(pm, '_analysis_result_for', return_value=analysis) as select, \
+             patch.object(video_utils, 'detect_scene_changes', side_effect=AssertionError("unexpected FFmpeg scan")), \
+             patch.object(pm, '_extract_scene_frames_for'), \
+             patch.object(pm, '_normalize_frames', return_value={
+                 15000: pm.lhs_all_frames[15000].copy(),
+             }), \
+             patch.object(pm, '_make_pairs', return_value=[
+                 (0, 0), (15000, 10000), (60000, 59600),
+             ]):
+            refined, _ = pm._match_key_frames(
+                {},
+                {},
+                lhs_normalized,
+                rhs_normalized,
+                lhs_scenes,
+                rhs_scenes,
+                matching_pairs=original,
+                frame_slope=1.0,
+                refine_discontinuities=True,
+            )
+
+        self.assertIn((15000, 10000), refined)
+        self.assertEqual(lhs_scenes, [15000])
+        self.assertEqual(
+            {call.args for call in select.call_args_list},
+            {(
+                pm.lhs_path,
+                pm.lhs_label,
+                media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            )},
+        )
+
+    def test_local_scene_refinement_revisits_only_narrowed_gaps(self):
+        timestamps = list(range(0, 40001, 40))
+        pm = self._make_pm_with_frames(timestamps, timestamps)
+        original = [(0, 0), (40000, 39600)]
+        matches = [
+            [(0, 0), (16000, 16000), (24000, 23600), (40000, 39600)],
+            [(16000, 16000), (19600, 19600), (20400, 20000), (24000, 23600)],
+        ]
+        analyses = {
+            pm.lhs_path: self._scene_analysis(
+                pm.lhs_path,
+                [
+                    (16000, 0.25),
+                    (19600, 0.2),
+                    (20400, 0.2),
+                    (24000, 0.25),
+                ],
+            ),
+            pm.rhs_path: self._scene_analysis(pm.rhs_path, []),
+        }
+        lhs_normalized = dict(pm.lhs_all_frames)
+        rhs_normalized = dict(pm.rhs_all_frames)
+
+        with patch.object(
+                 pm,
+                 '_analysis_result_for',
+                 side_effect=lambda path, *_args: analyses[path],
+             ) as select, \
+             patch.object(pm, '_extract_scene_frames_for'), \
+             patch.object(pm, '_make_pairs', side_effect=matches), \
+             patch.object(pm, '_match_key_frames', wraps=pm._match_key_frames) as match:
+            refined, remaining = pm._match_key_frames(
+                {},
+                {},
+                lhs_normalized,
+                rhs_normalized,
+                [],
+                [],
+                matching_pairs=original,
+                frame_slope=1.0,
+                refine_discontinuities=True,
+            )
+
+        self.assertEqual(
+            [call.kwargs.get('region') for call in match.call_args_list],
+            [
+                None,
+                (0, 40000, 0, 39600, 400),
+                (16000, 24000, 16000, 23600, 400),
+            ],
+        )
+        self.assertEqual(
+            refined,
+            sorted(set(original + matches[0] + matches[1])),
+        )
+        self.assertEqual(remaining, [(19600, 20400, 19600, 20000, 400)])
+        self.assertEqual(
+            [call.args[0] for call in select.call_args_list],
+            [pm.lhs_path, pm.lhs_path, pm.lhs_path],
+        )
+
+    def test_local_scene_refinement_without_new_scenes_keeps_original_gap(self):
+        timestamps = list(range(0, 40001, 40))
+        pm = self._make_pm_with_frames(timestamps, timestamps)
+        original = [(0, 0), (40000, 39600)]
+        analysis = self._scene_analysis(pm.lhs_path, [])
+
+        with patch.object(pm, '_analysis_result_for', return_value=analysis) as select, \
+             patch.object(video_utils, 'detect_scene_changes', side_effect=AssertionError("unexpected FFmpeg scan")), \
+             patch.object(pm, '_make_pairs') as match, \
+             self.assertLogs(pm.logger, level='INFO') as logs:
+            refined, remaining = pm._match_key_frames(
+                {},
+                {},
+                dict(pm.lhs_all_frames),
+                dict(pm.rhs_all_frames),
+                [],
+                [],
+                matching_pairs=original,
+                frame_slope=1.0,
+                refine_discontinuities=True,
+            )
+
+        self.assertEqual(refined, original)
+        self.assertEqual(remaining, [(0, 40000, 0, 39600, 400)])
+        match.assert_not_called()
+        select.assert_called_once()
+        self.assertTrue(any('Refining suspicious region:' in line for line in logs.output))
+        self.assertTrue(any('found no new candidates' in line for line in logs.output))
+        self.assertTrue(any('Local scene refinement complete:' in line for line in logs.output))
 
     # ---- _drop_pairs_breaking_local_linearity ----
 

@@ -16,6 +16,9 @@ from .generic_utils import InterruptibleProcess
 _SCENE_FRAME_RE = re.compile(
     r"^frame:\d+\s+pts:\S+\s+pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))"
 )
+_SCENE_SCORE_RE = re.compile(
+    r"^lavfi\.scene_score=([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)$"
+)
 _PROGRESS_TIME_RE = re.compile(r"^out_time_ms=(\d+)$")
 _PROGRESS_PREFIXES = (
     "bitrate=",
@@ -77,6 +80,12 @@ class VideoSample:
 
 
 @dataclass(frozen=True)
+class SceneCandidate:
+    timestamp_ms: int
+    score: float
+
+
+@dataclass(frozen=True)
 class MediaAnalysisRequest:
     path: str
     label: str
@@ -125,9 +134,9 @@ class VideoScanResult:
     path: str
     features: MediaAnalysisFeature
     frames: dict[int, dict]
-    scene_changes: tuple[int, ...]
     identity_samples: tuple[VideoSample, ...]
     decode_error: str | None
+    scene_candidates: tuple[SceneCandidate, ...] = ()
 
     def supports(self, features: MediaAnalysisFeature) -> bool:
         return self.features & features == features
@@ -140,11 +149,25 @@ class VideoScanResult:
         """Return mutable frame metadata isolated from other consumers."""
         return {timestamp: info.copy() for timestamp, info in self.frames.items()}
 
+    def scene_changes_at(self, threshold: float) -> tuple[int, ...]:
+        return tuple(
+            candidate.timestamp_ms
+            for candidate in self.scene_candidates
+            if candidate.score > threshold
+        )
+
 
 class PersistentMediaAnalysisCache(Protocol):
-    def load_scene_changes(self, video_path: str) -> list[int] | None: ...
+    def load_scene_candidates(
+        self,
+        video_path: str,
+    ) -> list[tuple[int, float]] | None: ...
 
-    def save_scene_changes(self, video_path: str, scenes: list[int]) -> None: ...
+    def save_scene_candidates(
+        self,
+        video_path: str,
+        candidates: list[tuple[int, float]],
+    ) -> None: ...
 
     def load_frame_probes(self, video_path: str) -> dict[int, dict] | None: ...
 
@@ -154,7 +177,7 @@ class PersistentMediaAnalysisCache(Protocol):
 class MediaAnalysisSession:
     """Collect and reuse requested media-analysis data throughout one tool run."""
 
-    _SCENE_THRESHOLD = 0.3
+    _MIN_SCENE_SCORE = 0.1
 
     def __init__(
         self,
@@ -295,13 +318,16 @@ class MediaAnalysisSession:
             return None
 
         features = MediaAnalysisFeature.NONE
-        scenes: tuple[int, ...] = ()
+        scene_candidates: tuple[SceneCandidate, ...] = ()
         frames: dict[int, dict] = {}
         if requested_features & MediaAnalysisFeature.SCENE_CHANGES:
-            cached_scenes = self._persistent_cache.load_scene_changes(path)
-            if cached_scenes is not None:
+            cached_candidates = self._persistent_cache.load_scene_candidates(path)
+            if cached_candidates is not None:
                 features |= MediaAnalysisFeature.SCENE_CHANGES
-                scenes = tuple(cached_scenes)
+                scene_candidates = tuple(
+                    SceneCandidate(timestamp_ms, score)
+                    for timestamp_ms, score in cached_candidates
+                )
         if requested_features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
             cached_frames = self._persistent_cache.load_frame_probes(path)
             if cached_frames is not None:
@@ -310,7 +336,14 @@ class MediaAnalysisSession:
 
         if features == MediaAnalysisFeature.NONE:
             return None
-        return VideoScanResult(path, features, frames, scenes, (), None)
+        return VideoScanResult(
+            path=path,
+            features=features,
+            frames=frames,
+            identity_samples=(),
+            decode_error=None,
+            scene_candidates=scene_candidates,
+        )
 
     def _store_persistent(self, result: VideoScanResult) -> None:
         if self._persistent_cache is None:
@@ -323,10 +356,14 @@ class MediaAnalysisSession:
             )
             return
         if result.supports(MediaAnalysisFeature.SCENE_CHANGES):
-            self._persistent_cache.save_scene_changes(result.path, list(result.scene_changes))
+            candidates = [
+                (candidate.timestamp_ms, candidate.score)
+                for candidate in result.scene_candidates
+            ]
+            self._persistent_cache.save_scene_candidates(result.path, candidates)
             self.logger.debug(
-                "Persistent media analysis cache stored %d scene changes for %s.",
-                len(result.scene_changes),
+                "Persistent media analysis cache stored %d scene candidates for %s.",
+                len(candidates),
                 result.path,
             )
         if result.supports(MediaAnalysisFeature.FRAME_TIMESTAMPS):
@@ -378,13 +415,13 @@ class MediaAnalysisSession:
         result: VideoScanResult,
     ) -> None:
         self.logger.debug(
-            "%s for %s: features=[%s], frames=%d, scene_changes=%d, "
+            "%s for %s: features=[%s], frames=%d, scene_candidates=%d, "
             "identity_samples=%d, decode_error=%s.",
             action,
             label,
             _format_features(result.features),
             len(result.frames),
-            len(result.scene_changes),
+            len(result.scene_candidates),
             len(result.identity_samples),
             result.decode_error or "none",
         )
@@ -469,7 +506,6 @@ class MediaAnalysisSession:
                 path=path,
                 features=features,
                 frames={},
-                scene_changes=(),
                 identity_samples=(),
                 decode_error=probe.error,
             )
@@ -477,7 +513,11 @@ class MediaAnalysisSession:
         has_primary_video = probe.has_video
         scan_dir = self.workspace.unique_dir("media_scan")
         frame_stats_path = os.path.join(scan_dir, "frames.txt")
-        scene_stats_path = os.path.join(scan_dir, "scenes.txt")
+        # Keep metadata off stderr: FFmpeg's progress and metadata writers can
+        # interleave there, leaving score fragments that look like decode errors.
+        # FFmpeg writes it to stdout, which the parent opens once as this file;
+        # pointing the filter at the file directly truncates it on graph reinit.
+        scene_metadata_path = os.path.join(scan_dir, "scenes.txt")
         sample_stats_path = os.path.join(scan_dir, "identity.txt")
         sample_pattern = os.path.join(scan_dir, "identity_%08d.png")
 
@@ -508,7 +548,10 @@ class MediaAnalysisSession:
 
         if features & MediaAnalysisFeature.SCENE_CHANGES:
             filter_parts.append(
-                f"{branch_source('vscenes')}select='gt(scene,{self._SCENE_THRESHOLD})'[scenes]"
+                f"{branch_source('vscenes')}"
+                f"select='gt(scene,{self._MIN_SCENE_SCORE})',"
+                "metadata=mode=print:key=lavfi.scene_score:"
+                "file='pipe\\:1'[scenes]"
             )
 
         if features & MediaAnalysisFeature.IDENTITY_SAMPLES:
@@ -569,9 +612,6 @@ class MediaAnalysisSession:
                 "-map", "[scenes]",
                 "-an", "-sn", "-dn",
                 "-fps_mode", "vfr",
-                "-enc_time_base:v:0", "filter",
-                "-stats_enc_pre:v:0", scene_stats_path,
-                "-stats_enc_pre_fmt:v:0", "{ni} {pts} {tb}",
                 "-f", "null", "-",
             ])
 
@@ -625,6 +665,11 @@ class MediaAnalysisSession:
             self.interruption,
             on_line=on_line,
             logger=self.logger,
+            stdout_path=(
+                scene_metadata_path
+                if features & MediaAnalysisFeature.SCENE_CHANGES
+                else None
+            ),
         )
         decode_error = self._decode_error(process.returncode, stderr_lines)
         if (
@@ -635,10 +680,10 @@ class MediaAnalysisSession:
             progress.update(duration_s - last_progress_s)
         progress.close()
 
-        scene_timestamps = (
-            self._read_scene_timestamps(scene_stats_path, timestamp_correction_ms)
+        scene_candidates = (
+            self._read_scene_candidates(scene_metadata_path, timestamp_correction_ms)
             if features & MediaAnalysisFeature.SCENE_CHANGES
-            else []
+            else ()
         )
         frames = (
             self._read_frames(frame_stats_path, timestamp_correction_ms)
@@ -665,9 +710,9 @@ class MediaAnalysisSession:
             path=path,
             features=features,
             frames=frames,
-            scene_changes=tuple(sorted(set(scene_timestamps))),
             identity_samples=samples,
             decode_error=decode_error,
+            scene_candidates=scene_candidates,
         )
 
     @staticmethod
@@ -698,17 +743,17 @@ class MediaAnalysisSession:
                 if scanned.supports(MediaAnalysisFeature.FRAME_TIMESTAMPS)
                 else cached.frames
             ),
-            scene_changes=(
-                scanned.scene_changes
-                if scanned.supports(MediaAnalysisFeature.SCENE_CHANGES)
-                else cached.scene_changes
-            ),
             identity_samples=(
                 scanned.identity_samples
                 if scanned.supports(MediaAnalysisFeature.IDENTITY_SAMPLES)
                 else cached.identity_samples
             ),
             decode_error=" | ".join(errors) if errors else None,
+            scene_candidates=(
+                scanned.scene_candidates
+                if scanned.supports(MediaAnalysisFeature.SCENE_CHANGES)
+                else cached.scene_candidates
+            ),
         )
 
     @staticmethod
@@ -732,12 +777,45 @@ class MediaAnalysisSession:
             for frame_id, timestamp_ms in cls._read_frame_entries(path, correction_ms)
         }
 
-    @classmethod
-    def _read_scene_timestamps(cls, path: str, correction_ms: int) -> list[int]:
-        return [
-            timestamp_ms
-            for _frame_id, timestamp_ms in cls._read_frame_entries(path, correction_ms)
-        ]
+    @staticmethod
+    def _read_scene_candidates(
+        path: str,
+        correction_ms: int,
+    ) -> tuple[SceneCandidate, ...]:
+        try:
+            with open(path, encoding="utf-8") as file:
+                lines = file.readlines()
+        except OSError:
+            return ()
+        return MediaAnalysisSession._parse_scene_candidates(lines, correction_ms)
+
+    @staticmethod
+    def _parse_scene_candidates(
+        lines: list[str],
+        correction_ms: int,
+    ) -> tuple[SceneCandidate, ...]:
+        timestamp_ms: int | None = None
+        candidates: dict[int, float] = {}
+        for line in lines:
+            stripped = line.strip()
+            frame_match = _SCENE_FRAME_RE.match(stripped)
+            if frame_match:
+                timestamp_ms = max(
+                    0,
+                    round(float(frame_match.group(1)) * 1000) + correction_ms,
+                )
+                continue
+
+            score_match = _SCENE_SCORE_RE.match(stripped)
+            if score_match and timestamp_ms is not None:
+                score = float(score_match.group(1))
+                candidates[timestamp_ms] = max(candidates.get(timestamp_ms, 0.0), score)
+                timestamp_ms = None
+
+        return tuple(
+            SceneCandidate(timestamp, score)
+            for timestamp, score in sorted(candidates.items())
+        )
 
     @staticmethod
     def _build_samples(

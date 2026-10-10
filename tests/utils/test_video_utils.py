@@ -107,11 +107,14 @@ class UtilsTests(TwoToneTestCase):
         frames = {
             1_001_167: {"frame_id": 0, "path": None},
             1_001_209: {"frame_id": 1, "path": None},
+            1_001_251: {"frame_id": 2, "path": None},
         }
 
         def extract_with_legacy_showinfo(args, _interruption, on_line, logger):
             del logger
             output_pattern = args[-1]
+            video_filter = args[args.index("-vf") + 1]
+            self.assertIn("trim=end=1001.251000", video_filter)
             stats_index = args.index("-stats_enc_pre:v:0")
             stats_format_index = args.index("-stats_enc_pre_fmt:v:0")
             self.assertEqual(args[stats_format_index + 1], "{ni} {pts} {tb}")
@@ -135,7 +138,8 @@ class UtilsTests(TwoToneTestCase):
                 logger=self.logger,
             )
 
-        self.assertTrue(all(info["path"] is not None for info in frames.values()))
+        self.assertTrue(all(frames[timestamp]["path"] is not None for timestamp in (1_001_167, 1_001_209)))
+        self.assertIsNone(frames[1_001_251]["path"])
 
     @parameterized.expand([
         ("missing_frame", "0 0 1/1000\n", 1, "missing.*501"),
@@ -570,6 +574,34 @@ class UtilsTests(TwoToneTestCase):
             correction = video_utils._showinfo_timestamp_correction_ms("input.mkv", self.logger)
 
         self.assertEqual(expected_correction_ms, correction)
+
+    def test_detect_scene_changes_limits_scan_and_restores_absolute_timestamps(self):
+        stderr_lines = [
+            "[Parsed_showinfo_0] n: 0 pts: 25 pts_time:1.000\n",
+            "[Parsed_showinfo_0] n: 1 pts: 50 pts_time:2.000\n",
+        ]
+        proc = unittest.mock.Mock(returncode=0)
+
+        def fake_start(args, interruption=None, on_line=None, logger=None):
+            for line in stderr_lines:
+                on_line(line)
+            return proc, stderr_lines
+
+        with patch.object(video_utils, "_showinfo_timestamp_correction_ms", return_value=0), \
+             patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start) as start:
+            scenes = video_utils.detect_scene_changes(
+                "input.mkv", threshold=0.15, logger=self.logger,
+                start_ms=10000, end_ms=20000,
+            )
+
+        args = start.call_args.args[0]
+        self.assertEqual(
+            args[:6],
+            ["-ss", "10.000", "-t", "10.000", "-i", "input.mkv"],
+        )
+        self.assertEqual(args[args.index("-t") + 1], "10.000")
+        self.assertIn("gt(scene,0.15)", args[args.index("-filter_complex") + 1])
+        self.assertEqual(scenes, [11000, 12000])
 
     def test_probe_frame_timestamps_corrects_negative_container_start(self):
         stderr_lines = [
