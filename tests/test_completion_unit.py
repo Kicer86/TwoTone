@@ -1,8 +1,10 @@
+import argparse
 import shlex
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 from twotone import twotone
@@ -11,6 +13,8 @@ from twotone.completion import build_bash_completion
 
 class BashCompletionTest(unittest.TestCase):
     version = "1.4.0+test-revision"
+    parser: ClassVar[argparse.ArgumentParser]
+    script: ClassVar[str]
 
     @classmethod
     def setUpClass(cls) -> None:
