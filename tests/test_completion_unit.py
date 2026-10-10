@@ -1,4 +1,5 @@
 import argparse
+import os
 import shlex
 import subprocess
 import tempfile
@@ -23,7 +24,16 @@ class BashCompletionTest(unittest.TestCase):
 
     @staticmethod
     def _bash_path(path: Path) -> str:
-        return path.as_posix()
+        if os.name != "nt":
+            return str(path)
+
+        result = subprocess.run(
+            ["bash", "-c", 'cygpath -u "$1"', "bash", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
 
     def test_generated_script_contains_runtime_version(self):
         self.assertEqual(
