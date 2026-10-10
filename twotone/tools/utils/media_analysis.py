@@ -515,6 +515,8 @@ class MediaAnalysisSession:
         frame_stats_path = os.path.join(scan_dir, "frames.txt")
         # Keep metadata off stderr: FFmpeg's progress and metadata writers can
         # interleave there, leaving score fragments that look like decode errors.
+        # FFmpeg writes it to stdout, which the parent opens once as this file;
+        # pointing the filter at the file directly truncates it on graph reinit.
         scene_metadata_path = os.path.join(scan_dir, "scenes.txt")
         sample_stats_path = os.path.join(scan_dir, "identity.txt")
         sample_pattern = os.path.join(scan_dir, "identity_%08d.png")
@@ -545,14 +547,11 @@ class MediaAnalysisSession:
             filter_parts.append(f"[0:v:0]null[{branches[0]}]")
 
         if features & MediaAnalysisFeature.SCENE_CHANGES:
-            escaped_scene_path = (
-                scene_metadata_path.replace("\\", "/").replace(":", "\\:")
-            )
             filter_parts.append(
                 f"{branch_source('vscenes')}"
                 f"select='gt(scene,{self._MIN_SCENE_SCORE})',"
                 "metadata=mode=print:key=lavfi.scene_score:"
-                f"file='{escaped_scene_path}'[scenes]"
+                "file='pipe\\:1'[scenes]"
             )
 
         if features & MediaAnalysisFeature.IDENTITY_SAMPLES:
@@ -666,6 +665,11 @@ class MediaAnalysisSession:
             self.interruption,
             on_line=on_line,
             logger=self.logger,
+            stdout_path=(
+                scene_metadata_path
+                if features & MediaAnalysisFeature.SCENE_CHANGES
+                else None
+            ),
         )
         decode_error = self._decode_error(process.returncode, stderr_lines)
         if (

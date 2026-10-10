@@ -77,14 +77,9 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         return args[options[occurrence] + 1]
 
     @staticmethod
-    def _scene_metadata_path(args: list[str]) -> str:
-        filter_graph = args[args.index("-filter_complex") + 1]
-        escaped_path = filter_graph.split("file='", 1)[1].split("'", 1)[0]
-        return escaped_path.replace("\\:", ":")
-
-    @classmethod
-    def _write_scene_metadata(cls, args: list[str], lines: list[str]) -> None:
-        with open(cls._scene_metadata_path(args), "w", encoding="utf-8") as file:
+    def _write_scene_metadata(path: str | None, lines: list[str]) -> None:
+        assert path is not None
+        with open(path, "w", encoding="utf-8") as file:
             file.writelines(lines)
 
     def test_probe_reuses_result_for_the_same_unchanged_file(self):
@@ -176,9 +171,9 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             }],
         }
 
-        def fake_ffmpeg(args, _interruption, on_line, logger):
-            del on_line, logger
-            self._write_scene_metadata(args, [
+        def fake_ffmpeg(args, _interruption, on_line, logger, stdout_path=None):
+            del args, on_line, logger
+            self._write_scene_metadata(stdout_path, [
                 "frame:0 pts:2 pts_time:0.08\n",
                 "lavfi.scene_score=0.400000\n",
             ])
@@ -229,7 +224,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         )
 
     def test_validation_only_decode_is_run_by_the_media_session(self):
-        def fake_start(args, _interruption, on_line, logger):
+        def fake_start(args, _interruption, on_line, logger, stdout_path=None):
             del on_line, logger
             self.assertIn("-xerror", args)
             self.assertIn("0:a?", args)
@@ -475,7 +470,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertIn("satisfied without FFmpeg", logs)
 
     def test_collects_frames_scenes_samples_and_validation_in_one_ffmpeg_call(self):
-        def fake_start(args, _interruption, on_line, logger):
+        def fake_start(args, _interruption, on_line, logger, stdout_path=None):
             stats_paths = [
                 args[index + 1]
                 for index, value in enumerate(args)
@@ -497,7 +492,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 with open(output_pattern.replace("%08d", f"{index:08d}"), "wb") as file:
                     file.write(b"png")
 
-            self._write_scene_metadata(args, [
+            self._write_scene_metadata(stdout_path, [
                 "frame:0 pts:80 pts_time:0.08\n",
                 "lavfi.scene_score=0.400000\n",
             ])
@@ -525,7 +520,8 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertIn("split=3", " ".join(args))
         # Scene metadata must not share stderr with -progress: concurrent FFmpeg
         # writers can split a score into a bare number interpreted as an error.
-        self.assertTrue(self._scene_metadata_path(args).endswith("scenes.txt"))
+        self.assertTrue(start.call_args.kwargs["stdout_path"].endswith("scenes.txt"))
+        self.assertIn("file='pipe\\:1'", " ".join(args))
         self.assertNotIn(
             "file='pipe\\:2'",
             " ".join(args),
@@ -577,8 +573,8 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             logging.getLogger("SceneOnlyMediaAnalysisTest"),
         )
 
-        def fake_start(args, _interruption, on_line, logger):
-            del on_line, logger
+        def fake_start(args, _interruption, on_line, logger, stdout_path=None):
+            del on_line, logger, stdout_path
             self.assertIn("[scenes]", args)
             self.assertNotIn("voutput", " ".join(args))
             return Mock(returncode=0), []
@@ -598,8 +594,8 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertIsNone(result.decode_error)
 
     def test_matching_scan_keeps_sparse_scenes_in_a_separate_null_output(self):
-        def fake_start(args, _interruption, on_line, logger):
-            del on_line, logger
+        def fake_start(args, _interruption, on_line, logger, stdout_path=None):
+            del on_line, logger, stdout_path
             stats_paths = [
                 args[index + 1]
                 for index, value in enumerate(args)
@@ -791,8 +787,8 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         persistent.load_frame_probes.assert_called_once_with(os.path.realpath(self.path))
 
     def test_identity_scan_does_not_collect_matching_data(self):
-        def fake_start(args, _interruption, on_line, logger):
-            del on_line, logger
+        def fake_start(args, _interruption, on_line, logger, stdout_path=None):
+            del on_line, logger, stdout_path
             stats_options = [
                 index for index, value in enumerate(args)
                 if value == "-stats_enc_pre:v:0"
@@ -836,7 +832,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             logging.getLogger("MediaAnalysisSessionTest.combined"),
         )
 
-        def fake_start(args, _interruption, on_line, logger):
+        def fake_start(args, _interruption, on_line, logger, stdout_path=None):
             del on_line, logger
             stats_options = [
                 index for index, value in enumerate(args)
@@ -850,7 +846,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             output_pattern = next(value for value in args if "identity_%08d.png" in value)
             with open(output_pattern.replace("%08d", "00000001"), "wb") as file:
                 file.write(b"png")
-            self._write_scene_metadata(args, [
+            self._write_scene_metadata(stdout_path, [
                 "frame:0 pts:0 pts_time:0\n",
                 "lavfi.scene_score=0.400000\n",
             ])

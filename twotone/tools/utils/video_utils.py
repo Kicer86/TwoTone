@@ -41,6 +41,7 @@ def _start_ffmpeg_streaming(
     interruption: InterruptibleProcess | None = None,
     on_line: "Callable[[str], None] | None" = None,
     logger: logging.Logger | None = None,
+    stdout_path: str | None = None,
 ) -> tuple[subprocess.Popen, list[str]]:
     """Start an ffmpeg subprocess and read its stderr line-by-line.
 
@@ -49,6 +50,8 @@ def _start_ffmpeg_streaming(
     Terminates the subprocess on interruption.
     When *on_line* is given, it is called with each stderr line (e.g. for
     progress updates).
+    When *stdout_path* is given, stdout is redirected there for the process's
+    whole lifetime instead of being buffered in memory.
     """
     defaults = process_utils.DEFAULT_TOOL_OPTIONS.get("ffmpeg", [])
     full_args = list(args)
@@ -60,8 +63,13 @@ def _start_ffmpeg_streaming(
     command = ["ffmpeg"] + full_args
     logger.debug(f"Starting ffmpeg {' '.join(full_args)}")
 
+    stdout_file = (
+        open(stdout_path, "w", encoding="utf-8")  # noqa: SIM115 - closed below
+        if stdout_path is not None
+        else None
+    )
     popen_kwargs: dict[str, Any] = {
-        "stdout": subprocess.PIPE,
+        "stdout": stdout_file or subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
         "encoding": "utf-8",
@@ -73,7 +81,12 @@ def _start_ffmpeg_streaming(
     else:
         popen_kwargs["preexec_fn"] = os.setsid
 
-    proc = subprocess.Popen(command, **popen_kwargs)
+    try:
+        proc = subprocess.Popen(command, **popen_kwargs)
+    except Exception:
+        if stdout_file is not None:
+            stdout_file.close()
+        raise
 
     stderr_lines: list[str] = []
     try:
@@ -86,9 +99,11 @@ def _start_ffmpeg_streaming(
                 proc.terminate()
                 proc.wait()
                 interruption.check_for_stop()  # raises SystemExit
-    except Exception:
+    except (Exception, SystemExit):
         proc.terminate()
         proc.wait()
+        if stdout_file is not None:
+            stdout_file.close()
         raise
 
     # Drain stdout (ffmpeg sends everything to stderr, but be safe)
@@ -100,6 +115,8 @@ def _start_ffmpeg_streaming(
         proc.stderr.close()
 
     proc.wait()
+    if stdout_file is not None:
+        stdout_file.close()
     return proc, stderr_lines
 
 
