@@ -59,7 +59,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             path=self.path,
             features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             frames={},
-            scene_changes=(1000,),
             identity_samples=(),
             decode_error=None,
             scene_candidates=(
@@ -192,7 +191,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             ))
 
-        self.assertEqual(result.scene_changes, (60,))
+        self.assertEqual(result.scene_changes_at(0.3), (60,))
         probe.assert_called_once()
         old_probe.assert_not_called()
 
@@ -206,7 +205,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             path=os.path.realpath(self.path),
             features=media_analysis.MediaAnalysisFeature.MATCHING,
             frames={},
-            scene_changes=(),
             identity_samples=(),
             decode_error=None,
         )
@@ -298,7 +296,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             path=os.path.realpath(self.path),
             features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             frames={},
-            scene_changes=(),
             identity_samples=(),
             decode_error="scan stopped after the first frame",
         )
@@ -393,7 +390,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 | media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS
             ),
             frames={},
-            scene_changes=(),
             identity_samples=(),
             decode_error=None,
         )
@@ -425,11 +421,13 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 path=os.path.realpath(self.path),
                 features=features,
                 frames={40: {"frame_id": 1, "path": None}} if features & matching else {},
-                scene_changes=(40,) if features & matching else (),
                 identity_samples=(
                     media_analysis.VideoSample(0, 0, 0, "/sample.png"),
                 ) if features & identity else (),
                 decode_error=None,
+                scene_candidates=(
+                    media_analysis.SceneCandidate(40, 0.4),
+                ) if features & matching else (),
             )
 
         with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
@@ -444,7 +442,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertEqual(first.features, identity)
         self.assertEqual(upgraded.features, identity | matching)
         self.assertEqual(upgraded.identity_samples, first.identity_samples)
-        self.assertEqual(upgraded.scene_changes, (40,))
+        self.assertEqual(upgraded.scene_changes_at(0.3), (40,))
         self.assertEqual(list(upgraded.frames), [40])
         self.assertIs(restored, upgraded)
         self.assertEqual(
@@ -470,7 +468,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         )
         self.assertIn(
             "Fresh media analysis collected for #1: features=[scene_changes, frame_timestamps], "
-            "frames=1, scene_changes=1, "
+            "frames=1, scene_candidates=1, "
             "identity_samples=0, decode_error=none",
             logs,
         )
@@ -548,7 +546,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             if value == "-enc_time_base:v:0"
         ], ["filter", "filter"])
         self.assertNotIn("-enc_time_base:v:1", args)
-        self.assertEqual(result.scene_changes, (80,))
+        self.assertEqual(result.scene_changes_at(0.3), (80,))
         self.assertEqual(
             result.scene_candidates,
             (media_analysis.SceneCandidate(80, 0.4),),
@@ -596,7 +594,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             ))
 
-        self.assertEqual(result.scene_changes, ())
+        self.assertEqual(result.scene_candidates, ())
         self.assertIsNone(result.decode_error)
 
     def test_matching_scan_keeps_sparse_scenes_in_a_separate_null_output(self):
@@ -654,7 +652,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             path=os.path.realpath(self.path),
             features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
             frames={0: {"frame_id": 0, "path": "/temporary/sample.png"}},
-            scene_changes=(),
             identity_samples=(),
             decode_error=None,
         )
@@ -670,7 +667,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             "#1",
             media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS
         )
-        self.assertEqual(result.scene_changes, (120,))
+        self.assertEqual(result.scene_changes_at(0.3), (120,))
         self.assertEqual(
             result.scene_candidates,
             (
@@ -697,7 +694,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             path=os.path.realpath(self.path),
             features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
             frames={0: {"frame_id": 0, "path": None}},
-            scene_changes=(),
             identity_samples=(),
             decode_error="corrupt input",
         )
@@ -718,7 +714,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             path=os.path.realpath(self.path),
             features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             frames={},
-            scene_changes=(120,),
             identity_samples=(),
             decode_error=None,
             scene_candidates=(media_analysis.SceneCandidate(120, 0.4),),
@@ -754,7 +749,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             ))
 
         scan.assert_not_called()
-        self.assertEqual(result.scene_changes, (120,))
+        self.assertEqual(result.scene_changes_at(0.3), (120,))
         self.assertEqual(
             result.scene_candidates,
             (
@@ -777,7 +772,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             path=os.path.realpath(self.path),
             features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
             frames={0: {"frame_id": 0, "path": "/session/frame.png"}},
-            scene_changes=(),
             identity_samples=(),
             decode_error=None,
         )
@@ -832,7 +826,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
         )
         self.assertEqual(result.frames, {})
-        self.assertEqual(result.scene_changes, ())
+        self.assertEqual(result.scene_candidates, ())
         self.assertEqual(len(result.identity_samples), 2)
 
     def test_scene_and_identity_scan_maps_scenes_to_a_null_output(self):
@@ -878,7 +872,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertIn("[scenes]", args)
         self.assertTrue(result.supports(media_analysis.MediaAnalysisFeature.SCENE_CHANGES))
         self.assertTrue(result.supports(media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES))
-        self.assertEqual(result.scene_changes, (0,))
+        self.assertEqual(result.scene_changes_at(0.3), (0,))
         self.assertEqual(
             result.scene_candidates,
             (media_analysis.SceneCandidate(0, 0.4),),

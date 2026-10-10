@@ -134,7 +134,6 @@ class VideoScanResult:
     path: str
     features: MediaAnalysisFeature
     frames: dict[int, dict]
-    scene_changes: tuple[int, ...]
     identity_samples: tuple[VideoSample, ...]
     decode_error: str | None
     scene_candidates: tuple[SceneCandidate, ...] = ()
@@ -179,7 +178,6 @@ class MediaAnalysisSession:
     """Collect and reuse requested media-analysis data throughout one tool run."""
 
     _MIN_SCENE_SCORE = 0.1
-    _SCENE_THRESHOLD = 0.3
 
     def __init__(
         self,
@@ -320,7 +318,6 @@ class MediaAnalysisSession:
             return None
 
         features = MediaAnalysisFeature.NONE
-        scenes: tuple[int, ...] = ()
         scene_candidates: tuple[SceneCandidate, ...] = ()
         frames: dict[int, dict] = {}
         if requested_features & MediaAnalysisFeature.SCENE_CHANGES:
@@ -330,11 +327,6 @@ class MediaAnalysisSession:
                 scene_candidates = tuple(
                     SceneCandidate(timestamp_ms, score)
                     for timestamp_ms, score in cached_candidates
-                )
-                scenes = tuple(
-                    candidate.timestamp_ms
-                    for candidate in scene_candidates
-                    if candidate.score > self._SCENE_THRESHOLD
                 )
         if requested_features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
             cached_frames = self._persistent_cache.load_frame_probes(path)
@@ -348,7 +340,6 @@ class MediaAnalysisSession:
             path=path,
             features=features,
             frames=frames,
-            scene_changes=scenes,
             identity_samples=(),
             decode_error=None,
             scene_candidates=scene_candidates,
@@ -424,13 +415,13 @@ class MediaAnalysisSession:
         result: VideoScanResult,
     ) -> None:
         self.logger.debug(
-            "%s for %s: features=[%s], frames=%d, scene_changes=%d, "
+            "%s for %s: features=[%s], frames=%d, scene_candidates=%d, "
             "identity_samples=%d, decode_error=%s.",
             action,
             label,
             _format_features(result.features),
             len(result.frames),
-            len(result.scene_changes),
+            len(result.scene_candidates),
             len(result.identity_samples),
             result.decode_error or "none",
         )
@@ -515,7 +506,6 @@ class MediaAnalysisSession:
                 path=path,
                 features=features,
                 frames={},
-                scene_changes=(),
                 identity_samples=(),
                 decode_error=probe.error,
             )
@@ -716,11 +706,6 @@ class MediaAnalysisSession:
             path=path,
             features=features,
             frames=frames,
-            scene_changes=tuple(
-                candidate.timestamp_ms
-                for candidate in scene_candidates
-                if candidate.score > self._SCENE_THRESHOLD
-            ),
             identity_samples=samples,
             decode_error=decode_error,
             scene_candidates=scene_candidates,
@@ -753,11 +738,6 @@ class MediaAnalysisSession:
                 scanned.frames
                 if scanned.supports(MediaAnalysisFeature.FRAME_TIMESTAMPS)
                 else cached.frames
-            ),
-            scene_changes=(
-                scanned.scene_changes
-                if scanned.supports(MediaAnalysisFeature.SCENE_CHANGES)
-                else cached.scene_changes
             ),
             identity_samples=(
                 scanned.identity_samples
