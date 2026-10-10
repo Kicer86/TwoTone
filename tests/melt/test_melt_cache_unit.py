@@ -9,6 +9,20 @@ from twotone.tools.melt.melt_cache import MeltCache
 
 
 class MeltCacheUnitTest(unittest.TestCase):
+    def test_scene_candidates_round_trip_with_scores(self):
+        with tempfile.TemporaryDirectory() as cache_dir:
+            video_path = os.path.join(cache_dir, "input.mkv")
+            with open(video_path, "wb") as file:
+                file.write(b"video")
+            cache = MeltCache(cache_dir, logging.getLogger("test.MeltCache"))
+
+            cache.save_scene_candidates(video_path, [(80, 0.2), (120, 0.4)])
+
+            self.assertEqual(
+                cache.load_scene_candidates(video_path),
+                [(80, 0.2), (120, 0.4)],
+            )
+
     def test_cache_key_does_not_reuse_legacy_timestamp_data(self):
         with tempfile.TemporaryDirectory() as cache_dir:
             video_path = os.path.join(cache_dir, "input.mkv")
@@ -33,7 +47,7 @@ class MeltCacheUnitTest(unittest.TestCase):
 
             stat = os.stat(video_path)
             cache = MeltCache(cache_dir, logging.getLogger("test.MeltCache"))
-            for version in (2, 3):
+            for version in (2, 3, 4):
                 with self.subTest(version=version):
                     old_identity = (
                         f"{version}:{os.path.realpath(video_path)}:{stat.st_size}:{stat.st_mtime_ns}"

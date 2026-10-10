@@ -626,7 +626,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
     def test_matching_scan_restores_and_updates_persistent_cache(self):
         persistent = Mock()
-        persistent.load_scene_changes.return_value = [120]
+        persistent.load_scene_candidates.return_value = [(80, 0.2), (120, 0.4)]
         persistent.load_frame_probes.return_value = None
         self.session.set_persistent_cache(persistent)
         scanned = media_analysis.VideoScanResult(
@@ -650,12 +650,19 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS
         )
         self.assertEqual(result.scene_changes, (120,))
+        self.assertEqual(
+            result.scene_candidates,
+            (
+                media_analysis.SceneCandidate(80, 0.2),
+                media_analysis.SceneCandidate(120, 0.4),
+            ),
+        )
         self.assertEqual(list(result.frames), [0])
         persistent.save_frame_probes.assert_called_once_with(
             os.path.realpath(self.path),
             {0: {"frame_id": 0, "path": None}},
         )
-        persistent.save_scene_changes.assert_not_called()
+        persistent.save_scene_candidates.assert_not_called()
         self.assertIn(
             "Persistent media analysis cache restored data for #1: features=[scene_changes]",
             "\n".join(captured.output),
@@ -680,11 +687,11 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             ), raise_on_error=False)
 
         persistent.save_frame_probes.assert_not_called()
-        persistent.save_scene_changes.assert_not_called()
+        persistent.save_scene_candidates.assert_not_called()
 
     def test_scanned_scenes_are_saved_to_persistent_cache(self):
         persistent = Mock()
-        persistent.load_scene_changes.return_value = None
+        persistent.load_scene_candidates.return_value = None
         self.session.set_persistent_cache(persistent)
         scanned = media_analysis.VideoScanResult(
             path=os.path.realpath(self.path),
@@ -693,6 +700,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             scene_changes=(120,),
             identity_samples=(),
             decode_error=None,
+            scene_candidates=(media_analysis.SceneCandidate(120, 0.4),),
         )
 
         with patch.object(self.session, "_scan", return_value=scanned):
@@ -700,7 +708,10 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             ))
 
-        persistent.save_scene_changes.assert_called_once_with(os.path.realpath(self.path), [120])
+        persistent.save_scene_candidates.assert_called_once_with(
+            os.path.realpath(self.path),
+            [(120, 0.4)],
+        )
         persistent.save_frame_probes.assert_not_called()
 
     def test_complete_persistent_matching_cache_avoids_a_scan(self):
@@ -710,7 +721,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             logging.getLogger("PersistentMediaAnalysisTest"),
         )
         persistent = Mock()
-        persistent.load_scene_changes.return_value = [120]
+        persistent.load_scene_candidates.return_value = [(80, 0.2), (120, 0.4)]
         persistent.load_frame_probes.return_value = {
             0: {"frame_id": 0, "path": None},
         }
@@ -723,6 +734,13 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
         scan.assert_not_called()
         self.assertEqual(result.scene_changes, (120,))
+        self.assertEqual(
+            result.scene_candidates,
+            (
+                media_analysis.SceneCandidate(80, 0.2),
+                media_analysis.SceneCandidate(120, 0.4),
+            ),
+        )
         self.assertEqual(list(result.frames), [0])
 
     def test_persistent_cache_does_not_replace_fresh_session_frames(self):

@@ -159,9 +159,16 @@ class VideoScanResult:
 
 
 class PersistentMediaAnalysisCache(Protocol):
-    def load_scene_changes(self, video_path: str) -> list[int] | None: ...
+    def load_scene_candidates(
+        self,
+        video_path: str,
+    ) -> list[tuple[int, float]] | None: ...
 
-    def save_scene_changes(self, video_path: str, scenes: list[int]) -> None: ...
+    def save_scene_candidates(
+        self,
+        video_path: str,
+        candidates: list[tuple[int, float]],
+    ) -> None: ...
 
     def load_frame_probes(self, video_path: str) -> dict[int, dict] | None: ...
 
@@ -314,12 +321,21 @@ class MediaAnalysisSession:
 
         features = MediaAnalysisFeature.NONE
         scenes: tuple[int, ...] = ()
+        scene_candidates: tuple[SceneCandidate, ...] = ()
         frames: dict[int, dict] = {}
         if requested_features & MediaAnalysisFeature.SCENE_CHANGES:
-            cached_scenes = self._persistent_cache.load_scene_changes(path)
-            if cached_scenes is not None:
+            cached_candidates = self._persistent_cache.load_scene_candidates(path)
+            if cached_candidates is not None:
                 features |= MediaAnalysisFeature.SCENE_CHANGES
-                scenes = tuple(cached_scenes)
+                scene_candidates = tuple(
+                    SceneCandidate(timestamp_ms, score)
+                    for timestamp_ms, score in cached_candidates
+                )
+                scenes = tuple(
+                    candidate.timestamp_ms
+                    for candidate in scene_candidates
+                    if candidate.score > self._SCENE_THRESHOLD
+                )
         if requested_features & MediaAnalysisFeature.FRAME_TIMESTAMPS:
             cached_frames = self._persistent_cache.load_frame_probes(path)
             if cached_frames is not None:
@@ -328,7 +344,15 @@ class MediaAnalysisSession:
 
         if features == MediaAnalysisFeature.NONE:
             return None
-        return VideoScanResult(path, features, frames, scenes, (), None)
+        return VideoScanResult(
+            path=path,
+            features=features,
+            frames=frames,
+            scene_changes=scenes,
+            identity_samples=(),
+            decode_error=None,
+            scene_candidates=scene_candidates,
+        )
 
     def _store_persistent(self, result: VideoScanResult) -> None:
         if self._persistent_cache is None:
@@ -341,10 +365,14 @@ class MediaAnalysisSession:
             )
             return
         if result.supports(MediaAnalysisFeature.SCENE_CHANGES):
-            self._persistent_cache.save_scene_changes(result.path, list(result.scene_changes))
+            candidates = [
+                (candidate.timestamp_ms, candidate.score)
+                for candidate in result.scene_candidates
+            ]
+            self._persistent_cache.save_scene_candidates(result.path, candidates)
             self.logger.debug(
-                "Persistent media analysis cache stored %d scene changes for %s.",
-                len(result.scene_changes),
+                "Persistent media analysis cache stored %d scene candidates for %s.",
+                len(candidates),
                 result.path,
             )
         if result.supports(MediaAnalysisFeature.FRAME_TIMESTAMPS):
