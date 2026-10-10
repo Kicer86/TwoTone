@@ -629,25 +629,22 @@ class PairMatcher:
 
         self.logger.info(
             "Refining suspicious region: %s %s-%s (%d scene(s)) "
-            "↔ %s %s-%s (%d scene(s)); scanning %s at threshold %.2f",
+            "↔ %s %s-%s (%d scene(s)); selecting cached candidates for %s "
+            "at threshold %.2f",
             self.lhs_label, generic_utils.ms_to_time(lhs_from),
             generic_utils.ms_to_time(lhs_to), len(lhs_local),
             self.rhs_label, generic_utils.ms_to_time(rhs_from),
             generic_utils.ms_to_time(rhs_to), len(rhs_local), label, threshold,
         )
-        detected = video_utils.detect_scene_changes(
+        analysis = self._analysis_result_for(
             path,
-            threshold=threshold,
-            logger=self.logger,
-            interruption=self.interruption,
-            desc=f"Local scene scan {label} (threshold {threshold:.2f})",
-            start_ms=start_ms,
-            end_ms=end_ms,
+            label,
+            media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
         )
         frame_timestamps = sorted(all_frames)
         new_scenes = sorted({
             self._snap_to_nearest_frame(frame_timestamps, timestamp)
-            for timestamp in detected
+            for timestamp in analysis.scene_changes_at(threshold)
             if start_ms < timestamp < end_ms
         } - set(scenes))
 

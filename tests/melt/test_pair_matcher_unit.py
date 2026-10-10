@@ -65,6 +65,25 @@ class PairMatcherUnitTest(unittest.TestCase):
     def _timestamp_for_frame(frame_id: int, fps: float) -> int:
         return round(frame_id * 1000 / fps)
 
+    @staticmethod
+    def _scene_analysis(
+        path: str,
+        candidates: list[tuple[int, float]],
+    ) -> media_analysis.VideoScanResult:
+        scene_candidates = tuple(
+            media_analysis.SceneCandidate(timestamp, score)
+            for timestamp, score in candidates
+        )
+        return media_analysis.VideoScanResult(
+            path=path,
+            features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            frames={},
+            scene_changes=(),
+            identity_samples=(),
+            decode_error=None,
+            scene_candidates=scene_candidates,
+        )
+
     def test_scene_and_frame_stages_consume_one_shared_media_scan(self):
         pm = self._make_pair_matcher()
         analysis = media_analysis.VideoScanResult(
@@ -1612,7 +1631,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             {0, 40}, {0}, {80},
         ])
 
-    def test_local_scene_refinement_scans_only_sparser_side(self):
+    def test_local_scene_refinement_uses_cached_candidates_only_for_sparser_side(self):
         timestamps = list(range(0, 60001, 40))
         pm = self._make_pm_with_frames(timestamps, timestamps)
         lhs_normalized = {
@@ -1626,8 +1645,10 @@ class PairMatcherUnitTest(unittest.TestCase):
         lhs_scenes: list[int] = []
         rhs_scenes = [10000, 20000]
         original = [(0, 0), (60000, 59600)]
+        analysis = self._scene_analysis(pm.lhs_path, [(15000, 0.2)])
 
-        with patch.object(video_utils, 'detect_scene_changes', return_value=[15000]) as detect, \
+        with patch.object(pm, '_analysis_result_for', return_value=analysis) as select, \
+             patch.object(video_utils, 'detect_scene_changes', side_effect=AssertionError("unexpected FFmpeg scan")), \
              patch.object(pm, '_extract_scene_frames_for'), \
              patch.object(pm, '_normalize_frames', return_value={
                  15000: pm.lhs_all_frames[15000].copy(),
@@ -1649,14 +1670,10 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertIn((15000, 10000), refined)
         self.assertEqual(lhs_scenes, [15000])
-        detect.assert_called_once_with(
+        select.assert_called_once_with(
             pm.lhs_path,
-            threshold=0.15,
-            logger=pm.logger,
-            interruption=pm.interruption,
-            desc='Local scene scan #1 (threshold 0.15)',
-            start_ms=0,
-            end_ms=60000,
+            pm.lhs_label,
+            media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
         )
 
     def test_local_scene_refinement_revisits_only_narrowed_gaps(self):
@@ -1667,11 +1684,26 @@ class PairMatcherUnitTest(unittest.TestCase):
             [(0, 0), (16000, 16000), (24000, 23600), (40000, 39600)],
             [(16000, 16000), (19600, 19600), (20400, 20000), (24000, 23600)],
         ]
-        detected = [[16000, 24000], [19600, 20400], []]
+        analyses = {
+            pm.lhs_path: self._scene_analysis(
+                pm.lhs_path,
+                [
+                    (16000, 0.25),
+                    (19600, 0.2),
+                    (20400, 0.2),
+                    (24000, 0.25),
+                ],
+            ),
+            pm.rhs_path: self._scene_analysis(pm.rhs_path, []),
+        }
         lhs_normalized = dict(pm.lhs_all_frames)
         rhs_normalized = dict(pm.rhs_all_frames)
 
-        with patch.object(video_utils, 'detect_scene_changes', side_effect=detected) as scan, \
+        with patch.object(
+                 pm,
+                 '_analysis_result_for',
+                 side_effect=lambda path, *_args: analyses[path],
+             ) as select, \
              patch.object(pm, '_extract_scene_frames_for'), \
              patch.object(pm, '_make_pairs', side_effect=matches), \
              patch.object(pm, '_match_key_frames', wraps=pm._match_key_frames) as match:
@@ -1701,16 +1733,18 @@ class PairMatcherUnitTest(unittest.TestCase):
         )
         self.assertEqual(remaining, [(19600, 20400, 19600, 20000, 400)])
         self.assertEqual(
-            [(call.kwargs['start_ms'], call.kwargs['end_ms']) for call in scan.call_args_list],
-            [(0, 40000), (16000, 24000), (19600, 20400)],
+            [call.args[0] for call in select.call_args_list],
+            [pm.lhs_path, pm.lhs_path, pm.lhs_path],
         )
 
     def test_local_scene_refinement_without_new_scenes_keeps_original_gap(self):
         timestamps = list(range(0, 40001, 40))
         pm = self._make_pm_with_frames(timestamps, timestamps)
         original = [(0, 0), (40000, 39600)]
+        analysis = self._scene_analysis(pm.lhs_path, [])
 
-        with patch.object(video_utils, 'detect_scene_changes', return_value=[]) as scan, \
+        with patch.object(pm, '_analysis_result_for', return_value=analysis) as select, \
+             patch.object(video_utils, 'detect_scene_changes', side_effect=AssertionError("unexpected FFmpeg scan")), \
              patch.object(pm, '_make_pairs') as match, \
              self.assertLogs(pm.logger, level='INFO') as logs:
             refined, remaining = pm._match_key_frames(
@@ -1728,7 +1762,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(refined, original)
         self.assertEqual(remaining, [(0, 40000, 0, 39600, 400)])
         match.assert_not_called()
-        self.assertEqual(scan.call_count, 3)
+        self.assertEqual(select.call_count, 3)
         self.assertTrue(any('Refining suspicious region:' in line for line in logs.output))
         self.assertTrue(any('no new scenes' in line for line in logs.output))
         self.assertTrue(any('Local scene refinement complete:' in line for line in logs.output))
