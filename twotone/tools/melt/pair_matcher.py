@@ -488,6 +488,7 @@ class PairMatcher:
     # Unlike the GENERIC time-domain tolerance below, this limit must not grow
     # with gap length: a content cut is a step in frame offset, not drift.
     _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 4.0
+    _SCENE_THRESHOLD = 0.30
     _LOCAL_SCENE_THRESHOLDS = (0.20, 0.15, 0.10)
 
     @staticmethod
@@ -2850,12 +2851,15 @@ class PairMatcher:
         analysis: media_analysis.VideoScanResult,
         label: str,
     ) -> list[int]:
+        scene_changes = analysis.scene_changes_at(self._SCENE_THRESHOLD)
         self.logger.info(
-            "[1/6] Scene changes for %s restored from media scan (%d scenes)",
+            "[1/6] Scene changes for %s selected from media scan at threshold "
+            "%.2f (%d scenes)",
             label,
-            len(analysis.scene_changes),
+            self._SCENE_THRESHOLD,
+            len(scene_changes),
         )
-        return list(analysis.scene_changes)
+        return list(scene_changes)
 
     def _probe_frames(
         self,
