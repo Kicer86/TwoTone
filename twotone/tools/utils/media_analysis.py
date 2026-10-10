@@ -523,6 +523,9 @@ class MediaAnalysisSession:
         has_primary_video = probe.has_video
         scan_dir = self.workspace.unique_dir("media_scan")
         frame_stats_path = os.path.join(scan_dir, "frames.txt")
+        # Keep metadata off stderr: FFmpeg's progress and metadata writers can
+        # interleave there, leaving score fragments that look like decode errors.
+        scene_metadata_path = os.path.join(scan_dir, "scenes.txt")
         sample_stats_path = os.path.join(scan_dir, "identity.txt")
         sample_pattern = os.path.join(scan_dir, "identity_%08d.png")
 
@@ -552,10 +555,14 @@ class MediaAnalysisSession:
             filter_parts.append(f"[0:v:0]null[{branches[0]}]")
 
         if features & MediaAnalysisFeature.SCENE_CHANGES:
+            escaped_scene_path = (
+                scene_metadata_path.replace("\\", "/").replace(":", "\\:")
+            )
             filter_parts.append(
                 f"{branch_source('vscenes')}"
                 f"select='gt(scene,{self._MIN_SCENE_SCORE})',"
-                "metadata=mode=print:key=lavfi.scene_score:file='pipe\\:2'[scenes]"
+                "metadata=mode=print:key=lavfi.scene_score:"
+                f"file='{escaped_scene_path}'[scenes]"
             )
 
         if features & MediaAnalysisFeature.IDENTITY_SAMPLES:
@@ -680,7 +687,7 @@ class MediaAnalysisSession:
         progress.close()
 
         scene_candidates = (
-            self._parse_scene_candidates(stderr_lines, timestamp_correction_ms)
+            self._read_scene_candidates(scene_metadata_path, timestamp_correction_ms)
             if features & MediaAnalysisFeature.SCENE_CHANGES
             else ()
         )
@@ -785,6 +792,18 @@ class MediaAnalysisSession:
             timestamp_ms: {"frame_id": frame_id, "path": None}
             for frame_id, timestamp_ms in cls._read_frame_entries(path, correction_ms)
         }
+
+    @staticmethod
+    def _read_scene_candidates(
+        path: str,
+        correction_ms: int,
+    ) -> tuple[SceneCandidate, ...]:
+        try:
+            with open(path, encoding="utf-8") as file:
+                lines = file.readlines()
+        except OSError:
+            return ()
+        return MediaAnalysisSession._parse_scene_candidates(lines, correction_ms)
 
     @staticmethod
     def _parse_scene_candidates(

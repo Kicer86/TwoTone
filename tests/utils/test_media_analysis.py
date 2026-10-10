@@ -77,6 +77,17 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         options = [index for index, value in enumerate(args) if value == option]
         return args[options[occurrence] + 1]
 
+    @staticmethod
+    def _scene_metadata_path(args: list[str]) -> str:
+        filter_graph = args[args.index("-filter_complex") + 1]
+        escaped_path = filter_graph.split("file='", 1)[1].split("'", 1)[0]
+        return escaped_path.replace("\\:", ":")
+
+    @classmethod
+    def _write_scene_metadata(cls, args: list[str], lines: list[str]) -> None:
+        with open(cls._scene_metadata_path(args), "w", encoding="utf-8") as file:
+            file.writelines(lines)
+
     def test_probe_reuses_result_for_the_same_unchanged_file(self):
         data = {"streams": [{"codec_type": "video", "codec_name": "h264"}]}
         normalized_data = {
@@ -167,11 +178,12 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         }
 
         def fake_ffmpeg(args, _interruption, on_line, logger):
-            del args, on_line, logger
-            return Mock(returncode=0), [
+            del on_line, logger
+            self._write_scene_metadata(args, [
                 "frame:0 pts:2 pts_time:0.08\n",
                 "lavfi.scene_score=0.400000\n",
-            ]
+            ])
+            return Mock(returncode=0), []
 
         with patch.object(video_utils, "get_video_full_info", return_value=probe_result) as probe, \
              patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_ffmpeg), \
@@ -487,12 +499,14 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 with open(output_pattern.replace("%08d", f"{index:08d}"), "wb") as file:
                     file.write(b"png")
 
-            on_line("out_time_ms=80000\n")
-            on_line("progress=end\n")
-            return SimpleNamespace(returncode=0), [
+            self._write_scene_metadata(args, [
                 "frame:0 pts:80 pts_time:0.08\n",
                 "lavfi.scene_score=0.400000\n",
-            ]
+            ])
+
+            on_line("out_time_ms=80000\n")
+            on_line("progress=end\n")
+            return SimpleNamespace(returncode=0), []
 
         with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
              patch.object(self.session, "probe", return_value=self._probe_result()), \
@@ -511,7 +525,14 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertIn("-xerror", args)
         self.assertIn("0:a?", args)
         self.assertIn("split=3", " ".join(args))
-        self.assertIn("file='pipe\\:2'", " ".join(args))
+        # Scene metadata must not share stderr with -progress: concurrent FFmpeg
+        # writers can split a score into a bare number interpreted as an error.
+        self.assertTrue(self._scene_metadata_path(args).endswith("scenes.txt"))
+        self.assertNotIn(
+            "file='pipe\\:2'",
+            " ".join(args),
+            "scene metadata must use its dedicated file, not FFmpeg stderr",
+        )
         self.assertIn("metadata=mode=print", " ".join(args))
         self.assertIn("gt(scene,0.1)", " ".join(args))
         self.assertIn("[scenes]", args)
@@ -835,10 +856,11 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             output_pattern = next(value for value in args if "identity_%08d.png" in value)
             with open(output_pattern.replace("%08d", "00000001"), "wb") as file:
                 file.write(b"png")
-            return SimpleNamespace(returncode=0), [
+            self._write_scene_metadata(args, [
                 "frame:0 pts:0 pts_time:0\n",
                 "lavfi.scene_score=0.400000\n",
-            ]
+            ])
+            return SimpleNamespace(returncode=0), []
 
         with patch.object(session, "probe", return_value=self._probe_result()), \
              patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start) as start, \
