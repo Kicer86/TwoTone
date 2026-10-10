@@ -8,10 +8,10 @@ import time
 from collections.abc import Iterable
 from importlib import metadata
 
-import argcomplete
 from overrides import override
 from tqdm.contrib.logging import logging_redirect_tqdm
 
+from .completion import build_bash_completion
 from .tools import (
     concatenate,
     language_fixer,
@@ -73,14 +73,14 @@ def _get_completion_dir() -> str:
     return os.path.join(data_dir, "bash-completion", "completions")
 
 
-def _install_completion() -> None:
+def _install_completion(parser: argparse.ArgumentParser) -> None:
     completion_dir = _get_completion_dir()
     os.makedirs(completion_dir, exist_ok=True)
     dest = os.path.join(completion_dir, "twotone")
 
-    script = argcomplete.shellcode(["twotone"], shell="bash")
+    script = build_bash_completion(parser)
 
-    with open(dest, "w") as f:
+    with open(dest, "w", encoding="utf-8") as f:
         f.write(script)
     print(f"Completion installed: {dest}")
     print("Open a new terminal for it to take effect.")
@@ -218,7 +218,8 @@ class CustomParserFormatter(argparse.HelpFormatter):
                 help_str += f' (default: {action.default})'
         return help_str
 
-def execute(argv: list[str]) -> None:
+
+def _create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog = 'twotone',
         description='Videos manipulation toolkit. '
@@ -297,14 +298,18 @@ def execute(argv: list[str]) -> None:
         )
         tool.setup_parser(tool_parser)
 
-    argcomplete.autocomplete(parser)
+    return parser
+
+
+def execute(argv: list[str]) -> None:
+    parser = _create_parser()
     args = parser.parse_args(args = argv)
 
     if args.version:
         print(_runtime_version_report())
         return
     if args.install_completion:
-        _install_completion()
+        _install_completion(parser)
         return
     if args.uninstall_completion:
         _uninstall_completion()
