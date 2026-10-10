@@ -16,6 +16,9 @@ from .generic_utils import InterruptibleProcess
 _SCENE_FRAME_RE = re.compile(
     r"^frame:\d+\s+pts:\S+\s+pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))"
 )
+_SCENE_SCORE_RE = re.compile(
+    r"^lavfi\.scene_score=([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)$"
+)
 _PROGRESS_TIME_RE = re.compile(r"^out_time_ms=(\d+)$")
 _PROGRESS_PREFIXES = (
     "bitrate=",
@@ -168,6 +171,7 @@ class PersistentMediaAnalysisCache(Protocol):
 class MediaAnalysisSession:
     """Collect and reuse requested media-analysis data throughout one tool run."""
 
+    _MIN_SCENE_SCORE = 0.1
     _SCENE_THRESHOLD = 0.3
 
     def __init__(
@@ -491,7 +495,6 @@ class MediaAnalysisSession:
         has_primary_video = probe.has_video
         scan_dir = self.workspace.unique_dir("media_scan")
         frame_stats_path = os.path.join(scan_dir, "frames.txt")
-        scene_stats_path = os.path.join(scan_dir, "scenes.txt")
         sample_stats_path = os.path.join(scan_dir, "identity.txt")
         sample_pattern = os.path.join(scan_dir, "identity_%08d.png")
 
@@ -522,7 +525,9 @@ class MediaAnalysisSession:
 
         if features & MediaAnalysisFeature.SCENE_CHANGES:
             filter_parts.append(
-                f"{branch_source('vscenes')}select='gt(scene,{self._SCENE_THRESHOLD})'[scenes]"
+                f"{branch_source('vscenes')}"
+                f"select='gt(scene,{self._MIN_SCENE_SCORE})',"
+                "metadata=mode=print:key=lavfi.scene_score:file='pipe\\:2'[scenes]"
             )
 
         if features & MediaAnalysisFeature.IDENTITY_SAMPLES:
@@ -583,9 +588,6 @@ class MediaAnalysisSession:
                 "-map", "[scenes]",
                 "-an", "-sn", "-dn",
                 "-fps_mode", "vfr",
-                "-enc_time_base:v:0", "filter",
-                "-stats_enc_pre:v:0", scene_stats_path,
-                "-stats_enc_pre_fmt:v:0", "{ni} {pts} {tb}",
                 "-f", "null", "-",
             ])
 
@@ -649,10 +651,10 @@ class MediaAnalysisSession:
             progress.update(duration_s - last_progress_s)
         progress.close()
 
-        scene_timestamps = (
-            self._read_scene_timestamps(scene_stats_path, timestamp_correction_ms)
+        scene_candidates = (
+            self._parse_scene_candidates(stderr_lines, timestamp_correction_ms)
             if features & MediaAnalysisFeature.SCENE_CHANGES
-            else []
+            else ()
         )
         frames = (
             self._read_frames(frame_stats_path, timestamp_correction_ms)
@@ -679,9 +681,14 @@ class MediaAnalysisSession:
             path=path,
             features=features,
             frames=frames,
-            scene_changes=tuple(sorted(set(scene_timestamps))),
+            scene_changes=tuple(
+                candidate.timestamp_ms
+                for candidate in scene_candidates
+                if candidate.score > self._SCENE_THRESHOLD
+            ),
             identity_samples=samples,
             decode_error=decode_error,
+            scene_candidates=scene_candidates,
         )
 
     @staticmethod
@@ -723,6 +730,11 @@ class MediaAnalysisSession:
                 else cached.identity_samples
             ),
             decode_error=" | ".join(errors) if errors else None,
+            scene_candidates=(
+                scanned.scene_candidates
+                if scanned.supports(MediaAnalysisFeature.SCENE_CHANGES)
+                else cached.scene_candidates
+            ),
         )
 
     @staticmethod
@@ -746,12 +758,33 @@ class MediaAnalysisSession:
             for frame_id, timestamp_ms in cls._read_frame_entries(path, correction_ms)
         }
 
-    @classmethod
-    def _read_scene_timestamps(cls, path: str, correction_ms: int) -> list[int]:
-        return [
-            timestamp_ms
-            for _frame_id, timestamp_ms in cls._read_frame_entries(path, correction_ms)
-        ]
+    @staticmethod
+    def _parse_scene_candidates(
+        lines: list[str],
+        correction_ms: int,
+    ) -> tuple[SceneCandidate, ...]:
+        timestamp_ms: int | None = None
+        candidates: dict[int, float] = {}
+        for line in lines:
+            stripped = line.strip()
+            frame_match = _SCENE_FRAME_RE.match(stripped)
+            if frame_match:
+                timestamp_ms = max(
+                    0,
+                    round(float(frame_match.group(1)) * 1000) + correction_ms,
+                )
+                continue
+
+            score_match = _SCENE_SCORE_RE.match(stripped)
+            if score_match and timestamp_ms is not None:
+                score = float(score_match.group(1))
+                candidates[timestamp_ms] = max(candidates.get(timestamp_ms, 0.0), score)
+                timestamp_ms = None
+
+        return tuple(
+            SceneCandidate(timestamp, score)
+            for timestamp, score in sorted(candidates.items())
+        )
 
     @staticmethod
     def _build_samples(
