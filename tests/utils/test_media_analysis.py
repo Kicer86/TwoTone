@@ -54,6 +54,24 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             features=features,
         )
 
+    def test_scan_result_selects_scene_changes_at_requested_threshold(self):
+        result = media_analysis.VideoScanResult(
+            path=self.path,
+            features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            frames={},
+            scene_changes=(1000,),
+            identity_samples=(),
+            decode_error=None,
+            scene_candidates=(
+                media_analysis.SceneCandidate(1000, 0.41),
+                media_analysis.SceneCandidate(2000, 0.30),
+                media_analysis.SceneCandidate(3000, 0.18),
+            ),
+        )
+
+        self.assertEqual(result.scene_changes_at(0.30), (1000,))
+        self.assertEqual(result.scene_changes_at(0.15), (1000, 2000, 3000))
+
     @staticmethod
     def _stats_path(args: list[str], option: str, occurrence: int = 0) -> str:
         options = [index for index, value in enumerate(args) if value == option]
