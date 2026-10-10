@@ -21,6 +21,10 @@ class BashCompletionTest(unittest.TestCase):
         cls.parser = twotone._create_parser()
         cls.script = build_bash_completion(cls.parser, cls.version)
 
+    @staticmethod
+    def _bash_path(path: Path) -> str:
+        return path.as_posix()
+
     def test_generated_script_contains_runtime_version(self):
         self.assertEqual(
             self.script.splitlines()[0],
@@ -39,7 +43,7 @@ class BashCompletionTest(unittest.TestCase):
                 '_twotone_complete; printf "%s\\n" "${COMPREPLY[@]}"'
             )
             result = subprocess.run(
-                ["bash", "-c", command, "bash", str(script_path)],
+                ["bash", "-c", command, "bash", self._bash_path(script_path)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -47,12 +51,15 @@ class BashCompletionTest(unittest.TestCase):
         return result.stdout.splitlines()
 
     def test_generated_script_has_valid_bash_syntax(self):
-        result = subprocess.run(
-            ["bash", "-n"],
-            input=self.script,
-            capture_output=True,
-            text=True,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            script_path = Path(directory) / "twotone-completion.bash"
+            script_path.write_text(self.script, encoding="utf-8")
+            result = subprocess.run(
+                ["bash", "-n", self._bash_path(script_path)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -94,7 +101,14 @@ class BashCompletionTest(unittest.TestCase):
                 '_twotone_complete; printf "%s\\n" "${COMPREPLY[@]}"'
             )
             result = subprocess.run(
-                ["bash", "-c", command, "bash", str(installed_path), str(updated_path)],
+                [
+                    "bash",
+                    "-c",
+                    command,
+                    "bash",
+                    self._bash_path(installed_path),
+                    self._bash_path(updated_path),
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
