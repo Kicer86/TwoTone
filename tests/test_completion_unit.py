@@ -35,31 +35,26 @@ class BashCompletionTest(unittest.TestCase):
             script_path.write_text(self.script, encoding="utf-8")
             quoted_words = " ".join(shlex.quote(word) for word in words)
             command = (
-                'source "./$1"; '
+                'source "$1"; '
                 f"COMP_WORDS=({quoted_words}); "
                 f"COMP_CWORD={current_word}; "
                 '_twotone_complete; printf "%s\\n" "${COMPREPLY[@]}"'
             )
             result = subprocess.run(
-                ["bash", "-c", command, "bash", script_path.name],
+                ["bash", "-c", command, "bash", str(script_path)],
                 check=True,
                 capture_output=True,
                 text=True,
-                cwd=directory,
             )
         return result.stdout.splitlines()
 
     def test_generated_script_has_valid_bash_syntax(self):
-        with tempfile.TemporaryDirectory() as directory:
-            script_path = Path(directory) / "twotone-completion.bash"
-            script_path.write_text(self.script, encoding="utf-8")
-            result = subprocess.run(
-                ["bash", "-n", script_path.name],
-                check=False,
-                capture_output=True,
-                text=True,
-                cwd=directory,
-            )
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=self.script,
+            capture_output=True,
+            text=True,
+        )
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -96,23 +91,15 @@ class BashCompletionTest(unittest.TestCase):
             installed_path.write_text(old_script, encoding="utf-8")
             updated_path.write_text(new_script, encoding="utf-8")
             command = (
-                'source "./$1"; cp "$2" "$1"; '
+                'source "$1"; cp "$2" "$1"; '
                 'COMP_WORDS=(twotone --new); COMP_CWORD=1; '
                 '_twotone_complete; printf "%s\\n" "${COMPREPLY[@]}"'
             )
             result = subprocess.run(
-                [
-                    "bash",
-                    "-c",
-                    command,
-                    "bash",
-                    installed_path.name,
-                    updated_path.name,
-                ],
+                ["bash", "-c", command, "bash", str(installed_path), str(updated_path)],
                 check=True,
                 capture_output=True,
                 text=True,
-                cwd=directory,
             )
 
         self.assertEqual(result.stdout.splitlines(), ["--new-option"])
