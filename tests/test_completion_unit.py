@@ -1,4 +1,5 @@
 import argparse
+import os
 import shlex
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ from twotone import twotone
 from twotone.completion import build_bash_completion
 
 
+@unittest.skipIf(os.name == "nt", "Bash completion requires a POSIX environment")
 class BashCompletionTest(unittest.TestCase):
     version = "1.4.0+test-revision"
     parser: ClassVar[argparse.ArgumentParser]
