@@ -1695,6 +1695,7 @@ class MeltPerformer(TrackTimelineMixin):
                         lhs_fps=matching.lhs_fps,
                         rhs_fps=matching.rhs_fps,
                         include_boundary_steps=False,
+                        require_persistent_confirmation=True,
                     )
                 )
             else:

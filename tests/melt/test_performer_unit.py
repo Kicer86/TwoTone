@@ -1922,26 +1922,32 @@ class MeltPerformerUnitTest(unittest.TestCase):
         source_audio = AudioStreamRef(source_video.path, 1, 1, "pol")
         mapping = [
             (0, 0),
+            (100000, 100000),
             (200000, 200000),
+            (300000, 299400),
             (400000, 399400),
-            (600000, 599400),
+            (500000, 499400),
         ]
         lhs_frames = {
             timestamp: {"frame_id": frame, "path": None}
             for timestamp, frame in [
                 (0, 0),
+                (100000, 2500),
                 (200000, 5000),
+                (300000, 7500),
                 (400000, 10000),
-                (600000, 15000),
+                (500000, 12500),
             ]
         }
         rhs_frames = {
             timestamp: {"frame_id": frame, "path": None}
             for timestamp, frame in [
                 (0, 0),
+                (100000, 2500),
                 (200000, 5000),
+                (299400, 7485),
                 (399400, 9985),
-                (599400, 14985),
+                (499400, 12485),
             ]
         }
         performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
@@ -1954,7 +1960,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 rhs_fps=25.0,
                 frame_slope=1.0,
             ),
-            source_duration=600000,
+            source_duration=500000,
         )
 
         with patch.object(performer, "_log_coverage"), \
@@ -1964,7 +1970,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 source_video,
                 source_audio,
                 None,
-                600000,
+                500000,
                 None,
                 {base_video.path: 1, source_video.path: 2},
             )

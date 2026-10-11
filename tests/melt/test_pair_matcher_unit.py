@@ -1585,6 +1585,11 @@ class PairMatcherUnitTest(unittest.TestCase):
             (484418, 1333626, 448600, 1263400, 241),
             (1333626, 2214126, 1263400, 2107920, 553),
         ])
+        self.assertTrue(PairMatcher.find_global_linear_content_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=0.999755636, lhs_fps=24.0, rhs_fps=25.0,
+            require_persistent_confirmation=True,
+        ))
 
     def test_global_linear_discontinuity_tolerates_four_frame_endpoint_error(self):
         mapping = [(0, 0), (10000, 9840), (20000, 19840)]
@@ -1621,6 +1626,30 @@ class PairMatcherUnitTest(unittest.TestCase):
         result = PairMatcher.find_global_linear_content_discontinuities(
             mapping, lhs_frames, rhs_frames,
             frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+        )
+
+        self.assertEqual(result, [])
+
+    def test_global_linear_discontinuity_rejects_non_persistent_frame_step(self):
+        lhs_timestamps = list(range(0, 7000, 1000))
+        rhs_timestamps = [0, 1000, 2000, 2600, 4000, 5000, 6000]
+        mapping = list(zip(lhs_timestamps, rhs_timestamps))
+        lhs_frames = {
+            timestamp: {"frame_id": frame * 25, "path": None}
+            for frame, timestamp in enumerate(lhs_timestamps)
+        }
+        rhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in zip(
+                rhs_timestamps,
+                [0, 25, 50, 65, 100, 125, 150],
+            )
+        }
+
+        result = PairMatcher.find_global_linear_content_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+            require_persistent_confirmation=True,
         )
 
         self.assertEqual(result, [])

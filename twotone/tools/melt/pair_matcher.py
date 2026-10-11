@@ -488,6 +488,10 @@ class PairMatcher:
     # Unlike the GENERIC time-domain tolerance below, this limit must not grow
     # with gap length: a content cut is a step in frame offset, not drift.
     _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 4.0
+    # A real insertion/removal permanently changes the mapping offset. Require
+    # this many anchors on both sides to distinguish that plateau change from
+    # one noisy match or an ambiguous media boundary.
+    _DISCONTINUITY_PLATEAU_PAIRS = 3
     # A step close to an inferred common-content boundary can be caused by
     # stream timestamp placement, an intro/outro trim, or ambiguous black
     # frames. It is not evidence of a hole unless matched content exists on
@@ -567,6 +571,7 @@ class PairMatcher:
         rhs_fps: float,
         include_boundary_steps: bool = True,
         require_decoded_confirmation: bool = True,
+        require_persistent_confirmation: bool = False,
     ) -> list[tuple[int, int, int, int, int]]:
         """Locate absolute frame-step errors in a GLOBAL_LINEAR mapping.
 
@@ -578,8 +583,10 @@ class PairMatcher:
         media edge are left to boundary handling. When
         ``require_decoded_confirmation`` is true, a timeline step must also be
         visible in decoded frame ordinals before it is reported as a content
-        discontinuity. The returned deficit remains milliseconds for the
-        common performer error-reporting API.
+        discontinuity. ``require_persistent_confirmation`` additionally
+        requires the mapping offset to settle at a different level after the
+        step. The returned deficit remains milliseconds for the common
+        performer error-reporting API.
         """
         pairs = sorted(mapping)
         if len(pairs) < 2 or frame_slope <= 0 or lhs_fps <= 0 or rhs_fps <= 0:
@@ -611,6 +618,22 @@ class PairMatcher:
             if lhs2 > lhs1 and rhs2 > rhs1
         ]
         decoded_slope = float(np.median(decoded_slopes)) if decoded_slopes else None
+        frame_residuals = [rhs - frame_slope * lhs for lhs, rhs in frame_pairs]
+        decoded_residuals = (
+            [rhs - decoded_slope * lhs for lhs, rhs in decoded_frame_pairs]
+            if decoded_slope is not None else []
+        )
+
+        def has_persistent_step(residuals: list[float], index: int) -> bool:
+            window = PairMatcher._DISCONTINUITY_PLATEAU_PAIRS
+            before = residuals[index - window + 1:index + 1]
+            after = residuals[index + 1:index + 1 + window]
+            return (
+                len(before) == window
+                and len(after) == window
+                and abs(float(np.median(after)) - float(np.median(before)))
+                > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
+            )
 
         result = []
         lhs_boundary_context = round(
@@ -667,6 +690,16 @@ class PairMatcher:
                     (
                         decoded_deficit is not None
                         and abs(decoded_deficit) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
+                    )
+                )
+                and (
+                    not require_persistent_confirmation
+                    or (
+                        has_persistent_step(frame_residuals, index)
+                        and (
+                            not require_decoded_confirmation
+                            or has_persistent_step(decoded_residuals, index)
+                        )
                     )
                 )
             ):
@@ -2015,6 +2048,7 @@ class PairMatcher:
                     lhs_fps=self.lhs_fps,
                     rhs_fps=self.rhs_fps,
                     include_boundary_steps=False,
+                    require_persistent_confirmation=True,
                 )
 
                 if discontinuities:
@@ -3164,6 +3198,7 @@ class PairMatcher:
                 frame_slope=frame_slope,
                 lhs_fps=self.lhs_fps, rhs_fps=self.rhs_fps,
                 require_decoded_confirmation=False,
+                require_persistent_confirmation=False,
             )
 
         discontinuities = find_discontinuities(matching_pairs)
