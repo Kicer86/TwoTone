@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import mock_open, patch
 
-from twotone.tools.melt.melt_cache import MeltCache
+from twotone.tools.melt.melt_cache import _CACHE_FORMAT_VERSION, MeltCache
 
 
 class MeltCacheUnitTest(unittest.TestCase):
@@ -47,7 +47,7 @@ class MeltCacheUnitTest(unittest.TestCase):
 
             stat = os.stat(video_path)
             cache = MeltCache(cache_dir, logging.getLogger("test.MeltCache"))
-            for version in (2, 3, 4):
+            for version in range(2, _CACHE_FORMAT_VERSION):
                 with self.subTest(version=version):
                     old_identity = (
                         f"{version}:{os.path.realpath(video_path)}:{stat.st_size}:{stat.st_mtime_ns}"
