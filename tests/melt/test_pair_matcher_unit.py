@@ -930,6 +930,41 @@ class PairMatcherUnitTest(unittest.TestCase):
         extrap.assert_called_once()
         self.assertEqual(result.mapping, extrapolated_pairs)
 
+    def test_create_segments_mapping_accepts_discontinuity_resolved_by_refinement(self):
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        initial_pairs = [(0, 0), (10000, 9600)]
+        refined_pairs = [(0, 0), (5000, 4800), (10000, 9600)]
+        extrapolated_pairs = [(0, 0), (10000, 9600)]
+        fit = GlobalLinearFit(1.0, 0.0, True, 1.0)
+        gap = (0, 10000, 0, 9600, 400)
+
+        with patch.object(pm, '_analysis_result_for'), \
+             patch.object(pm, '_detect_scenes', return_value=([], [])), \
+             patch.object(pm, '_probe_frames'), \
+             patch.object(pm, '_extract_scene_frames', return_value=([], [])), \
+             patch.object(pm, '_normalize_extracted', return_value=({}, {}, {}, {})), \
+             patch.object(pm, '_match_key_frames', side_effect=[
+                 (initial_pairs, []),
+                 (refined_pairs, []),
+             ]), \
+             patch.object(pm, '_log_relation_diagnostics'), \
+             patch.object(PairMatcher, 'detect_global_linear', return_value=fit), \
+             patch.object(
+                 PairMatcher,
+                 'find_global_linear_content_discontinuities',
+                 side_effect=[[gap], []],
+             ), \
+             patch.object(
+                 PairMatcher,
+                 '_extrapolate_and_verify_global_linear',
+                 return_value=extrapolated_pairs,
+             ) as extrap, \
+             patch('twotone.tools.melt.pair_matcher.DebugRoutines'):
+            result = pm.create_segments_mapping()
+
+        self.assertEqual(result.mapping, extrapolated_pairs)
+        self.assertEqual(extrap.call_args.args[1], refined_pairs)
+
     # ---- _extrapolate_and_verify_global_linear ----
 
     def _make_pm_with_frames(self, lhs_ts, rhs_ts):

@@ -1999,7 +1999,6 @@ class PairMatcher:
                 include_boundary_steps=False,
             )
             if discontinuities:
-                original_discontinuities = discontinuities
                 refined_pairs, _ = self._match_key_frames(
                     lhs_key_frames, rhs_key_frames,
                     lhs_normalized_frames, rhs_normalized_frames,
@@ -2020,39 +2019,31 @@ class PairMatcher:
 
                 if discontinuities:
                     debug.dump_matches(refined_pairs, "localized discontinuities")
-                else:
-                    # The total offset still changed by more than four frames,
-                    # but denser anchors distributed it across smaller steps.
-                    # That is non-linear timing rather than proof of one cut;
-                    # keep the original interval and refuse the global audio
-                    # transform instead of silently accepting accumulated drift.
-                    self.logger.warning(
-                        "Local scene refinement found distributed timing drift, "
-                        "not one persistent frame step."
-                    )
-                    discontinuities = original_discontinuities
+                    for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in discontinuities:
+                        self.logger.error(
+                            "Suspected timing discontinuity between matched anchors: %s-%s in %s "
+                            "↔ %s-%s in %s "
+                            "(%+d ms, %+.1f frames)",
+                            generic_utils.ms_to_time(lhs_from),
+                            generic_utils.ms_to_time(lhs_to),
+                            self.lhs_label,
+                            generic_utils.ms_to_time(rhs_from),
+                            generic_utils.ms_to_time(rhs_to),
+                            self.rhs_label,
+                            deficit_ms,
+                            deficit_ms * self.rhs_fps / 1000,
+                        )
 
-                for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in discontinuities:
-                    self.logger.error(
-                        "Suspected timing discontinuity between matched anchors: %s-%s in %s "
-                        "↔ %s-%s in %s "
-                        "(%+d ms, %+.1f frames)",
-                        generic_utils.ms_to_time(lhs_from),
-                        generic_utils.ms_to_time(lhs_to),
-                        self.lhs_label,
-                        generic_utils.ms_to_time(rhs_from),
-                        generic_utils.ms_to_time(rhs_to),
-                        self.rhs_label,
-                        deficit_ms,
-                        deficit_ms * self.rhs_fps / 1000,
+                    raise RuntimeError(
+                        "Inputs share content with holes in the scene sequence "
+                        f"(absolute frame-step error exceeds "
+                        f"{self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:g} frames) — patching "
+                        "audio across such discontinuities is not supported yet"
                     )
-
-                raise RuntimeError(
-                    "Inputs share content with holes in the scene sequence "
-                    f"(absolute frame-step error exceeds "
-                    f"{self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:g} frames) — patching "
-                    "audio across such discontinuities is not supported yet"
+                self.logger.info(
+                    "Local scene refinement resolved all suspected timing discontinuities."
                 )
+                matching_pairs = refined_pairs
             # Use the fit as a precise predictor of where identical frames should
             # be, extend each boundary toward the video edge, and keep the
             # extension only where the predicted pair is content-verified (same
