@@ -1569,6 +1569,27 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertEqual(result, [])
 
+    def test_global_linear_discontinuity_ignores_timestamp_only_step(self):
+        # The second source has a PTS jump, but both decoders advanced through
+        # the same 250 frames. This is a timeline irregularity, not content
+        # removed from one transfer.
+        mapping = [(0, 0), (10000, 10000), (20000, 19600), (30000, 29600)]
+        lhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (10000, 250), (20000, 500), (30000, 750)]
+        }
+        rhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [(0, 0), (10000, 250), (19600, 500), (29600, 750)]
+        }
+
+        result = PairMatcher.find_global_linear_content_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+        )
+
+        self.assertEqual(result, [])
+
     def test_global_linear_discontinuity_ignores_step_near_first_matched_pair(self):
         mapping = [(0, 0), (400, 400), (10000, 9600), (20000, 19600)]
         lhs_frames = {

@@ -566,6 +566,7 @@ class PairMatcher:
         lhs_fps: float,
         rhs_fps: float,
         include_boundary_steps: bool = True,
+        require_decoded_confirmation: bool = True,
     ) -> list[tuple[int, int, int, int, int]]:
         """Locate absolute frame-step errors in a GLOBAL_LINEAR mapping.
 
@@ -574,8 +575,11 @@ class PairMatcher:
         insertion changes that advance by a fixed number of frames; scaling
         the tolerance with the time between sparse anchors would hide exactly
         such edits. With ``include_boundary_steps=False``, gaps touching a
-        media edge are left to boundary handling. The returned deficit remains
-        milliseconds for the common performer error-reporting API.
+        media edge are left to boundary handling. When
+        ``require_decoded_confirmation`` is true, a timeline step must also be
+        visible in decoded frame ordinals before it is reported as a content
+        discontinuity. The returned deficit remains milliseconds for the
+        common performer error-reporting API.
         """
         pairs = sorted(mapping)
         if len(pairs) < 2 or frame_slope <= 0 or lhs_fps <= 0 or rhs_fps <= 0:
@@ -588,8 +592,25 @@ class PairMatcher:
                 (lhs_ids[lhs_ts], rhs_ids[rhs_ts])
                 for lhs_ts, rhs_ts in pairs
             ]
+            decoded_frame_pairs = [
+                (
+                    int(lhs_all_frames[lhs_ts]["frame_id"]),
+                    int(rhs_all_frames[rhs_ts]["frame_id"]),
+                )
+                for lhs_ts, rhs_ts in pairs
+            ]
         except KeyError:
             return PairMatcher.find_content_discontinuities(pairs)
+
+        decoded_slopes = [
+            (rhs2 - rhs1) / (lhs2 - lhs1)
+            for (lhs1, rhs1), (lhs2, rhs2) in zip(
+                decoded_frame_pairs,
+                decoded_frame_pairs[1:],
+            )
+            if lhs2 > lhs1 and rhs2 > rhs1
+        ]
+        decoded_slope = float(np.median(decoded_slopes)) if decoded_slopes else None
 
         result = []
         lhs_boundary_context = round(
@@ -600,8 +621,18 @@ class PairMatcher:
         )
         lhs_first, rhs_first = frame_pairs[0]
         lhs_last, rhs_last = frame_pairs[-1]
-        for index, ((lhs1, rhs1), (lhs2, rhs2)) in enumerate(
-            zip(frame_pairs, frame_pairs[1:])
+        for index, (
+            (lhs1, rhs1),
+            (lhs2, rhs2),
+            (lhs_decoded1, rhs_decoded1),
+            (lhs_decoded2, rhs_decoded2),
+        ) in enumerate(
+            zip(
+                frame_pairs,
+                frame_pairs[1:],
+                decoded_frame_pairs,
+                decoded_frame_pairs[1:],
+            )
         ):
             # The outer matched pairs delimit common content, but normally are
             # scene anchors rather than literal video boundaries. A step near
@@ -620,7 +651,25 @@ class PairMatcher:
             if lhs_advance <= 0 or rhs_advance <= 0:
                 continue
             deficit_frames = lhs_advance * frame_slope - rhs_advance
-            if abs(deficit_frames) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:
+            decoded_deficit = None
+            if decoded_slope is not None:
+                decoded_lhs_advance = lhs_decoded2 - lhs_decoded1
+                decoded_rhs_advance = rhs_decoded2 - rhs_decoded1
+                if decoded_lhs_advance > 0 and decoded_rhs_advance > 0:
+                    decoded_deficit = (
+                        decoded_lhs_advance * decoded_slope - decoded_rhs_advance
+                    )
+            if (
+                abs(deficit_frames) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
+                and (
+                    not require_decoded_confirmation
+                    or
+                    (
+                        decoded_deficit is not None
+                        and abs(decoded_deficit) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
+                    )
+                )
+            ):
                 deficit_ms = round(deficit_frames * 1000 / rhs_fps)
                 result.append((
                     pairs[index][0], pairs[index + 1][0],
@@ -3123,6 +3172,7 @@ class PairMatcher:
                 pairs, self.lhs_all_frames, self.rhs_all_frames,
                 frame_slope=frame_slope,
                 lhs_fps=self.lhs_fps, rhs_fps=self.rhs_fps,
+                require_decoded_confirmation=False,
             )
 
         discontinuities = find_discontinuities(matching_pairs)
