@@ -1569,15 +1569,15 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertEqual(result, [])
 
-    def test_global_linear_discontinuity_ignores_media_edge_step(self):
-        mapping = [(0, 0), (10000, 9600), (20000, 19600)]
+    def test_global_linear_discontinuity_ignores_first_matched_step(self):
+        mapping = [(400, 400), (10000, 9600), (20000, 19600)]
         lhs_frames = {
             timestamp: {"frame_id": frame, "path": None}
-            for timestamp, frame in [(0, 0), (10000, 250), (20000, 500)]
+            for timestamp, frame in [(0, 0), (400, 10), (10000, 250), (20000, 500)]
         }
         rhs_frames = {
             timestamp: {"frame_id": frame, "path": None}
-            for timestamp, frame in [(0, 0), (9600, 240), (19600, 490)]
+            for timestamp, frame in [(0, 0), (400, 10), (9600, 240), (19600, 490)]
         }
 
         result = PairMatcher.find_global_linear_content_discontinuities(
@@ -1588,15 +1588,15 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertEqual(result, [])
 
-    def test_global_linear_discontinuity_ignores_media_end_step(self):
-        mapping = [(0, 0), (10000, 10000), (20000, 19600)]
+    def test_global_linear_discontinuity_ignores_last_matched_step(self):
+        mapping = [(0, 0), (10000, 10000), (19600, 19200)]
         lhs_frames = {
             timestamp: {"frame_id": frame, "path": None}
-            for timestamp, frame in [(0, 0), (10000, 250), (20000, 500)]
+            for timestamp, frame in [(0, 0), (10000, 250), (19600, 490), (20000, 500)]
         }
         rhs_frames = {
             timestamp: {"frame_id": frame, "path": None}
-            for timestamp, frame in [(0, 0), (10000, 250), (19600, 490)]
+            for timestamp, frame in [(0, 0), (10000, 250), (19200, 480), (20000, 500)]
         }
 
         result = PairMatcher.find_global_linear_content_discontinuities(

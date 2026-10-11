@@ -586,19 +586,17 @@ class PairMatcher:
         except KeyError:
             return PairMatcher.find_content_discontinuities(pairs)
 
-        lhs_last = max(lhs_ids.values())
-        rhs_last = max(rhs_ids.values())
         result = []
+        last_gap_index = len(frame_pairs) - 2
         for index, ((lhs1, rhs1), (lhs2, rhs2)) in enumerate(
             zip(frame_pairs, frame_pairs[1:])
         ):
-            # A step touching either media edge describes an intro/outro
-            # boundary, not a hole proven to have shared content on both
-            # sides.  The boundary matcher handles those regions separately.
-            if not include_boundary_steps and (
-                lhs1 == 0 or rhs1 == 0
-                or lhs2 == lhs_last or rhs2 == rhs_last
-            ):
+            # The first and last matched pair delimit the common content, but
+            # normally are scene anchors rather than literal first/last video
+            # frames. A step at either end can therefore describe a divergent
+            # intro/outro, not a hole proven to have shared content on both
+            # sides. The boundary matcher handles those regions separately.
+            if not include_boundary_steps and index in (0, last_gap_index):
                 continue
             lhs_advance = lhs2 - lhs1
             rhs_advance = rhs2 - rhs1
