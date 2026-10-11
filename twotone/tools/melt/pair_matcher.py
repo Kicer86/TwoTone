@@ -488,6 +488,11 @@ class PairMatcher:
     # Unlike the GENERIC time-domain tolerance below, this limit must not grow
     # with gap length: a content cut is a step in frame offset, not drift.
     _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 4.0
+    # A step close to an inferred common-content boundary can be caused by
+    # stream timestamp placement, an intro/outro trim, or ambiguous black
+    # frames. It is not evidence of a hole unless matched content exists on
+    # both sides for this long.
+    _MIN_INTERIOR_DISCONTINUITY_CONTEXT_SECONDS = 1.0
     _SCENE_THRESHOLD = 0.30
 
     @staticmethod
@@ -587,16 +592,28 @@ class PairMatcher:
             return PairMatcher.find_content_discontinuities(pairs)
 
         result = []
-        last_gap_index = len(frame_pairs) - 2
+        lhs_boundary_context = round(
+            PairMatcher._MIN_INTERIOR_DISCONTINUITY_CONTEXT_SECONDS * lhs_fps
+        )
+        rhs_boundary_context = round(
+            PairMatcher._MIN_INTERIOR_DISCONTINUITY_CONTEXT_SECONDS * rhs_fps
+        )
+        lhs_first, rhs_first = frame_pairs[0]
+        lhs_last, rhs_last = frame_pairs[-1]
         for index, ((lhs1, rhs1), (lhs2, rhs2)) in enumerate(
             zip(frame_pairs, frame_pairs[1:])
         ):
-            # The first and last matched pair delimit the common content, but
-            # normally are scene anchors rather than literal first/last video
-            # frames. A step at either end can therefore describe a divergent
-            # intro/outro, not a hole proven to have shared content on both
-            # sides. The boundary matcher handles those regions separately.
-            if not include_boundary_steps and index in (0, last_gap_index):
+            # The outer matched pairs delimit common content, but normally are
+            # scene anchors rather than literal video boundaries. A step near
+            # either end can therefore describe timestamp placement or a
+            # divergent intro/outro, not a hole proven to have shared content
+            # on both sides. The boundary matcher handles those regions.
+            if not include_boundary_steps and (
+                lhs1 - lhs_first < lhs_boundary_context
+                or lhs_last - lhs2 < lhs_boundary_context
+                or rhs1 - rhs_first < rhs_boundary_context
+                or rhs_last - rhs2 < rhs_boundary_context
+            ):
                 continue
             lhs_advance = lhs2 - lhs1
             rhs_advance = rhs2 - rhs1

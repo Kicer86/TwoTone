@@ -1569,8 +1569,8 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertEqual(result, [])
 
-    def test_global_linear_discontinuity_ignores_first_matched_step(self):
-        mapping = [(400, 400), (10000, 9600), (20000, 19600)]
+    def test_global_linear_discontinuity_ignores_step_near_first_matched_pair(self):
+        mapping = [(0, 0), (400, 400), (10000, 9600), (20000, 19600)]
         lhs_frames = {
             timestamp: {"frame_id": frame, "path": None}
             for timestamp, frame in [(0, 0), (400, 10), (10000, 250), (20000, 500)]
@@ -1580,31 +1580,41 @@ class PairMatcherUnitTest(unittest.TestCase):
             for timestamp, frame in [(0, 0), (400, 10), (9600, 240), (19600, 490)]
         }
 
+        with_boundary_steps = PairMatcher.find_global_linear_content_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+        )
         result = PairMatcher.find_global_linear_content_discontinuities(
             mapping, lhs_frames, rhs_frames,
             frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
             include_boundary_steps=False,
         )
 
+        self.assertEqual(len(with_boundary_steps), 1)
         self.assertEqual(result, [])
 
-    def test_global_linear_discontinuity_ignores_last_matched_step(self):
-        mapping = [(0, 0), (10000, 10000), (19600, 19200)]
+    def test_global_linear_discontinuity_ignores_step_near_last_matched_pair(self):
+        mapping = [(0, 0), (10000, 10000), (19600, 19200), (20000, 19600)]
         lhs_frames = {
             timestamp: {"frame_id": frame, "path": None}
             for timestamp, frame in [(0, 0), (10000, 250), (19600, 490), (20000, 500)]
         }
         rhs_frames = {
             timestamp: {"frame_id": frame, "path": None}
-            for timestamp, frame in [(0, 0), (10000, 250), (19200, 480), (20000, 500)]
+            for timestamp, frame in [(0, 0), (10000, 250), (19200, 480), (19600, 490)]
         }
 
+        with_boundary_steps = PairMatcher.find_global_linear_content_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+        )
         result = PairMatcher.find_global_linear_content_discontinuities(
             mapping, lhs_frames, rhs_frames,
             frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
             include_boundary_steps=False,
         )
 
+        self.assertEqual(len(with_boundary_steps), 1)
         self.assertEqual(result, [])
 
     def test_scene_extraction_completes_cached_ranges_without_reextracting(self):
