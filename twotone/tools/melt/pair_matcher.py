@@ -3142,33 +3142,19 @@ class PairMatcher:
         matching_pairs: list[tuple[int, int]] | None = None,
         frame_slope: float | None = None,
         refine_discontinuities: bool = False,
-        region: tuple[int, int, int, int, int] | None = None,
     ) -> tuple[
         list[tuple[int, int]],
         list[tuple[int, int, int, int, int]],
     ]:
-        """Match key frames and recursively densify discontinuous regions."""
+        """Match key frames and iteratively densify discontinuous regions."""
         if matching_pairs is None:
-            if region is None:
-                self.logger.info("[5/6] Matching key frames")
+            self.logger.info("[5/6] Matching key frames")
             matching_pairs = self._make_pairs(
                 lhs_key_frames,
                 rhs_key_frames,
                 lhs_normalized_frames,
                 rhs_normalized_frames,
             )
-            if region is not None:
-                lhs_from, lhs_to, rhs_from, rhs_to, _ = region
-                matching_pairs = [
-                    pair for pair in matching_pairs
-                    if lhs_from < pair[0] < lhs_to
-                    and rhs_from < pair[1] < rhs_to
-                ]
-                matching_pairs.extend([
-                    (lhs_from, rhs_from),
-                    (lhs_to, rhs_to),
-                ])
-
             if debug is not None:
                 lhs_extracted = self._extracted_subset(self.lhs_all_frames)
                 rhs_extracted = self._extracted_subset(self.rhs_all_frames)
@@ -3205,19 +3191,25 @@ class PairMatcher:
         if not discontinuities or not refine_discontinuities:
             return matching_pairs, discontinuities
 
-        if region is None:
-            self.logger.info(
-                "Starting local scene refinement for suspicious timing regions: %s ↔ %s",
-                self.lhs_label,
-                self.rhs_label,
-            )
+        self.logger.info(
+            "Starting local scene refinement for suspicious timing regions: %s ↔ %s",
+            self.lhs_label,
+            self.rhs_label,
+        )
         self.logger.info(
             "Refining %d suspicious region(s) using cached scene scores",
             len(discontinuities),
         )
 
         refined = set(matching_pairs)
-        for gap in discontinuities:
+        pending = list(reversed(discontinuities))
+        unresolved = []
+        # Each rematch consumes at least one previously unselected cached
+        # candidate. The finite candidate pool bounds retries even if no new
+        # pairs are found; candidate consumption alone never resolves a gap.
+        while pending:
+            self.interruption.check_for_stop()
+            gap = pending.pop()
             lhs_from, lhs_to, rhs_from, rhs_to, _ = gap
             lhs_scenes, rhs_scenes, scenes_added = (
                 self._refine_scenes_in_region(
@@ -3225,35 +3217,39 @@ class PairMatcher:
                     lhs_scene_changes, rhs_scene_changes,
                 )
             )
-            self._extract_scene_frames(lhs_scenes, rhs_scenes)
-            _, _, lhs_candidates, rhs_candidates = self._normalize_extracted(
-                lhs_scenes, rhs_scenes, lhs_normalized_frames, rhs_normalized_frames,
-            )
-            anchors = [(lhs_from, rhs_from), (lhs_to, rhs_to)]
             if scenes_added:
-                local_pairs, _ = self._match_key_frames(
+                self._extract_scene_frames(lhs_scenes, rhs_scenes)
+                _, _, lhs_candidates, rhs_candidates = self._normalize_extracted(
+                    lhs_scenes, rhs_scenes, lhs_normalized_frames, rhs_normalized_frames,
+                )
+                local_pairs = self._make_pairs(
                     lhs_candidates, rhs_candidates,
                     lhs_normalized_frames, rhs_normalized_frames,
-                    lhs_scene_changes, rhs_scene_changes,
-                    matching_pairs=None,
-                    frame_slope=frame_slope,
-                    refine_discontinuities=True,
-                    region=gap,
                 )
+                local_pairs = sorted({
+                    (lhs_from, rhs_from), (lhs_to, rhs_to),
+                    *(pair for pair in local_pairs
+                      if lhs_from < pair[0] < lhs_to
+                      and rhs_from < pair[1] < rhs_to),
+                })
+                if set(local_pairs) - refined:
+                    refined.update(local_pairs)
+                    pending.extend(reversed(find_discontinuities(local_pairs)))
+                else:
+                    # Unchanged anchors imply the same suspected gap. Avoid
+                    # rebuilding full-film coordinates to rediscover it.
+                    pending.append(gap)
             else:
-                local_pairs = anchors
-            refined.update(local_pairs)
+                unresolved.append(gap)
 
         refined_pairs = sorted(refined)
-        discontinuities = find_discontinuities(refined_pairs)
-        if region is None:
-            self.logger.info(
-                "Local scene refinement complete: %d additional matched pair(s), "
-                "%d remaining suspicious region(s)",
-                len(refined - set(matching_pairs)),
-                len(discontinuities),
-            )
-        return refined_pairs, discontinuities
+        self.logger.info(
+            "Local scene refinement complete: %d additional matched pair(s), "
+            "%d remaining suspicious region(s)",
+            len(refined - set(matching_pairs)),
+            len(unresolved),
+        )
+        return refined_pairs, sorted(unresolved)
 
     def _extract_and_refine_boundaries(
         self,
