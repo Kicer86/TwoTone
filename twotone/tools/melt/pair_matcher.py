@@ -2011,22 +2011,21 @@ class PairMatcher:
         # understood without enabling --verbose.
         self._log_relation_diagnostics(matching_pairs)
 
-        # Detect a single global linear frame relation (constant offset = slope
-        # 1, or a fitted near-identity drift).  This decides the *relation* (and
-        # thus the audio strategy) and yields the precise time-scale for the
-        # audio.
+        # Detect a candidate global linear frame relation (constant offset =
+        # slope 1, or a fitted near-identity drift). If suspicious regions add
+        # observations, those final pairs must certify the relation again
+        # before it can determine boundary prediction or the audio strategy.
         global_linear_fit = self.detect_global_linear(
             matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
         )
 
         if global_linear_fit is not None:
-            relation = MappingRelation.GLOBAL_LINEAR
-            frame_slope = global_linear_fit.slope
+            initial_frame_slope = global_linear_fit.slope
             discontinuities = self.find_global_linear_content_discontinuities(
                 matching_pairs,
                 self.lhs_all_frames,
                 self.rhs_all_frames,
-                frame_slope=frame_slope,
+                frame_slope=initial_frame_slope,
                 lhs_fps=self.lhs_fps,
                 rhs_fps=self.rhs_fps,
                 include_boundary_steps=False,
@@ -2037,14 +2036,21 @@ class PairMatcher:
                     lhs_normalized_frames, rhs_normalized_frames,
                     list(lhs_scene_changes), list(rhs_scene_changes),
                     matching_pairs=matching_pairs,
-                    frame_slope=frame_slope,
+                    frame_slope=initial_frame_slope,
                     refine_discontinuities=True,
+                )
+                refined_fit = self.detect_global_linear(
+                    refined_pairs, self.lhs_all_frames, self.rhs_all_frames,
                 )
                 discontinuities = self.find_global_linear_content_discontinuities(
                     refined_pairs,
                     self.lhs_all_frames,
                     self.rhs_all_frames,
-                    frame_slope=frame_slope,
+                    frame_slope=(
+                        refined_fit.slope
+                        if refined_fit is not None
+                        else initial_frame_slope
+                    ),
                     lhs_fps=self.lhs_fps,
                     rhs_fps=self.rhs_fps,
                     include_boundary_steps=False,
@@ -2074,10 +2080,22 @@ class PairMatcher:
                         f"{self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:g} frames) — patching "
                         "audio across such discontinuities is not supported yet"
                     )
-                self.logger.info(
-                    "Local scene refinement resolved all suspected timing discontinuities."
-                )
                 matching_pairs = refined_pairs
+                global_linear_fit = refined_fit
+                if global_linear_fit is not None:
+                    self.logger.info(
+                        "Local scene refinement resolved all suspected timing discontinuities."
+                    )
+                else:
+                    self.logger.info(
+                        "Local scene refinement found no confirmed content discontinuity, "
+                        "but the final observations do not support one global linear relation; "
+                        "using the generic mapping path."
+                    )
+
+        if global_linear_fit is not None:
+            relation = MappingRelation.GLOBAL_LINEAR
+            frame_slope = global_linear_fit.slope
             # Use the fit as a precise predictor of where identical frames should
             # be, extend each boundary toward the video edge, and keep the
             # extension only where the predicted pair is content-verified (same

@@ -935,7 +935,8 @@ class PairMatcherUnitTest(unittest.TestCase):
         initial_pairs = [(0, 0), (10000, 9600)]
         refined_pairs = [(0, 0), (5000, 4800), (10000, 9600)]
         extrapolated_pairs = [(0, 0), (10000, 9600)]
-        fit = GlobalLinearFit(1.0, 0.0, True, 1.0)
+        initial_fit = GlobalLinearFit(1.0, 0.0, True, 1.0)
+        refined_fit = GlobalLinearFit(1.0, -5.0, True, 1.0)
         gap = (0, 10000, 0, 9600, 400)
 
         with patch.object(pm, '_analysis_result_for'), \
@@ -948,7 +949,11 @@ class PairMatcherUnitTest(unittest.TestCase):
                  (refined_pairs, []),
              ]), \
              patch.object(pm, '_log_relation_diagnostics'), \
-             patch.object(PairMatcher, 'detect_global_linear', return_value=fit), \
+             patch.object(
+                 PairMatcher,
+                 'detect_global_linear',
+                 side_effect=[initial_fit, refined_fit],
+             ) as detect, \
              patch.object(
                  PairMatcher,
                  'find_global_linear_content_discontinuities',
@@ -963,7 +968,75 @@ class PairMatcherUnitTest(unittest.TestCase):
             result = pm.create_segments_mapping()
 
         self.assertEqual(result.mapping, extrapolated_pairs)
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
+        self.assertEqual(result.frame_slope, refined_fit.slope)
+        self.assertEqual(detect.call_args_list[1].args[0], refined_pairs)
+        self.assertEqual(extrap.call_args.args[0], refined_fit)
         self.assertEqual(extrap.call_args.args[1], refined_pairs)
+
+    def test_create_segments_mapping_revalidates_relation_after_refinement(self):
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        pm.lhs_all_frames = self._make_frames(
+            list(range(0, 1900001, 40)), prefix="lhs"
+        )
+        pm.rhs_all_frames = self._make_frames(
+            list(range(0, 1900001, 40)), prefix="rhs"
+        )
+        initial_pairs = [
+            (i * 100000, i * 100000 - (600 if i == 9 else 0))
+            for i in range(20)
+        ]
+        refined_pairs = sorted({
+            *initial_pairs,
+            *(
+                (
+                    timestamp,
+                    timestamp - round(
+                        (1 - abs(timestamp - 900000) / 100000) * 600 / 40
+                    ) * 40,
+                )
+                for timestamp in range(805000, 1000000, 5000)
+            ),
+        })
+
+        initial_fit = pm.detect_global_linear(
+            initial_pairs, pm.lhs_all_frames, pm.rhs_all_frames,
+        )
+        self.assertIsNotNone(initial_fit)
+        self.assertIsNone(
+            pm.detect_global_linear(
+                refined_pairs, pm.lhs_all_frames, pm.rhs_all_frames,
+            )
+        )
+
+        with patch.object(pm, '_analysis_result_for'), \
+             patch.object(pm, '_detect_scenes', return_value=([], [])), \
+             patch.object(pm, '_probe_frames'), \
+             patch.object(pm, '_extract_scene_frames', return_value=([], [])), \
+             patch.object(pm, '_normalize_extracted', return_value=({}, {}, {}, {})), \
+             patch.object(pm, '_match_key_frames', side_effect=[
+                 (initial_pairs, []),
+                 (refined_pairs, []),
+             ]), \
+             patch.object(pm, '_log_relation_diagnostics'), \
+             patch.object(
+                 pm,
+                 '_extrapolate_and_verify_global_linear',
+                 side_effect=AssertionError("obsolete fit used for boundary prediction"),
+             ), \
+             patch.object(
+                 pm,
+                 '_extract_and_refine_boundaries',
+                 return_value=refined_pairs,
+             ) as refine_boundaries, \
+             patch.object(pm, 'snap_to_edges', return_value=refined_pairs), \
+             patch('twotone.tools.melt.pair_matcher.DebugRoutines'):
+            result = pm.create_segments_mapping()
+
+        self.assertEqual(result.mapping, refined_pairs)
+        self.assertEqual(result.relation, MappingRelation.GENERIC)
+        self.assertIsNone(result.frame_slope)
+        refine_boundaries.assert_called_once()
 
     # ---- _extrapolate_and_verify_global_linear ----
 

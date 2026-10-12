@@ -607,6 +607,44 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         self.assertTrue(result)
 
+    def test_generic_smooth_timing_variation_uses_subsegment_audio(self):
+        performer = self._make_performer()
+        initial_pairs = [
+            (i * 100000, i * 100000 - (600 if i == 9 else 0))
+            for i in range(20)
+        ]
+        refined_pairs = sorted({
+            *initial_pairs,
+            *(
+                (
+                    timestamp,
+                    timestamp - round(
+                        (1 - abs(timestamp - 900000) / 100000) * 600 / 40
+                    ) * 40,
+                )
+                for timestamp in range(805000, 1000000, 5000)
+            ),
+        })
+        matching = SegmentsMappingResult(
+            mapping=refined_pairs,
+            lhs_all_frames={},
+            rhs_all_frames={},
+            relation=MappingRelation.GENERIC,
+            lhs_fps=25.0,
+            rhs_fps=25.0,
+        )
+
+        with patch.object(
+            performer,
+            "_is_frame_rate_only_drift_mapping",
+            return_value=False,
+        ):
+            strategy = performer._choose_audio_strategy(
+                "/tmp/base.mkv", "/tmp/source.mkv", matching,
+            )
+
+        self.assertEqual(strategy, _AudioStrategy.SUBSEGMENT)
+
     def test_linear_recovery_rejects_tmnt_piecewise_pairs(self):
         # A 23.976 fps base against a 30 fps resampled transfer with ad-break
         # cuts.  The pairs are piecewise (interior residuals of ~1.4 s against
