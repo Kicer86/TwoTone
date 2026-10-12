@@ -1,11 +1,88 @@
 
 import logging
+import os
+import unittest
+from unittest.mock import patch
+
+import cv2 as cv
+import numpy as np
+from parameterized import parameterized
 
 from common import add_to_test_dir
 
 from melt.helpers import MeltTestBase
 from twotone.tools.melt.melt import MappingRelation, PairMatcher
-from twotone.tools.utils import generic_utils, media_analysis, video_utils
+from twotone.tools.utils import files_utils, generic_utils, media_analysis, video_utils
+
+
+class DiscontinuityContentTest(unittest.TestCase):
+    """Same anchor residuals, different actual content around the suspect pair."""
+
+    @parameterized.expand(["false_match", "opposite_edits", "sparse_cut", "ambiguous_black"])
+    def test_sparse_step_requires_content_evidence(self, case):
+        workspace = files_utils.Workspace.temporary()
+        self.addCleanup(workspace.close)
+        rng = np.random.default_rng(42)
+        frames = [cv.resize(rng.integers(0, 256, (45, 80), dtype=np.uint8), (320, 180),
+                            interpolation=cv.INTER_NEAREST)
+                  for _ in range(301)]
+        # Two identical pictures in an otherwise varying sequence allow a
+        # convincing but false single-frame match in two identical videos.
+        frames[110] = frames[125].copy()
+        rhs_frames = list(frames)
+        pairs = [(i * 1000, i * 1000 - (600 if i == 5 else 0)) for i in range(12)]
+        if case == "opposite_edits":
+            # Remove 15 frames, then insert 15 different frames before the
+            # next anchor. Net duration is unchanged and (5000, 4400) is real.
+            rhs_frames = frames[:105] + frames[120:150] + frames[200:215] + frames[150:]
+        elif case == "sparse_cut":
+            rhs_frames = frames[:50] + frames[65:]
+            pairs = [(i * 1600, i * 1600 - (600 if i >= 2 else 0)) for i in range(8)]
+        elif case == "ambiguous_black":
+            frames = [np.zeros_like(frame) if 50 <= i < 225 else frame
+                      for i, frame in enumerate(frames)]
+            rhs_frames = list(frames)
+
+        # A single image cannot distinguish these cases: every seeded anchor
+        # really has identical pictures, including the false match.
+        for lhs, rhs in pairs:
+            np.testing.assert_array_equal(frames[lhs // 40], rhs_frames[rhs // 40])
+
+        paths = []
+        for name, images in (("lhs", frames), ("rhs", rhs_frames)):
+            path = os.path.join(workspace.root, name + ".avi")
+            writer = cv.VideoWriter(path, cv.VideoWriter_fourcc(*"FFV1"), 25.0, (320, 180), False)
+            self.assertTrue(writer.isOpened())
+            try:
+                for frame in images:
+                    writer.write(frame)
+            finally:
+                writer.release()
+            paths.append(path)
+
+        interruption = generic_utils.InterruptibleProcess()
+        logger = logging.getLogger("test.DiscontinuityContent")
+        pm = PairMatcher(
+            interruption, workspace.root, *paths, logger,
+            media_analysis_session=media_analysis.MediaAnalysisSession(workspace, interruption, logger),
+        )
+        # Seed the ambiguous visual match; leave decoding, normalization,
+        # cropping, sequence checks, fitting and final mapping decisions real.
+        with patch.object(pm, '_detect_scenes', return_value=([l for l, _ in pairs], [r for _, r in pairs])), \
+             patch.object(pm, '_make_pairs', return_value=pairs), \
+             patch.object(pm, '_refine_scenes_in_region', return_value=([], [], False)), \
+             patch('twotone.tools.melt.pair_matcher.DebugRoutines'):
+            if case == "false_match":
+                result = pm.create_segments_mapping()
+                self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
+                self.assertEqual(result.frame_slope, 1.0)
+                self.assertNotIn((5000, 4400), result.mapping)
+                self.assertTrue(all(lhs == rhs for lhs, rhs in result.mapping))
+                self.assertEqual(result.mapping[0], (0, 0))
+                self.assertEqual(result.mapping[-1], (12000, 12000))
+            else:
+                with self.assertRaisesRegex(RuntimeError, "Unresolved suspected content discontinuities"):
+                    pm.create_segments_mapping()
 
 
 class PairMatcherIntegrationTest(MeltTestBase):

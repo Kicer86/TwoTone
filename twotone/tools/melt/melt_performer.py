@@ -1695,7 +1695,6 @@ class MeltPerformer(TrackTimelineMixin):
                         lhs_fps=matching.lhs_fps,
                         rhs_fps=matching.rhs_fps,
                         include_boundary_steps=False,
-                        require_persistent_confirmation=True,
                     )
                 )
             else:
@@ -1710,7 +1709,7 @@ class MeltPerformer(TrackTimelineMixin):
                         if strict_global_linear else ""
                     )
                     self.logger.error(
-                        "  Content discontinuity: %s-%s in #%d ↔ %s-%s in #%d "
+                        "  Suspected content discontinuity: %s-%s in #%d ↔ %s-%s in #%d "
                         "(%+d ms%s)",
                         generic_utils.ms_to_time(lhs_from),
                         generic_utils.ms_to_time(lhs_to),
@@ -1722,7 +1721,7 @@ class MeltPerformer(TrackTimelineMixin):
                         suffix,
                     )
                 raise RuntimeError(
-                    "Inputs share content with holes in the scene sequence "
+                    "Unresolved suspected content discontinuities: possible holes in the scene sequence "
                     "(e.g. commercial-break cuts) — patching audio across such "
                     "discontinuities is not supported yet"
                 )

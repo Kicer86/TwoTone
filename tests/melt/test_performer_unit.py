@@ -2013,6 +2013,32 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 {base_video.path: 1, source_video.path: 2},
             )
 
+    def test_patch_mismatched_audio_rejects_sparse_global_linear_frame_step(self):
+        performer = self._make_performer()
+        base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
+        source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
+        mapping = [(0, 0), (200000, 200000), (400000, 399400), (600000, 599400)]
+        performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
+            matching=SegmentsMappingResult(
+                mapping=mapping,
+                lhs_all_frames={lhs: {"frame_id": lhs // 40, "path": None} for lhs, _ in mapping},
+                rhs_all_frames={rhs: {"frame_id": rhs // 40, "path": None} for _, rhs in mapping},
+                relation=MappingRelation.GLOBAL_LINEAR,
+                lhs_fps=25.0, rhs_fps=25.0, frame_slope=1.0,
+            ),
+            source_duration=600000,
+        )
+        with patch.object(performer, "_log_coverage"), \
+             patch.object(performer, "_choose_audio_strategy", side_effect=AssertionError("unsafe mapping reached audio strategy")) as choose, \
+             patch.object(performer, "_execute_audio_patch") as execute, \
+             self.assertRaisesRegex(RuntimeError, "discontinuit.*not supported yet"):
+            performer._patch_mismatched_audio(
+                base_video, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
+                None, 600000, None, {base_video.path: 1, source_video.path: 2},
+            )
+        choose.assert_not_called()
+        execute.assert_not_called()
+
     def test_unscaled_audio_patch_routes_through_shared_executor(self):
         performer = self._make_performer()
         base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)

@@ -488,10 +488,6 @@ class PairMatcher:
     # Unlike the GENERIC time-domain tolerance below, this limit must not grow
     # with gap length: a content cut is a step in frame offset, not drift.
     _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 4.0
-    # A real insertion/removal permanently changes the mapping offset. Require
-    # this many anchors on both sides to distinguish that plateau change from
-    # one noisy match or an ambiguous media boundary.
-    _DISCONTINUITY_PLATEAU_PAIRS = 3
     # A step close to an inferred common-content boundary can be caused by
     # stream timestamp placement, an intro/outro trim, or ambiguous black
     # frames. It is not evidence of a hole unless matched content exists on
@@ -571,7 +567,6 @@ class PairMatcher:
         rhs_fps: float,
         include_boundary_steps: bool = True,
         require_decoded_confirmation: bool = True,
-        require_persistent_confirmation: bool = False,
     ) -> list[tuple[int, int, int, int, int]]:
         """Locate absolute frame-step errors in a GLOBAL_LINEAR mapping.
 
@@ -583,10 +578,11 @@ class PairMatcher:
         media edge are left to boundary handling. When
         ``require_decoded_confirmation`` is true, a timeline step must also be
         visible in decoded frame ordinals before it is reported as a content
-        discontinuity. ``require_persistent_confirmation`` additionally
-        requires the mapping offset to settle at a different level after the
-        step. The returned deficit remains milliseconds for the common
-        performer error-reporting API.
+        discontinuity. These are suspicious intervals, not proof of an edit:
+        a false visual match can also produce opposite steps. Sparse support
+        or a later compensating step cannot clear them; callers must refine
+        the observations or verify the suspected false match against content.
+        The returned deficit remains milliseconds for error reporting.
         """
         pairs = sorted(mapping)
         if len(pairs) < 2 or frame_slope <= 0 or lhs_fps <= 0 or rhs_fps <= 0:
@@ -618,22 +614,6 @@ class PairMatcher:
             if lhs2 > lhs1 and rhs2 > rhs1
         ]
         decoded_slope = float(np.median(decoded_slopes)) if decoded_slopes else None
-        frame_residuals = [rhs - frame_slope * lhs for lhs, rhs in frame_pairs]
-        decoded_residuals = (
-            [rhs - decoded_slope * lhs for lhs, rhs in decoded_frame_pairs]
-            if decoded_slope is not None else []
-        )
-
-        def has_persistent_step(residuals: list[float], index: int) -> bool:
-            window = PairMatcher._DISCONTINUITY_PLATEAU_PAIRS
-            before = residuals[index - window + 1:index + 1]
-            after = residuals[index + 1:index + 1 + window]
-            return (
-                len(before) == window
-                and len(after) == window
-                and abs(float(np.median(after)) - float(np.median(before)))
-                > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-            )
 
         result = []
         lhs_boundary_context = round(
@@ -690,16 +670,6 @@ class PairMatcher:
                     (
                         decoded_deficit is not None
                         and abs(decoded_deficit) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-                    )
-                )
-                and (
-                    not require_persistent_confirmation
-                    or (
-                        has_persistent_step(frame_residuals, index)
-                        and (
-                            not require_decoded_confirmation
-                            or has_persistent_step(decoded_residuals, index)
-                        )
                     )
                 )
             ):
@@ -793,31 +763,46 @@ class PairMatcher:
         )
 
     def _drop_pairs_breaking_local_linearity(
-        self, pairs: list[tuple[int, int]]
+        self, pairs: list[tuple[int, int]],
+        lhs_normalized_frames: FramesInfo,
+        rhs_normalized_frames: FramesInfo,
+        *, frame_slope: float | None = None,
     ) -> list[tuple[int, int]]:
-        """Drop single pairs whose removal restores local linearity.
+        """Remove a cancelling excursion only after content disproves the pair.
 
-        A mismatched pair (two visually alike frames from different moments)
-        bends the mapping around itself: the gaps on its sides show time
-        deficits of opposite signs that cancel once the pair is gone.  Such
-        pairs are removed one at a time until none is left.  A genuine
-        content hole (e.g. a commercial-break cut) shifts the offset
-        persistently instead — its deficit is one-sided, nothing cancels it,
-        and the gap stays for ``find_content_discontinuities`` to report.
+        Opposite edits and a false match have the same timing signature. The
+        existing gap detector nominates candidates; sequence verification must
+        support the neighbours' line and contradict the candidate on both sides.
+        Without that evidence the pair, and its suspicious gaps, survive.
         """
         result = sorted(pairs)
         while True:
-            flagged = PairMatcher._flagged_gap_deficits(result)
+            if frame_slope is not None:
+                gaps = self.find_global_linear_content_discontinuities(
+                    result, self.lhs_all_frames, self.rhs_all_frames,
+                    frame_slope=frame_slope, lhs_fps=self.lhs_fps, rhs_fps=self.rhs_fps,
+                    include_boundary_steps=False,
+                )
+                indices = {pair: i for i, pair in enumerate(result)}
+                flagged = [(indices[(l1, r1)], deficit) for l1, _, r1, _, deficit in gaps]
+            else:
+                flagged = PairMatcher._flagged_gap_deficits(result)
             rogue: tuple[int, int, int] | None = None
             for (gap_a, deficit_a), (gap_b, deficit_b) in zip(flagged, flagged[1:]):
                 if gap_b != gap_a + 1 or deficit_a * deficit_b >= 0:
                     continue
                 merged_gap = result[gap_b + 1][0] - result[gap_a][0]
-                threshold = max(
-                    PairMatcher._MAX_GAP_TIME_DEFICIT_MS,
-                    PairMatcher._MAX_GAP_TIME_DEFICIT_RATIO * merged_gap,
+                threshold = (
+                    self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES * 1000 / self.rhs_fps
+                    if frame_slope is not None else max(
+                        self._MAX_GAP_TIME_DEFICIT_MS,
+                        self._MAX_GAP_TIME_DEFICIT_RATIO * merged_gap,
+                    )
                 )
-                if abs(deficit_a + deficit_b) <= threshold:
+                if abs(deficit_a + deficit_b) <= threshold and self._verify_false_pair(
+                    result[gap_a], result[gap_b], result[gap_b + 1],
+                    lhs_normalized_frames, rhs_normalized_frames,
+                ):
                     rogue = (gap_a + 1, deficit_a, deficit_b)
                     break
             if rogue is None:
@@ -825,12 +810,80 @@ class PairMatcher:
             rogue_index, deficit_before, deficit_after = rogue
             lhs_ts, rhs_ts = result.pop(rogue_index)
             self.logger.warning(
-                "Dropping pair %s ↔ %s — it bends the mapping its neighbours agree on (%+d ms before, %+d ms after)",
+                "Dropping content-disproved pair %s ↔ %s (%+d ms before, %+d ms after)",
                 generic_utils.ms_to_time(lhs_ts),
                 generic_utils.ms_to_time(rhs_ts),
                 deficit_before,
                 deficit_after,
             )
+
+    def _verify_false_pair(
+        self, before: tuple[int, int], pair: tuple[int, int], after: tuple[int, int],
+        lhs_normalized_frames: FramesInfo, rhs_normalized_frames: FramesInfo,
+    ) -> bool:
+        """Verify a replacement sequence before discarding an isolated anchor.
+
+        Sample half a second around the anchor, bounded by its neighbours.
+        Every sample on the neighbours' line must contain matching rich content;
+        the original alignment must contradict rich content both before and
+        after the anchor. Missing images, black frames or repeated/static shots
+        cannot establish a false match. All comparisons reuse the matcher's
+        normalized, shared-crop space and calibrated cutoff.
+        """
+        if not self.lhs_all_frames or not self.rhs_all_frames:
+            return False
+        if any(l not in lhs_normalized_frames or r not in rhs_normalized_frames
+               for l, r in (before, after)):
+            return False
+        lhs_ts, rhs_ts = pair
+        if after[0] <= before[0] or after[1] <= before[1]:
+            return False
+        slope = (after[1] - before[1]) / (after[0] - before[0])
+        radius = min(
+            500, (lhs_ts - before[0]) // 2, (after[0] - lhs_ts) // 2,
+            int((rhs_ts - before[1]) / (2 * slope)),
+            int((after[1] - rhs_ts) / (2 * slope)),
+        )
+        if radius <= 0:
+            return False
+        samples = []
+        for offset in (-radius, -radius // 2, 0, radius // 2, radius):
+            lhs = self._nearest_frame_timestamp(self.lhs_all_frames, lhs_ts + offset)
+            predicted = round(before[1] + (lhs - before[0]) * slope)
+            original = round(rhs_ts + (lhs - lhs_ts) * slope)
+            if not (before[1] < predicted < after[1] and before[1] < original < after[1]):
+                return False
+            samples.append((
+                lhs,
+                self._nearest_frame_timestamp(self.rhs_all_frames, predicted),
+                self._nearest_frame_timestamp(self.rhs_all_frames, original),
+            ))
+        self._prefetch_boundary_images(
+            self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames,
+            [lhs for lhs, _, _ in samples],
+        )
+        self._prefetch_boundary_images(
+            self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames,
+            [ts for _, predicted, original in samples for ts in (predicted, original)],
+        )
+        ctx = self._build_boundary_verify_context(
+            [before, after], lhs_normalized_frames, rhs_normalized_frames,
+        )
+        contradicted_before = contradicted_after = False
+        for lhs, predicted, original in samples:
+            self.interruption.check_for_stop()
+            lhs_img = self._comparison_image(ctx.lhs, lhs)
+            predicted_img = self._comparison_image(ctx.rhs, predicted)
+            original_img = self._comparison_image(ctx.rhs, original)
+            if not all(img is not None and self._is_rich(img)
+                       for img in (lhs_img, predicted_img, original_img)):
+                return False
+            if not self._boundary_content_matches(ctx, lhs, predicted):
+                return False
+            if not self._boundary_content_matches(ctx, lhs, original):
+                contradicted_before |= lhs < lhs_ts
+                contradicted_after |= lhs > lhs_ts
+        return contradicted_before and contradicted_after
 
     # A mapping counts as effectively linear when every pair sits within this
     # distance of the line through its endpoints.
@@ -2039,6 +2092,10 @@ class PairMatcher:
                     frame_slope=initial_frame_slope,
                     refine_discontinuities=True,
                 )
+                refined_pairs = self._drop_pairs_breaking_local_linearity(
+                    refined_pairs, lhs_normalized_frames, rhs_normalized_frames,
+                    frame_slope=initial_frame_slope,
+                )
                 refined_fit = self.detect_global_linear(
                     refined_pairs, self.lhs_all_frames, self.rhs_all_frames,
                 )
@@ -2054,7 +2111,6 @@ class PairMatcher:
                     lhs_fps=self.lhs_fps,
                     rhs_fps=self.rhs_fps,
                     include_boundary_steps=False,
-                    require_persistent_confirmation=True,
                 )
 
                 if discontinuities:
@@ -2075,7 +2131,7 @@ class PairMatcher:
                         )
 
                     raise RuntimeError(
-                        "Inputs share content with holes in the scene sequence "
+                        "Unresolved suspected content discontinuities: possible holes in the scene sequence "
                         f"(absolute frame-step error exceeds "
                         f"{self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:g} frames) — patching "
                         "audio across such discontinuities is not supported yet"
@@ -2659,7 +2715,7 @@ class PairMatcher:
 
         unique_pairs = sorted(set(final))
 
-        consistent = self._drop_pairs_breaking_local_linearity(unique_pairs)
+        consistent = self._drop_pairs_breaking_local_linearity(unique_pairs, lhs_all, rhs_all)
         self.logger.debug(f"Local linearity filter:    {PairMatcher.summarize_pairs(self.phash, consistent, lhs_all, rhs_all)}")
 
         self.logger.debug(PairMatcher.summarize_segments(consistent, self.lhs_fps, self.rhs_fps, lhs_label=self.lhs_label, rhs_label=self.rhs_label))
@@ -3202,7 +3258,6 @@ class PairMatcher:
                 frame_slope=frame_slope,
                 lhs_fps=self.lhs_fps, rhs_fps=self.rhs_fps,
                 require_decoded_confirmation=False,
-                require_persistent_confirmation=False,
             )
 
         discontinuities = find_discontinuities(matching_pairs)

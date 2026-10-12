@@ -957,7 +957,7 @@ class PairMatcherUnitTest(unittest.TestCase):
              patch.object(
                  PairMatcher,
                  'find_global_linear_content_discontinuities',
-                 side_effect=[[gap], []],
+                 side_effect=[[gap], [], []],
              ), \
              patch.object(
                  PairMatcher,
@@ -1037,6 +1037,43 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(result.relation, MappingRelation.GENERIC)
         self.assertIsNone(result.frame_slope)
         refine_boundaries.assert_called_once()
+
+    def test_create_segments_mapping_keeps_unresolved_sparse_steps(self):
+        seeds = {
+            "sparse_cut": [(i * 100000, i * 100000 - (600 if i >= 2 else 0))
+                           for i in range(8)],
+            "opposite_edits": [(i * 100000, i * 100000 - (600 if i == 5 else 0))
+                               for i in range(12)],
+        }
+        for name, pairs in seeds.items():
+            with self.subTest(name=name):
+                pm = self._make_pair_matcher()
+                pm.lhs_all_frames = self._make_frames_at_fps(27501, 25.0, "lhs")
+                pm.rhs_all_frames = self._make_frames_at_fps(27501, 25.0, "rhs")
+                fit = pm.detect_global_linear(pairs, pm.lhs_all_frames, pm.rhs_all_frames)
+                self.assertIsNotNone(fit)
+                suspected = pm.find_global_linear_content_discontinuities(
+                    pairs, pm.lhs_all_frames, pm.rhs_all_frames,
+                    frame_slope=fit.slope, lhs_fps=25.0, rhs_fps=25.0,
+                    include_boundary_steps=False,
+                )
+                self.assertEqual(len(suspected), 1 if name == "sparse_cut" else 2)
+
+                # Real orchestration, fit, detector and bounded refinement; no
+                # additional scene evidence is available to resolve these steps.
+                with patch.object(pm, '_analysis_result_for', return_value=self._scene_analysis("fake", [])), \
+                     patch.object(pm, '_detect_scenes', return_value=([], [])), \
+                     patch.object(pm, '_probe_frames'), \
+                     patch.object(pm, '_extract_scene_frames', return_value=([], [])), \
+                     patch.object(pm, '_normalize_extracted', return_value=({}, {}, {}, {})), \
+                     patch.object(pm, '_make_pairs', return_value=pairs), \
+                     patch.object(pm, '_log_relation_diagnostics'), \
+                     patch.object(PairMatcher, 'summarize_pairs'), \
+                     patch.object(pm, '_extrapolate_and_verify_global_linear', return_value=pairs) as extrapolate, \
+                     patch('twotone.tools.melt.pair_matcher.DebugRoutines'), \
+                     self.assertRaisesRegex(RuntimeError, "discontinuit.*not supported yet"):
+                    pm.create_segments_mapping()
+                extrapolate.assert_not_called()
 
     # ---- _extrapolate_and_verify_global_linear ----
 
@@ -1658,12 +1695,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             (484418, 1333626, 448600, 1263400, 241),
             (1333626, 2214126, 1263400, 2107920, 553),
         ])
-        self.assertTrue(PairMatcher.find_global_linear_content_discontinuities(
-            mapping, lhs_frames, rhs_frames,
-            frame_slope=0.999755636, lhs_fps=24.0, rhs_fps=25.0,
-            require_persistent_confirmation=True,
-        ))
-
     def test_global_linear_discontinuity_tolerates_four_frame_endpoint_error(self):
         mapping = [(0, 0), (10000, 9840), (20000, 19840)]
         lhs_frames = {
@@ -1703,7 +1734,7 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertEqual(result, [])
 
-    def test_global_linear_discontinuity_rejects_non_persistent_frame_step(self):
+    def test_global_linear_discontinuity_preserves_compensating_steps(self):
         lhs_timestamps = list(range(0, 7000, 1000))
         rhs_timestamps = [0, 1000, 2000, 2600, 4000, 5000, 6000]
         mapping = list(zip(lhs_timestamps, rhs_timestamps))
@@ -1722,10 +1753,12 @@ class PairMatcherUnitTest(unittest.TestCase):
         result = PairMatcher.find_global_linear_content_discontinuities(
             mapping, lhs_frames, rhs_frames,
             frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
-            require_persistent_confirmation=True,
         )
 
-        self.assertEqual(result, [])
+        self.assertEqual(result, [
+            (2000, 3000, 2000, 2600, 400),
+            (3000, 4000, 2600, 4000, -400),
+        ])
 
     def test_global_linear_discontinuity_ignores_step_near_first_matched_pair(self):
         mapping = [(0, 0), (400, 400), (10000, 9600), (20000, 19600)]
@@ -2047,7 +2080,17 @@ class PairMatcherUnitTest(unittest.TestCase):
         ]
         rogue = (3671813, 3527080)
 
-        result = pm._drop_pairs_breaking_local_linearity(sorted(good + [rogue]))
+        # Timestamp geometry nominates the pair but cannot disprove it. Keep
+        # the original removal oracle once content verification supplies that
+        # evidence; inconclusive verification must preserve the same fixture.
+        with patch.object(pm, "_verify_false_pair", return_value=False):
+            self.assertEqual(
+                pm._drop_pairs_breaking_local_linearity(sorted(good + [rogue]), {}, {}),
+                sorted(good + [rogue]),
+            )
+        with patch.object(pm, "_verify_false_pair", return_value=True) as verify:
+            result = pm._drop_pairs_breaking_local_linearity(sorted(good + [rogue]), {}, {})
+        verify.assert_called_once()
 
         self.assertEqual(result, good)
         self.assertEqual(PairMatcher.find_content_discontinuities(result), [])
@@ -2062,7 +2105,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             for lhs in range(0, 600001, 10000)
         ]
 
-        result = pm._drop_pairs_breaking_local_linearity(mapping)
+        result = pm._drop_pairs_breaking_local_linearity(mapping, {}, {})
 
         self.assertEqual(result, mapping)
         self.assertEqual(len(PairMatcher.find_content_discontinuities(result)), 1)
@@ -2076,9 +2119,16 @@ class PairMatcherUnitTest(unittest.TestCase):
             cut = (7000 if lhs > 300000 else 0) + (7000 if lhs > 310000 else 0)
             mapping.append((lhs, lhs - cut))
 
-        result = pm._drop_pairs_breaking_local_linearity(mapping)
+        result = pm._drop_pairs_breaking_local_linearity(mapping, {}, {})
 
         self.assertEqual(result, mapping)
+
+    def test_local_linearity_filter_keeps_unverified_opposite_edits(self):
+        pm = self._make_pair_matcher()
+        mapping = [(i * 10000, i * 10000 - (3000 if i == 5 else 0))
+                   for i in range(12)]
+
+        self.assertEqual(pm._drop_pairs_breaking_local_linearity(mapping, {}, {}), mapping)
 
     def test_local_linearity_filter_tolerates_speed_waviness(self):
         # VHS-style wobble oscillates below the deficit threshold — no gap
@@ -2091,7 +2141,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             rhs += round(10000 * (1.03 if i % 2 else 0.97))
             mapping.append((lhs, rhs))
 
-        result = pm._drop_pairs_breaking_local_linearity(mapping)
+        result = pm._drop_pairs_breaking_local_linearity(mapping, {}, {})
 
         self.assertEqual(result, mapping)
 
@@ -2104,7 +2154,9 @@ class PairMatcherUnitTest(unittest.TestCase):
         corrupted[10] = (100000, 103000)
         corrupted[30] = (300000, 297200)
 
-        result = pm._drop_pairs_breaking_local_linearity(corrupted)
+        with patch.object(pm, "_verify_false_pair", return_value=True) as verify:
+            result = pm._drop_pairs_breaking_local_linearity(corrupted, {}, {})
+        self.assertEqual(verify.call_count, 2)
 
         expected = [p for i, p in enumerate(base) if i not in (10, 30)]
         self.assertEqual(result, expected)
