@@ -488,11 +488,6 @@ class PairMatcher:
     # Unlike the GENERIC time-domain tolerance below, this limit must not grow
     # with gap length: a content cut is a step in frame offset, not drift.
     _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 4.0
-    # A step close to an inferred common-content boundary can be caused by
-    # stream timestamp placement, an intro/outro trim, or ambiguous black
-    # frames. It is not evidence of a hole unless matched content exists on
-    # both sides for this long.
-    _MIN_INTERIOR_DISCONTINUITY_CONTEXT_SECONDS = 1.0
     _SCENE_THRESHOLD = 0.30
 
     @staticmethod
@@ -565,7 +560,6 @@ class PairMatcher:
         frame_slope: float,
         lhs_fps: float,
         rhs_fps: float,
-        include_boundary_steps: bool = True,
         require_decoded_confirmation: bool = True,
     ) -> list[tuple[int, int, int, int, int]]:
         """Locate absolute frame-step errors in a GLOBAL_LINEAR mapping.
@@ -574,8 +568,9 @@ class PairMatcher:
         lhs_advance`` between every two matched anchors. A content removal or
         insertion changes that advance by a fixed number of frames; scaling
         the tolerance with the time between sparse anchors would hide exactly
-        such edits. With ``include_boundary_steps=False``, gaps touching a
-        media edge are left to boundary handling. When
+        such edits. First and last intervals are bracketed by matched anchors
+        too; boundary extension outside those anchors cannot verify their
+        interior. Every suspicious interval needs refinement or content evidence. When
         ``require_decoded_confirmation`` is true, a timeline step must also be
         visible in decoded frame ordinals before it is reported as a content
         discontinuity. These are suspicious intervals, not proof of an edit:
@@ -616,14 +611,6 @@ class PairMatcher:
         decoded_slope = float(np.median(decoded_slopes)) if decoded_slopes else None
 
         result = []
-        lhs_boundary_context = round(
-            PairMatcher._MIN_INTERIOR_DISCONTINUITY_CONTEXT_SECONDS * lhs_fps
-        )
-        rhs_boundary_context = round(
-            PairMatcher._MIN_INTERIOR_DISCONTINUITY_CONTEXT_SECONDS * rhs_fps
-        )
-        lhs_first, rhs_first = frame_pairs[0]
-        lhs_last, rhs_last = frame_pairs[-1]
         for index, (
             (lhs1, rhs1),
             (lhs2, rhs2),
@@ -637,18 +624,6 @@ class PairMatcher:
                 decoded_frame_pairs[1:],
             )
         ):
-            # The outer matched pairs delimit common content, but normally are
-            # scene anchors rather than literal video boundaries. A step near
-            # either end can therefore describe timestamp placement or a
-            # divergent intro/outro, not a hole proven to have shared content
-            # on both sides. The boundary matcher handles those regions.
-            if not include_boundary_steps and (
-                lhs1 - lhs_first < lhs_boundary_context
-                or lhs_last - lhs2 < lhs_boundary_context
-                or rhs1 - rhs_first < rhs_boundary_context
-                or rhs_last - rhs2 < rhs_boundary_context
-            ):
-                continue
             lhs_advance = lhs2 - lhs1
             rhs_advance = rhs2 - rhs1
             if lhs_advance <= 0 or rhs_advance <= 0:
@@ -781,7 +756,6 @@ class PairMatcher:
                 gaps = self.find_global_linear_content_discontinuities(
                     result, self.lhs_all_frames, self.rhs_all_frames,
                     frame_slope=frame_slope, lhs_fps=self.lhs_fps, rhs_fps=self.rhs_fps,
-                    include_boundary_steps=False,
                 )
                 indices = {pair: i for i, pair in enumerate(result)}
                 flagged = [(indices[(l1, r1)], deficit) for l1, _, r1, _, deficit in gaps]
@@ -2081,7 +2055,6 @@ class PairMatcher:
                 frame_slope=initial_frame_slope,
                 lhs_fps=self.lhs_fps,
                 rhs_fps=self.rhs_fps,
-                include_boundary_steps=False,
             )
             if discontinuities:
                 refined_pairs, _ = self._match_key_frames(
@@ -2110,7 +2083,6 @@ class PairMatcher:
                     ),
                     lhs_fps=self.lhs_fps,
                     rhs_fps=self.rhs_fps,
-                    include_boundary_steps=False,
                 )
 
                 if discontinuities:

@@ -1055,7 +1055,6 @@ class PairMatcherUnitTest(unittest.TestCase):
                 suspected = pm.find_global_linear_content_discontinuities(
                     pairs, pm.lhs_all_frames, pm.rhs_all_frames,
                     frame_slope=fit.slope, lhs_fps=25.0, rhs_fps=25.0,
-                    include_boundary_steps=False,
                 )
                 self.assertEqual(len(suspected), 1 if name == "sparse_cut" else 2)
 
@@ -1074,6 +1073,42 @@ class PairMatcherUnitTest(unittest.TestCase):
                      self.assertRaisesRegex(RuntimeError, "discontinuit.*not supported yet"):
                     pm.create_segments_mapping()
                 extrapolate.assert_not_called()
+
+    def test_create_segments_mapping_keeps_unresolved_outer_steps(self):
+        for edge in ("first", "last"):
+            for reverse in (False, True):
+                with self.subTest(edge=edge, reverse=reverse):
+                    pm = self._make_pair_matcher()
+                    pm.lhs_all_frames = self._make_frames_at_fps(47501, 25.0, "lhs")
+                    pm.rhs_all_frames = self._make_frames_at_fps(47501, 25.0, "rhs")
+                    pairs = [(i * 100000, i * 100000 - (3000 if i >= (1 if edge == "first" else 19) else 0))
+                             for i in range(20)]
+                    if reverse:
+                        pairs = [(rhs, lhs) for lhs, rhs in pairs]
+                    fit = pm.detect_global_linear(pairs, pm.lhs_all_frames, pm.rhs_all_frames)
+                    self.assertIsNotNone(fit)
+                    suspected = pm.find_global_linear_content_discontinuities(
+                        pairs, pm.lhs_all_frames, pm.rhs_all_frames,
+                        frame_slope=fit.slope, lhs_fps=25.0, rhs_fps=25.0,
+                    )
+                    self.assertEqual(len(suspected), 1)
+                    self.assertEqual(abs(suspected[0][-1]), 3000)
+
+                    # Keep the real fit, detector and refinement orchestration.
+                    # No visual evidence resolves this long, bracketed interval.
+                    with patch.object(pm, '_analysis_result_for', return_value=self._scene_analysis("fake", [])), \
+                         patch.object(pm, '_detect_scenes', return_value=([], [])), \
+                         patch.object(pm, '_probe_frames'), \
+                         patch.object(pm, '_extract_scene_frames', return_value=([], [])), \
+                         patch.object(pm, '_normalize_extracted', return_value=({}, {}, {}, {})), \
+                         patch.object(pm, '_make_pairs', return_value=pairs), \
+                         patch.object(pm, '_log_relation_diagnostics'), \
+                         patch.object(PairMatcher, 'summarize_pairs'), \
+                         patch.object(pm, '_extrapolate_and_verify_global_linear', return_value=pairs) as extrapolate, \
+                         patch('twotone.tools.melt.pair_matcher.DebugRoutines'), \
+                         self.assertRaisesRegex(RuntimeError, "Unresolved suspected content discontinuities"):
+                        pm.create_segments_mapping()
+                    extrapolate.assert_not_called()
 
     # ---- _extrapolate_and_verify_global_linear ----
 
@@ -1760,7 +1795,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             (3000, 4000, 2600, 4000, -400),
         ])
 
-    def test_global_linear_discontinuity_ignores_step_near_first_matched_pair(self):
+    def test_global_linear_discontinuity_preserves_step_near_first_matched_pair(self):
         mapping = [(0, 0), (400, 400), (10000, 9600), (20000, 19600)]
         lhs_frames = {
             timestamp: {"frame_id": frame, "path": None}
@@ -1771,20 +1806,14 @@ class PairMatcherUnitTest(unittest.TestCase):
             for timestamp, frame in [(0, 0), (400, 10), (9600, 240), (19600, 490)]
         }
 
-        with_boundary_steps = PairMatcher.find_global_linear_content_discontinuities(
-            mapping, lhs_frames, rhs_frames,
-            frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
-        )
         result = PairMatcher.find_global_linear_content_discontinuities(
             mapping, lhs_frames, rhs_frames,
             frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
-            include_boundary_steps=False,
         )
 
-        self.assertEqual(len(with_boundary_steps), 1)
-        self.assertEqual(result, [])
+        self.assertEqual(result, [(400, 10000, 400, 9600, 400)])
 
-    def test_global_linear_discontinuity_ignores_step_near_last_matched_pair(self):
+    def test_global_linear_discontinuity_preserves_step_near_last_matched_pair(self):
         mapping = [(0, 0), (10000, 10000), (19600, 19200), (20000, 19600)]
         lhs_frames = {
             timestamp: {"frame_id": frame, "path": None}
@@ -1795,18 +1824,12 @@ class PairMatcherUnitTest(unittest.TestCase):
             for timestamp, frame in [(0, 0), (10000, 250), (19200, 480), (19600, 490)]
         }
 
-        with_boundary_steps = PairMatcher.find_global_linear_content_discontinuities(
-            mapping, lhs_frames, rhs_frames,
-            frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
-        )
         result = PairMatcher.find_global_linear_content_discontinuities(
             mapping, lhs_frames, rhs_frames,
             frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
-            include_boundary_steps=False,
         )
 
-        self.assertEqual(len(with_boundary_steps), 1)
-        self.assertEqual(result, [])
+        self.assertEqual(result, [(10000, 19600, 10000, 19200, 400)])
 
     def test_scene_extraction_completes_cached_ranges_without_reextracting(self):
         pm = self._make_pm_with_frames([0, 40, 80, 120], [0])

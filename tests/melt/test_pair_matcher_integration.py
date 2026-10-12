@@ -20,8 +20,6 @@ class DiscontinuityContentTest(unittest.TestCase):
 
     @parameterized.expand(["false_match", "opposite_edits", "sparse_cut", "ambiguous_black"])
     def test_sparse_step_requires_content_evidence(self, case):
-        workspace = files_utils.Workspace.temporary()
-        self.addCleanup(workspace.close)
         rng = np.random.default_rng(42)
         frames = [cv.resize(rng.integers(0, 256, (45, 80), dtype=np.uint8), (320, 180),
                             interpolation=cv.INTER_NEAREST)
@@ -48,24 +46,7 @@ class DiscontinuityContentTest(unittest.TestCase):
         for lhs, rhs in pairs:
             np.testing.assert_array_equal(frames[lhs // 40], rhs_frames[rhs // 40])
 
-        paths = []
-        for name, images in (("lhs", frames), ("rhs", rhs_frames)):
-            path = os.path.join(workspace.root, name + ".avi")
-            writer = cv.VideoWriter(path, cv.VideoWriter_fourcc(*"FFV1"), 25.0, (320, 180), False)
-            self.assertTrue(writer.isOpened())
-            try:
-                for frame in images:
-                    writer.write(frame)
-            finally:
-                writer.release()
-            paths.append(path)
-
-        interruption = generic_utils.InterruptibleProcess()
-        logger = logging.getLogger("test.DiscontinuityContent")
-        pm = PairMatcher(
-            interruption, workspace.root, *paths, logger,
-            media_analysis_session=media_analysis.MediaAnalysisSession(workspace, interruption, logger),
-        )
+        pm = self._make_content_matcher(frames, rhs_frames)
         # Seed the ambiguous visual match; leave decoding, normalization,
         # cropping, sequence checks, fitting and final mapping decisions real.
         with patch.object(pm, '_detect_scenes', return_value=([l for l, _ in pairs], [r for _, r in pairs])), \
@@ -83,6 +64,73 @@ class DiscontinuityContentTest(unittest.TestCase):
             else:
                 with self.assertRaisesRegex(RuntimeError, "Unresolved suspected content discontinuities"):
                     pm.create_segments_mapping()
+
+    @parameterized.expand([
+        (edge, reverse, content)
+        for edge in ("first", "last")
+        for reverse in (False, True)
+        for content in ("cut", "ambiguous_black")
+    ])
+    def test_outer_interval_requires_content_evidence(self, edge, reverse, content):
+        rng = np.random.default_rng(43)
+        frames = [cv.resize(rng.integers(0, 256, (45, 80), dtype=np.uint8), (320, 180),
+                            interpolation=cv.INTER_NEAREST)
+                  for _ in range(601)]
+        cut_start = 15 if edge == "first" else 555
+        if content == "ambiguous_black":
+            # Both anchors look identical, but black cannot establish whether
+            # an edit or a spurious pairing produced the timeline step.
+            frames = [np.zeros_like(frame)
+                      if (i <= 30 if edge == "first" else i >= 555) else frame
+                      for i, frame in enumerate(frames)]
+        rhs_frames = frames[:cut_start] + frames[cut_start + 15:]
+        pairs = [(i * 1200, i * 1200 - (600 if i >= (1 if edge == "first" else 19) else 0))
+                 for i in range(20)]
+        for lhs, rhs in pairs:
+            np.testing.assert_array_equal(frames[lhs // 40], rhs_frames[rhs // 40])
+        if reverse:
+            frames, rhs_frames = rhs_frames, frames
+            pairs = [(rhs, lhs) for lhs, rhs in pairs]
+        pm = self._make_content_matcher(frames, rhs_frames)
+
+        # Real extraction, normalization, fitting, detector and local matching.
+        # Seed only the sparse initial anchors; cached candidates may refine
+        # the interval, but must never erase verified common content at its edge.
+        make_pairs = pm._make_pairs
+
+        def seed_initial_pairs(*args):
+            if matching.call_count == 1:
+                return pairs
+            else:
+                return make_pairs(*args)
+
+        with patch.object(pm, '_detect_scenes', return_value=([l for l, _ in pairs], [r for _, r in pairs])), \
+             patch.object(pm, '_make_pairs', side_effect=seed_initial_pairs) as matching, \
+             patch('twotone.tools.melt.pair_matcher.DebugRoutines'), \
+             self.assertRaisesRegex(RuntimeError, "Unresolved suspected content discontinuities"):
+            pm.create_segments_mapping()
+
+    def _make_content_matcher(self, frames, rhs_frames):
+        workspace = files_utils.Workspace.temporary()
+        self.addCleanup(workspace.close)
+        paths = []
+        for name, images in (("lhs", frames), ("rhs", rhs_frames)):
+            path = os.path.join(workspace.root, name + ".avi")
+            writer = cv.VideoWriter(path, cv.VideoWriter_fourcc(*"FFV1"), 25.0, (320, 180), False)
+            self.assertTrue(writer.isOpened())
+            try:
+                for frame in images:
+                    writer.write(frame)
+            finally:
+                writer.release()
+            paths.append(path)
+
+        interruption = generic_utils.InterruptibleProcess()
+        logger = logging.getLogger("test.DiscontinuityContent")
+        return PairMatcher(
+            interruption, workspace.root, *paths, logger,
+            media_analysis_session=media_analysis.MediaAnalysisSession(workspace, interruption, logger),
+        )
 
 
 class PairMatcherIntegrationTest(MeltTestBase):
