@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from twotone.tools.melt.melt import MappingRelation, PairMatcher
 from twotone.tools.melt.pair_matcher import (
+    GlobalLinearDiscontinuityReport,
     GlobalLinearFit,
     _BoundaryVerifyContext,
     _VerifySide,
@@ -956,8 +957,12 @@ class PairMatcherUnitTest(unittest.TestCase):
              ) as detect, \
              patch.object(
                  PairMatcher,
-                 'find_global_linear_content_discontinuities',
-                 side_effect=[[gap], [], []],
+                 '_classify_global_linear_discontinuities',
+                 side_effect=[
+                     GlobalLinearDiscontinuityReport([gap], []),
+                     GlobalLinearDiscontinuityReport([], []),
+                     GlobalLinearDiscontinuityReport([], []),
+                 ],
              ), \
              patch.object(
                  PairMatcher,
@@ -1109,6 +1114,48 @@ class PairMatcherUnitTest(unittest.TestCase):
                          self.assertRaisesRegex(RuntimeError, "Unresolved suspected content discontinuities"):
                         pm.create_segments_mapping()
                     extrapolate.assert_not_called()
+
+    def test_create_segments_mapping_preserves_pts_step_before_boundary_prediction(self):
+        for reverse, refine in ((False, False), (True, False), (False, True)):
+            with self.subTest(reverse=reverse, refine=refine):
+                pm = self._make_pair_matcher()
+                pm.lhs_all_frames = self._make_frames_at_fps(48000, 25.0, "lhs")
+                pm.rhs_all_frames = self._make_frames(
+                    [i * 40 + (3000 if i >= 40000 else 0) for i in range(48000)], "rhs",
+                )
+                pairs = [(j * 100000, j * 100000 + (3000 if j >= 16 else 0)) for j in range(20)]
+                if reverse:
+                    pm.lhs_all_frames, pm.rhs_all_frames = pm.rhs_all_frames, pm.lhs_all_frames
+                    pairs = [(rhs, lhs) for lhs, rhs in pairs]
+                initial_pairs = list(pairs)
+                if refine:
+                    # Refinement can also expose smooth timing variation that
+                    # invalidates the fit. The independent PTS step must still
+                    # block generic boundary search and audio execution.
+                    initial_pairs[9] = (900000, 899400)
+                    pairs = sorted({
+                        *initial_pairs,
+                        *((t, t - round((1 - abs(t - 900000) / 100000) * 600 / 40) * 40)
+                          for t in range(805000, 1000000, 5000)),
+                    })
+                    self.assertIsNone(pm.detect_global_linear(pairs, pm.lhs_all_frames, pm.rhs_all_frames))
+                self.assertIsNotNone(pm.detect_global_linear(initial_pairs, pm.lhs_all_frames, pm.rhs_all_frames))
+                with patch.object(pm, '_analysis_result_for', return_value=self._scene_analysis("fake", [])), \
+                     patch.object(pm, '_detect_scenes', return_value=([], [])), \
+                     patch.object(pm, '_probe_frames'), \
+                     patch.object(pm, '_extract_scene_frames', return_value=([], [])), \
+                     patch.object(pm, '_normalize_extracted', return_value=({}, {}, {}, {})), \
+                     patch.object(pm, '_match_key_frames', side_effect=[(initial_pairs, []), (pairs, [])]), \
+                     patch.object(PairMatcher, 'summarize_pairs'), \
+                     patch.object(pm, '_extrapolate_and_verify_global_linear', return_value=pairs) as extrapolate, \
+                     patch.object(pm, '_extract_and_refine_boundaries', return_value=pairs) as generic, \
+                     patch('twotone.tools.melt.pair_matcher.DebugRoutines'):
+                    result = pm.create_segments_mapping()
+                self.assertEqual(result.mapping, pairs)
+                self.assertEqual(len(result.timing_discontinuities), 1)
+                self.assertEqual(abs(result.timing_discontinuities[0][-1]), 3000)
+                extrapolate.assert_not_called()
+                generic.assert_not_called()
 
     # ---- _extrapolate_and_verify_global_linear ----
 
@@ -1768,6 +1815,34 @@ class PairMatcherUnitTest(unittest.TestCase):
         )
 
         self.assertEqual(result, [])
+
+    def test_global_linear_discontinuity_rejects_decoded_continuity_with_pts_step(self):
+        # The decoded frames are continuous, but the source timeline jumps by
+        # three seconds at frame 40000.  Equal decode advances do not prove
+        # that one global audio transform can represent the mapping.
+        lhs_frames = {
+            timestamp: {"frame_id": index, "path": None}
+            for index in range(48000)
+            for timestamp in [index * 40]
+        }
+        rhs_frames = {
+            timestamp: {"frame_id": index, "path": None}
+            for index in range(48000)
+            for timestamp in [index * 40 + (3000 if index >= 40000 else 0)]
+        }
+        mapping = [
+            (index * 100000, index * 100000 + (3000 if index >= 16 else 0))
+            for index in range(20)
+        ]
+
+        report = PairMatcher._classify_global_linear_discontinuities(
+            mapping, lhs_frames, rhs_frames,
+            frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+        )
+
+        self.assertEqual(report.content, [])
+        self.assertEqual(len(report.timing), 1)
+        self.assertEqual(report.timing[0][-1], -3000)
 
     def test_global_linear_discontinuity_preserves_compensating_steps(self):
         lhs_timestamps = list(range(0, 7000, 1000))

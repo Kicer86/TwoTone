@@ -49,6 +49,18 @@ class GlobalLinearFit(NamedTuple):
     time_scale: float
 
 
+class GlobalLinearDiscontinuityReport(NamedTuple):
+    """Suspected content cuts and timestamp steps with continuous decode order.
+
+    Content entries remain unresolved until verified against images. Timing
+    entries also prohibit audio execution: equal decoded advances do not make
+    the source PTS representable by one supported audio transform.
+    """
+
+    content: list[tuple[int, int, int, int, int]]
+    timing: list[tuple[int, int, int, int, int]]
+
+
 class CoverageSummary(TypedDict):
     """Human-readable coverage report for two matched files."""
 
@@ -68,6 +80,8 @@ class SegmentsMappingResult(NamedTuple):
     lhs_fps: float
     rhs_fps: float
     frame_slope: float | None = None
+    # A candidate frame relation is not audio certification when these exist.
+    timing_discontinuities: tuple[tuple[int, int, int, int, int], ...] = ()
 
 
 class _BoundarySearchContext(NamedTuple):
@@ -578,10 +592,30 @@ class PairMatcher:
         or a later compensating step cannot clear them; callers must refine
         the observations or verify the suspected false match against content.
         The returned deficit remains milliseconds for error reporting.
+        An empty content list does not certify audio timing; execution decisions
+        must consume the full report from ``_classify_global_linear_discontinuities``.
         """
+        report = PairMatcher._classify_global_linear_discontinuities(
+            mapping, lhs_all_frames, rhs_all_frames,
+            frame_slope=frame_slope, lhs_fps=lhs_fps, rhs_fps=rhs_fps,
+        )
+        if require_decoded_confirmation:
+            return report.content
+        return sorted(report.content + report.timing)
+
+    @staticmethod
+    def _classify_global_linear_discontinuities(
+        mapping: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+        *,
+        frame_slope: float,
+        lhs_fps: float,
+        rhs_fps: float,
+    ) -> GlobalLinearDiscontinuityReport:
         pairs = sorted(mapping)
         if len(pairs) < 2 or frame_slope <= 0 or lhs_fps <= 0 or rhs_fps <= 0:
-            return []
+            return GlobalLinearDiscontinuityReport([], [])
 
         lhs_ids = PairMatcher._timeline_frame_ids(lhs_all_frames, lhs_fps)
         rhs_ids = PairMatcher._timeline_frame_ids(rhs_all_frames, rhs_fps)
@@ -598,7 +632,9 @@ class PairMatcher:
                 for lhs_ts, rhs_ts in pairs
             ]
         except KeyError:
-            return PairMatcher.find_content_discontinuities(pairs)
+            return GlobalLinearDiscontinuityReport(
+                PairMatcher.find_content_discontinuities(pairs), [],
+            )
 
         decoded_slopes = [
             (rhs2 - rhs1) / (lhs2 - lhs1)
@@ -610,7 +646,8 @@ class PairMatcher:
         ]
         decoded_slope = float(np.median(decoded_slopes)) if decoded_slopes else None
 
-        result = []
+        content_result = []
+        timing_result = []
         for index, (
             (lhs1, rhs1),
             (lhs2, rhs2),
@@ -637,23 +674,20 @@ class PairMatcher:
                     decoded_deficit = (
                         decoded_lhs_advance * decoded_slope - decoded_rhs_advance
                     )
-            if (
-                abs(deficit_frames) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-                and (
-                    not require_decoded_confirmation
-                    or
-                    (
-                        decoded_deficit is not None
-                        and abs(decoded_deficit) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-                    )
-                )
-            ):
+            if abs(deficit_frames) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:
                 deficit_ms = round(deficit_frames * 1000 / rhs_fps)
-                result.append((
+                discontinuity = (
                     pairs[index][0], pairs[index + 1][0],
                     pairs[index][1], pairs[index + 1][1], deficit_ms,
-                ))
-        return result
+                )
+                if (
+                    decoded_deficit is None
+                    or abs(decoded_deficit) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
+                ):
+                    content_result.append(discontinuity)
+                else:
+                    timing_result.append(discontinuity)
+        return GlobalLinearDiscontinuityReport(content_result, timing_result)
 
     def _refine_scenes_in_region(
         self,
@@ -2045,10 +2079,11 @@ class PairMatcher:
         global_linear_fit = self.detect_global_linear(
             matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
         )
+        timing_discontinuities: tuple[tuple[int, int, int, int, int], ...] = ()
 
         if global_linear_fit is not None:
             initial_frame_slope = global_linear_fit.slope
-            discontinuities = self.find_global_linear_content_discontinuities(
+            discontinuity_report = self._classify_global_linear_discontinuities(
                 matching_pairs,
                 self.lhs_all_frames,
                 self.rhs_all_frames,
@@ -2056,6 +2091,8 @@ class PairMatcher:
                 lhs_fps=self.lhs_fps,
                 rhs_fps=self.rhs_fps,
             )
+            discontinuities = discontinuity_report.content
+            timing_discontinuities = tuple(discontinuity_report.timing)
             if discontinuities:
                 refined_pairs, _ = self._match_key_frames(
                     lhs_key_frames, rhs_key_frames,
@@ -2072,7 +2109,7 @@ class PairMatcher:
                 refined_fit = self.detect_global_linear(
                     refined_pairs, self.lhs_all_frames, self.rhs_all_frames,
                 )
-                discontinuities = self.find_global_linear_content_discontinuities(
+                discontinuity_report = self._classify_global_linear_discontinuities(
                     refined_pairs,
                     self.lhs_all_frames,
                     self.rhs_all_frames,
@@ -2084,12 +2121,14 @@ class PairMatcher:
                     lhs_fps=self.lhs_fps,
                     rhs_fps=self.rhs_fps,
                 )
+                discontinuities = discontinuity_report.content
+                timing_discontinuities = tuple(discontinuity_report.timing)
 
                 if discontinuities:
                     debug.dump_matches(refined_pairs, "localized discontinuities")
                     for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in discontinuities:
                         self.logger.error(
-                            "Suspected timing discontinuity between matched anchors: %s-%s in %s "
+                            "Suspected content discontinuity between matched anchors: %s-%s in %s "
                             "↔ %s-%s in %s "
                             "(%+d ms, %+.1f frames)",
                             generic_utils.ms_to_time(lhs_from),
@@ -2103,18 +2142,19 @@ class PairMatcher:
                         )
 
                     raise RuntimeError(
-                        "Unresolved suspected content discontinuities: possible holes in the scene sequence "
+                        "Unresolved suspected content discontinuities: insufficient evidence to rule out "
+                        "holes in the scene sequence "
                         f"(absolute frame-step error exceeds "
                         f"{self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:g} frames) — patching "
                         "audio across such discontinuities is not supported yet"
                     )
                 matching_pairs = refined_pairs
                 global_linear_fit = refined_fit
-                if global_linear_fit is not None:
+                if global_linear_fit is not None and not timing_discontinuities:
                     self.logger.info(
-                        "Local scene refinement resolved all suspected timing discontinuities."
+                        "Local scene refinement resolved all suspected content discontinuities."
                     )
-                else:
+                elif global_linear_fit is None and not timing_discontinuities:
                     self.logger.info(
                         "Local scene refinement found no confirmed content discontinuity, "
                         "but the final observations do not support one global linear relation; "
@@ -2132,39 +2172,47 @@ class PairMatcher:
             # match — the line is never blindly projected across divergent
             # content.  No timestamp edge-snap here: the extension is already
             # frame-exact on the fitted line.
-            matching_pairs = self._extrapolate_and_verify_global_linear(
-                global_linear_fit, matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
-            )
-            debug.dump_matches(matching_pairs, "after verified global-linear extrapolation")
+            if not timing_discontinuities:
+                matching_pairs = self._extrapolate_and_verify_global_linear(
+                    global_linear_fit, matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
+                )
+                debug.dump_matches(matching_pairs, "after verified global-linear extrapolation")
         else:
             relation = MappingRelation.GENERIC
             frame_slope = None
-            # No global relation — fall back to the content/entropy-aware
-            # iterative boundary search.
-            matching_pairs = self._extract_and_refine_boundaries(
-                matching_pairs, lhs_scene_ranges, rhs_scene_ranges,
-                lhs_normalized_frames, rhs_normalized_frames, debug,
-            )
-            # The refined pairs can reveal a linear relation the sparse
-            # initial matching could not certify.  A mapping that now passes
-            # the full global-linear detection earns the same verified
-            # boundary extension as a detected global-linear one: the fitted
-            # line predicts the edge pairs, and every extension is
-            # content-verified before being kept.  This must run before the
-            # edge snap: snapped pairs are artificial timestamps with no
-            # normalized frames behind them, while the fit and the
-            # verification may only ever see real matched pairs.
-            generic_fit = self.detect_global_linear(
-                matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
-            )
-            if generic_fit is not None:
-                matching_pairs = self._extrapolate_and_verify_global_linear(
-                    generic_fit, matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
+            if not timing_discontinuities:
+                # No global relation — fall back to the content/entropy-aware
+                # iterative boundary search.
+                matching_pairs = self._extract_and_refine_boundaries(
+                    matching_pairs, lhs_scene_ranges, rhs_scene_ranges,
+                    lhs_normalized_frames, rhs_normalized_frames, debug,
                 )
-                debug.dump_matches(matching_pairs, "after verified linear extrapolation")
-            matching_pairs = self.snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
+                # The refined pairs can reveal a linear relation the sparse
+                # initial matching could not certify.  A mapping that now passes
+                # the full global-linear detection earns the same verified
+                # boundary extension as a detected global-linear one: the fitted
+                # line predicts the edge pairs, and every extension is
+                # content-verified before being kept.  This must run before the
+                # edge snap: snapped pairs are artificial timestamps with no
+                # normalized frames behind them, while the fit and the
+                # verification may only ever see real matched pairs.
+                generic_fit = self.detect_global_linear(
+                    matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
+                )
+                if generic_fit is not None:
+                    matching_pairs = self._extrapolate_and_verify_global_linear(
+                        generic_fit, matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
+                    )
+                    debug.dump_matches(matching_pairs, "after verified linear extrapolation")
+                matching_pairs = self.snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
 
-        self.logger.info("Mapping relation chosen: %s", relation.value)
+        if timing_discontinuities:
+            self.logger.warning(
+                "Matched content has continuous decoded advances but discontinuous presentation timestamps; "
+                "the candidate %s frame relation is unsafe for audio execution.", relation.value,
+            )
+        else:
+            self.logger.info("Mapping relation chosen: %s", relation.value)
 
         return SegmentsMappingResult(
             mapping=matching_pairs,
@@ -2174,6 +2222,7 @@ class PairMatcher:
             lhs_fps=self.lhs_fps,
             rhs_fps=self.rhs_fps,
             frame_slope=frame_slope,
+            timing_discontinuities=timing_discontinuities,
         )
 
     def _log_relation_diagnostics(self, matching_pairs: list[tuple[int, int]]) -> None:

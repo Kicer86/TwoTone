@@ -1681,26 +1681,46 @@ class MeltPerformer(TrackTimelineMixin):
             # audio strategy assumes the mapped content is continuous.  Fail
             # loudly instead of producing a subtly broken track.
             frame_slope = matching.frame_slope
+            timing_discontinuities = matching.timing_discontinuities
             if (
                 matching.relation is MappingRelation.GLOBAL_LINEAR
                 and frame_slope is not None
             ):
                 strict_global_linear = True
-                discontinuities = (
-                    PairMatcher.find_global_linear_content_discontinuities(
-                        matching.mapping,
-                        matching.lhs_all_frames,
-                        matching.rhs_all_frames,
-                        frame_slope=frame_slope,
-                        lhs_fps=matching.lhs_fps,
-                        rhs_fps=matching.rhs_fps,
-                    )
+                report = PairMatcher._classify_global_linear_discontinuities(
+                    matching.mapping,
+                    matching.lhs_all_frames,
+                    matching.rhs_all_frames,
+                    frame_slope=frame_slope,
+                    lhs_fps=matching.lhs_fps,
+                    rhs_fps=matching.rhs_fps,
                 )
+                discontinuities = report.content
+                timing_discontinuities = timing_discontinuities or tuple(report.timing)
             else:
                 strict_global_linear = False
                 discontinuities = PairMatcher.find_content_discontinuities(
                     matching.mapping,
                 )
+            if timing_discontinuities:
+                for lhs_from, lhs_to, rhs_from, rhs_to, deficit in timing_discontinuities:
+                    self.logger.error(
+                        "  Unsupported audio timeline discontinuity: %s-%s in #%d ↔ %s-%s in #%d "
+                        "(%+d ms)",
+                        generic_utils.ms_to_time(lhs_from),
+                        generic_utils.ms_to_time(lhs_to),
+                        file_ids[video_path_base],
+                        generic_utils.ms_to_time(rhs_from),
+                        generic_utils.ms_to_time(rhs_to),
+                        file_ids[audio_path],
+                        deficit,
+                    )
+                raise RuntimeError(
+                    "Unsupported audio timeline discontinuity: the matched PTS mapping "
+                    "has a PTS step despite continuous decoded video; the supported audio executors "
+                    "cannot preserve alignment on both sides of that step"
+                )
+
             if discontinuities:
                 for lhs_from, lhs_to, rhs_from, rhs_to, deficit in discontinuities:
                     suffix = (
@@ -1720,7 +1740,8 @@ class MeltPerformer(TrackTimelineMixin):
                         suffix,
                     )
                 raise RuntimeError(
-                    "Unresolved suspected content discontinuities: possible holes in the scene sequence "
+                    "Unresolved suspected content discontinuities: insufficient evidence to rule out "
+                    "holes in the scene sequence "
                     "(e.g. commercial-break cuts) — patching audio across such "
                     "discontinuities is not supported yet"
                 )

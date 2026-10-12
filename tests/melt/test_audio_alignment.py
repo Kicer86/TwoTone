@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from itertools import combinations, permutations, product
 from pathlib import Path
 from typing import ClassVar
+from unittest.mock import patch
 
 import numpy as np
 from common import (
@@ -20,6 +21,8 @@ from parameterized import parameterized
 
 from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
 from twotone.tools.melt.melt_cache import MeltCache
+from twotone.tools.melt.melt_common import AudioStreamRef, VideoStreamRef
+from twotone.tools.melt.pair_matcher import PairMatcher
 from twotone.tools.tool import ToolRuntimeContext
 from twotone.tools.utils import generic_utils, media_analysis, video_utils
 
@@ -140,6 +143,71 @@ for index, (first, second) in enumerate(combinations(FRAME_DRIFT_VARIANTS, 2)):
             False,
         ),
     ])
+
+
+class AudioTimelineDiscontinuityTest(TwoToneTestCase):
+    def test_audio_following_interior_pts_jump_is_rejected(self):
+        # Lossless video keeps every decoded frame; video and audio both gain
+        # three empty presentation seconds at 16 s. Beeps on either side prove
+        # the audio's local timing, independently of whole-file duration.
+        base = os.path.join(self.wd.path, "continuous.mkv")
+        source = os.path.join(self.wd.path, "pts_jump.mkv")
+        run_ffmpeg([
+            "-y", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25:duration=20",
+            "-f", "lavfi", "-i",
+            "aevalsrc=0.75*sin(2*PI*880*t)*(between(t\\,5\\,5.12)+between(t\\,18\\,18.12)):s=48000:d=20",
+            "-vf", "negate=enable='gte(mod(t,2),1)'",
+            "-c:v", "ffv1", "-c:a", "pcm_s16le", base,
+        ], expected_path=base)
+        run_ffmpeg([
+            "-y", "-i", base,
+            "-vf", "setpts=PTS+if(gte(N\\,400)\\,3/TB\\,0)",
+            "-af", "asetnsamples=n=1920:p=0,asetpts=PTS+if(gte(T\\,16)\\,3/TB\\,0)",
+            "-fps_mode", "passthrough", "-c:v", "ffv1", "-c:a", "pcm_s16le", source,
+        ], expected_path=source)
+        for path, expected in ((base, [5.06, 18.06]), (source, [5.06, 21.06])):
+            wav_path = path + ".wav"
+            run_ffmpeg([
+                "-y", "-i", path, "-map", "0:a:0",
+                "-af", "aresample=async=1:first_pts=0", "-c:a", "pcm_s16le", wav_path,
+            ], expected_path=wav_path)
+            centers = AudioAlignmentTest._detect_beep_centers(wav_path)
+            self.assertEqual(len(centers), 2)
+            for actual, target in zip(centers, expected):
+                self.assertAlmostEqual(actual, target, delta=0.0071)
+
+        interruption = generic_utils.InterruptibleProcess()
+        analysis = media_analysis.MediaAnalysisSession(self.workspace, interruption, self.logger)
+        frames = [analysis.fulfill(media_analysis.MediaAnalysisRequest(
+            path, path, media_analysis.MediaAnalysisFeature.MATCHING,
+        )).frames for path in (base, source)]
+        lhs_timestamps, rhs_timestamps = (sorted(side) for side in frames)
+        self.assertEqual(len(lhs_timestamps), 500)
+        self.assertEqual(len(rhs_timestamps), 500)
+        self.assertEqual(rhs_timestamps[400] - lhs_timestamps[400], 3000)
+        self.assertEqual(rhs_timestamps[399] - lhs_timestamps[399], 0)
+        self.assertEqual([v["frame_id"] for v in frames[0].values()],
+                         [v["frame_id"] for v in frames[1].values()])
+        pairs = [(lhs_timestamps[i], rhs_timestamps[i]) for i in range(0, 500, 25)]
+
+        context = ToolRuntimeContext(self.workspace, interruption, analysis)
+        performer = MeltPerformer(logger=self.logger, context=context, output_dir=self.wd.path)
+        # Only visual candidate selection is controlled. Probing, frame PTS,
+        # fitting, discontinuity classification and performer decisions are real.
+        with patch.object(PairMatcher, "_detect_scenes", return_value=(
+                 [lhs for lhs, _ in pairs], [rhs for _, rhs in pairs],
+             )), \
+             patch.object(PairMatcher, "_match_key_frames", return_value=(pairs, [])), \
+             patch.object(performer, "_create_audio_patch_request") as request, \
+             patch.object(performer, "_execute_audio_patch") as execute, \
+             self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity.*PTS step"):
+            performer._patch_mismatched_audio(
+                VideoStreamRef(base, 0, 0, None), VideoStreamRef(source, 0, 0, None),
+                AudioStreamRef(source, 1, 1, "pol"), None, 20000, None,
+                {base: 1, source: 2},
+            )
+        request.assert_not_called()
+        execute.assert_not_called()
 
 
 class AudioAlignmentTest(TwoToneTestCase):
