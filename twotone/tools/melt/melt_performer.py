@@ -1676,31 +1676,14 @@ class MeltPerformer(TrackTimelineMixin):
                     file_ids[audio_path],
                 )
 
-            # Holes in the shared scene sequence (content present on one side
-            # only, e.g. commercial-break cuts) cannot be patched over: every
-            # audio strategy assumes the mapped content is continuous.  Fail
-            # loudly instead of producing a subtly broken track.
-            frame_slope = matching.frame_slope
+            # PairMatcher owns global-linear certification. The generic path
+            # has no such certificate: its gap check remains an execution-time
+            # safeguard before an audio strategy can consume the mapping.
+            discontinuities = matching.content_discontinuities
             timing_discontinuities = matching.timing_discontinuities
-            if (
-                matching.relation is MappingRelation.GLOBAL_LINEAR
-                and frame_slope is not None
-            ):
-                strict_global_linear = True
-                report = PairMatcher._classify_global_linear_discontinuities(
-                    matching.mapping,
-                    matching.lhs_all_frames,
-                    matching.rhs_all_frames,
-                    frame_slope=frame_slope,
-                    lhs_fps=matching.lhs_fps,
-                    rhs_fps=matching.rhs_fps,
-                )
-                discontinuities = report.content
-                timing_discontinuities = timing_discontinuities or tuple(report.timing)
-            else:
-                strict_global_linear = False
-                discontinuities = PairMatcher.find_content_discontinuities(
-                    matching.mapping,
+            if matching.relation is MappingRelation.GENERIC:
+                discontinuities = discontinuities or tuple(
+                    PairMatcher.find_content_discontinuities(matching.mapping)
                 )
             if timing_discontinuities:
                 for lhs_from, lhs_to, rhs_from, rhs_to, deficit in timing_discontinuities:
@@ -1725,7 +1708,7 @@ class MeltPerformer(TrackTimelineMixin):
                 for lhs_from, lhs_to, rhs_from, rhs_to, deficit in discontinuities:
                     suffix = (
                         f", {deficit * matching.rhs_fps / 1000:+.1f} frames"
-                        if strict_global_linear else ""
+                        if matching.relation is MappingRelation.GLOBAL_LINEAR else ""
                     )
                     self.logger.error(
                         "  Suspected content discontinuity: %s-%s in #%d ↔ %s-%s in #%d "

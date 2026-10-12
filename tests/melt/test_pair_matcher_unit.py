@@ -946,8 +946,8 @@ class PairMatcherUnitTest(unittest.TestCase):
              patch.object(pm, '_extract_scene_frames', return_value=([], [])), \
              patch.object(pm, '_normalize_extracted', return_value=({}, {}, {}, {})), \
              patch.object(pm, '_match_key_frames', side_effect=[
-                 (initial_pairs, []),
-                 (refined_pairs, []),
+                 initial_pairs,
+                 refined_pairs,
              ]), \
              patch.object(pm, '_log_relation_diagnostics'), \
              patch.object(
@@ -1020,8 +1020,8 @@ class PairMatcherUnitTest(unittest.TestCase):
              patch.object(pm, '_extract_scene_frames', return_value=([], [])), \
              patch.object(pm, '_normalize_extracted', return_value=({}, {}, {}, {})), \
              patch.object(pm, '_match_key_frames', side_effect=[
-                 (initial_pairs, []),
-                 (refined_pairs, []),
+                 initial_pairs,
+                 refined_pairs,
              ]), \
              patch.object(pm, '_log_relation_diagnostics'), \
              patch.object(
@@ -1145,7 +1145,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                      patch.object(pm, '_probe_frames'), \
                      patch.object(pm, '_extract_scene_frames', return_value=([], [])), \
                      patch.object(pm, '_normalize_extracted', return_value=({}, {}, {}, {})), \
-                     patch.object(pm, '_match_key_frames', side_effect=[(initial_pairs, []), (pairs, [])]), \
+                     patch.object(pm, '_match_key_frames', side_effect=[initial_pairs, pairs]), \
                      patch.object(PairMatcher, 'summarize_pairs'), \
                      patch.object(pm, '_extrapolate_and_verify_global_linear', return_value=pairs) as extrapolate, \
                      patch.object(pm, '_extract_and_refine_boundaries', return_value=pairs) as generic, \
@@ -1983,7 +1983,7 @@ class PairMatcherUnitTest(unittest.TestCase):
              patch.object(pm, '_make_pairs', return_value=[
                  (0, 0), (15000, 10000), (60000, 59600),
              ]):
-            refined, _ = pm._match_key_frames(
+            refined = pm._match_key_frames(
                 {},
                 {},
                 lhs_normalized,
@@ -2037,7 +2037,7 @@ class PairMatcherUnitTest(unittest.TestCase):
              patch.object(pm, '_extract_scene_frames_for'), \
              patch.object(pm, '_make_pairs', side_effect=matches), \
              patch.object(pm, '_refine_scenes_in_region', wraps=pm._refine_scenes_in_region) as refine:
-            refined, remaining = pm._match_key_frames(
+            refined = pm._match_key_frames(
                 {},
                 {},
                 lhs_normalized,
@@ -2061,7 +2061,14 @@ class PairMatcherUnitTest(unittest.TestCase):
             refined,
             sorted(set(original + matches[0] + matches[1])),
         )
-        self.assertEqual(remaining, [(19600, 20400, 19600, 20000, 400)])
+        self.assertEqual(
+            pm.find_global_linear_content_discontinuities(
+                refined, pm.lhs_all_frames, pm.rhs_all_frames,
+                frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+                require_decoded_confirmation=False,
+            ),
+            [(19600, 20400, 19600, 20000, 400)],
+        )
         self.assertEqual(
             [call.args[0] for call in select.call_args_list],
             [pm.lhs_path, pm.lhs_path, pm.lhs_path],
@@ -2110,13 +2117,20 @@ class PairMatcherUnitTest(unittest.TestCase):
              patch.object(pm, '_normalize_frames', side_effect=normalize), \
              patch.object(pm, '_make_pairs', side_effect=match) as matching, \
              patch.object(PairMatcher, '_timeline_frame_ids', wraps=PairMatcher._timeline_frame_ids) as coordinates:
-            refined, remaining = pm._match_key_frames(
+            refined = pm._match_key_frames(
                 {}, {}, lhs_normalized, rhs_normalized, lhs_scenes, rhs_scenes,
                 matching_pairs=original, frame_slope=1.0, refine_discontinuities=True,
             )
 
         self.assertEqual(refined, original)
-        self.assertEqual(remaining, [(0, 60000, 0, 59600, 400)])
+        self.assertEqual(
+            pm.find_global_linear_content_discontinuities(
+                refined, pm.lhs_all_frames, pm.rhs_all_frames,
+                frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+                require_decoded_confirmation=False,
+            ),
+            [(0, 60000, 0, 59600, 400)],
+        )
         self.assertEqual(sorted(lhs_scenes), [ts for ts, _ in candidates])
         self.assertEqual(sorted(rhs_scenes), [ts for ts, _ in candidates])
         self.assertEqual(matching.call_count, 2 * len(candidates))
@@ -2136,7 +2150,7 @@ class PairMatcherUnitTest(unittest.TestCase):
              patch.object(pm, '_normalize_extracted') as normalize, \
              patch.object(pm, '_make_pairs') as match, \
              self.assertLogs(pm.logger, level='INFO') as logs:
-            refined, remaining = pm._match_key_frames(
+            refined = pm._match_key_frames(
                 {},
                 {},
                 dict(pm.lhs_all_frames),
@@ -2149,7 +2163,14 @@ class PairMatcherUnitTest(unittest.TestCase):
             )
 
         self.assertEqual(refined, original)
-        self.assertEqual(remaining, [(0, 40000, 0, 39600, 400)])
+        self.assertEqual(
+            pm.find_global_linear_content_discontinuities(
+                refined, pm.lhs_all_frames, pm.rhs_all_frames,
+                frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+                require_decoded_confirmation=False,
+            ),
+            [(0, 40000, 0, 39600, 400)],
+        )
         match.assert_not_called()
         extract.assert_not_called()
         normalize.assert_not_called()

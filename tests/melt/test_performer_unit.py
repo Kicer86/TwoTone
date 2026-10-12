@@ -1997,6 +1997,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 lhs_fps=25.0,
                 rhs_fps=25.0,
                 frame_slope=1.0,
+                content_discontinuities=tuple(
+                    PairMatcher._classify_global_linear_discontinuities(
+                        mapping, lhs_frames, rhs_frames,
+                        frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+                    ).content
+                ),
             ),
             source_duration=500000,
         )
@@ -2025,6 +2031,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 rhs_all_frames={rhs: {"frame_id": rhs // 40, "path": None} for _, rhs in mapping},
                 relation=MappingRelation.GLOBAL_LINEAR,
                 lhs_fps=25.0, rhs_fps=25.0, frame_slope=1.0,
+                content_discontinuities=tuple(
+                    PairMatcher._classify_global_linear_discontinuities(
+                        mapping,
+                        {lhs: {"frame_id": lhs // 40, "path": None} for lhs, _ in mapping},
+                        {rhs: {"frame_id": rhs // 40, "path": None} for _, rhs in mapping},
+                        frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+                    ).content
+                ),
             ),
             source_duration=600000,
         )
@@ -2090,12 +2104,23 @@ class MeltPerformerUnitTest(unittest.TestCase):
             pairs, lhs_frames, rhs_frames,
             frame_slope=fit.slope, lhs_fps=25.0, rhs_fps=25.0,
         ), [])
-        # Exercise the defensive decision on real evidence, without pre-tagging
-        # the result with a timing verdict or mocking the fit/detector/strategy.
+        timing_discontinuities = PairMatcher._classify_global_linear_discontinuities(
+            pairs, lhs_frames, rhs_frames,
+            frame_slope=fit.slope, lhs_fps=25.0, rhs_fps=25.0,
+        ).timing
+        self.assertEqual(len(timing_discontinuities), 1)
+        # The performer enforces PairMatcher's final timing verdict without
+        # rerunning detection or reaching an audio strategy.
         performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
             matching=SegmentsMappingResult(
-                pairs, lhs_frames, rhs_frames, MappingRelation.GLOBAL_LINEAR,
-                25.0, 25.0, fit.slope,
+                mapping=pairs,
+                lhs_all_frames=lhs_frames,
+                rhs_all_frames=rhs_frames,
+                relation=MappingRelation.GLOBAL_LINEAR,
+                lhs_fps=25.0,
+                rhs_fps=25.0,
+                frame_slope=fit.slope,
+                timing_discontinuities=tuple(timing_discontinuities),
             ),
             source_duration=1923000,
         )
@@ -2109,6 +2134,61 @@ class MeltPerformerUnitTest(unittest.TestCase):
             )
         request.assert_not_called()
         execute.assert_not_called()
+
+    def test_patch_mismatched_audio_uses_pair_matcher_timing_verdict_without_reclassification(self):
+        performer = self._make_performer()
+        base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
+        source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
+        source_audio = AudioStreamRef("/tmp/source.mkv", 2, 2, "pol")
+        mapping = [(0, 0), (60000, 60000)]
+        performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
+            matching=SegmentsMappingResult(
+                mapping=mapping,
+                lhs_all_frames={
+                    0: {"frame_id": 0, "path": None},
+                    60000: {"frame_id": 1440, "path": None},
+                },
+                rhs_all_frames={
+                    0: {"frame_id": 0, "path": None},
+                    60000: {"frame_id": 1440, "path": None},
+                },
+                relation=MappingRelation.GLOBAL_LINEAR,
+                lhs_fps=24.0,
+                rhs_fps=24.0,
+                frame_slope=1.0,
+            ),
+            source_duration=60000,
+        )
+        request = Mock(output_path="/tmp/patched.mka", source_audio=source_audio)
+        result = AudioPatchResult(
+            AudioStreamRef("/tmp/patched.mka", 0, 0, "pol"),
+            0,
+            60000,
+            "unscaled-normalization",
+        )
+
+        with patch.object(
+                 PairMatcher,
+                 "_classify_global_linear_discontinuities",
+                 side_effect=AssertionError("performer must use PairMatcher's final verdict"),
+             ), \
+             patch.object(performer, "_choose_audio_strategy", return_value=_AudioStrategy.UNSCALED), \
+             patch.object(performer, "_prepare_audio_mapping", return_value=mapping), \
+             patch.object(performer, "_mapping_stream_bias_ms", return_value=0), \
+             patch.object(performer, "_unscaled_timeline_shift_ms", return_value=0), \
+             patch.object(performer, "_create_audio_patch_request", return_value=request), \
+             patch.object(performer, "_execute_audio_patch", return_value=result):
+            actual = performer._patch_mismatched_audio(
+                base_video,
+                source_video,
+                source_audio,
+                None,
+                60000,
+                None,
+                {base_video.path: 1, source_video.path: 2},
+            )
+
+        self.assertEqual(actual, result)
 
     def test_unscaled_audio_patch_routes_through_shared_executor(self):
         performer = self._make_performer()

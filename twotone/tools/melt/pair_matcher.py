@@ -82,6 +82,10 @@ class SegmentsMappingResult(NamedTuple):
     frame_slope: float | None = None
     # A candidate frame relation is not audio certification when these exist.
     timing_discontinuities: tuple[tuple[int, int, int, int, int], ...] = ()
+    # PairMatcher returns only content-continuous mappings, but keeping the
+    # verdict explicit lets downstream execution defend that contract without
+    # reclassifying the mapping.
+    content_discontinuities: tuple[tuple[int, int, int, int, int], ...] = ()
 
 
 class _BoundarySearchContext(NamedTuple):
@@ -2034,6 +2038,32 @@ class PairMatcher:
 
         return matching_pairs
 
+    def _raise_for_unresolved_content_discontinuities(
+        self,
+        discontinuities: list[tuple[int, int, int, int, int]],
+    ) -> None:
+        for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in discontinuities:
+            self.logger.error(
+                "Suspected content discontinuity between matched anchors: %s-%s in %s "
+                "↔ %s-%s in %s "
+                "(%+d ms, %+.1f frames)",
+                generic_utils.ms_to_time(lhs_from),
+                generic_utils.ms_to_time(lhs_to),
+                self.lhs_label,
+                generic_utils.ms_to_time(rhs_from),
+                generic_utils.ms_to_time(rhs_to),
+                self.rhs_label,
+                deficit_ms,
+                deficit_ms * self.rhs_fps / 1000,
+            )
+        raise RuntimeError(
+            "Unresolved suspected content discontinuities: insufficient evidence to rule out "
+            "holes in the scene sequence "
+            f"(absolute frame-step error exceeds "
+            f"{self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:g} frames) — patching "
+            "audio across such discontinuities is not supported yet"
+        )
+
     def create_segments_mapping(self) -> SegmentsMappingResult:
 
         lhs_analysis = self._analysis_result_for(
@@ -2060,7 +2090,7 @@ class PairMatcher:
         debug.dump_frames(lhs_key_frames, f"{self.lhs_label} key frames")
         debug.dump_frames(rhs_key_frames, f"{self.rhs_label} key frames")
 
-        matching_pairs, _ = self._match_key_frames(
+        matching_pairs = self._match_key_frames(
             lhs_key_frames, rhs_key_frames,
             lhs_normalized_frames, rhs_normalized_frames,
             lhs_scene_changes, rhs_scene_changes,
@@ -2094,7 +2124,7 @@ class PairMatcher:
             discontinuities = discontinuity_report.content
             timing_discontinuities = tuple(discontinuity_report.timing)
             if discontinuities:
-                refined_pairs, _ = self._match_key_frames(
+                refined_pairs = self._match_key_frames(
                     lhs_key_frames, rhs_key_frames,
                     lhs_normalized_frames, rhs_normalized_frames,
                     list(lhs_scene_changes), list(rhs_scene_changes),
@@ -2126,28 +2156,7 @@ class PairMatcher:
 
                 if discontinuities:
                     debug.dump_matches(refined_pairs, "localized discontinuities")
-                    for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in discontinuities:
-                        self.logger.error(
-                            "Suspected content discontinuity between matched anchors: %s-%s in %s "
-                            "↔ %s-%s in %s "
-                            "(%+d ms, %+.1f frames)",
-                            generic_utils.ms_to_time(lhs_from),
-                            generic_utils.ms_to_time(lhs_to),
-                            self.lhs_label,
-                            generic_utils.ms_to_time(rhs_from),
-                            generic_utils.ms_to_time(rhs_to),
-                            self.rhs_label,
-                            deficit_ms,
-                            deficit_ms * self.rhs_fps / 1000,
-                        )
-
-                    raise RuntimeError(
-                        "Unresolved suspected content discontinuities: insufficient evidence to rule out "
-                        "holes in the scene sequence "
-                        f"(absolute frame-step error exceeds "
-                        f"{self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:g} frames) — patching "
-                        "audio across such discontinuities is not supported yet"
-                    )
+                    self._raise_for_unresolved_content_discontinuities(discontinuities)
                 matching_pairs = refined_pairs
                 global_linear_fit = refined_fit
                 if global_linear_fit is not None and not timing_discontinuities:
@@ -3237,10 +3246,7 @@ class PairMatcher:
         matching_pairs: list[tuple[int, int]] | None = None,
         frame_slope: float | None = None,
         refine_discontinuities: bool = False,
-    ) -> tuple[
-        list[tuple[int, int]],
-        list[tuple[int, int, int, int, int]],
-    ]:
+    ) -> list[tuple[int, int]]:
         """Match key frames and iteratively densify discontinuous regions."""
         if matching_pairs is None:
             self.logger.info("[5/6] Matching key frames")
@@ -3269,7 +3275,7 @@ class PairMatcher:
         if not matching_pairs:
             raise RuntimeError("No matching pairs found between the two files")
         if frame_slope is None:
-            return matching_pairs, []
+            return matching_pairs
 
         def find_discontinuities(
             pairs: list[tuple[int, int]],
@@ -3283,7 +3289,7 @@ class PairMatcher:
 
         discontinuities = find_discontinuities(matching_pairs)
         if not discontinuities or not refine_discontinuities:
-            return matching_pairs, discontinuities
+            return matching_pairs
 
         self.logger.info(
             "Starting local scene refinement for suspicious timing regions: %s ↔ %s",
@@ -3343,7 +3349,7 @@ class PairMatcher:
             len(refined - set(matching_pairs)),
             len(unresolved),
         )
-        return refined_pairs, sorted(unresolved)
+        return refined_pairs
 
     def _extract_and_refine_boundaries(
         self,

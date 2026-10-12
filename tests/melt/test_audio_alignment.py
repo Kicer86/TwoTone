@@ -197,7 +197,7 @@ class AudioTimelineDiscontinuityTest(TwoToneTestCase):
         with patch.object(PairMatcher, "_detect_scenes", return_value=(
                  [lhs for lhs, _ in pairs], [rhs for _, rhs in pairs],
              )), \
-             patch.object(PairMatcher, "_match_key_frames", return_value=(pairs, [])), \
+             patch.object(PairMatcher, "_match_key_frames", return_value=pairs), \
              patch.object(performer, "_create_audio_patch_request") as request, \
              patch.object(performer, "_execute_audio_patch") as execute, \
              self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity.*PTS step"):
