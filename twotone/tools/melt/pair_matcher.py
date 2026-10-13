@@ -865,12 +865,14 @@ class PairMatcher:
     ) -> bool:
         """Verify a replacement sequence before discarding an isolated anchor.
 
-        Sample half a second around the anchor, bounded by its neighbours.
-        Every sample on the neighbours' line must contain matching rich content;
-        the original alignment must contradict rich content both before and
-        after the anchor. Missing images, black frames or repeated/static shots
-        cannot establish a false match. All comparisons reuse the matcher's
-        normalized, shared-crop space and calibrated cutoff.
+        Expand a sequence around the anchor, staying within half the distance
+        to its neighbours on both timelines. Each temporal side needs two
+        distinct rich replacement pairs and rich contradiction of the original.
+        Unavailable or low-entropy images supply no evidence for that comparison;
+        a rich replacement mismatch vetoes removal. Repeated/static content that
+        also supports the original remains ambiguous. Comparisons reuse the
+        normalized, shared-crop space and calibrated cutoff, extracting only
+        the next small batch until there is enough evidence or the bound is hit.
         """
         if not self.lhs_all_frames or not self.rhs_all_frames:
             return False
@@ -882,50 +884,66 @@ class PairMatcher:
             return False
         slope = (after[1] - before[1]) / (after[0] - before[0])
         radius = min(
-            500, (lhs_ts - before[0]) // 2, (after[0] - lhs_ts) // 2,
+            (lhs_ts - before[0]) // 2, (after[0] - lhs_ts) // 2,
             int((rhs_ts - before[1]) / (2 * slope)),
             int((after[1] - rhs_ts) / (2 * slope)),
         )
         if radius <= 0:
             return False
-        samples = []
-        for offset in (-radius, -radius // 2, 0, radius // 2, radius):
-            lhs = self._nearest_frame_timestamp(self.lhs_all_frames, lhs_ts + offset)
-            predicted = round(before[1] + (lhs - before[0]) * slope)
-            original = round(rhs_ts + (lhs - lhs_ts) * slope)
-            if not (before[1] < predicted < after[1] and before[1] < original < after[1]):
-                return False
-            samples.append((
-                lhs,
-                self._nearest_frame_timestamp(self.rhs_all_frames, predicted),
-                self._nearest_frame_timestamp(self.rhs_all_frames, original),
-            ))
-        self._prefetch_boundary_images(
-            self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames,
-            [lhs for lhs, _, _ in samples],
-        )
-        self._prefetch_boundary_images(
-            self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames,
-            [ts for _, predicted, original in samples for ts in (predicted, original)],
-        )
         ctx = self._build_boundary_verify_context(
             [before, after], lhs_normalized_frames, rhs_normalized_frames,
         )
-        contradicted_before = contradicted_after = False
-        for lhs, predicted, original in samples:
+        supported: list[set[tuple[int, int]]] = [set(), set()]
+        contradicted = [False, False]
+        step = max(1, min(250, radius // 2))
+        for distance in range(step, radius + 1, 2 * step):
             self.interruption.check_for_stop()
-            lhs_img = self._comparison_image(ctx.lhs, lhs)
-            predicted_img = self._comparison_image(ctx.rhs, predicted)
-            original_img = self._comparison_image(ctx.rhs, original)
-            if not all(img is not None and self._is_rich(img)
-                       for img in (lhs_img, predicted_img, original_img)):
-                return False
-            if not self._boundary_content_matches(ctx, lhs, predicted):
-                return False
-            if not self._boundary_content_matches(ctx, lhs, original):
-                contradicted_before |= lhs < lhs_ts
-                contradicted_after |= lhs > lhs_ts
-        return contradicted_before and contradicted_after
+            offsets = [-distance, distance]
+            if distance + step <= radius:
+                offsets.extend((-(distance + step), distance + step))
+            if distance == step:
+                offsets.insert(0, 0)
+            samples = []
+            for offset in offsets:
+                lhs = self._nearest_frame_timestamp(self.lhs_all_frames, lhs_ts + offset)
+                predicted = round(before[1] + (lhs - before[0]) * slope)
+                original = round(rhs_ts + (lhs - lhs_ts) * slope)
+                if not (before[1] < predicted < after[1] and before[1] < original < after[1]):
+                    return False
+                samples.append((
+                    lhs,
+                    self._nearest_frame_timestamp(self.rhs_all_frames, predicted),
+                    self._nearest_frame_timestamp(self.rhs_all_frames, original),
+                ))
+            self._prefetch_boundary_images(
+                self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames,
+                [lhs for lhs, _, _ in samples],
+            )
+            self._prefetch_boundary_images(
+                self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames,
+                [ts for _, predicted, original in samples for ts in (predicted, original)],
+            )
+            for lhs, predicted, original in samples:
+                lhs_img = self._comparison_image(ctx.lhs, lhs)
+                predicted_img = self._comparison_image(ctx.rhs, predicted)
+                if not all(img is not None and self._is_rich(img)
+                           for img in (lhs_img, predicted_img)):
+                    continue
+                if not self._boundary_content_matches(ctx, lhs, predicted):
+                    return False
+                if lhs == lhs_ts:
+                    continue
+                side = int(lhs > lhs_ts)
+                # Snapping sparse timestamps must not count one image twice.
+                if all(lhs != l and predicted != r for l, r in supported[side]):
+                    supported[side].add((lhs, predicted))
+                original_img = self._comparison_image(ctx.rhs, original)
+                if original_img is not None and self._is_rich(original_img):
+                    if not self._boundary_content_matches(ctx, lhs, original):
+                        contradicted[side] = True
+            if all(len(pairs) >= 2 for pairs in supported) and all(contradicted):
+                return True
+        return False
 
     # A mapping counts as effectively linear when every pair sits within this
     # distance of the line through its endpoints.

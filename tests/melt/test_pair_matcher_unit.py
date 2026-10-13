@@ -2262,6 +2262,112 @@ class PairMatcherUnitTest(unittest.TestCase):
 
     # ---- _drop_pairs_breaking_local_linearity ----
 
+    def _false_pair_sequence(self):
+        pm = self._make_pm_with_frames(list(range(0, 18040, 40)), list(range(0, 18040, 40)))
+        pairs = [(0, 0), (2000, 2000), (8000, 7400), (14000, 14000),
+                 (16000, 16000), (18000, 18000)]
+        lhs_images = {ts: info['path'] for ts, info in pm.lhs_all_frames.items()}
+        rhs_images = {ts: info['path'] for ts, info in pm.rhs_all_frames.items()}
+        hashes = {path: ts * 10 for images in (lhs_images, rhs_images)
+                  for ts, path in images.items()}
+        entropies = {path: 8.0 for path in hashes}
+        ctx = self._make_verify_ctx(hashes, 96, lhs_images, rhs_images)
+        return pm, pairs, ctx, hashes, entropies
+
+    def test_false_pair_uses_sequence_past_unusable_original_sample(self):
+        for unavailable in (False, True):
+            with self.subTest(unavailable=unavailable):
+                pm, pairs, ctx, hashes, entropies = self._false_pair_sequence()
+                # The original +250 ms sample repeats the expected picture;
+                # +500 ms is black or missing. Neither disproves the original,
+                # but later rich samples do. Replacement evidence stays usable.
+                lhs = pm._nearest_frame_timestamp(pm.lhs_all_frames, 8250)
+                hashes[ctx.rhs.comparison_cache[lhs - 600]] = hashes[ctx.lhs.comparison_cache[lhs]]
+                original = pm._nearest_frame_timestamp(pm.lhs_all_frames, 8500) - 600
+                entropies[ctx.rhs.comparison_cache[original]] = 0.0
+                if unavailable:
+                    ctx.rhs.comparison_cache[original] = None
+
+                with patch.object(pm, '_build_boundary_verify_context', return_value=ctx), \
+                     patch.object(pm, '_prefetch_boundary_images') as prefetch, \
+                     patch.object(image_utils, 'image_entropy', side_effect=entropies.__getitem__):
+                    result = pm._drop_pairs_breaking_local_linearity(
+                        pairs, pm.lhs_all_frames, pm.rhs_all_frames, frame_slope=1.0,
+                    )
+
+                self.assertEqual(result, [pair for pair in pairs if pair != (8000, 7400)])
+                self.assertEqual(pm.find_global_linear_content_discontinuities(
+                    result, pm.lhs_all_frames, pm.rhs_all_frames,
+                    frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+                ), [])
+                # Extend in local batches, retaining the same comparison cache.
+                self.assertGreater(prefetch.call_count, 2)
+                self.assertTrue(all(len(call.args[3]) <= 10 for call in prefetch.call_args_list))
+                pm.media_analysis.fulfill.assert_not_called()
+
+    def test_false_pair_ignores_low_entropy_replacement_without_counting_it(self):
+        for black_region, expected in (("centre", True), ("after", False)):
+            with self.subTest(black_region=black_region):
+                pm, pairs, ctx, _, entropies = self._false_pair_sequence()
+                for ts, path in ctx.rhs.comparison_cache.items():
+                    if ts == 8000 or (black_region == "after" and 8000 < ts < 14000):
+                        entropies[path] = 0.0
+                with patch.object(pm, '_build_boundary_verify_context', return_value=ctx), \
+                     patch.object(pm, '_prefetch_boundary_images'), \
+                     patch.object(image_utils, 'image_entropy', side_effect=entropies.__getitem__):
+                    self.assertEqual(pm._verify_false_pair(
+                        pairs[1], pairs[2], pairs[3], pm.lhs_all_frames, pm.rhs_all_frames,
+                    ), expected)
+
+    def test_false_pair_preserves_ambiguous_sequences_and_compensating_edits(self):
+        for case in ("static", "repeated", "black", "opposite_edits"):
+            with self.subTest(case=case):
+                pm, pairs, ctx, hashes, entropies = self._false_pair_sequence()
+                if case in ("static", "repeated"):
+                    for side in (ctx.lhs, ctx.rhs):
+                        for ts, path in side.comparison_cache.items():
+                            hashes[path] = 0 if case == "static" else (ts % 600) * 10
+                elif case == "black":
+                    entropies = dict.fromkeys(entropies, 0.0)
+                else:
+                    # A cut and insertion restore the outer offset, but the
+                    # middle anchor and its original sequence really match.
+                    for ts, path in ctx.rhs.comparison_cache.items():
+                        if 6000 <= ts <= 10000:
+                            hashes[path] = (ts + 600) * 10
+
+                with patch.object(pm, '_build_boundary_verify_context', return_value=ctx), \
+                     patch.object(pm, '_prefetch_boundary_images'), \
+                     patch.object(image_utils, 'image_entropy', side_effect=entropies.__getitem__):
+                    result = pm._drop_pairs_breaking_local_linearity(
+                        pairs, pm.lhs_all_frames, pm.rhs_all_frames, frame_slope=1.0,
+                    )
+                self.assertEqual(result, pairs)
+                gaps = pm.find_global_linear_content_discontinuities(
+                    result, pm.lhs_all_frames, pm.rhs_all_frames,
+                    frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+                )
+                self.assertEqual([gap[4] for gap in gaps], [600, -600])
+                with self.assertRaisesRegex(RuntimeError, "Unresolved suspected content discontinuities"):
+                    pm._raise_for_unresolved_content_discontinuities(gaps)
+
+    def test_false_pair_requires_independent_replacement_samples_on_both_sides(self):
+        for before in (True, False):
+            with self.subTest(before=before):
+                pm, pairs, ctx, _, entropies = self._false_pair_sequence()
+                # Only one usable LHS image on this side: repeated checks and
+                # the rich centre image cannot make it a supported sequence.
+                retained = pm._nearest_frame_timestamp(pm.lhs_all_frames, 7750 if before else 8250)
+                for ts in ctx.lhs.comparison_cache:
+                    if ts != retained and ((2000 < ts < 8000) if before else (8000 < ts < 14000)):
+                        ctx.lhs.comparison_cache[ts] = None
+                with patch.object(pm, '_build_boundary_verify_context', return_value=ctx), \
+                     patch.object(pm, '_prefetch_boundary_images'), \
+                     patch.object(image_utils, 'image_entropy', side_effect=entropies.__getitem__):
+                    self.assertFalse(pm._verify_false_pair(
+                        pairs[1], pairs[2], pairs[3], pm.lhs_all_frames, pm.rhs_all_frames,
+                    ))
+
     def test_local_linearity_filter_drops_mismatched_gendarme_pair(self):
         # Real pairs #310-#329 from a Gendarme Gets Married melt (24 fps
         # BluRay vs 25 fps AVI transfer, slope 0.96).  The pair
