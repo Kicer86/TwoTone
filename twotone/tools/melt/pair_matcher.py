@@ -54,11 +54,13 @@ class GlobalLinearDiscontinuityReport(NamedTuple):
 
     Content entries remain unresolved until verified against images. Timing
     entries also prohibit audio execution: equal decoded advances do not make
-    the source PTS representable by one supported audio transform.
+    the source PTS representable by one supported audio transform. Inferred
+    frame steps nominate refinement regions but alone prove neither verdict.
     """
 
     content: list[tuple[int, int, int, int, int]]
     timing: list[tuple[int, int, int, int, int]]
+    frame_steps: tuple[tuple[int, int, int, int, int], ...] = ()
 
 
 class CoverageSummary(TypedDict):
@@ -460,9 +462,10 @@ class PairMatcher:
 
         A nominal FPS can be slightly inaccurate, so using ``timestamp * fps``
         as an absolute coordinate accumulates a false drift across long videos.
-        Instead, retain decoder ordinals and use FPS only to identify local PTS
-        jumps that span more than one frame.  This preserves empty AVI slots
-        without letting metadata override the relation observed by frame pairs.
+        Instead, retain decoder ordinals and infer empty presentation slots
+        from local PTS gaps. This preserves sparse AVI coordinates, but rounding
+        variable cadence can also invent slots. A slot difference alone cannot
+        establish a timing discontinuity; that requires observed timestamp evidence.
         """
         timestamps = sorted(frames)
         if not timestamps:
@@ -591,13 +594,16 @@ class PairMatcher:
         interior. Every suspicious interval needs refinement or content evidence. When
         ``require_decoded_confirmation`` is true, a timeline step must also be
         visible in decoded frame ordinals before it is reported as a content
-        discontinuity. These are suspicious intervals, not proof of an edit:
+        discontinuity. Otherwise, include inferred slot steps as refinement
+        candidates even without an observed PTS step. These are suspicious
+        intervals, not proof of an edit:
         a false visual match can also produce opposite steps. Sparse support
         or a later compensating step cannot clear them; callers must refine
         the observations or verify the suspected false match against content.
         The returned deficit remains milliseconds for error reporting.
         An empty content list does not certify audio timing; execution decisions
-        must consume the full report from ``_classify_global_linear_discontinuities``.
+        must consume the full report from ``_classify_global_linear_discontinuities``,
+        whose timing entries measure deviations from the observed timestamp slope.
         """
         report = PairMatcher._classify_global_linear_discontinuities(
             mapping, lhs_all_frames, rhs_all_frames,
@@ -605,7 +611,10 @@ class PairMatcher:
         )
         if require_decoded_confirmation:
             return report.content
-        return sorted(report.content + report.timing)
+        # Refinement still needs slot-based candidates, even when the current
+        # timestamp observations do not establish an unsupported timing step.
+        gaps = {gap[:4]: gap for gap in (*report.frame_steps, *report.content, *report.timing)}
+        return sorted(gaps.values())
 
     @staticmethod
     def _classify_global_linear_discontinuities(
@@ -649,9 +658,16 @@ class PairMatcher:
             if lhs2 > lhs1 and rhs2 > rhs1
         ]
         decoded_slope = float(np.median(decoded_slopes)) if decoded_slopes else None
+        timestamp_slopes = [
+            (rhs2 - rhs1) / (lhs2 - lhs1)
+            for (lhs1, rhs1), (lhs2, rhs2) in zip(pairs, pairs[1:])
+            if lhs2 > lhs1 and rhs2 > rhs1
+        ]
+        timestamp_slope = float(np.median(timestamp_slopes)) if timestamp_slopes else None
 
-        content_result = []
-        timing_result = []
+        content_result: list[tuple[int, int, int, int, int]] = []
+        timing_result: list[tuple[int, int, int, int, int]] = []
+        frame_steps = []
         for index, (
             (lhs1, rhs1),
             (lhs2, rhs2),
@@ -670,6 +686,11 @@ class PairMatcher:
             if lhs_advance <= 0 or rhs_advance <= 0:
                 continue
             deficit_frames = lhs_advance * frame_slope - rhs_advance
+            if abs(deficit_frames) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:
+                frame_steps.append((
+                    pairs[index][0], pairs[index + 1][0],
+                    pairs[index][1], pairs[index + 1][1], round(deficit_frames * 1000 / rhs_fps),
+                ))
             decoded_deficit = None
             if decoded_slope is not None:
                 decoded_lhs_advance = lhs_decoded2 - lhs_decoded1
@@ -678,20 +699,29 @@ class PairMatcher:
                     decoded_deficit = (
                         decoded_lhs_advance * decoded_slope - decoded_rhs_advance
                     )
+            if (
+                decoded_deficit is not None
+                and abs(decoded_deficit) <= PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
+            ):
+                # Continuous decode order rules out a content step, but audio
+                # safety depends on PTS. Use the observed tempo, not rounded
+                # slots or the nominal-FPS conversion of the frame slope.
+                if timestamp_slope is None:
+                    continue
+                lhs_from, rhs_from = pairs[index]
+                lhs_to, rhs_to = pairs[index + 1]
+                deficit_ms = (lhs_to - lhs_from) * timestamp_slope - (rhs_to - rhs_from)
+                deficit_frames = deficit_ms * rhs_fps / 1000
+                result = timing_result
+            else:
+                deficit_ms = deficit_frames * 1000 / rhs_fps
+                result = content_result
             if abs(deficit_frames) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:
-                deficit_ms = round(deficit_frames * 1000 / rhs_fps)
-                discontinuity = (
+                result.append((
                     pairs[index][0], pairs[index + 1][0],
-                    pairs[index][1], pairs[index + 1][1], deficit_ms,
-                )
-                if (
-                    decoded_deficit is None
-                    or abs(decoded_deficit) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-                ):
-                    content_result.append(discontinuity)
-                else:
-                    timing_result.append(discontinuity)
-        return GlobalLinearDiscontinuityReport(content_result, timing_result)
+                    pairs[index][1], pairs[index + 1][1], round(deficit_ms),
+                ))
+        return GlobalLinearDiscontinuityReport(content_result, timing_result, tuple(frame_steps))
 
     def _refine_scenes_in_region(
         self,

@@ -1157,6 +1157,39 @@ class PairMatcherUnitTest(unittest.TestCase):
                 extrapolate.assert_not_called()
                 generic.assert_not_called()
 
+    def test_create_segments_mapping_preserves_linear_pts_with_nominal_fps_rounding(self):
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=24.99)
+        # Both transfers have the same brief VFR cadence (60/20 ms instead
+        # of 40/40 ms), with a constant two-second stream offset. Rounding
+        # 60 ms to nominal frame slots differs at 25 versus 24.99 fps, but
+        # every observed timestamp and decoded ordinal still agrees.
+        timestamps = [
+            i * 40 + (20 if 40000 <= i < 40020 and i % 2 else 0)
+            for i in range(48000)
+        ]
+        pm.lhs_all_frames = self._make_frames(timestamps, "lhs")
+        pm.rhs_all_frames = self._make_frames([t + 2000 for t in timestamps], "rhs")
+        pairs = [(timestamps[i], timestamps[i] + 2000) for i in range(0, 48000, 2500)]
+        self.assertIsNotNone(pm.detect_global_linear(pairs, pm.lhs_all_frames, pm.rhs_all_frames))
+
+        # Only media I/O and boundary images are mocked. Keep the real fit,
+        # discontinuity classifier and final mapping policy.
+        with patch.object(pm, '_analysis_result_for'), \
+             patch.object(pm, '_detect_scenes', return_value=([], [])), \
+             patch.object(pm, '_probe_frames'), \
+             patch.object(pm, '_extract_scene_frames', return_value=([], [])), \
+             patch.object(pm, '_normalize_extracted', return_value=({}, {}, {}, {})), \
+             patch.object(pm, '_make_pairs', return_value=pairs), \
+             patch.object(PairMatcher, 'summarize_pairs'), \
+             patch.object(pm, '_extrapolate_and_verify_global_linear', return_value=pairs), \
+             patch('twotone.tools.melt.pair_matcher.DebugRoutines'):
+            result = pm.create_segments_mapping()
+
+        self.assertEqual(result.mapping, pairs)
+        self.assertEqual(result.timing_discontinuities, ())
+        self.assertEqual(result.content_discontinuities, ())
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
+
     # ---- _extrapolate_and_verify_global_linear ----
 
     def _make_pm_with_frames(self, lhs_ts, rhs_ts):
@@ -1843,6 +1876,54 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(report.content, [])
         self.assertEqual(len(report.timing), 1)
         self.assertEqual(report.timing[0][-1], -3000)
+
+    def test_global_linear_timing_discontinuity_without_empty_slots(self):
+        lhs_timestamps = [i * 40 for i in range(48000)]
+        # Ten 20 ms intervals shorten the presentation timeline by 200 ms.
+        # Each still occupies one inferred slot, with continuous decode order.
+        rhs_timestamps = [t - min(10, max(0, i - 40000)) * 20
+                          for i, t in enumerate(lhs_timestamps)]
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                lhs, rhs = (rhs_timestamps, lhs_timestamps) if reverse else (lhs_timestamps, rhs_timestamps)
+                pm = self._make_pm_with_frames(lhs, rhs)
+                pairs = [(lhs[i], rhs[i]) for i in range(0, 48000, 2500)]
+                fit = pm.detect_global_linear(pairs, pm.lhs_all_frames, pm.rhs_all_frames)
+                self.assertIsNotNone(fit)
+
+                report = pm._classify_global_linear_discontinuities(
+                    pairs, pm.lhs_all_frames, pm.rhs_all_frames,
+                    frame_slope=fit.slope, lhs_fps=25.0, rhs_fps=25.0,
+                )
+
+                self.assertEqual(report.content, [])
+                self.assertEqual(report.timing, [
+                    (lhs[40000], lhs[42500], rhs[40000], rhs[42500], -200 if reverse else 200),
+                ])
+
+    def test_global_linear_timing_preserves_variable_pts_at_observed_speed(self):
+        lhs_timestamps = [i * 40 + (20 if 40000 <= i < 40020 and i % 2 else 0)
+                          for i in range(48000)]
+        for rhs_fps, time_slope in ((24.99, 1.0), (24.0, 25 / 24), (24000 / 1001, 25025 / 24000)):
+            rhs_timestamps = [round(t * time_slope) + 2000 for t in lhs_timestamps]
+            for reverse in (False, True):
+                with self.subTest(rhs_fps=rhs_fps, reverse=reverse):
+                    lhs, rhs = (rhs_timestamps, lhs_timestamps) if reverse else (lhs_timestamps, rhs_timestamps)
+                    lhs_rate, rhs_rate = (rhs_fps, 25.0) if reverse else (25.0, rhs_fps)
+                    pm = self._make_pair_matcher(lhs_fps=lhs_rate, rhs_fps=rhs_rate)
+                    pm.lhs_all_frames = self._make_frames(lhs, "lhs")
+                    pm.rhs_all_frames = self._make_frames(rhs, "rhs")
+                    pairs = [(lhs[i], rhs[i]) for i in range(0, 48000, 2500)]
+                    fit = pm.detect_global_linear(pairs, pm.lhs_all_frames, pm.rhs_all_frames)
+                    self.assertIsNotNone(fit)
+
+                    report = pm._classify_global_linear_discontinuities(
+                        pairs, pm.lhs_all_frames, pm.rhs_all_frames,
+                        frame_slope=fit.slope, lhs_fps=lhs_rate, rhs_fps=rhs_rate,
+                    )
+
+                    self.assertEqual(report.content, [])
+                    self.assertEqual(report.timing, [])
 
     def test_global_linear_discontinuity_preserves_compensating_steps(self):
         lhs_timestamps = list(range(0, 7000, 1000))
