@@ -575,6 +575,19 @@ class UtilsTests(TwoToneTestCase):
 
         self.assertEqual(expected_correction_ms, correction)
 
+    def test_detect_scene_changes_accepts_unknown_duration(self):
+        stderr_lines = [
+            "[Parsed_showinfo_0] n: 0 pts: 25 pts_time:1.000\n",
+            "[Parsed_showinfo_0] n: 1 pts: 50 pts_time:2.000\n",
+        ]
+        proc = unittest.mock.Mock(returncode=0)
+        with patch.object(video_utils, "get_video_duration", return_value=None), \
+             patch.object(video_utils, "_showinfo_timestamp_correction_ms", return_value=0), \
+             patch.object(video_utils, "_start_ffmpeg_streaming", return_value=(proc, stderr_lines)):
+            scenes = video_utils.detect_scene_changes("input.mkv", logger=self.logger)
+
+        self.assertEqual(scenes, [1000, 2000])
+
     def test_probe_frame_timestamps_corrects_negative_container_start(self):
         stderr_lines = [
             "[Parsed_showinfo_0] n:   0 pts:     21 pts_time:0.021\n",

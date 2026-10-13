@@ -206,7 +206,8 @@ def detect_scene_changes(
     basename = os.path.basename(file_path)
     bar_desc = desc or f"Detecting scenes: {basename}"
 
-    duration_ms = max(0, get_video_duration(file_path, logger=logger))
+    duration = get_video_duration(file_path, logger=logger)
+    duration_ms = max(0, duration) if duration is not None else None
     duration_s = (duration_ms / 1000.0) if duration_ms else None
     timestamp_correction_ms = _showinfo_timestamp_correction_ms(file_path, logger=logger)
 
