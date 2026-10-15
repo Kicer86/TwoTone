@@ -18,6 +18,70 @@ from twotone.tools.utils import files_utils, generic_utils, media_analysis, vide
 class DiscontinuityContentTest(unittest.TestCase):
     """Same anchor residuals, different actual content around the suspect pair."""
 
+    @parameterized.expand([
+        (case, reverse)
+        for case in ("false_match", "false_match_flat_sample", "opposite_edits", "sparse_cut",
+                     "static", "repeated", "black")
+        for reverse in (False, True)
+    ])
+    def test_false_pair_discriminates_similar_sequences(self, case, reverse):
+        # A mostly static textured scene with a changing central region gives
+        # distinct rich pictures whose hash distances still fit the permissive
+        # boundary-gap cutoff. Interior evidence must distinguish them.
+        rng = np.random.default_rng(44)
+        background = rng.integers(0, 256, (45, 80), dtype=np.uint8)
+        frames = []
+        for _ in range(301):
+            frame = background.copy()
+            frame[10:35, 25:55] = rng.integers(0, 256, (25, 30), dtype=np.uint8)
+            frames.append(cv.resize(frame, (320, 180), interpolation=cv.INTER_NEAREST))
+        frames[110] = frames[125].copy()
+        if case == "false_match_flat_sample":
+            # The second coarse replacement sample is unusable in either
+            # orientation. Other distinct rich frames remain inside the same
+            # neighbour-bounded radius and must be sampled before giving up.
+            frames[115] = np.zeros_like(frames[115])
+            frames[130] = np.zeros_like(frames[130])
+        elif case == "static":
+            frames = [frames[0] if 50 <= i < 225 else frame
+                      for i, frame in enumerate(frames)]
+        elif case == "repeated":
+            frames = [frames[i % 15] for i in range(len(frames))]
+        elif case == "black":
+            frames = [np.zeros_like(frame) if 50 <= i < 225 else frame
+                      for i, frame in enumerate(frames)]
+        rhs_frames = list(frames)
+        pairs = [(i * 1000, i * 1000 - (600 if i == 5 else 0)) for i in range(12)]
+        if case == "opposite_edits":
+            rhs_frames = frames[:105] + frames[120:150] + frames[200:215] + frames[150:]
+        elif case == "sparse_cut":
+            rhs_frames = frames[:50] + frames[65:]
+            pairs = [(i * 1600, i * 1600 - (600 if i >= 2 else 0)) for i in range(8)]
+        for lhs, rhs in pairs:
+            np.testing.assert_array_equal(frames[lhs // 40], rhs_frames[rhs // 40])
+        if reverse:
+            frames, rhs_frames = rhs_frames, frames
+            pairs = [(rhs, lhs) for lhs, rhs in pairs]
+        pm = self._make_content_matcher(frames, rhs_frames)
+
+        # Keep the suspect anchors available; extraction, shared-crop
+        # calibration, sequence evidence and the final blocker all run for real.
+        with patch.object(pm, '_detect_scenes', return_value=([l for l, _ in pairs], [r for _, r in pairs])), \
+             patch.object(pm, '_make_pairs', return_value=pairs), \
+             patch.object(pm, '_refine_scenes_in_region', return_value=([], [], False)), \
+             patch('twotone.tools.melt.pair_matcher.DebugRoutines'):
+            if case.startswith("false_match"):
+                result = pm.create_segments_mapping()
+                self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
+                self.assertEqual(result.content_discontinuities, ())
+                self.assertEqual(result.timing_discontinuities, ())
+                self.assertTrue(all(lhs == rhs for lhs, rhs in result.mapping))
+                self.assertEqual(result.mapping[0], (0, 0))
+                self.assertEqual(result.mapping[-1], (12000, 12000))
+            else:
+                with self.assertRaisesRegex(RuntimeError, "Unresolved suspected content discontinuities"):
+                    pm.create_segments_mapping()
+
     @parameterized.expand(["false_match", "opposite_edits", "sparse_cut", "ambiguous_black"])
     def test_sparse_step_requires_content_evidence(self, case):
         rng = np.random.default_rng(42)

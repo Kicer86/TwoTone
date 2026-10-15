@@ -892,10 +892,18 @@ class PairMatcher:
             return False
         ctx = self._build_boundary_verify_context(
             [before, after], lhs_normalized_frames, rhs_normalized_frames,
+            minimum_cutoff=self._MIN_PHASH_CUTOFF,
         )
+        # These samples interpolate between neighbours. The boundary-gap
+        # allowance for extrapolated crops/predictions can accept distinct
+        # pictures here, hiding the evidence against a false anchor. Use the
+        # local calibration (with the ordinary comparison floor) for both
+        # replacement support and contradiction, retaining mismatch vetoes.
         supported: list[set[tuple[int, int]]] = [set(), set()]
         contradicted = [False, False]
-        step = max(1, min(250, radius // 2))
+        # Leave two batches inside even a short window: one unusable sample
+        # must not exhaust the opportunities for two distinct rich pairs.
+        step = max(1, min(250, radius // 4))
         for distance in range(step, radius + 1, 2 * step):
             self.interruption.check_for_stop()
             offsets = [-distance, distance]
@@ -1647,6 +1655,7 @@ class PairMatcher:
         matching_pairs: list[tuple[int, int]],
         lhs_normalized_frames: FramesInfo,
         rhs_normalized_frames: FramesInfo,
+        *, minimum_cutoff: int = _MIN_BOUNDARY_GAP_PHASH_CUTOFF,
     ) -> _BoundaryVerifyContext:
         """Build the comparison engine used to content-verify boundary-gap frames.
 
@@ -1654,8 +1663,9 @@ class PairMatcher:
         normalized frames cropped to the shared region interpolated from the
         matched pairs (``_find_interpolated_crop``), with the phash cutoff
         calibrated on the matched pairs themselves in that same representation
-        (``_calculate_cutoff``, floored by ``_MIN_BOUNDARY_GAP_PHASH_CUTOFF``
-        to cover the extra noise gap samples carry).  This keeps geometry
+        (``_calculate_cutoff``, floored by ``minimum_cutoff``). Boundary callers
+        allow extra extrapolation noise by default; interior sequence checks
+        use the ordinary comparison floor. This keeps geometry
         differences between the two transfers — letterboxing, an open-matte
         master vs a widescreen crop, different grading — from failing
         genuinely shared frames, which is exactly what a fixed cutoff on raw
@@ -1698,13 +1708,11 @@ class PairMatcher:
         usable_pairs = [
             (l, r) for l, r in matching_pairs if l in lhs_cmp and r in rhs_cmp
         ]
-        # The floor covers the prediction-jitter and crop-extrapolation noise
-        # gap samples carry on top of what the matched pairs measure (see the
-        # constant's comment); the adaptive term takes over for pairs whose
-        # transfers differ more than that noise.
+        # The adaptive term preserves transfer differences measured in this
+        # comparison space, even when they exceed the caller's noise floor.
         cutoff = max(
             self._calculate_cutoff(phash, usable_pairs, lhs_cmp, rhs_cmp),
-            self._MIN_BOUNDARY_GAP_PHASH_CUTOFF,
+            minimum_cutoff,
         )
         self.logger.debug(
             f"Boundary verification cutoff: {cutoff:.1f} "
