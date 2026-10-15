@@ -1354,8 +1354,8 @@ class PairMatcher:
         This method only *detects* the relation and returns the fit; it does
         **not** decide the first/last common pair.  The boundaries are found by
         the content/entropy-aware boundary walk (shared with the GENERIC path),
-        which uses this fit only as a precise predictor of where identical frames
-        should be and stops at the first genuine divergence.  Blindly
+        which uses the certified pairs' observed timestamp span as its predictor
+        and stops at genuine divergence. Blindly
         extrapolating the line to the video edges would pair unrelated content
         across divergent intros/outros and is non-deterministic across ffmpeg
         builds, so it is deliberately avoided.
@@ -1575,10 +1575,12 @@ class PairMatcher:
         lhs_normalized_frames: FramesInfo,
         rhs_normalized_frames: FramesInfo,
     ) -> list[tuple[int, int]]:
-        """Extend the first/last common pair along the fitted line through verified content.
+        """Extend certified pairs along their observed time relation through verified content.
 
-        The fit predicts, for any lhs frame, exactly which rhs frame should hold
-        the same content.  Each boundary is projected to the overlap of the full
+        The frame fit certifies the relation; the matched timestamp span predicts
+        where the same content should be. Nominal FPS only supplies units for
+        sampling and jitter, without rounding PTS gaps into inferred slots.
+        Each boundary is projected to the overlap of the full
         frame ranges and then **content-verified across the whole gap** between
         the outermost match and the projected edge: the extension is kept only
         when every sampled predicted pair in that gap is visually the same frame
@@ -1593,23 +1595,30 @@ class PairMatcher:
         from the matched pairs, and compared against a cutoff calibrated on
         those pairs (see ``_build_boundary_verify_context``).
         """
-        slope, intercept = fit.slope, fit.intercept
-        if slope == 0:
-            return sorted(matching_pairs)
+        result = sorted(matching_pairs)
+        if fit.slope <= 0 or len(result) < 2:
+            return result
 
         verify_ctx = self._build_boundary_verify_context(
             matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
         )
 
-        lhs_frame_ids = self._timeline_frame_ids(self.lhs_all_frames, self.lhs_fps)
-        rhs_frame_ids = self._timeline_frame_ids(self.rhs_all_frames, self.rhs_fps)
+        # Continuous presentation coordinates retain held-frame durations but
+        # cannot accumulate fictitious slots from rounding a variable cadence.
+        # Derive the predictor from observed correspondence in these same units,
+        # never from the frame fit's nominal-FPS time scale.
+        lhs_frame_ids = {ts: ts * self.lhs_fps / 1000 for ts in self.lhs_all_frames}
+        rhs_frame_ids = {ts: ts * self.rhs_fps / 1000 for ts in self.rhs_all_frames}
+        first_lhs, first_rhs = result[0]
+        last_lhs, last_rhs = result[-1]
+        slope = ((rhs_frame_ids[last_rhs] - rhs_frame_ids[first_rhs])
+                 / (lhs_frame_ids[last_lhs] - lhs_frame_ids[first_lhs]))
+        intercept = rhs_frame_ids[first_rhs] - slope * lhs_frame_ids[first_lhs]
         lhs_by_frame = {frame_id: ts for ts, frame_id in lhs_frame_ids.items()}
         rhs_by_frame = {frame_id: ts for ts, frame_id in rhs_frame_ids.items()}
         lhs_min_frame, lhs_max_frame = min(lhs_by_frame), max(lhs_by_frame)
         rhs_min_frame, rhs_max_frame = min(rhs_by_frame), max(rhs_by_frame)
 
-        result = sorted(matching_pairs)
-        eps = 1e-6
         # Snap a boundary whose projection lands within a few frames of BOTH
         # video edges onto the edges themselves — the fit's slope error
         # accumulates over a long extrapolation, so an equal-length shared
@@ -1620,11 +1629,11 @@ class PairMatcher:
         # still content-verified by the walk below, never blindly accepted.
         snap_tol = 4
 
-        first_lhs_frame = max(lhs_min_frame, int(np.ceil((rhs_min_frame - intercept) / slope - eps)))
-        first_rhs_frame = int(round(slope * first_lhs_frame + intercept))
+        first_lhs_frame = max(lhs_min_frame, (rhs_min_frame - intercept) / slope)
+        first_rhs_frame = slope * first_lhs_frame + intercept
         if (
             first_lhs_frame - lhs_min_frame <= snap_tol
-            and abs(int(round(slope * lhs_min_frame + intercept)) - rhs_min_frame) <= snap_tol
+            and abs(slope * lhs_min_frame + intercept - rhs_min_frame) <= snap_tol
         ):
             first_lhs_frame = lhs_min_frame
             first_rhs_frame = rhs_min_frame
@@ -1634,11 +1643,11 @@ class PairMatcher:
             lhs_frame_ids, lhs_by_frame, rhs_by_frame, verify_ctx,
         )
 
-        last_lhs_frame = min(lhs_max_frame, int(np.floor((rhs_max_frame - intercept) / slope + eps)))
-        last_rhs_frame = int(round(slope * last_lhs_frame + intercept))
+        last_lhs_frame = min(lhs_max_frame, (rhs_max_frame - intercept) / slope)
+        last_rhs_frame = slope * last_lhs_frame + intercept
         if (
             lhs_max_frame - last_lhs_frame <= snap_tol
-            and abs(int(round(slope * lhs_max_frame + intercept)) - rhs_max_frame) <= snap_tol
+            and abs(slope * lhs_max_frame + intercept - rhs_max_frame) <= snap_tol
         ):
             last_lhs_frame = lhs_max_frame
             last_rhs_frame = rhs_max_frame
@@ -1767,13 +1776,13 @@ class PairMatcher:
 
     @staticmethod
     def _resolve_timeline_samples(
-        by_frame: dict[int, int], frame_ids: list[int],
-    ) -> dict[int, tuple[int, int]]:
-        """Resolve slots to (sample time, displayed image PTS), within the video.
+        by_frame: dict[float, int], frame_ids: list[float],
+    ) -> dict[float, tuple[int, int]]:
+        """Resolve presentation coordinates to (sample time, displayed image PTS).
 
-        Empty slots hold the preceding decoded image. Interpolate their sample
+        Between decoded frames, hold the preceding image. Interpolate sample
         times between the surrounding observed timestamps, not from absolute
-        nominal FPS, which may drift. Exact decoded slots retain their PTS.
+        nominal FPS. Exact decoded coordinates retain their PTS.
         """
         keys = sorted(by_frame)
         samples = {}
@@ -1788,6 +1797,8 @@ class PairMatcher:
                     image_ts = by_frame[previous]
                     sample_ts = round(image_ts + (by_frame[following] - image_ts)
                                       * (frame_id - previous) / (following - previous))
+                    if sample_ts == by_frame[following]:
+                        image_ts = sample_ts
                     samples[frame_id] = (sample_ts, image_ts)
         return samples
 
@@ -1797,11 +1808,11 @@ class PairMatcher:
         side: str,
         slope: float,
         intercept: float,
-        lhs_frame: int,
-        rhs_frame: int,
-        lhs_frame_ids: dict[int, int],
-        lhs_by_frame: dict[int, int],
-        rhs_by_frame: dict[int, int],
+        lhs_frame: float,
+        rhs_frame: float,
+        lhs_frame_ids: dict[int, float],
+        lhs_by_frame: dict[float, int],
+        rhs_by_frame: dict[float, int],
         verify_ctx: _BoundaryVerifyContext,
     ) -> None:
         """Extend the boundary toward the projected edge as far as content verifies.
@@ -1850,11 +1861,11 @@ class PairMatcher:
         self,
         slope: float,
         intercept: float,
-        anchor_lhs_frame: int,
-        boundary_lhs_frame: int,
-        boundary_rhs_frame: int,
-        lhs_by_frame: dict[int, int],
-        rhs_by_frame: dict[int, int],
+        anchor_lhs_frame: float,
+        boundary_lhs_frame: float,
+        boundary_rhs_frame: float,
+        lhs_by_frame: dict[float, int],
+        rhs_by_frame: dict[float, int],
         verify_ctx: _BoundaryVerifyContext,
     ) -> tuple[int, int] | None:
         """Walk ~0.5s-spaced predicted pairs from the match toward the projected
@@ -1877,12 +1888,13 @@ class PairMatcher:
         # Keep the established sampling grid throughout the rest of the gap.
         distance = boundary_lhs_frame - anchor_lhs_frame
         direction = 1 if distance >= 0 else -1
-        frame_ids = list(range(anchor_lhs_frame + direction * step, boundary_lhs_frame, direction * step))
+        frame_ids = [anchor_lhs_frame + direction * step * i
+                     for i in range(1, int(np.ceil(abs(distance) / step)))]
         jitter = self._BOUNDARY_PREDICTION_JITTER_FRAMES
         if frame_ids and abs(slope * (boundary_lhs_frame - frame_ids[-1])) <= jitter:
             previous = frame_ids[-2] if len(frame_ids) > 1 else anchor_lhs_frame
             frame_ids[-1] = round((previous + boundary_lhs_frame) / 2)
-        samples = [(f, round(slope * f + intercept)) for f in frame_ids]
+        samples = [(f, slope * f + intercept) for f in frame_ids]
         samples.append((boundary_lhs_frame, boundary_rhs_frame))
 
         # Bulk-extract every sampled frame up front (two ffmpeg calls),
@@ -1923,9 +1935,9 @@ class PairMatcher:
     def _shared_content_at_prediction(
         self,
         verify_ctx: _BoundaryVerifyContext,
-        rhs_frame: int,
+        rhs_frame: float,
         lhs_ts: int,
-        rhs_samples: dict[int, tuple[int, int]],
+        rhs_samples: dict[float, tuple[int, int]],
     ) -> bool:
         """Content-check the predicted pair, tolerating ±2 frames of rhs jitter.
 
@@ -2229,14 +2241,13 @@ class PairMatcher:
         if global_linear_fit is not None:
             relation = MappingRelation.GLOBAL_LINEAR
             frame_slope = global_linear_fit.slope
-            # Use the fit as a precise predictor of where identical frames should
-            # be, extend each boundary toward the video edge, and keep the
+            # Use the certified pairs' observed span to predict shared content,
+            # extend each boundary toward the video edge, and keep the
             # extension only where the predicted pair is content-verified (same
             # frame, or both low-entropy black).  A genuinely different intro/outro
             # fails verification and the boundary stays at the outermost real
             # match — the line is never blindly projected across divergent
-            # content.  No timestamp edge-snap here: the extension is already
-            # frame-exact on the fitted line.
+            # content. No later timestamp edge-snap may bypass verification.
             if not timing_discontinuities:
                 matching_pairs = self._extrapolate_and_verify_global_linear(
                     global_linear_fit, matching_pairs, lhs_normalized_frames, rhs_normalized_frames,

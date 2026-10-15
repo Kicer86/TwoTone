@@ -1,6 +1,7 @@
 
 import logging
 import os
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -195,6 +196,76 @@ class DiscontinuityContentTest(unittest.TestCase):
             interruption, workspace.root, *paths, logger,
             media_analysis_session=media_analysis.MediaAnalysisSession(workspace, interruption, logger),
         )
+
+
+class BoundaryPredictionTest(unittest.TestCase):
+    @parameterized.expand([
+        (edge, reverse) for edge in ("tail", "head") for reverse in (False, True)
+    ])
+    def test_verified_boundaries_with_nominal_fps_rounding(self, edge, reverse):
+        workspace = files_utils.Workspace.temporary()
+        self.addCleanup(workspace.close)
+        raw, lhs, rhs = [os.path.join(workspace.root, name)
+                         for name in ("raw.avi", "lhs.mkv", "rhs.mkv")]
+        rng = np.random.default_rng(45)
+        writer = cv.VideoWriter(raw, cv.VideoWriter_fourcc(*"FFV1"), 25.0, (320, 180), False)
+        self.assertTrue(writer.isOpened())
+        try:
+            for _ in range(500):
+                writer.write(cv.resize(rng.integers(0, 256, (45, 80), dtype=np.uint8),
+                                       (320, 180), interpolation=cv.INTER_NEAREST))
+        finally:
+            writer.release()
+
+        def run(*args):
+            return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT)
+
+        # Keep F04's tail anchors and media recipe. The head variant puts the
+        # same cadence before the first anchor to exercise leading extension.
+        cadence_start = 400 if edge == "tail" else 0
+        run("ffmpeg", "-v", "error", "-y", "-i", raw, "-vf",
+            f"settb=1/1000,setpts=N*40+if(between(N\\,{cadence_start}\\,{cadence_start + 19})*mod(N\\,2)\\,20\\,0)",
+            "-enc_time_base", "1/1000", "-fps_mode", "passthrough", "-c:v", "ffv1", lhs)
+        run("ffmpeg", "-v", "error", "-y", "-itsoffset", "2", "-i", lhs, "-c", "copy", rhs)
+        run("mkvpropedit", lhs, "--edit", "track:v1", "--set", "default-duration=40000000")
+        run("mkvpropedit", rhs, "--edit", "track:v1", "--set", "default-duration=40016006")
+        hashes = []
+        for path in (lhs, rhs):
+            lines = run("ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0",
+                        "-fps_mode", "passthrough", "-f", "framemd5", "-").splitlines()
+            hashes.append([line.rsplit(",", 1)[1].strip()
+                           for line in lines if not line.startswith("#")])
+        self.assertEqual(len(hashes[0]), 500)
+        self.assertEqual(hashes[0], hashes[1])
+        interruption = generic_utils.InterruptibleProcess()
+        logger = logging.getLogger("test.BoundaryPrediction")
+        analysis = media_analysis.MediaAnalysisSession(workspace, interruption, logger)
+        scans = [analysis.fulfill(media_analysis.MediaAnalysisRequest(
+            path, path, media_analysis.MediaAnalysisFeature.MATCHING,
+        )) for path in (lhs, rhs)]
+        timestamps = [sorted(scan.frames) for scan in scans]
+        self.assertEqual(timestamps[0], timestamps[1])
+        self.assertEqual(timestamps[0], [
+            i * 40 + (20 if cadence_start <= i < cadence_start + 20 and i % 2 else 0)
+            for i in range(500)
+        ])
+        pairs = [(timestamps[0][i], timestamps[1][i])
+                 for i in range(0 if edge == "tail" else 25, 500, 25)]
+        paths = (rhs, lhs) if reverse else (lhs, rhs)
+        pm = PairMatcher(interruption, os.path.join(workspace.root, "matcher"), *paths, logger,
+                         media_analysis_session=analysis)
+        self.assertEqual((pm.lhs_fps, pm.rhs_fps), (24.99, 25.0) if reverse else (25.0, 24.99))
+        # Only candidate selection is seeded: fit, classification, extraction,
+        # normalization, shared-crop calibration and boundary checks run for real.
+        with patch.object(pm, '_detect_scenes', return_value=([l for l, _ in pairs], [r for _, r in pairs])), \
+             patch.object(pm, '_make_pairs', return_value=pairs):
+            result = pm.create_segments_mapping()
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
+        self.assertEqual(result.content_discontinuities, ())
+        self.assertEqual(result.timing_discontinuities, ())
+        for side in (0, 1):
+            self.assertLessEqual(abs(result.mapping[0][side] - timestamps[side][0]), 80)
+            self.assertLessEqual(abs(result.mapping[-1][side] - timestamps[side][-1]), 80)
 
 
 class PairMatcherIntegrationTest(MeltTestBase):
