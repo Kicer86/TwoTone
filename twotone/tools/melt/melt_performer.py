@@ -1676,15 +1676,20 @@ class MeltPerformer(TrackTimelineMixin):
                     file_ids[audio_path],
                 )
 
-            # Holes in the shared scene sequence (content present on one side
-            # only, e.g. commercial-break cuts) cannot be patched over: every
-            # audio strategy assumes the mapped content is continuous.  Fail
-            # loudly instead of producing a subtly broken track.
-            discontinuities = PairMatcher.find_content_discontinuities(matching.mapping)
-            if discontinuities:
-                for lhs_from, lhs_to, rhs_from, rhs_to, deficit in discontinuities:
+            # PairMatcher owns global-linear certification. The generic path
+            # has no such certificate: its gap check remains an execution-time
+            # safeguard before an audio strategy can consume the mapping.
+            discontinuities = matching.content_discontinuities
+            timing_discontinuities = matching.timing_discontinuities
+            if matching.relation is MappingRelation.GENERIC:
+                discontinuities = discontinuities or tuple(
+                    PairMatcher.find_content_discontinuities(matching.mapping)
+                )
+            if timing_discontinuities:
+                for lhs_from, lhs_to, rhs_from, rhs_to, deficit in timing_discontinuities:
                     self.logger.error(
-                        "  Content discontinuity: %s-%s in #%d ↔ %s-%s in #%d (%+d ms)",
+                        "  Unsupported audio timeline discontinuity: %s-%s in #%d ↔ %s-%s in #%d "
+                        "(%+d ms)",
                         generic_utils.ms_to_time(lhs_from),
                         generic_utils.ms_to_time(lhs_to),
                         file_ids[video_path_base],
@@ -1694,7 +1699,32 @@ class MeltPerformer(TrackTimelineMixin):
                         deficit,
                     )
                 raise RuntimeError(
-                    "Inputs share content with holes in the scene sequence "
+                    "Unsupported audio timeline discontinuity: the matched PTS mapping "
+                    "has a PTS step despite continuous decoded video; the supported audio executors "
+                    "cannot preserve alignment on both sides of that step"
+                )
+
+            if discontinuities:
+                for lhs_from, lhs_to, rhs_from, rhs_to, deficit in discontinuities:
+                    suffix = (
+                        f", {deficit * matching.rhs_fps / 1000:+.1f} frames"
+                        if matching.relation is MappingRelation.GLOBAL_LINEAR else ""
+                    )
+                    self.logger.error(
+                        "  Suspected content discontinuity: %s-%s in #%d ↔ %s-%s in #%d "
+                        "(%+d ms%s)",
+                        generic_utils.ms_to_time(lhs_from),
+                        generic_utils.ms_to_time(lhs_to),
+                        file_ids[video_path_base],
+                        generic_utils.ms_to_time(rhs_from),
+                        generic_utils.ms_to_time(rhs_to),
+                        file_ids[audio_path],
+                        deficit,
+                        suffix,
+                    )
+                raise RuntimeError(
+                    "Unresolved suspected content discontinuities: insufficient evidence to rule out "
+                    "holes in the scene sequence "
                     "(e.g. commercial-break cuts) — patching audio across such "
                     "discontinuities is not supported yet"
                 )

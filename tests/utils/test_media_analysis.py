@@ -54,10 +54,33 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             features=features,
         )
 
+    def test_scan_result_selects_scene_changes_at_requested_threshold(self):
+        result = media_analysis.VideoScanResult(
+            path=self.path,
+            features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            frames={},
+            identity_samples=(),
+            decode_error=None,
+            scene_candidates=(
+                media_analysis.SceneCandidate(1000, 0.41),
+                media_analysis.SceneCandidate(2000, 0.30),
+                media_analysis.SceneCandidate(3000, 0.18),
+            ),
+        )
+
+        self.assertEqual(result.scene_changes_at(0.30), (1000,))
+        self.assertEqual(result.scene_changes_at(0.15), (1000, 2000, 3000))
+
     @staticmethod
     def _stats_path(args: list[str], option: str, occurrence: int = 0) -> str:
         options = [index for index, value in enumerate(args) if value == option]
         return args[options[occurrence] + 1]
+
+    @staticmethod
+    def _write_scene_metadata(path: str | None, lines: list[str]) -> None:
+        assert path is not None
+        with open(path, "w", encoding="utf-8") as file:
+            file.writelines(lines)
 
     def test_probe_reuses_result_for_the_same_unchanged_file(self):
         data = {"streams": [{"codec_type": "video", "codec_name": "h264"}]}
@@ -148,11 +171,12 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             }],
         }
 
-        def fake_ffmpeg(args, _interruption, on_line, logger):
-            del logger
-            scene_stats = self._stats_path(args, "-stats_enc_pre:v:0")
-            with open(scene_stats, "w", encoding="utf-8") as file:
-                file.write("0 2 1/25\n")
+        def fake_ffmpeg(args, _interruption, on_line, logger, stdout_path=None):
+            del args, on_line, logger
+            self._write_scene_metadata(stdout_path, [
+                "frame:0 pts:2 pts_time:0.08\n",
+                "lavfi.scene_score=0.400000\n",
+            ])
             return Mock(returncode=0), []
 
         with patch.object(video_utils, "get_video_full_info", return_value=probe_result) as probe, \
@@ -162,7 +186,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             ))
 
-        self.assertEqual(result.scene_changes, (60,))
+        self.assertEqual(result.scene_changes_at(0.3), (60,))
         probe.assert_called_once()
         old_probe.assert_not_called()
 
@@ -176,7 +200,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             path=os.path.realpath(self.path),
             features=media_analysis.MediaAnalysisFeature.MATCHING,
             frames={},
-            scene_changes=(),
             identity_samples=(),
             decode_error=None,
         )
@@ -201,7 +224,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         )
 
     def test_validation_only_decode_is_run_by_the_media_session(self):
-        def fake_start(args, _interruption, on_line, logger):
+        def fake_start(args, _interruption, on_line, logger, stdout_path=None):
             del on_line, logger
             self.assertIn("-xerror", args)
             self.assertIn("0:a?", args)
@@ -268,7 +291,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             path=os.path.realpath(self.path),
             features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             frames={},
-            scene_changes=(),
             identity_samples=(),
             decode_error="scan stopped after the first frame",
         )
@@ -363,7 +385,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 | media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS
             ),
             frames={},
-            scene_changes=(),
             identity_samples=(),
             decode_error=None,
         )
@@ -395,11 +416,13 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 path=os.path.realpath(self.path),
                 features=features,
                 frames={40: {"frame_id": 1, "path": None}} if features & matching else {},
-                scene_changes=(40,) if features & matching else (),
                 identity_samples=(
                     media_analysis.VideoSample(0, 0, 0, "/sample.png"),
                 ) if features & identity else (),
                 decode_error=None,
+                scene_candidates=(
+                    media_analysis.SceneCandidate(40, 0.4),
+                ) if features & matching else (),
             )
 
         with self.assertLogs("MediaAnalysisSessionTest", level="DEBUG") as captured, \
@@ -414,7 +437,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertEqual(first.features, identity)
         self.assertEqual(upgraded.features, identity | matching)
         self.assertEqual(upgraded.identity_samples, first.identity_samples)
-        self.assertEqual(upgraded.scene_changes, (40,))
+        self.assertEqual(upgraded.scene_changes_at(0.3), (40,))
         self.assertEqual(list(upgraded.frames), [40])
         self.assertIs(restored, upgraded)
         self.assertEqual(
@@ -440,14 +463,14 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         )
         self.assertIn(
             "Fresh media analysis collected for #1: features=[scene_changes, frame_timestamps], "
-            "frames=1, scene_changes=1, "
+            "frames=1, scene_candidates=1, "
             "identity_samples=0, decode_error=none",
             logs,
         )
         self.assertIn("satisfied without FFmpeg", logs)
 
     def test_collects_frames_scenes_samples_and_validation_in_one_ffmpeg_call(self):
-        def fake_start(args, _interruption, on_line, logger):
+        def fake_start(args, _interruption, on_line, logger, stdout_path=None):
             stats_paths = [
                 args[index + 1]
                 for index, value in enumerate(args)
@@ -455,9 +478,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             ]
             frame_stats = next(
                 path for path in stats_paths if path.endswith("frames.txt")
-            )
-            scene_stats = next(
-                path for path in stats_paths if path.endswith("scenes.txt")
             )
             sample_stats = next(
                 path for path in stats_paths if path.endswith("identity.txt")
@@ -467,13 +487,15 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 file.write("0 0 1/1000\n1 40 1/1000\n2 80 1/1000\n")
             with open(sample_stats, "w", encoding="utf-8") as file:
                 file.write("0 0 1/1000\n1 80 1/1000\n")
-            with open(scene_stats, "w", encoding="utf-8") as file:
-                file.write("0 80 1/1000\n")
-
             output_pattern = next(value for value in args if "identity_%08d.png" in value)
             for index in (1, 2):
                 with open(output_pattern.replace("%08d", f"{index:08d}"), "wb") as file:
                     file.write(b"png")
+
+            self._write_scene_metadata(stdout_path, [
+                "frame:0 pts:80 pts_time:0.08\n",
+                "lavfi.scene_score=0.400000\n",
+            ])
 
             on_line("out_time_ms=80000\n")
             on_line("progress=end\n")
@@ -496,22 +518,35 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertIn("-xerror", args)
         self.assertIn("0:a?", args)
         self.assertIn("split=3", " ".join(args))
-        self.assertNotIn("file='pipe\\:2'", " ".join(args))
-        self.assertNotIn("metadata=mode=print", " ".join(args))
+        # Scene metadata must not share stderr with -progress: concurrent FFmpeg
+        # writers can split a score into a bare number interpreted as an error.
+        self.assertTrue(start.call_args.kwargs["stdout_path"].endswith("scenes.txt"))
+        self.assertIn("file='pipe\\:1'", " ".join(args))
+        self.assertNotIn(
+            "file='pipe\\:2'",
+            " ".join(args),
+            "scene metadata must use its dedicated file, not FFmpeg stderr",
+        )
+        self.assertIn("metadata=mode=print", " ".join(args))
+        self.assertIn("gt(scene,0.1)", " ".join(args))
         self.assertIn("[scenes]", args)
         self.assertEqual(
             [
                 args[index + 1] for index, value in enumerate(args)
                 if value == "-stats_enc_pre_fmt:v:0"
             ],
-            ["{ni} {pts} {tb}", "{ni} {pts} {tb}", "{ni} {pts} {tb}"],
+            ["{ni} {pts} {tb}", "{ni} {pts} {tb}"],
         )
         self.assertEqual([
             args[index + 1] for index, value in enumerate(args)
             if value == "-enc_time_base:v:0"
-        ], ["filter", "filter", "filter"])
+        ], ["filter", "filter"])
         self.assertNotIn("-enc_time_base:v:1", args)
-        self.assertEqual(result.scene_changes, (80,))
+        self.assertEqual(result.scene_changes_at(0.3), (80,))
+        self.assertEqual(
+            result.scene_candidates,
+            (media_analysis.SceneCandidate(80, 0.4),),
+        )
         self.assertEqual(list(result.frames), [0, 40, 80])
         self.assertEqual(
             [(sample.timestamp_ms, sample.frame_id) for sample in result.identity_samples],
@@ -538,13 +573,10 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             logging.getLogger("SceneOnlyMediaAnalysisTest"),
         )
 
-        def fake_start(args, _interruption, on_line, logger):
-            del on_line, logger
+        def fake_start(args, _interruption, on_line, logger, stdout_path=None):
+            del on_line, logger, stdout_path
             self.assertIn("[scenes]", args)
             self.assertNotIn("voutput", " ".join(args))
-            scene_stats = self._stats_path(args, "-stats_enc_pre:v:0")
-            with open(scene_stats, "w", encoding="utf-8"):
-                pass
             return Mock(returncode=0), []
 
         probe = media_analysis.MediaProbeResult(
@@ -558,18 +590,18 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             ))
 
-        self.assertEqual(result.scene_changes, ())
+        self.assertEqual(result.scene_candidates, ())
         self.assertIsNone(result.decode_error)
 
     def test_matching_scan_keeps_sparse_scenes_in_a_separate_null_output(self):
-        def fake_start(args, _interruption, on_line, logger):
-            del on_line, logger
+        def fake_start(args, _interruption, on_line, logger, stdout_path=None):
+            del on_line, logger, stdout_path
             stats_paths = [
                 args[index + 1]
                 for index, value in enumerate(args)
                 if value == "-stats_enc_pre:v:0"
             ]
-            self.assertEqual(len(stats_paths), 2)
+            self.assertEqual(len(stats_paths), 1)
             for path in stats_paths:
                 with open(path, "w", encoding="utf-8"):
                     pass
@@ -609,14 +641,13 @@ class MediaAnalysisSessionTest(unittest.TestCase):
 
     def test_matching_scan_restores_and_updates_persistent_cache(self):
         persistent = Mock()
-        persistent.load_scene_changes.return_value = [120]
+        persistent.load_scene_candidates.return_value = [(80, 0.2), (120, 0.4)]
         persistent.load_frame_probes.return_value = None
         self.session.set_persistent_cache(persistent)
         scanned = media_analysis.VideoScanResult(
             path=os.path.realpath(self.path),
             features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
             frames={0: {"frame_id": 0, "path": "/temporary/sample.png"}},
-            scene_changes=(),
             identity_samples=(),
             decode_error=None,
         )
@@ -632,13 +663,20 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             "#1",
             media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS
         )
-        self.assertEqual(result.scene_changes, (120,))
+        self.assertEqual(result.scene_changes_at(0.3), (120,))
+        self.assertEqual(
+            result.scene_candidates,
+            (
+                media_analysis.SceneCandidate(80, 0.2),
+                media_analysis.SceneCandidate(120, 0.4),
+            ),
+        )
         self.assertEqual(list(result.frames), [0])
         persistent.save_frame_probes.assert_called_once_with(
             os.path.realpath(self.path),
             {0: {"frame_id": 0, "path": None}},
         )
-        persistent.save_scene_changes.assert_not_called()
+        persistent.save_scene_candidates.assert_not_called()
         self.assertIn(
             "Persistent media analysis cache restored data for #1: features=[scene_changes]",
             "\n".join(captured.output),
@@ -652,7 +690,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             path=os.path.realpath(self.path),
             features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
             frames={0: {"frame_id": 0, "path": None}},
-            scene_changes=(),
             identity_samples=(),
             decode_error="corrupt input",
         )
@@ -663,19 +700,19 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             ), raise_on_error=False)
 
         persistent.save_frame_probes.assert_not_called()
-        persistent.save_scene_changes.assert_not_called()
+        persistent.save_scene_candidates.assert_not_called()
 
     def test_scanned_scenes_are_saved_to_persistent_cache(self):
         persistent = Mock()
-        persistent.load_scene_changes.return_value = None
+        persistent.load_scene_candidates.return_value = None
         self.session.set_persistent_cache(persistent)
         scanned = media_analysis.VideoScanResult(
             path=os.path.realpath(self.path),
             features=media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             frames={},
-            scene_changes=(120,),
             identity_samples=(),
             decode_error=None,
+            scene_candidates=(media_analysis.SceneCandidate(120, 0.4),),
         )
 
         with patch.object(self.session, "_scan", return_value=scanned):
@@ -683,7 +720,10 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             ))
 
-        persistent.save_scene_changes.assert_called_once_with(os.path.realpath(self.path), [120])
+        persistent.save_scene_candidates.assert_called_once_with(
+            os.path.realpath(self.path),
+            [(120, 0.4)],
+        )
         persistent.save_frame_probes.assert_not_called()
 
     def test_complete_persistent_matching_cache_avoids_a_scan(self):
@@ -693,7 +733,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             logging.getLogger("PersistentMediaAnalysisTest"),
         )
         persistent = Mock()
-        persistent.load_scene_changes.return_value = [120]
+        persistent.load_scene_candidates.return_value = [(80, 0.2), (120, 0.4)]
         persistent.load_frame_probes.return_value = {
             0: {"frame_id": 0, "path": None},
         }
@@ -705,7 +745,14 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             ))
 
         scan.assert_not_called()
-        self.assertEqual(result.scene_changes, (120,))
+        self.assertEqual(result.scene_changes_at(0.3), (120,))
+        self.assertEqual(
+            result.scene_candidates,
+            (
+                media_analysis.SceneCandidate(80, 0.2),
+                media_analysis.SceneCandidate(120, 0.4),
+            ),
+        )
         self.assertEqual(list(result.frames), [0])
 
     def test_persistent_cache_does_not_replace_fresh_session_frames(self):
@@ -721,7 +768,6 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             path=os.path.realpath(self.path),
             features=media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
             frames={0: {"frame_id": 0, "path": "/session/frame.png"}},
-            scene_changes=(),
             identity_samples=(),
             decode_error=None,
         )
@@ -741,8 +787,8 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         persistent.load_frame_probes.assert_called_once_with(os.path.realpath(self.path))
 
     def test_identity_scan_does_not_collect_matching_data(self):
-        def fake_start(args, _interruption, on_line, logger):
-            del on_line, logger
+        def fake_start(args, _interruption, on_line, logger, stdout_path=None):
+            del on_line, logger, stdout_path
             stats_options = [
                 index for index, value in enumerate(args)
                 if value == "-stats_enc_pre:v:0"
@@ -776,7 +822,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
         )
         self.assertEqual(result.frames, {})
-        self.assertEqual(result.scene_changes, ())
+        self.assertEqual(result.scene_candidates, ())
         self.assertEqual(len(result.identity_samples), 2)
 
     def test_scene_and_identity_scan_maps_scenes_to_a_null_output(self):
@@ -786,23 +832,24 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             logging.getLogger("MediaAnalysisSessionTest.combined"),
         )
 
-        def fake_start(args, _interruption, on_line, logger):
+        def fake_start(args, _interruption, on_line, logger, stdout_path=None):
             del on_line, logger
             stats_options = [
                 index for index, value in enumerate(args)
                 if value == "-stats_enc_pre:v:0"
             ]
-            self.assertEqual(len(stats_options), 2)
-            scene_stats = args[stats_options[0] + 1]
-            sample_stats = args[stats_options[1] + 1]
-            with open(scene_stats, "w", encoding="utf-8") as file:
-                file.write("0 0 1/1000\n")
+            self.assertEqual(len(stats_options), 1)
+            sample_stats = args[stats_options[0] + 1]
             with open(sample_stats, "w", encoding="utf-8") as file:
                 file.write("0 0 1/1000\n")
 
             output_pattern = next(value for value in args if "identity_%08d.png" in value)
             with open(output_pattern.replace("%08d", "00000001"), "wb") as file:
                 file.write(b"png")
+            self._write_scene_metadata(stdout_path, [
+                "frame:0 pts:0 pts_time:0\n",
+                "lavfi.scene_score=0.400000\n",
+            ])
             return SimpleNamespace(returncode=0), []
 
         with patch.object(session, "probe", return_value=self._probe_result()), \
@@ -821,7 +868,11 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertIn("[scenes]", args)
         self.assertTrue(result.supports(media_analysis.MediaAnalysisFeature.SCENE_CHANGES))
         self.assertTrue(result.supports(media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES))
-        self.assertEqual(result.scene_changes, (0,))
+        self.assertEqual(result.scene_changes_at(0.3), (0,))
+        self.assertEqual(
+            result.scene_candidates,
+            (media_analysis.SceneCandidate(0, 0.4),),
+        )
         self.assertEqual(len(result.identity_samples), 1)
 
     def test_frame_stats_preserve_millisecond_precision_for_long_timestamps(self):

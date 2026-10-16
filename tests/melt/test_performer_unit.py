@@ -23,7 +23,7 @@ from twotone.tools.melt.melt_performer import (
     _PairMatchResult,
     _StreamEntry,
 )
-from twotone.tools.melt.pair_matcher import MappingRelation, SegmentsMappingResult
+from twotone.tools.melt.pair_matcher import MappingRelation, PairMatcher, SegmentsMappingResult
 from twotone.tools.tool import ToolRuntimeContext
 from twotone.tools.utils import (
     files_utils,
@@ -606,6 +606,44 @@ class MeltPerformerUnitTest(unittest.TestCase):
             )
 
         self.assertTrue(result)
+
+    def test_generic_smooth_timing_variation_uses_subsegment_audio(self):
+        performer = self._make_performer()
+        initial_pairs = [
+            (i * 100000, i * 100000 - (600 if i == 9 else 0))
+            for i in range(20)
+        ]
+        refined_pairs = sorted({
+            *initial_pairs,
+            *(
+                (
+                    timestamp,
+                    timestamp - round(
+                        (1 - abs(timestamp - 900000) / 100000) * 600 / 40
+                    ) * 40,
+                )
+                for timestamp in range(805000, 1000000, 5000)
+            ),
+        })
+        matching = SegmentsMappingResult(
+            mapping=refined_pairs,
+            lhs_all_frames={},
+            rhs_all_frames={},
+            relation=MappingRelation.GENERIC,
+            lhs_fps=25.0,
+            rhs_fps=25.0,
+        )
+
+        with patch.object(
+            performer,
+            "_is_frame_rate_only_drift_mapping",
+            return_value=False,
+        ):
+            strategy = performer._choose_audio_strategy(
+                "/tmp/base.mkv", "/tmp/source.mkv", matching,
+            )
+
+        self.assertEqual(strategy, _AudioStrategy.SUBSEGMENT)
 
     def test_linear_recovery_rejects_tmnt_piecewise_pairs(self):
         # A 23.976 fps base against a 30 fps resampled transfer with ad-break
@@ -1914,6 +1952,243 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(second.timeline_start_ms, 0)
         self.assertEqual(patch_outputs, [first.stream.path, second.stream.path])
         self.assertNotEqual(first.stream.path, second.stream.path)
+
+    def test_patch_mismatched_audio_rejects_absolute_global_linear_frame_step(self):
+        performer = self._make_performer()
+        base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
+        source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
+        source_audio = AudioStreamRef(source_video.path, 1, 1, "pol")
+        mapping = [
+            (0, 0),
+            (100000, 100000),
+            (200000, 200000),
+            (300000, 299400),
+            (400000, 399400),
+            (500000, 499400),
+        ]
+        lhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [
+                (0, 0),
+                (100000, 2500),
+                (200000, 5000),
+                (300000, 7500),
+                (400000, 10000),
+                (500000, 12500),
+            ]
+        }
+        rhs_frames = {
+            timestamp: {"frame_id": frame, "path": None}
+            for timestamp, frame in [
+                (0, 0),
+                (100000, 2500),
+                (200000, 5000),
+                (299400, 7485),
+                (399400, 9985),
+                (499400, 12485),
+            ]
+        }
+        performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
+            matching=SegmentsMappingResult(
+                mapping=mapping,
+                lhs_all_frames=lhs_frames,
+                rhs_all_frames=rhs_frames,
+                relation=MappingRelation.GLOBAL_LINEAR,
+                lhs_fps=25.0,
+                rhs_fps=25.0,
+                frame_slope=1.0,
+                content_discontinuities=tuple(
+                    PairMatcher._classify_global_linear_discontinuities(
+                        mapping, lhs_frames, rhs_frames,
+                        frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+                    ).content
+                ),
+            ),
+            source_duration=500000,
+        )
+
+        with patch.object(performer, "_log_coverage"), \
+             self.assertRaisesRegex(RuntimeError, "holes in the scene sequence"):
+            performer._patch_mismatched_audio(
+                base_video,
+                source_video,
+                source_audio,
+                None,
+                500000,
+                None,
+                {base_video.path: 1, source_video.path: 2},
+            )
+
+    def test_patch_mismatched_audio_rejects_sparse_global_linear_frame_step(self):
+        performer = self._make_performer()
+        base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
+        source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
+        mapping = [(0, 0), (200000, 200000), (400000, 399400), (600000, 599400)]
+        performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
+            matching=SegmentsMappingResult(
+                mapping=mapping,
+                lhs_all_frames={lhs: {"frame_id": lhs // 40, "path": None} for lhs, _ in mapping},
+                rhs_all_frames={rhs: {"frame_id": rhs // 40, "path": None} for _, rhs in mapping},
+                relation=MappingRelation.GLOBAL_LINEAR,
+                lhs_fps=25.0, rhs_fps=25.0, frame_slope=1.0,
+                content_discontinuities=tuple(
+                    PairMatcher._classify_global_linear_discontinuities(
+                        mapping,
+                        {lhs: {"frame_id": lhs // 40, "path": None} for lhs, _ in mapping},
+                        {rhs: {"frame_id": rhs // 40, "path": None} for _, rhs in mapping},
+                        frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+                    ).content
+                ),
+            ),
+            source_duration=600000,
+        )
+        with patch.object(performer, "_log_coverage"), \
+             patch.object(performer, "_choose_audio_strategy", side_effect=AssertionError("unsafe mapping reached audio strategy")) as choose, \
+             patch.object(performer, "_execute_audio_patch") as execute, \
+             self.assertRaisesRegex(RuntimeError, "discontinuit.*not supported yet"):
+            performer._patch_mismatched_audio(
+                base_video, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
+                None, 600000, None, {base_video.path: 1, source_video.path: 2},
+            )
+        choose.assert_not_called()
+        execute.assert_not_called()
+
+    @parameterized.expand([
+        ("global", MappingRelation.GLOBAL_LINEAR),
+        ("generic", MappingRelation.GENERIC),
+    ])
+    def test_patch_mismatched_audio_rejects_unsupported_pts_step_before_strategy(self, _case, relation):
+        performer = self._make_performer()
+        base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
+        source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
+        timing_step = (1600000, 1700000, 1600000, 1703000, -3000)
+        performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
+            matching=SegmentsMappingResult(
+                mapping=[(0, 0), (1600000, 1600000), (1700000, 1703000)],
+                lhs_all_frames={},
+                rhs_all_frames={},
+                relation=relation,
+                lhs_fps=25.0, rhs_fps=25.0, frame_slope=1.0,
+                timing_discontinuities=(timing_step,),
+            ),
+            source_duration=2000000,
+        )
+
+        with patch.object(performer, "_choose_audio_strategy", side_effect=AssertionError("unsafe mapping reached audio strategy")) as choose, \
+             self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity"):
+            performer._patch_mismatched_audio(
+                base_video, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
+                None, 2000000, None, {base_video.path: 1, source_video.path: 2},
+            )
+        choose.assert_not_called()
+
+    def test_patch_mismatched_audio_rejects_pts_step_with_real_global_fit(self):
+        performer = self._make_performer()
+        base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
+        source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
+        lhs_frames = {i * 40: {"frame_id": i, "path": None} for i in range(48000)}
+        rhs_frames = {
+            i * 40 + (3000 if i >= 40000 else 0): {"frame_id": i, "path": None}
+            for i in range(48000)
+        }
+        pairs = [(j * 100000, j * 100000 + (3000 if j >= 16 else 0)) for j in range(20)]
+        with patch.object(video_utils, "get_video_data", return_value={"video": [{"fps": "25/1"}]}):
+            matcher = PairMatcher(
+                generic_utils.InterruptibleProcess(), performer.workspace.root,
+                base_video.path, source_video.path, performer.logger,
+                media_analysis_session=Mock(spec=media_analysis.MediaAnalysisSession),
+            )
+        fit = matcher.detect_global_linear(pairs, lhs_frames, rhs_frames)
+        self.assertIsNotNone(fit)
+        self.assertEqual(PairMatcher.find_global_linear_content_discontinuities(
+            pairs, lhs_frames, rhs_frames,
+            frame_slope=fit.slope, lhs_fps=25.0, rhs_fps=25.0,
+        ), [])
+        timing_discontinuities = PairMatcher._classify_global_linear_discontinuities(
+            pairs, lhs_frames, rhs_frames,
+            frame_slope=fit.slope, lhs_fps=25.0, rhs_fps=25.0,
+        ).timing
+        self.assertEqual(len(timing_discontinuities), 1)
+        # The performer enforces PairMatcher's final timing verdict without
+        # rerunning detection or reaching an audio strategy.
+        performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
+            matching=SegmentsMappingResult(
+                mapping=pairs,
+                lhs_all_frames=lhs_frames,
+                rhs_all_frames=rhs_frames,
+                relation=MappingRelation.GLOBAL_LINEAR,
+                lhs_fps=25.0,
+                rhs_fps=25.0,
+                frame_slope=fit.slope,
+                timing_discontinuities=tuple(timing_discontinuities),
+            ),
+            source_duration=1923000,
+        )
+        with patch.object(video_utils, "get_video_full_info", return_value={}), \
+             patch.object(performer, "_create_audio_patch_request") as request, \
+             patch.object(performer, "_execute_audio_patch") as execute, \
+             self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity"):
+            performer._patch_mismatched_audio(
+                base_video, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
+                None, 1920000, None, {base_video.path: 1, source_video.path: 2},
+            )
+        request.assert_not_called()
+        execute.assert_not_called()
+
+    def test_patch_mismatched_audio_uses_pair_matcher_timing_verdict_without_reclassification(self):
+        performer = self._make_performer()
+        base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
+        source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
+        source_audio = AudioStreamRef("/tmp/source.mkv", 2, 2, "pol")
+        mapping = [(0, 0), (60000, 60000)]
+        performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
+            matching=SegmentsMappingResult(
+                mapping=mapping,
+                lhs_all_frames={
+                    0: {"frame_id": 0, "path": None},
+                    60000: {"frame_id": 1440, "path": None},
+                },
+                rhs_all_frames={
+                    0: {"frame_id": 0, "path": None},
+                    60000: {"frame_id": 1440, "path": None},
+                },
+                relation=MappingRelation.GLOBAL_LINEAR,
+                lhs_fps=24.0,
+                rhs_fps=24.0,
+                frame_slope=1.0,
+            ),
+            source_duration=60000,
+        )
+        request = Mock(output_path="/tmp/patched.mka", source_audio=source_audio)
+        result = AudioPatchResult(
+            AudioStreamRef("/tmp/patched.mka", 0, 0, "pol"),
+            0,
+            60000,
+            "unscaled-normalization",
+        )
+
+        with patch.object(
+                 PairMatcher,
+                 "_classify_global_linear_discontinuities",
+                 side_effect=AssertionError("performer must use PairMatcher's final verdict"),
+             ), \
+             patch.object(performer, "_choose_audio_strategy", return_value=_AudioStrategy.UNSCALED), \
+             patch.object(performer, "_prepare_audio_mapping", return_value=mapping), \
+             patch.object(performer, "_mapping_stream_bias_ms", return_value=0), \
+             patch.object(performer, "_unscaled_timeline_shift_ms", return_value=0), \
+             patch.object(performer, "_create_audio_patch_request", return_value=request), \
+             patch.object(performer, "_execute_audio_patch", return_value=result):
+            actual = performer._patch_mismatched_audio(
+                base_video,
+                source_video,
+                source_audio,
+                None,
+                60000,
+                None,
+                {base_video.path: 1, source_video.path: 2},
+            )
+
+        self.assertEqual(actual, result)
 
     def test_unscaled_audio_patch_routes_through_shared_executor(self):
         performer = self._make_performer()
