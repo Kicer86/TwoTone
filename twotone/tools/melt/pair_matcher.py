@@ -5,6 +5,7 @@ import os
 from bisect import bisect_right
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from math import ceil, floor
 from typing import NamedTuple, TypedDict
 
 import cv2 as cv
@@ -1354,7 +1355,7 @@ class PairMatcher:
         This method only *detects* the relation and returns the fit; it does
         **not** decide the first/last common pair.  The boundaries are found by
         the content/entropy-aware boundary walk (shared with the GENERIC path),
-        which uses the certified pairs' observed timestamp span as its predictor
+        which uses the certified pairs' full observed timestamp correspondence as its predictor
         and stops at genuine divergence. Blindly
         extrapolating the line to the video edges would pair unrelated content
         across divergent intros/outros and is non-deterministic across ffmpeg
@@ -1605,15 +1606,29 @@ class PairMatcher:
 
         # Continuous presentation coordinates retain held-frame durations but
         # cannot accumulate fictitious slots from rounding a variable cadence.
-        # Derive the predictor from observed correspondence in these same units,
-        # never from the frame fit's nominal-FPS time scale.
+        # Derive a robust predictor from the full observed correspondence in
+        # these same units, never from the frame fit's nominal-FPS time scale.
+        # Median pairwise slopes keep one noisy outer anchor from defining the
+        # line, while the median observed intercept incorporates every anchor.
+        # Unlike nominal slots, both quantities preserve the observed PTS.
         lhs_frame_ids = {ts: ts * self.lhs_fps / 1000 for ts in self.lhs_all_frames}
         rhs_frame_ids = {ts: ts * self.rhs_fps / 1000 for ts in self.rhs_all_frames}
-        first_lhs, first_rhs = result[0]
-        last_lhs, last_rhs = result[-1]
-        slope = ((rhs_frame_ids[last_rhs] - rhs_frame_ids[first_rhs])
-                 / (lhs_frame_ids[last_lhs] - lhs_frame_ids[first_lhs]))
-        intercept = rhs_frame_ids[first_rhs] - slope * lhs_frame_ids[first_lhs]
+        observed_pairs = np.array([
+            (lhs_frame_ids[lhs_ts], rhs_frame_ids[rhs_ts])
+            for lhs_ts, rhs_ts in result
+        ])
+        pair_slopes = [
+            (rhs2 - rhs1) / (lhs2 - lhs1)
+            for index, (lhs1, rhs1) in enumerate(observed_pairs)
+            for lhs2, rhs2 in observed_pairs[index + 1:]
+            if lhs2 != lhs1
+        ]
+        if not pair_slopes:
+            return result
+        slope = float(np.median(pair_slopes))
+        intercept = float(np.median(
+            observed_pairs[:, 1] - slope * observed_pairs[:, 0]
+        ))
         lhs_by_frame = {frame_id: ts for ts, frame_id in lhs_frame_ids.items()}
         rhs_by_frame = {frame_id: ts for ts, frame_id in rhs_frame_ids.items()}
         lhs_min_frame, lhs_max_frame = min(lhs_by_frame), max(lhs_by_frame)
@@ -1777,12 +1792,15 @@ class PairMatcher:
     @staticmethod
     def _resolve_timeline_samples(
         by_frame: dict[float, int], frame_ids: list[float],
+        round_sample: Callable[[float], int] = round,
     ) -> dict[float, tuple[int, int]]:
         """Resolve presentation coordinates to (sample time, displayed image PTS).
 
         Between decoded frames, hold the preceding image. Interpolate sample
         times between the surrounding observed timestamps, not from absolute
-        nominal FPS. Exact decoded coordinates retain their PTS.
+        nominal FPS. Exact decoded coordinates retain their PTS. Callers may
+        round a projected edge outward so integer milliseconds do not shorten
+        an otherwise content-verified overlap.
         """
         keys = sorted(by_frame)
         samples = {}
@@ -1795,8 +1813,10 @@ class PairMatcher:
                 if 0 < index < len(keys):
                     previous, following = keys[index - 1], keys[index]
                     image_ts = by_frame[previous]
-                    sample_ts = round(image_ts + (by_frame[following] - image_ts)
-                                      * (frame_id - previous) / (following - previous))
+                    sample_ts = round_sample(
+                        image_ts + (by_frame[following] - image_ts)
+                        * (frame_id - previous) / (following - previous)
+                    )
                     if sample_ts == by_frame[following]:
                         image_ts = sample_ts
                     samples[frame_id] = (sample_ts, image_ts)
@@ -1907,6 +1927,16 @@ class PairMatcher:
             for _, rf in samples
             for delta in range(-jitter, jitter + 1)
         ])
+        # The projection is continuous but mapping timestamps are integer
+        # milliseconds. Round only the final edge outward; nearest rounding is
+        # retained for every gap sample, including held-frame resolution.
+        boundary_round = floor if direction < 0 else ceil
+        lhs_samples.update(self._resolve_timeline_samples(
+            lhs_by_frame, [boundary_lhs_frame], boundary_round,
+        ))
+        rhs_samples.update(self._resolve_timeline_samples(
+            rhs_by_frame, [boundary_rhs_frame], boundary_round,
+        ))
         self._prefetch_boundary_images(
             self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames,
             [image_ts for _, image_ts in lhs_samples.values()],

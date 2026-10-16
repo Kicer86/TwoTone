@@ -1238,6 +1238,76 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(result[0], (0, 0))
         self.assertEqual(result[-1], (10000, 10000))
 
+    def test_verified_extrapolation_fits_all_observed_pairs_with_noisy_outer_anchor(self):
+        pm = self._make_pm_with_frames(
+            [0, 490, 61560],
+            [0, 500, 62791],
+        )
+        matching_pairs = [
+            (6250, 6416), (8700, 8875), (11397, 11625),
+            (13235, 13500), (16258, 16583), (21813, 22250),
+            (23570, 24041), (25694, 26208), (26838, 27375),
+            (32066, 32708), (37132, 37875), (41666, 42500),
+            (42279, 43125), (47426, 48375), (51511, 52541),
+            (55555, 56666), (57720, 58875),
+        ]
+        pm.lhs_all_frames.update(self._make_frames(
+            [lhs_ts for lhs_ts, _ in matching_pairs], prefix="lhs_match",
+        ))
+        pm.rhs_all_frames.update(self._make_frames(
+            [rhs_ts for _, rhs_ts in matching_pairs], prefix="rhs_match",
+        ))
+
+        with self._patch_verify_ctx(), patch.object(
+            PairMatcher, '_maybe_insert_verified_boundary',
+        ) as insert_boundary:
+            pm._extrapolate_and_verify_global_linear(
+                GlobalLinearFit(1.0, -12.0, True, 1.0),
+                matching_pairs,
+                pm.lhs_all_frames,
+                pm.rhs_all_frames,
+            )
+
+        slopes = [call.args[2] for call in insert_boundary.call_args_list]
+        intercepts = [call.args[3] for call in insert_boundary.call_args_list]
+        self.assertEqual(len(slopes), 2)
+        for slope in slopes:
+            self.assertAlmostEqual(slope, 1.02, delta=0.0001)
+        for intercept in intercepts:
+            self.assertLess(abs(intercept), 0.1)
+
+    def test_verified_extrapolation_does_not_round_verified_overlap_inward(self):
+        pm = self._make_pm_with_frames(
+            [490, 62009],
+            [0, 64030],
+        )
+        matching_pairs = [
+            (6290, 5994), (8700, 8545), (13194, 13222),
+            (16217, 16369), (16544, 16709), (21813, 22151),
+            (25694, 26232), (26879, 27465), (27736, 28358),
+            (37132, 38137), (43341, 44600), (47426, 48852),
+            (51470, 53061), (52573, 54209), (55555, 57312),
+        ]
+        pm.lhs_all_frames.update(self._make_frames(
+            [lhs_ts for lhs_ts, _ in matching_pairs], prefix="lhs_match",
+        ))
+        pm.rhs_all_frames.update(self._make_frames(
+            [rhs_ts for _, rhs_ts in matching_pairs], prefix="rhs_match",
+        ))
+
+        with self._patch_verify_ctx(), patch.object(
+            PairMatcher, '_boundary_content_matches', return_value=True,
+        ):
+            result = pm._extrapolate_and_verify_global_linear(
+                GlobalLinearFit(1.0, -12.0, True, 1.0),
+                matching_pairs,
+                pm.lhs_all_frames,
+                pm.rhs_all_frames,
+            )
+
+        self.assertEqual(result[0], (490, 0))
+        self.assertEqual(result[-1], (62009, 64030))
+
     def test_verified_extrapolation_preserves_sparse_outro_timeline(self):
         """A held black outro uses its timeline edge, not its decode ordinal."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
