@@ -964,6 +964,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                      GlobalLinearDiscontinuityReport([gap], []),
                      GlobalLinearDiscontinuityReport([], []),
                      GlobalLinearDiscontinuityReport([], []),
+                     GlobalLinearDiscontinuityReport([], []),
                  ],
              ), \
              patch.object(
@@ -980,6 +981,56 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(detect.call_args_list[1].args[0], refined_pairs)
         self.assertEqual(extrap.call_args.args[0], refined_fit)
         self.assertEqual(extrap.call_args.args[1], refined_pairs)
+
+    def test_create_segments_mapping_removes_false_pair_before_scene_refinement(self):
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
+        initial_pairs = [(0, 0), (5000, 4400), (10000, 10000)]
+        cleaned_pairs = [(0, 0), (10000, 10000)]
+        initial_fit = GlobalLinearFit(1.0, 0.0, True, 1.0)
+        cleaned_fit = GlobalLinearFit(1.0, 0.0, True, 1.0)
+        gap = (0, 5000, 0, 4400, 600)
+
+        with patch.object(pm, '_analysis_result_for'), \
+             patch.object(pm, '_detect_scenes', return_value=([], [])), \
+             patch.object(pm, '_probe_frames'), \
+             patch.object(pm, '_extract_scene_frames', return_value=([], [])), \
+             patch.object(pm, '_normalize_extracted', return_value=({}, {}, {}, {})), \
+             patch.object(pm, '_match_key_frames', return_value=initial_pairs), \
+             patch.object(pm, '_log_relation_diagnostics'), \
+             patch.object(
+                 pm,
+                 '_drop_pairs_breaking_local_linearity',
+                 return_value=cleaned_pairs,
+             ) as drop, \
+             patch.object(
+                 pm,
+                 '_refine_global_linear_discontinuities',
+                 side_effect=AssertionError("resolved false pair reached scene refinement"),
+             ), \
+             patch.object(
+                 PairMatcher,
+                 'detect_global_linear',
+                 side_effect=[initial_fit, cleaned_fit],
+             ), \
+             patch.object(
+                 PairMatcher,
+                 '_classify_global_linear_discontinuities',
+                 side_effect=[
+                     GlobalLinearDiscontinuityReport([gap], []),
+                     GlobalLinearDiscontinuityReport([], []),
+                 ],
+             ), \
+             patch.object(
+                 PairMatcher,
+                 '_extrapolate_and_verify_global_linear',
+                 return_value=cleaned_pairs,
+             ), \
+             patch('twotone.tools.melt.pair_matcher.DebugRoutines'):
+            result = pm.create_segments_mapping()
+
+        self.assertEqual(result.mapping, cleaned_pairs)
+        self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
+        drop.assert_called_once_with(initial_pairs, {}, {}, frame_slope=1.0)
 
     def test_create_segments_mapping_revalidates_relation_after_refinement(self):
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
