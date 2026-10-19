@@ -1604,19 +1604,13 @@ class PairMatcher:
             matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
         )
 
-        # Continuous presentation coordinates retain held-frame durations but
-        # cannot accumulate fictitious slots from rounding a variable cadence.
-        # Derive a robust predictor from the full observed correspondence in
-        # these same units, never from the frame fit's nominal-FPS time scale.
+        # Derive a robust timestamp predictor from the full observed
+        # correspondence, never from the frame fit's nominal-FPS time scale.
         # Median pairwise slopes keep one noisy outer anchor from defining the
         # line, while the median observed intercept incorporates every anchor.
-        # Unlike nominal slots, both quantities preserve the observed PTS.
-        lhs_frame_ids = {ts: ts * self.lhs_fps / 1000 for ts in self.lhs_all_frames}
-        rhs_frame_ids = {ts: ts * self.rhs_fps / 1000 for ts in self.rhs_all_frames}
-        observed_pairs = np.array([
-            (lhs_frame_ids[lhs_ts], rhs_frame_ids[rhs_ts])
-            for lhs_ts, rhs_ts in result
-        ])
+        # Working directly in milliseconds preserves observed PTS and avoids
+        # converting to nominal frame units only to convert back at the edge.
+        observed_pairs = np.asarray(result, dtype=float)
         pair_slopes = [
             (rhs2 - rhs1) / (lhs2 - lhs1)
             for index, (lhs1, rhs1) in enumerate(observed_pairs)
@@ -1629,10 +1623,10 @@ class PairMatcher:
         intercept = float(np.median(
             observed_pairs[:, 1] - slope * observed_pairs[:, 0]
         ))
-        lhs_by_frame = {frame_id: ts for ts, frame_id in lhs_frame_ids.items()}
-        rhs_by_frame = {frame_id: ts for ts, frame_id in rhs_frame_ids.items()}
-        lhs_min_frame, lhs_max_frame = min(lhs_by_frame), max(lhs_by_frame)
-        rhs_min_frame, rhs_max_frame = min(rhs_by_frame), max(rhs_by_frame)
+        lhs_timestamps = sorted(self.lhs_all_frames)
+        rhs_timestamps = sorted(self.rhs_all_frames)
+        lhs_min_time, lhs_max_time = lhs_timestamps[0], lhs_timestamps[-1]
+        rhs_min_time, rhs_max_time = rhs_timestamps[0], rhs_timestamps[-1]
 
         # Snap a boundary whose projection lands within a few frames of BOTH
         # video edges onto the edges themselves — the fit's slope error
@@ -1642,34 +1636,37 @@ class PairMatcher:
         # genuinely offset lead-in/out (e.g. 2s vs 6s black) is far past the
         # tolerance and keeps its predicted position.  The snapped target is
         # still content-verified by the walk below, never blindly accepted.
-        snap_tol = 4
+        lhs_snap_tolerance_ms = 4 * 1000 / self.lhs_fps
+        rhs_snap_tolerance_ms = 4 * 1000 / self.rhs_fps
 
-        first_lhs_frame = max(lhs_min_frame, (rhs_min_frame - intercept) / slope)
-        first_rhs_frame = slope * first_lhs_frame + intercept
+        first_lhs_time = max(lhs_min_time, (rhs_min_time - intercept) / slope)
+        first_rhs_time = slope * first_lhs_time + intercept
         if (
-            first_lhs_frame - lhs_min_frame <= snap_tol
-            and abs(slope * lhs_min_frame + intercept - rhs_min_frame) <= snap_tol
+            first_lhs_time - lhs_min_time <= lhs_snap_tolerance_ms
+            and abs(slope * lhs_min_time + intercept - rhs_min_time)
+            <= rhs_snap_tolerance_ms
         ):
-            first_lhs_frame = lhs_min_frame
-            first_rhs_frame = rhs_min_frame
-        first_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, first_rhs_frame))
+            first_lhs_time = lhs_min_time
+            first_rhs_time = rhs_min_time
+        first_rhs_time = max(rhs_min_time, min(rhs_max_time, first_rhs_time))
         self._maybe_insert_verified_boundary(
-            result, "start", slope, intercept, first_lhs_frame, first_rhs_frame,
-            lhs_frame_ids, lhs_by_frame, rhs_by_frame, verify_ctx,
+            result, "start", slope, intercept, first_lhs_time, first_rhs_time,
+            lhs_timestamps, rhs_timestamps, verify_ctx,
         )
 
-        last_lhs_frame = min(lhs_max_frame, (rhs_max_frame - intercept) / slope)
-        last_rhs_frame = slope * last_lhs_frame + intercept
+        last_lhs_time = min(lhs_max_time, (rhs_max_time - intercept) / slope)
+        last_rhs_time = slope * last_lhs_time + intercept
         if (
-            lhs_max_frame - last_lhs_frame <= snap_tol
-            and abs(slope * lhs_max_frame + intercept - rhs_max_frame) <= snap_tol
+            lhs_max_time - last_lhs_time <= lhs_snap_tolerance_ms
+            and abs(slope * lhs_max_time + intercept - rhs_max_time)
+            <= rhs_snap_tolerance_ms
         ):
-            last_lhs_frame = lhs_max_frame
-            last_rhs_frame = rhs_max_frame
-        last_rhs_frame = max(rhs_min_frame, min(rhs_max_frame, last_rhs_frame))
+            last_lhs_time = lhs_max_time
+            last_rhs_time = rhs_max_time
+        last_rhs_time = max(rhs_min_time, min(rhs_max_time, last_rhs_time))
         self._maybe_insert_verified_boundary(
-            result, "end", slope, intercept, last_lhs_frame, last_rhs_frame,
-            lhs_frame_ids, lhs_by_frame, rhs_by_frame, verify_ctx,
+            result, "end", slope, intercept, last_lhs_time, last_rhs_time,
+            lhs_timestamps, rhs_timestamps, verify_ctx,
         )
 
         return result
@@ -1790,36 +1787,30 @@ class PairMatcher:
         return path
 
     @staticmethod
-    def _resolve_timeline_samples(
-        by_frame: dict[float, int], frame_ids: list[float],
+    def _resolve_timestamp_samples(
+        timestamps: list[int], sample_times: list[float],
         round_sample: Callable[[float], int] = round,
     ) -> dict[float, tuple[int, int]]:
-        """Resolve presentation coordinates to (sample time, displayed image PTS).
+        """Resolve requested times to (sample time, displayed image PTS).
 
-        Between decoded frames, hold the preceding image. Interpolate sample
-        times between the surrounding observed timestamps, not from absolute
-        nominal FPS. Exact decoded coordinates retain their PTS. Callers may
-        round a projected edge outward so integer milliseconds do not shorten
-        an otherwise content-verified overlap.
+        ``timestamps`` is sorted. Between decoded frames, hold the preceding
+        image. Exact decoded timestamps retain their PTS. Callers may round a
+        projected edge outward so integer milliseconds do not shorten a
+        content-verified overlap.
         """
-        keys = sorted(by_frame)
         samples = {}
-        for frame_id in set(frame_ids):
-            if frame_id in by_frame:
-                ts = by_frame[frame_id]
-                samples[frame_id] = (ts, ts)
-            else:
-                index = bisect_right(keys, frame_id)
-                if 0 < index < len(keys):
-                    previous, following = keys[index - 1], keys[index]
-                    image_ts = by_frame[previous]
-                    sample_ts = round_sample(
-                        image_ts + (by_frame[following] - image_ts)
-                        * (frame_id - previous) / (following - previous)
-                    )
-                    if sample_ts == by_frame[following]:
-                        image_ts = sample_ts
-                    samples[frame_id] = (sample_ts, image_ts)
+        for sample_time in set(sample_times):
+            index = bisect_right(timestamps, sample_time)
+            if index > 0 and timestamps[index - 1] == sample_time:
+                timestamp = timestamps[index - 1]
+                samples[sample_time] = (timestamp, timestamp)
+            elif 0 < index < len(timestamps):
+                previous, following = timestamps[index - 1], timestamps[index]
+                image_ts = previous
+                sample_ts = round_sample(sample_time)
+                if sample_ts == following:
+                    image_ts = sample_ts
+                samples[sample_time] = (sample_ts, image_ts)
         return samples
 
     def _maybe_insert_verified_boundary(
@@ -1828,11 +1819,10 @@ class PairMatcher:
         side: str,
         slope: float,
         intercept: float,
-        lhs_frame: float,
-        rhs_frame: float,
-        lhs_frame_ids: dict[int, float],
-        lhs_by_frame: dict[float, int],
-        rhs_by_frame: dict[float, int],
+        lhs_time: float,
+        rhs_time: float,
+        lhs_timestamps: list[int],
+        rhs_timestamps: list[int],
         verify_ctx: _BoundaryVerifyContext,
     ) -> None:
         """Extend the boundary toward the projected edge as far as content verifies.
@@ -1844,8 +1834,12 @@ class PairMatcher:
         different outro) stops at the divergence; a gap that diverges immediately
         (different intro) does not move the boundary at all.
         """
-        lhs_sample = self._resolve_timeline_samples(lhs_by_frame, [lhs_frame]).get(lhs_frame)
-        rhs_sample = self._resolve_timeline_samples(rhs_by_frame, [rhs_frame]).get(rhs_frame)
+        lhs_sample = self._resolve_timestamp_samples(
+            lhs_timestamps, [lhs_time]
+        ).get(lhs_time)
+        rhs_sample = self._resolve_timestamp_samples(
+            rhs_timestamps, [rhs_time]
+        ).get(rhs_time)
         if lhs_sample is None or rhs_sample is None:
             return
         lhs_ts, rhs_ts = lhs_sample[0], rhs_sample[0]
@@ -1858,12 +1852,9 @@ class PairMatcher:
         if not beyond or (lhs_ts, rhs_ts) == anchor:
             return
 
-        anchor_lhs_frame = lhs_frame_ids.get(anchor[0])
-        if anchor_lhs_frame is None:
-            return
-
         verified = self._walk_shared_boundary(
-            slope, intercept, anchor_lhs_frame, lhs_frame, rhs_frame, lhs_by_frame, rhs_by_frame, verify_ctx,
+            slope, intercept, anchor[0], lhs_time, rhs_time,
+            lhs_timestamps, rhs_timestamps, verify_ctx,
         )
         if verified is None or verified == anchor:
             self.logger.debug(
@@ -1881,11 +1872,11 @@ class PairMatcher:
         self,
         slope: float,
         intercept: float,
-        anchor_lhs_frame: float,
-        boundary_lhs_frame: float,
-        boundary_rhs_frame: float,
-        lhs_by_frame: dict[float, int],
-        rhs_by_frame: dict[float, int],
+        anchor_lhs_time: float,
+        boundary_lhs_time: float,
+        boundary_rhs_time: float,
+        lhs_timestamps: list[int],
+        rhs_timestamps: list[int],
         verify_ctx: _BoundaryVerifyContext,
     ) -> tuple[int, int] | None:
         """Walk ~0.5s-spaced predicted pairs from the match toward the projected
@@ -1899,43 +1890,59 @@ class PairMatcher:
         so a tolerated miss never becomes the boundary itself.  Returns
         ``None`` when the walk diverges before verifying anything.
         """
-        step = max(1, int(self.lhs_fps * 0.5))
+        step_ms = max(1, int(self.lhs_fps * 0.5)) * 1000 / self.lhs_fps
 
-        # Ordered (lhs_frame, rhs_frame) samples from just past the match to the
-        # projected boundary (inclusive); the boundary uses its snapped rhs.
+        # Ordered timestamp samples from just past the match to the projected
+        # boundary (inclusive); the boundary uses its snapped rhs time.
         # Balance only a final interval within the rhs jitter tolerance: a
         # sample there could retry the edge's black image instead of the gap.
         # Keep the established sampling grid throughout the rest of the gap.
-        distance = boundary_lhs_frame - anchor_lhs_frame
+        distance = boundary_lhs_time - anchor_lhs_time
         direction = 1 if distance >= 0 else -1
-        frame_ids = [anchor_lhs_frame + direction * step * i
-                     for i in range(1, int(np.ceil(abs(distance) / step)))]
+        lhs_sample_times = [
+            anchor_lhs_time + direction * step_ms * i
+            for i in range(1, int(np.ceil(abs(distance) / step_ms)))
+        ]
         jitter = self._BOUNDARY_PREDICTION_JITTER_FRAMES
-        if frame_ids and abs(slope * (boundary_lhs_frame - frame_ids[-1])) <= jitter:
-            previous = frame_ids[-2] if len(frame_ids) > 1 else anchor_lhs_frame
-            frame_ids[-1] = round((previous + boundary_lhs_frame) / 2)
-        samples = [(f, slope * f + intercept) for f in frame_ids]
-        samples.append((boundary_lhs_frame, boundary_rhs_frame))
+        rhs_frame_ms = 1000 / self.rhs_fps
+        if (
+            lhs_sample_times
+            and abs(slope * (boundary_lhs_time - lhs_sample_times[-1]))
+            <= jitter * rhs_frame_ms
+        ):
+            previous = (
+                lhs_sample_times[-2]
+                if len(lhs_sample_times) > 1
+                else anchor_lhs_time
+            )
+            lhs_sample_times[-1] = round((previous + boundary_lhs_time) / 2)
+        samples = [
+            (lhs_time, slope * lhs_time + intercept)
+            for lhs_time in lhs_sample_times
+        ]
+        samples.append((boundary_lhs_time, boundary_rhs_time))
 
         # Bulk-extract every sampled frame up front (two ffmpeg calls),
         # including the ±2 rhs neighbours used by the prediction-jitter retry,
         # so the per-sample verification below only reads images instead of
         # spawning one-frame ffmpeg extractions.
-        lhs_samples = self._resolve_timeline_samples(lhs_by_frame, [lf for lf, _ in samples])
-        rhs_samples = self._resolve_timeline_samples(rhs_by_frame, [
-            rf + delta
-            for _, rf in samples
+        lhs_samples = self._resolve_timestamp_samples(
+            lhs_timestamps, [lhs_time for lhs_time, _ in samples]
+        )
+        rhs_samples = self._resolve_timestamp_samples(rhs_timestamps, [
+            rhs_time + delta * rhs_frame_ms
+            for _, rhs_time in samples
             for delta in range(-jitter, jitter + 1)
         ])
         # The projection is continuous but mapping timestamps are integer
         # milliseconds. Round only the final edge outward; nearest rounding is
         # retained for every gap sample, including held-frame resolution.
         boundary_round = floor if direction < 0 else ceil
-        lhs_samples.update(self._resolve_timeline_samples(
-            lhs_by_frame, [boundary_lhs_frame], boundary_round,
+        lhs_samples.update(self._resolve_timestamp_samples(
+            lhs_timestamps, [boundary_lhs_time], boundary_round,
         ))
-        rhs_samples.update(self._resolve_timeline_samples(
-            rhs_by_frame, [boundary_rhs_frame], boundary_round,
+        rhs_samples.update(self._resolve_timestamp_samples(
+            rhs_timestamps, [boundary_rhs_time], boundary_round,
         ))
         self._prefetch_boundary_images(
             self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames,
@@ -1948,12 +1955,14 @@ class PairMatcher:
 
         best: tuple[int, int] | None = None
         consecutive_misses = 0
-        for lhs_f, rhs_f in samples:
-            lhs_sample = lhs_samples.get(lhs_f)
-            rhs_sample = rhs_samples.get(rhs_f)
+        for lhs_time, rhs_time in samples:
+            lhs_sample = lhs_samples.get(lhs_time)
+            rhs_sample = rhs_samples.get(rhs_time)
             if lhs_sample is None or rhs_sample is None:
                 break
-            if self._shared_content_at_prediction(verify_ctx, rhs_f, lhs_sample[1], rhs_samples):
+            if self._shared_content_at_prediction(
+                verify_ctx, rhs_time, lhs_sample[1], rhs_samples
+            ):
                 best = (lhs_sample[0], rhs_sample[0])
                 consecutive_misses = 0
             else:
@@ -1965,7 +1974,7 @@ class PairMatcher:
     def _shared_content_at_prediction(
         self,
         verify_ctx: _BoundaryVerifyContext,
-        rhs_frame: float,
+        rhs_time: float,
         lhs_ts: int,
         rhs_samples: dict[float, tuple[int, int]],
     ) -> bool:
@@ -1981,9 +1990,10 @@ class PairMatcher:
         line), keeping the boundary error within the allowed 1-2 frames.
         """
         jitter = self._BOUNDARY_PREDICTION_JITTER_FRAMES
+        rhs_frame_ms = 1000 / self.rhs_fps
         for delta in sorted(range(-jitter, jitter + 1), key=abs):
-            candidate_frame = rhs_frame + delta
-            candidate = rhs_samples.get(candidate_frame)
+            candidate_time = rhs_time + delta * rhs_frame_ms
+            candidate = rhs_samples.get(candidate_time)
             if candidate is None:
                 continue
             if self._boundary_content_matches(verify_ctx, lhs_ts, candidate[1]):

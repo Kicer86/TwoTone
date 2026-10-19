@@ -1334,7 +1334,31 @@ class PairMatcherUnitTest(unittest.TestCase):
         for slope in slopes:
             self.assertAlmostEqual(slope, 1.02, delta=0.0001)
         for intercept in intercepts:
-            self.assertLess(abs(intercept), 0.1)
+            self.assertLess(abs(intercept), 0.1 * 1000 / pm.rhs_fps)
+
+    def test_verified_extrapolation_predictor_uses_observed_timestamps_directly(self):
+        pm = self._make_pair_matcher(lhs_fps=20.0, rhs_fps=25.0)
+        pm.lhs_all_frames = self._make_frames(
+            [0, 2000, 4000, 6000, 8000, 10000], prefix="lhs",
+        )
+        pm.rhs_all_frames = self._make_frames(
+            [1000, 2600, 4200, 5800, 7400, 9000], prefix="rhs",
+        )
+        matching_pairs = [(2000, 2600), (4000, 4200), (6000, 5800), (8000, 7400)]
+
+        with self._patch_verify_ctx(), patch.object(
+            PairMatcher, '_maybe_insert_verified_boundary',
+        ) as insert_boundary:
+            pm._extrapolate_and_verify_global_linear(
+                GlobalLinearFit(1.0, 25.0, True, 0.8),
+                matching_pairs,
+                pm.lhs_all_frames,
+                pm.rhs_all_frames,
+            )
+
+        for call in insert_boundary.call_args_list:
+            self.assertAlmostEqual(call.args[2], 0.8)
+            self.assertAlmostEqual(call.args[3], 1000.0)
 
     def test_verified_extrapolation_does_not_round_verified_overlap_inward(self):
         pm = self._make_pm_with_frames(
