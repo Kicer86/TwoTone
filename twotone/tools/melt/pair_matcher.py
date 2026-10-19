@@ -2191,7 +2191,6 @@ class PairMatcher:
         matching_pairs = self._match_key_frames(
             lhs_key_frames, rhs_key_frames,
             lhs_normalized_frames, rhs_normalized_frames,
-            lhs_scene_changes, rhs_scene_changes,
             debug=debug,
         )
 
@@ -2222,13 +2221,11 @@ class PairMatcher:
             discontinuities = discontinuity_report.content
             timing_discontinuities = tuple(discontinuity_report.timing)
             if discontinuities:
-                refined_pairs = self._match_key_frames(
-                    lhs_key_frames, rhs_key_frames,
+                refined_pairs = self._refine_global_linear_discontinuities(
+                    matching_pairs,
                     lhs_normalized_frames, rhs_normalized_frames,
                     list(lhs_scene_changes), list(rhs_scene_changes),
-                    matching_pairs=matching_pairs,
                     frame_slope=initial_frame_slope,
-                    refine_discontinuities=True,
                 )
                 refined_pairs = self._drop_pairs_breaking_local_linearity(
                     refined_pairs, lhs_normalized_frames, rhs_normalized_frames,
@@ -3336,43 +3333,47 @@ class PairMatcher:
         rhs_key_frames: FramesInfo,
         lhs_normalized_frames: FramesInfo,
         rhs_normalized_frames: FramesInfo,
-        lhs_scene_changes: list[int],
-        rhs_scene_changes: list[int],
         *,
         debug: DebugRoutines | None = None,
-        matching_pairs: list[tuple[int, int]] | None = None,
-        frame_slope: float | None = None,
-        refine_discontinuities: bool = False,
     ) -> list[tuple[int, int]]:
-        """Match key frames and iteratively densify discontinuous regions."""
-        if matching_pairs is None:
-            self.logger.info("[5/6] Matching key frames")
-            matching_pairs = self._make_pairs(
-                lhs_key_frames,
-                rhs_key_frames,
-                lhs_normalized_frames,
-                rhs_normalized_frames,
-            )
-            if debug is not None:
-                lhs_extracted = self._extracted_subset(self.lhs_all_frames)
-                rhs_extracted = self._extracted_subset(self.rhs_all_frames)
-                debug.dump_matches(matching_pairs, "initial matching")
-                self.logger.debug("Pairs summary after initial matching:")
-                self.logger.debug(PairMatcher.summarize_pairs(
-                    self.phash,
-                    matching_pairs,
-                    lhs_extracted,
-                    rhs_extracted,
-                    verbose=True,
-                ))
-        else:
-            matching_pairs = list(matching_pairs)
-
+        """Match the initially selected scene frames."""
+        self.logger.info("[5/6] Matching key frames")
+        matching_pairs = self._make_pairs(
+            lhs_key_frames,
+            rhs_key_frames,
+            lhs_normalized_frames,
+            rhs_normalized_frames,
+        )
         matching_pairs = sorted(set(matching_pairs))
         if not matching_pairs:
             raise RuntimeError("No matching pairs found between the two files")
-        if frame_slope is None:
-            return matching_pairs
+
+        if debug is not None:
+            lhs_extracted = self._extracted_subset(self.lhs_all_frames)
+            rhs_extracted = self._extracted_subset(self.rhs_all_frames)
+            debug.dump_matches(matching_pairs, "initial matching")
+            self.logger.debug("Pairs summary after initial matching:")
+            self.logger.debug(PairMatcher.summarize_pairs(
+                self.phash,
+                matching_pairs,
+                lhs_extracted,
+                rhs_extracted,
+                verbose=True,
+            ))
+        return matching_pairs
+
+    def _refine_global_linear_discontinuities(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        lhs_normalized_frames: FramesInfo,
+        rhs_normalized_frames: FramesInfo,
+        lhs_scene_changes: list[int],
+        rhs_scene_changes: list[int],
+        *,
+        frame_slope: float,
+    ) -> list[tuple[int, int]]:
+        """Iteratively add scene evidence inside suspicious linear intervals."""
+        matching_pairs = sorted(set(matching_pairs))
 
         def find_discontinuities(
             pairs: list[tuple[int, int]],
@@ -3385,7 +3386,7 @@ class PairMatcher:
             )
 
         discontinuities = find_discontinuities(matching_pairs)
-        if not discontinuities or not refine_discontinuities:
+        if not discontinuities:
             return matching_pairs
 
         self.logger.info(
