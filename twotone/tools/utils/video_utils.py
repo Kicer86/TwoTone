@@ -1575,18 +1575,49 @@ def generate_mkv(
     if thumbnail:
         options.extend(["--attach-file", thumbnail])
 
-    cmd = "mkvmerge"
-    result = process_utils.start_process(cmd, options, logger=logger)
+    def run_mkvmerge(mkvmerge_options: list[str]) -> None:
+        cmd = "mkvmerge"
+        result = process_utils.start_process(cmd, mkvmerge_options, logger=logger)
 
-    # validate result and output file
-    # mkvmerge returns: 0 = success, 1 = success with warnings, 2 = error
-    if result.returncode == 1:
-        warnings = (result.stdout or "") + (result.stderr or "")
-        if warnings.strip():
-            logger.warning(f"{cmd} completed with warnings: {warnings.strip()}")
-    elif result.returncode > 1:
+        # mkvmerge returns: 0 = success, 1 = success with warnings, 2 = error
+        if result.returncode == 1:
+            warnings = (result.stdout or "") + (result.stderr or "")
+            if warnings.strip():
+                logger.warning(f"{cmd} completed with warnings: {warnings.strip()}")
+        elif result.returncode > 1:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            raise RuntimeError(
+                f"{cmd} exited with unexpected error:\n"
+                f"{result.stderr}\n\nAnd output: {result.stdout}"
+            )
+
+    run_mkvmerge(options)
+    try:
+        validate_media_output(output_path, logger=logger)
+    except RuntimeError as initial_error:
+        if ext != ".mp4":
+            raise
+
         if os.path.exists(output_path):
             os.remove(output_path)
-        raise RuntimeError(f"{cmd} exited with unexpected error:\n{result.stderr}\n\nAnd output: {result.stdout}")
-
-    validate_media_output(output_path, logger=logger)
+        # MKVToolNix 103.0 can report success while dropping all video packets
+        # from some MP4 files. Reading video and other tracks separately avoids
+        # the MP4 reader flush bug without slowing down the normal path.
+        logger.warning(
+            "mkvmerge generated an invalid MP4 output for %s; "
+            "retrying with the video track isolated: %s",
+            input_video,
+            initial_error,
+        )
+        retry_options = [
+            "-o", output_path,
+            "-A", "-S", input_video,
+            "-D", "--no-chapters", "--no-global-tags", input_video,
+            *options[3:],
+        ]
+        try:
+            run_mkvmerge(retry_options)
+            validate_media_output(output_path, logger=logger)
+        except RuntimeError as retry_error:
+            raise retry_error from initial_error

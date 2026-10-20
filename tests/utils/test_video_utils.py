@@ -428,6 +428,78 @@ class UtilsTests(TwoToneTestCase):
                 logger=self.logger,
             )
 
+    def test_generate_mkv_retries_invalid_mp4_with_separate_video_input(self):
+        input_path = os.path.join(self.wd.path, "input.mp4")
+        output_path = os.path.join(self.wd.path, "output.mkv")
+        subtitle_path = os.path.join(self.wd.path, "subtitle.srt")
+        subtitle = subtitles_utils.SubtitleFile(path=subtitle_path, language="pol")
+
+        def fake_mkvmerge(_command, _options, **_kwargs):
+            with open(output_path, "wb") as output_file:
+                output_file.write(b"mkv")
+            return process_utils.ProcessResult(0, "", "")
+
+        with patch.object(process_utils, "start_process", side_effect=fake_mkvmerge) as start, \
+             patch.object(
+                 video_utils,
+                 "validate_media_output",
+                 side_effect=[RuntimeError("invalid mux"), None],
+             ) as validate:
+            video_utils.generate_mkv(
+                output_path=output_path,
+                input_video=input_path,
+                subtitles=[subtitle],
+                logger=self.logger,
+            )
+
+        self.assertEqual(validate.call_count, 2)
+        self.assertEqual(start.call_count, 2)
+        self.assertEqual(
+            start.call_args_list[0].args[1],
+            [
+                "-o", output_path,
+                input_path,
+                "--language", "0:pol",
+                "--default-track", "0:no",
+                subtitle_path,
+            ],
+        )
+        self.assertEqual(
+            start.call_args_list[1].args[1],
+            [
+                "-o", output_path,
+                "-A", "-S", input_path,
+                "-D", "--no-chapters", "--no-global-tags", input_path,
+                "--language", "0:pol",
+                "--default-track", "0:no",
+                subtitle_path,
+            ],
+        )
+
+    def test_generate_mkv_does_not_retry_invalid_non_mp4_input(self):
+        input_path = os.path.join(self.wd.path, "input.avi")
+        output_path = os.path.join(self.wd.path, "output.mkv")
+
+        def fake_mkvmerge(_command, _options, **_kwargs):
+            with open(output_path, "wb") as output_file:
+                output_file.write(b"mkv")
+            return process_utils.ProcessResult(0, "", "")
+
+        with patch.object(process_utils, "start_process", side_effect=fake_mkvmerge) as start, \
+             patch.object(
+                 video_utils,
+                 "validate_media_output",
+                 side_effect=RuntimeError("invalid mux"),
+             ):
+            with self.assertRaisesRegex(RuntimeError, "invalid mux"):
+                video_utils.generate_mkv(
+                    output_path=output_path,
+                    input_video=input_path,
+                    logger=self.logger,
+                )
+
+        self.assertEqual(start.call_count, 1)
+
     def test_validate_media_output_rejects_unexpected_stream_count(self):
         output_path = os.path.join(self.wd.path, "wrong-streams.mkv")
         with open(output_path, "wb") as output_file:
