@@ -2193,7 +2193,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             {0, 40}, {0}, {80},
         ])
 
-    def test_local_scene_refinement_uses_cached_candidates_only_for_sparser_side(self):
+    def test_local_scene_refinement_starts_with_cached_candidates_from_sparser_side(self):
         timestamps = list(range(0, 60001, 40))
         pm = self._make_pm_with_frames(timestamps, timestamps)
         lhs_normalized = {
@@ -2230,12 +2230,46 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertIn((15000, 10000), refined)
         self.assertEqual(lhs_scenes, [15000])
         self.assertEqual(
-            {call.args for call in select.call_args_list},
-            {(
+            select.call_args_list[0].args,
+            (
                 pm.lhs_path,
                 pm.lhs_label,
                 media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
-            )},
+            ),
+        )
+
+    def test_local_scene_refinement_tries_other_side_when_first_has_no_candidates(self):
+        timestamps = list(range(0, 40001, 40))
+        pm = self._make_pm_with_frames(timestamps, timestamps)
+        analyses = {
+            pm.lhs_path: self._scene_analysis(pm.lhs_path, []),
+            pm.rhs_path: self._scene_analysis(
+                pm.rhs_path,
+                [(15000, 0.3), (25000, 0.2)],
+            ),
+        }
+        lhs_scenes: list[int] = []
+        rhs_scenes = [10000, 20000]
+
+        with patch.object(
+                 pm,
+                 '_analysis_result_for',
+                 side_effect=lambda path, *_args: analyses[path],
+             ) as select:
+            lhs_region, rhs_region, added = pm._refine_scenes_in_region(
+                (0, 40000, 0, 40000, 400),
+                lhs_scenes,
+                rhs_scenes,
+            )
+
+        self.assertTrue(added)
+        self.assertEqual(lhs_scenes, [])
+        self.assertEqual(rhs_scenes, [10000, 20000, 15000])
+        self.assertEqual(lhs_region, [0, 40000])
+        self.assertEqual(rhs_region, [0, 10000, 15000, 20000, 40000])
+        self.assertEqual(
+            [call.args[0] for call in select.call_args_list],
+            [pm.lhs_path, pm.rhs_path],
         )
 
     def test_local_scene_refinement_revisits_only_narrowed_gaps(self):
@@ -2300,7 +2334,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         )
         self.assertEqual(
             [call.args[0] for call in select.call_args_list],
-            [pm.lhs_path, pm.lhs_path, pm.lhs_path],
+            [pm.lhs_path, pm.lhs_path, pm.lhs_path, pm.rhs_path],
         )
 
     def test_local_scene_refinement_exhausts_candidates_without_matches(self):
@@ -2400,7 +2434,10 @@ class PairMatcherUnitTest(unittest.TestCase):
         match.assert_not_called()
         extract.assert_not_called()
         normalize.assert_not_called()
-        select.assert_called_once()
+        self.assertEqual(
+            [call.args[0] for call in select.call_args_list],
+            [pm.lhs_path, pm.rhs_path],
+        )
         self.assertTrue(any('Refining suspicious region:' in line for line in logs.output))
         self.assertTrue(any('found no new candidates' in line for line in logs.output))
         self.assertTrue(any('Local scene refinement complete:' in line for line in logs.output))

@@ -730,80 +730,94 @@ class PairMatcher:
         lhs_scene_changes: list[int],
         rhs_scene_changes: list[int],
     ) -> tuple[list[int], list[int], bool]:
-        """Extend the sparser scene list and return timestamps within the region."""
+        """Extend one scene list and return timestamps within the region."""
         lhs_from, lhs_to, rhs_from, rhs_to, _ = gap
         lhs_local = [ts for ts in lhs_scene_changes if lhs_from < ts < lhs_to]
         rhs_local = [ts for ts in rhs_scene_changes if rhs_from < ts < rhs_to]
 
+        lhs_side = (
+            self.lhs_path, self.lhs_label,
+            lhs_from, lhs_to, self.lhs_all_frames, lhs_scene_changes,
+        )
+        rhs_side = (
+            self.rhs_path, self.rhs_label,
+            rhs_from, rhs_to, self.rhs_all_frames, rhs_scene_changes,
+        )
         if len(lhs_local) <= len(rhs_local):
-            path, label = self.lhs_path, self.lhs_label
-            start_ms, end_ms = lhs_from, lhs_to
-            all_frames = self.lhs_all_frames
-            scenes = lhs_scene_changes
+            sides = (lhs_side, rhs_side)
         else:
-            path, label = self.rhs_path, self.rhs_label
-            start_ms, end_ms = rhs_from, rhs_to
-            all_frames = self.rhs_all_frames
-            scenes = rhs_scene_changes
+            sides = (rhs_side, lhs_side)
 
         self.logger.info(
             "Refining suspicious region: %s %s-%s (%d scene(s)) "
-            "↔ %s %s-%s (%d scene(s)); selecting cached candidates for %s",
+            "↔ %s %s-%s (%d scene(s)); checking the sparser side first",
             self.lhs_label, generic_utils.ms_to_time(lhs_from),
             generic_utils.ms_to_time(lhs_to), len(lhs_local),
             self.rhs_label, generic_utils.ms_to_time(rhs_from),
-            generic_utils.ms_to_time(rhs_to), len(rhs_local), label,
+            generic_utils.ms_to_time(rhs_to), len(rhs_local),
         )
-        analysis = self._analysis_result_for(
-            path,
-            label,
-            media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
-        )
-        frame_timestamps = sorted(all_frames)
-        candidates: dict[int, float] = {}
-        for candidate in analysis.scene_candidates:
-            if not start_ms < candidate.timestamp_ms < end_ms:
-                continue
-            timestamp = self._snap_to_nearest_frame(
-                frame_timestamps,
-                candidate.timestamp_ms,
+        scenes_added = False
+        for side_index, (path, label, start_ms, end_ms, all_frames, scenes) in enumerate(sides):
+            analysis = self._analysis_result_for(
+                path,
+                label,
+                media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             )
-            if start_ms < timestamp < end_ms and timestamp not in scenes:
-                candidates[timestamp] = max(
-                    candidates.get(timestamp, 0.0),
-                    candidate.score,
+            frame_timestamps = sorted(all_frames)
+            candidates: dict[int, float] = {}
+            for candidate in analysis.scene_candidates:
+                if not start_ms < candidate.timestamp_ms < end_ms:
+                    continue
+                timestamp = self._snap_to_nearest_frame(
+                    frame_timestamps,
+                    candidate.timestamp_ms,
                 )
+                if start_ms < timestamp < end_ms and timestamp not in scenes:
+                    candidates[timestamp] = max(
+                        candidates.get(timestamp, 0.0),
+                        candidate.score,
+                    )
 
-        desired_count = max(1, abs(len(lhs_local) - len(rhs_local)))
-        ranked_scores = sorted(candidates.values(), reverse=True)
-        if ranked_scores:
+            ranked_scores = sorted(candidates.values(), reverse=True)
+            if not ranked_scores:
+                self.logger.info(
+                    "Local scene refinement %s found no new candidates",
+                    label,
+                )
+                continue
+
+            # Several candidates can balance the initially sparser side. The
+            # fallback side is already at least as dense, so consume only its
+            # strongest candidate before rematching and narrowing the gap.
+            desired_count = (
+                max(1, abs(len(lhs_local) - len(rhs_local)))
+                if side_index == 0
+                else 1
+            )
             cutoff = ranked_scores[min(desired_count, len(ranked_scores)) - 1]
             new_scenes = sorted(
                 timestamp
                 for timestamp, score in candidates.items()
                 if score >= cutoff
             )
-        else:
-            cutoff = None
-            new_scenes = []
-
-        if new_scenes:
             scenes.extend(new_scenes)
+            scenes_added = True
             self.logger.info(
                 "Local scene refinement %s selected %d scene(s) at score %.6f",
                 label, len(new_scenes), cutoff,
             )
-        else:
+            break
+
+        if not scenes_added:
             self.logger.info(
-                "Local scene refinement %s found no new candidates; "
+                "Local scene refinement found no new candidates on either side; "
                 "region remains unresolved",
-                label,
             )
 
         return (
             sorted({lhs_from, lhs_to, *(ts for ts in lhs_scene_changes if lhs_from < ts < lhs_to)}),
             sorted({rhs_from, rhs_to, *(ts for ts in rhs_scene_changes if rhs_from < ts < rhs_to)}),
-            bool(new_scenes),
+            scenes_added,
         )
 
     def _drop_pairs_breaking_local_linearity(
