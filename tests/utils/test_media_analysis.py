@@ -172,7 +172,10 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         }
 
         def fake_ffmpeg(args, _interruption, on_line, logger, stdout_path=None):
-            del args, on_line, logger
+            del on_line, logger
+            scene_stats = self._stats_path(args, "-stats_enc_pre:v:0")
+            with open(scene_stats, "w", encoding="utf-8") as file:
+                file.write("0 2 1/25\n")
             self._write_scene_metadata(stdout_path, [
                 "frame:0 pts:2 pts_time:0.08\n",
                 "lavfi.scene_score=0.400000\n",
@@ -482,11 +485,16 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             sample_stats = next(
                 path for path in stats_paths if path.endswith("identity.txt")
             )
+            scene_stats = next(
+                path for path in stats_paths if path.endswith("scene_frames.txt")
+            )
 
             with open(frame_stats, "w", encoding="utf-8") as file:
                 file.write("0 0 1/1000\n1 40 1/1000\n2 80 1/1000\n")
             with open(sample_stats, "w", encoding="utf-8") as file:
                 file.write("0 0 1/1000\n1 80 1/1000\n")
+            with open(scene_stats, "w", encoding="utf-8") as file:
+                file.write("0 80 1/1000\n")
             output_pattern = next(value for value in args if "identity_%08d.png" in value)
             for index in (1, 2):
                 with open(output_pattern.replace("%08d", f"{index:08d}"), "wb") as file:
@@ -535,12 +543,12 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 args[index + 1] for index, value in enumerate(args)
                 if value == "-stats_enc_pre_fmt:v:0"
             ],
-            ["{ni} {pts} {tb}", "{ni} {pts} {tb}"],
+            ["{ni} {pts} {tb}", "{ni} {pts} {tb}", "{ni} {pts} {tb}"],
         )
         self.assertEqual([
             args[index + 1] for index, value in enumerate(args)
             if value == "-enc_time_base:v:0"
-        ], ["filter", "filter"])
+        ], ["filter", "filter", "filter"])
         self.assertNotIn("-enc_time_base:v:1", args)
         self.assertEqual(result.scene_changes_at(0.3), (80,))
         self.assertEqual(
@@ -566,6 +574,46 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             logs,
         )
 
+    def test_matching_scene_timestamps_keep_exact_frame_precision_after_long_runtime(self):
+        def fake_start(args, _interruption, on_line, logger, stdout_path=None):
+            del on_line, logger
+            frame_stats = next(
+                args[index + 1]
+                for index, value in enumerate(args)
+                if value == "-stats_enc_pre:v:0"
+                and args[index + 1].endswith("frames.txt")
+            )
+            scene_stats = next(
+                args[index + 1]
+                for index, value in enumerate(args)
+                if value == "-stats_enc_pre:v:0"
+                and args[index + 1].endswith("scene_frames.txt")
+            )
+            with open(frame_stats, "w", encoding="utf-8") as file:
+                file.write("0 24001 1/24\n")
+            with open(scene_stats, "w", encoding="utf-8") as file:
+                file.write("0 24001 1/24\n")
+            # FFmpeg's metadata printer rounds this value to six significant
+            # digits, which would incorrectly produce 1_000_040 ms.
+            self._write_scene_metadata(stdout_path, [
+                "frame:0 pts:24001 pts_time:1000.04\n",
+                "lavfi.scene_score=0.400000\n",
+            ])
+            return SimpleNamespace(returncode=0), []
+
+        with patch.object(self.session, "probe", return_value=self._probe_result()), \
+             patch.object(video_utils, "_start_ffmpeg_streaming", side_effect=fake_start):
+            result = self.session.fulfill(self._request(
+                media_analysis.MediaAnalysisFeature.MATCHING,
+            ))
+
+        self.assertEqual(list(result.frames), [1_000_042])
+        self.assertEqual(
+            result.scene_candidates,
+            (media_analysis.SceneCandidate(1_000_042, 0.4),),
+        )
+        self.assertTrue(set(result.scene_changes_at(0.3)).issubset(result.frames))
+
     def test_scene_only_scan_has_a_mapped_filter_output(self):
         session = media_analysis.MediaAnalysisSession(
             self.workspace,
@@ -577,6 +625,9 @@ class MediaAnalysisSessionTest(unittest.TestCase):
             del on_line, logger, stdout_path
             self.assertIn("[scenes]", args)
             self.assertNotIn("voutput", " ".join(args))
+            scene_stats = self._stats_path(args, "-stats_enc_pre:v:0")
+            with open(scene_stats, "w", encoding="utf-8"):
+                pass
             return Mock(returncode=0), []
 
         probe = media_analysis.MediaProbeResult(
@@ -601,7 +652,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 for index, value in enumerate(args)
                 if value == "-stats_enc_pre:v:0"
             ]
-            self.assertEqual(len(stats_paths), 1)
+            self.assertEqual(len(stats_paths), 2)
             for path in stats_paths:
                 with open(path, "w", encoding="utf-8"):
                     pass
@@ -838,9 +889,13 @@ class MediaAnalysisSessionTest(unittest.TestCase):
                 index for index, value in enumerate(args)
                 if value == "-stats_enc_pre:v:0"
             ]
-            self.assertEqual(len(stats_options), 1)
-            sample_stats = args[stats_options[0] + 1]
+            self.assertEqual(len(stats_options), 2)
+            stats_paths = [args[index + 1] for index in stats_options]
+            sample_stats = next(path for path in stats_paths if path.endswith("identity.txt"))
+            scene_stats = next(path for path in stats_paths if path.endswith("scene_frames.txt"))
             with open(sample_stats, "w", encoding="utf-8") as file:
+                file.write("0 0 1/1000\n")
+            with open(scene_stats, "w", encoding="utf-8") as file:
                 file.write("0 0 1/1000\n")
 
             output_pattern = next(value for value in args if "identity_%08d.png" in value)

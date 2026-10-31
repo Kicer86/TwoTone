@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-_CACHE_FORMAT_VERSION = 5  # v5 stores scene scores for in-memory threshold selection.
+_CACHE_FORMAT_VERSION = 6  # v6 stores scene timestamps from exact PTS/time-base stats.
 
 
 class MeltCache:

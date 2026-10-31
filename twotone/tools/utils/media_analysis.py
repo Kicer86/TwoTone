@@ -14,7 +14,7 @@ from .files_utils import Workspace
 from .generic_utils import InterruptibleProcess
 
 _SCENE_FRAME_RE = re.compile(
-    r"^frame:\d+\s+pts:\S+\s+pts_time:([-+]?(?:\d+(?:\.\d*)?|\.\d+))"
+    r"^frame:\d+\s+pts:\S+\s+pts_time:\S+"
 )
 _SCENE_SCORE_RE = re.compile(
     r"^lavfi\.scene_score=([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)$"
@@ -518,6 +518,7 @@ class MediaAnalysisSession:
         # FFmpeg writes it to stdout, which the parent opens once as this file;
         # pointing the filter at the file directly truncates it on graph reinit.
         scene_metadata_path = os.path.join(scan_dir, "scenes.txt")
+        scene_stats_path = os.path.join(scan_dir, "scene_frames.txt")
         sample_stats_path = os.path.join(scan_dir, "identity.txt")
         sample_pattern = os.path.join(scan_dir, "identity_%08d.png")
 
@@ -612,6 +613,11 @@ class MediaAnalysisSession:
                 "-map", "[scenes]",
                 "-an", "-sn", "-dn",
                 "-fps_mode", "vfr",
+                # metadata's textual pts_time has only six significant digits.
+                # Preserve exact PTS and time base for long-running videos.
+                "-enc_time_base:v:0", "filter",
+                "-stats_enc_pre:v:0", scene_stats_path,
+                "-stats_enc_pre_fmt:v:0", "{ni} {pts} {tb}",
                 "-f", "null", "-",
             ])
 
@@ -681,7 +687,11 @@ class MediaAnalysisSession:
         progress.close()
 
         scene_candidates = (
-            self._read_scene_candidates(scene_metadata_path, timestamp_correction_ms)
+            self._read_scene_candidates(
+                scene_metadata_path,
+                scene_stats_path,
+                timestamp_correction_ms,
+            )
             if features & MediaAnalysisFeature.SCENE_CHANGES
             else ()
         )
@@ -779,38 +789,39 @@ class MediaAnalysisSession:
 
     @staticmethod
     def _read_scene_candidates(
-        path: str,
+        metadata_path: str,
+        stats_path: str,
         correction_ms: int,
     ) -> tuple[SceneCandidate, ...]:
         try:
-            with open(path, encoding="utf-8") as file:
+            with open(metadata_path, encoding="utf-8") as file:
                 lines = file.readlines()
         except OSError:
             return ()
-        return MediaAnalysisSession._parse_scene_candidates(lines, correction_ms)
+        entries = MediaAnalysisSession._read_frame_entries(stats_path, correction_ms)
+        return MediaAnalysisSession._parse_scene_candidates(lines, entries)
 
     @staticmethod
     def _parse_scene_candidates(
         lines: list[str],
-        correction_ms: int,
+        entries: list[tuple[int, int]],
     ) -> tuple[SceneCandidate, ...]:
-        timestamp_ms: int | None = None
-        candidates: dict[int, float] = {}
+        expect_score = False
+        scores: list[float] = []
         for line in lines:
             stripped = line.strip()
-            frame_match = _SCENE_FRAME_RE.match(stripped)
-            if frame_match:
-                timestamp_ms = max(
-                    0,
-                    round(float(frame_match.group(1)) * 1000) + correction_ms,
-                )
+            if _SCENE_FRAME_RE.match(stripped):
+                expect_score = True
                 continue
 
             score_match = _SCENE_SCORE_RE.match(stripped)
-            if score_match and timestamp_ms is not None:
-                score = float(score_match.group(1))
-                candidates[timestamp_ms] = max(candidates.get(timestamp_ms, 0.0), score)
-                timestamp_ms = None
+            if score_match and expect_score:
+                scores.append(float(score_match.group(1)))
+                expect_score = False
+
+        candidates: dict[int, float] = {}
+        for (_, timestamp_ms), score in zip(entries, scores):
+            candidates[timestamp_ms] = max(candidates.get(timestamp_ms, 0.0), score)
 
         return tuple(
             SceneCandidate(timestamp, score)
