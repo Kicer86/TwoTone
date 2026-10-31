@@ -456,7 +456,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
         ("length_mismatch_without_flag", "Video length mismatch", False),
         ("length_mismatch_with_flag", "Video length mismatch", True),
     ])
-    def test_analyze_group_rejects_subtitles_when_source_requires_timeline_alignment(
+    def test_analyze_group_handles_subtitles_when_source_requires_timeline_alignment(
         self,
         _name,
         requirement_issue,
@@ -489,12 +489,15 @@ class MeltAnalyzerTest(TwoToneTestCase):
                 [base_path, subtitle_path], {base_path: 1, subtitle_path: 2}, "Title",
             )
 
-        self.assertIsNone(plan)
-        matching_request.assert_not_called()
-        self.assertEqual(
-            issue,
-            "Subtitle streams from #2 require video timeline alignment, which is not supported yet.",
-        )
+        if allow_video_timeline_mismatch:
+            self.assertIsNotNone(plan)
+            self.assertIsNone(issue)
+            self.assertEqual(plan["alignment_paths"], [subtitle_path])
+            self.assertEqual(matching_request.call_count, 2)
+        else:
+            self.assertIsNone(plan)
+            matching_request.assert_not_called()
+            self.assertEqual(issue, requirement_issue)
 
     def test_analyze_group_requests_matching_data_needed_for_allowed_timeline_alignment(self):
         base_path = os.path.join(self.wd.path, "base.mkv")
