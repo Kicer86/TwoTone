@@ -6,12 +6,19 @@ import unittest
 from array import array
 from unittest.mock import Mock, patch
 
-from common import run_ffmpeg
+import pysubs2
+
+from common import run_ffmpeg, write_srt_subtitle
 from parameterized import parameterized
 
 from melt.helpers import _FAKE_PROCESS_OK
 from twotone.tools.melt.melt import MeltPerformer, StaticSource, StreamsPicker
-from twotone.tools.melt.melt_common import AttachmentRef, AudioStreamRef, VideoStreamRef
+from twotone.tools.melt.melt_common import (
+    AttachmentRef,
+    AudioStreamRef,
+    SubtitleStreamRef,
+    VideoStreamRef,
+)
 from twotone.tools.melt.melt_performer import (
     AudioPatchRequest,
     AudioPatchResult,
@@ -390,7 +397,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         for file_path in (first_file, second_file):
             self.assertEqual(args[args.index(file_path) - 1], "--no-chapters")
 
-    def test_strict_audio_mapping_collapses_ambiguous_boundary_matches(self):
+    def test_strict_mapping_collapses_ambiguous_boundary_matches(self):
         mapping = [
             (0, 510),
             (500, 510),
@@ -399,7 +406,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             (63250, 65050),
         ]
 
-        result = MeltPerformer._strict_audio_mapping(mapping)
+        result = MeltPerformer._strict_mapping(mapping)
 
         self.assertEqual(
             result,
@@ -409,6 +416,165 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 (63250, 64540),
             ],
         )
+
+    @staticmethod
+    def _subtitle_matching(
+        mapping: list[tuple[int, int]],
+        relation: MappingRelation,
+    ) -> SegmentsMappingResult:
+        lhs_frames = {
+            lhs: {"frame_id": index, "path": None}
+            for index, (lhs, _rhs) in enumerate(mapping)
+        }
+        rhs_frames = {
+            rhs: {"frame_id": index, "path": None}
+            for index, (_lhs, rhs) in enumerate(mapping)
+        }
+        return SegmentsMappingResult(
+            mapping,
+            lhs_frames,
+            rhs_frames,
+            relation,
+            25.0,
+            25.0,
+        )
+
+    def test_retime_subtitle_content_applies_global_shift_and_scale(self):
+        performer = self._make_performer()
+        content = pysubs2.SSAFile()
+        content.append(pysubs2.SSAEvent(start=2000, end=4000, text="Line"))
+        matching = self._subtitle_matching(
+            [(0, 1000), (10000, 9000)],
+            MappingRelation.GLOBAL_LINEAR,
+        )
+
+        performer._retime_subtitle_content(
+            content,
+            matching,
+            source_mapping_to_video_ms=0,
+            output_mapping_to_video_ms=500,
+            source_description="subtitle track #2 from file #2",
+        )
+
+        self.assertEqual((content[0].start, content[0].end), (1750, 4250))
+
+    def test_retime_subtitle_content_uses_piecewise_generic_mapping(self):
+        performer = self._make_performer()
+        content = pysubs2.SSAFile()
+        content.append(pysubs2.SSAEvent(start=2000, end=7000, text="Line"))
+        matching = self._subtitle_matching(
+            [(0, 0), (5000, 4000), (10000, 10000)],
+            MappingRelation.GENERIC,
+        )
+
+        performer._retime_subtitle_content(
+            content,
+            matching,
+            source_mapping_to_video_ms=0,
+            output_mapping_to_video_ms=0,
+            source_description="subtitle track #2 from file #2",
+        )
+
+        self.assertEqual((content[0].start, content[0].end), (2500, 7500))
+
+    def test_retime_subtitle_content_rejects_event_outside_shared_content(self):
+        performer = self._make_performer()
+        content = pysubs2.SSAFile()
+        content.append(pysubs2.SSAEvent(start=500, end=1500, text="Intro"))
+        matching = self._subtitle_matching(
+            [(0, 1000), (10000, 11000)],
+            MappingRelation.GLOBAL_LINEAR,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "extends beyond verified shared content"):
+            performer._retime_subtitle_content(
+                content,
+                matching,
+                source_mapping_to_video_ms=0,
+                output_mapping_to_video_ms=0,
+                source_description="subtitle track #2 from file #2",
+            )
+
+    def test_patch_mismatched_subtitle_rejects_image_based_track(self):
+        performer = self._make_performer()
+        base_path = "/tmp/base.mkv"
+        source_path = "/tmp/source.mkv"
+        subtitle = SubtitleStreamRef(source_path, 2, 2, "pol")
+        details = {
+            source_path: {
+                "tracks": {
+                    "subtitle": [
+                        {"tid": 2, "format": "HDMV PGS", "forced": True},
+                    ],
+                },
+            },
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "image-based subtitle format"):
+            performer._patch_mismatched_subtitle(
+                VideoStreamRef(base_path, 0, 0, None),
+                VideoStreamRef(source_path, 0, 0, None),
+                subtitle,
+                10000,
+                {base_path: 1, source_path: 2},
+                details,
+            )
+
+    def test_patch_mismatched_subtitle_extracts_text_track_from_mp4(self):
+        performer = self._make_performer()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subtitle_path = os.path.join(tmpdir, "source.srt")
+            source_path = os.path.join(tmpdir, "source.mp4")
+            write_srt_subtitle(subtitle_path, [(1000, 2000, "Line")])
+            run_ffmpeg(
+                [
+                    "-y",
+                    "-f", "lavfi",
+                    "-i", "color=c=black:s=64x64:r=25:d=5",
+                    "-i", subtitle_path,
+                    "-map", "0:v:0",
+                    "-map", "1:s:0",
+                    "-c:v", "mpeg4",
+                    "-c:s", "mov_text",
+                    "-t", "5",
+                    source_path,
+                ],
+                expected_path=source_path,
+            )
+            matching = self._subtitle_matching(
+                [(0, 0), (5000, 5000)],
+                MappingRelation.GLOBAL_LINEAR,
+            )
+            match_result = _PairMatchResult(matching, 5000)
+            base_path = "/tmp/base.mkv"
+            details = {
+                source_path: {
+                    "tracks": {
+                        "subtitle": [
+                            {"tid": 1, "format": "mov_text"},
+                        ],
+                    },
+                },
+            }
+
+            with patch.object(
+                performer,
+                "_validated_pair_match",
+                return_value=match_result,
+            ), patch.object(performer, "_mapping_to_video_ms", return_value=0):
+                output_stream, _metadata = performer._patch_mismatched_subtitle(
+                    VideoStreamRef(base_path, 0, 0, None),
+                    VideoStreamRef(source_path, 0, 0, None),
+                    SubtitleStreamRef(source_path, 1, 1, "pol"),
+                    5000,
+                    {base_path: 1, source_path: 2},
+                    details,
+                )
+
+            content = pysubs2.load(output_stream.path)
+            self.assertEqual(len(content), 1)
+            self.assertEqual(content[0].text, "Line")
+            self.assertEqual((content[0].start, content[0].end), (1000, 2000))
 
     def test_unscaled_timeline_shift_accepts_whole_frame_offsets(self):
         # 5 dropped leading frames at 24 fps: deltas sit on the whole-frame grid.
@@ -1436,6 +1602,34 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertIn("1:471", sync_values)
         self.assertIn("2:250", sync_values)
         self.assertIn("0:500", sync_values)
+
+    def test_build_mkvmerge_args_preserves_rewritten_subtitle_metadata(self):
+        performer = self._make_performer()
+        subtitle_path = "/tmp/aligned.ass"
+
+        args = performer.build_mkvmerge_args(
+            "/tmp/out.mkv",
+            [
+                _StreamEntry(
+                    "subtitle",
+                    0,
+                    subtitle_path,
+                    "pol",
+                    name="Forced signs",
+                    forced=True,
+                    default=False,
+                ),
+            ],
+            attachments=[],
+            preferred_audio=None,
+            required_input_files=[subtitle_path],
+        )
+
+        self.assertIn("0:Forced signs", args)
+        forced_index = args.index("--forced-display-flag")
+        self.assertEqual(args[forced_index + 1], "0:yes")
+        default_index = args.index("--default-track")
+        self.assertEqual(args[default_index + 1], "0:no")
 
     def test_build_mkvmerge_args_applies_track_sync_offset_only_to_selected_track(self):
         performer = self._make_performer()
