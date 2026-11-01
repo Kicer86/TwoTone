@@ -33,17 +33,45 @@ class MeltPlanMediaAnalysisTest(unittest.TestCase):
 
 class MeltPlanInputValidationTest(unittest.TestCase):
     def test_validates_only_selected_audio_and_video_streams(self):
+        first_audio_track_id = 2
+        first_audio_ffprobe_index = 7
+        second_video_track_id = 0
+        second_video_ffprobe_index = 4
+        second_audio_track_id = 1
+        second_audio_ffprobe_index = 5
+        first_subtitle_track_id = 3
+        first_subtitle_ffprobe_index = 9
         plan = MeltPlan(items=[{
             "title": "Movie",
             "groups": [{
                 "files": ["/media/first.mkv", "/media/second.mkv"],
                 "streams": {
-                    "video": [("/media/second.mkv", 0, 4, None)],
+                    "video": [(
+                        "/media/second.mkv",
+                        second_video_track_id,
+                        second_video_ffprobe_index,
+                        None,
+                    )],
                     "audio": [
-                        ("/media/first.mkv", 2, 7, "eng"),
-                        ("/media/second.mkv", 1, 5, "pol"),
+                        (
+                            "/media/first.mkv",
+                            first_audio_track_id,
+                            first_audio_ffprobe_index,
+                            "eng",
+                        ),
+                        (
+                            "/media/second.mkv",
+                            second_audio_track_id,
+                            second_audio_ffprobe_index,
+                            "pol",
+                        ),
                     ],
-                    "subtitle": [("/media/first.mkv", 3, 9, "eng")],
+                    "subtitle": [(
+                        "/media/first.mkv",
+                        first_subtitle_track_id,
+                        first_subtitle_ffprobe_index,
+                        "eng",
+                    )],
                 },
             }],
         }], output_dir="/output")
@@ -52,12 +80,15 @@ class MeltPlanInputValidationTest(unittest.TestCase):
             input_validation.InputValidationTarget(
                 "/media/first.mkv",
                 "#1",
-                stream_indices=(7,),
+                stream_indices=(first_audio_ffprobe_index,),
             ),
             input_validation.InputValidationTarget(
                 "/media/second.mkv",
                 "#2",
-                stream_indices=(4, 5),
+                stream_indices=(
+                    second_video_ffprobe_index,
+                    second_audio_ffprobe_index,
+                ),
             ),
         ))
 
