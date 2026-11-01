@@ -209,6 +209,40 @@ class InputValidatorTest(unittest.TestCase):
         self.assertFalse(report.is_valid)
         self.assertIn("Invalid data found", report.issues[0].message)
 
+    def test_timestamp_error_reports_affected_stream_and_safe_repair_guidance(self):
+        self._probe([
+            {"index": 0, "codec_type": "video", "codec_name": "h264"},
+            {
+                "index": 5,
+                "codec_type": "audio",
+                "codec_name": "dts",
+                "sample_rate": "48000",
+                "channels": 6,
+            },
+        ])
+        self._scan(
+            "Application provided invalid, non monotonically increasing dts "
+            "to muxer in output stream 0 (input stream #5): 42 >= 41"
+        )
+        target = input_validation.InputValidationTarget(
+            self.path,
+            "#1",
+            stream_indices=(5,),
+        )
+
+        report = self._validator(input_validation.ValidationMode.FULL).validate([target])
+
+        self.assertFalse(report.is_valid)
+        issue = report.issues[0]
+        self.assertIn("audio #5: dts 48000 Hz 6 channels", issue.message)
+        self.assertIsNotNone(issue.repair_suggestion)
+        assert issue.repair_suggestion is not None
+        self.assertIn("remux", issue.repair_suggestion.lower())
+        self.assertIn("new", issue.repair_suggestion.lower())
+        with self.assertLogs(self.logger, "ERROR") as logs:
+            report.render(self.logger)
+        self.assertIn("Suggested repair", "\n".join(logs.output))
+
     def test_full_validation_does_not_treat_partial_analysis_as_cached_validation(self):
         self.media_analysis.result_for.return_value = media_analysis.VideoScanResult(
             path=self.path,
@@ -268,8 +302,9 @@ class InputValidatorTest(unittest.TestCase):
         self.assertIn("Invalid data found", first.issues[0].message)
         with self.assertLogs(self.logger, "ERROR") as logs:
             first.render(self.logger)
-        self.assertNotIn("Suggested repair", "\n".join(logs.output))
+        self.assertIn("Suggested repair", "\n".join(logs.output))
         self.assertFalse(second.is_valid)
+        self.assertIsNotNone(second.issues[0].repair_suggestion)
         self.assertEqual(second.checked_count, 0)
         self.assertEqual(second.cached_count, 1)
         self.media_analysis.probe.assert_not_called()
@@ -290,6 +325,7 @@ class InputValidatorTest(unittest.TestCase):
 
         self.assertFalse(report.is_valid)
         self.assertIn("Invalid data found", report.issues[0].message)
+        self.assertIsNotNone(report.issues[0].repair_suggestion)
         self.media_analysis.fulfill.assert_not_called()
 
     def test_fast_validation_only_requests_probe(self):

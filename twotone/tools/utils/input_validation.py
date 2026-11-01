@@ -56,6 +56,7 @@ class ValidationIssue:
     path: str
     message: str
     reference: str | None = None
+    repair_suggestion: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,8 @@ class ValidationReport:
                 issue.reference or issue.path,
                 issue.message,
             )
+            if issue.repair_suggestion:
+                logger.error("Suggested repair: %s", issue.repair_suggestion)
 
 
 class InputValidator:
@@ -155,6 +158,7 @@ class InputValidator:
                         path,
                         cached_issue,
                         target.reference,
+                        cached.get("repair_suggestion"),
                     )
                     if cached_issue is not None
                     else None
@@ -191,7 +195,10 @@ class InputValidator:
             self.logger.info("Checking input %s.", target.reference)
             issue = self._validate_file(target)
             results[path] = issue
-            cache[key] = {"issue": issue.message if issue else None}
+            cache[key] = {
+                "issue": issue.message if issue else None,
+                "repair_suggestion": issue.repair_suggestion if issue else None,
+            }
 
         if pending_checks:
             self._save_cache(cache)
@@ -245,6 +252,7 @@ class InputValidator:
                 path,
                 self._summarize_error(probe.error),
                 target.reference,
+                self._repair_suggestion(probe.error),
             )
 
         selected_stream_indices = self._selected_decodable_stream_indices(
@@ -272,6 +280,7 @@ class InputValidator:
                         selected_stream_indices,
                     ),
                     target.reference,
+                    self._repair_suggestion(scan.decode_error),
                 )
         return None
 
@@ -312,14 +321,35 @@ class InputValidator:
         output: str,
         selected_stream_indices: tuple[int, ...],
     ) -> str:
+        affected_indices = {
+            int(match)
+            for match in re.findall(r"input stream #(\d+)", output)
+        }
+        described_indices = affected_indices or set(selected_stream_indices)
         streams = [
             self._stream_description(stream)
             for stream in probe_data.get("streams", [])
             if stream.get("codec_type") in {"audio", "video"}
-            and stream.get("index") in selected_stream_indices
+            and stream.get("index") in described_indices
         ]
         stream_details = ", ".join(streams) if streams else "no decodable streams reported"
         return f"Selected-stream validation failed ({stream_details}): {self._summarize_error(output)}"
+
+    @staticmethod
+    def _repair_suggestion(output: str) -> str:
+        if re.search(r"non[- ]monoton", output, re.IGNORECASE):
+            return (
+                "The affected stream has out-of-order timestamps. First remux the source "
+                "to a new MKV with mkvmerge and validate that copy. If the error remains, "
+                "rebuild only the affected stream by decoding and losslessly re-encoding "
+                "it, then remux it with the untouched streams. Verify A/V sync before "
+                "replacing the source."
+            )
+        return (
+            "Create a new remuxed copy with mkvmerge and validate it. If the error remains, "
+            "re-encode only the affected stream or obtain a clean source. Verify the "
+            "repaired copy before replacing the original."
+        )
 
     @staticmethod
     def _stream_description(stream: dict) -> str:

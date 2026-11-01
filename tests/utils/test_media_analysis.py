@@ -286,7 +286,7 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertNotIn("0:a?", args)
         self.assertEqual(result.validated_stream_indices, frozenset({0, 5}))
         self.assertFalse(result.validated_all_streams)
-        self.assertIn("in stream 1", result.decode_error or "")
+        self.assertIn("output stream 1 (input stream #5)", result.decode_error or "")
 
     def test_validation_cache_tracks_partial_stream_coverage(self):
         first_result = media_analysis.VideoScanResult(

@@ -652,6 +652,7 @@ class MediaAnalysisSession:
             elif "vvalidate" in branches:
                 args.extend(["-map", "[vvalidate]"])
 
+        validation_output_streams: tuple[int, ...] = ()
         if features & MediaAnalysisFeature.VALIDATE_STREAMS:
             if validation_stream_indices is not None:
                 if features != MediaAnalysisFeature.VALIDATE_STREAMS:
@@ -659,7 +660,8 @@ class MediaAnalysisSession:
                         "Selective stream validation cannot share an FFmpeg scan "
                         "with other media-analysis features"
                     )
-                for stream_index in validation_stream_indices:
+                validation_output_streams = validation_stream_indices
+                for stream_index in validation_output_streams:
                     args.extend(["-map", f"0:{stream_index}"])
             else:
                 if has_primary_video:
@@ -757,6 +759,11 @@ class MediaAnalysisSession:
             ),
         )
         decode_error = self._decode_error(process.returncode, stderr_lines)
+        if decode_error is not None and validation_output_streams:
+            decode_error = self._annotate_validation_streams(
+                decode_error,
+                validation_output_streams,
+            )
         if (
             decode_error is None
             and duration_s is not None
@@ -809,6 +816,22 @@ class MediaAnalysisSession:
                 else None
             ),
         )
+
+    @staticmethod
+    def _annotate_validation_streams(
+        output: str,
+        input_stream_indices: tuple[int, ...],
+    ) -> str:
+        def replace(match: re.Match[str]) -> str:
+            output_index = int(match.group(1))
+            if output_index >= len(input_stream_indices):
+                return match.group(0)
+            return (
+                f"in output stream {output_index} "
+                f"(input stream #{input_stream_indices[output_index]})"
+            )
+
+        return re.sub(r"in stream (\d+)", replace, output)
 
     @staticmethod
     def _timestamp_correction_ms(probe: MediaProbeResult) -> int:
