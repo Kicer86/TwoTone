@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import generic_utils, media_analysis
 
-_CACHE_VERSION = 2
+_CACHE_VERSION = 3
 
 
 class ValidationMode(enum.Enum):
@@ -48,6 +48,7 @@ class InputValidationPolicy:
 class InputValidationTarget:
     path: str
     reference: str
+    stream_indices: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -108,10 +109,23 @@ class InputValidator:
                 else InputValidationTarget(input_value, input_value)
             )
             real_path = os.path.realpath(target.path)
-            targets_by_path.setdefault(
+            normalized = InputValidationTarget(
                 real_path,
-                InputValidationTarget(real_path, target.reference),
+                target.reference,
+                target.stream_indices,
             )
+            existing = targets_by_path.get(real_path)
+            if existing is None:
+                targets_by_path[real_path] = normalized
+            else:
+                targets_by_path[real_path] = InputValidationTarget(
+                    real_path,
+                    existing.reference,
+                    self._merge_stream_indices(
+                        existing.stream_indices,
+                        normalized.stream_indices,
+                    ),
+                )
         targets = tuple(targets_by_path.values())
 
         results: dict[str, ValidationIssue | None] = {}
@@ -127,14 +141,21 @@ class InputValidator:
                 )
                 continue
 
-            key = self._cache_key(path)
+            key = self._cache_key(path, target.stream_indices)
             cached = cache.get(key)
-            has_fresh_decode = self._has_analysis_decode(path)
+            has_fresh_decode = self._has_analysis_decode(
+                path,
+                target.stream_indices,
+            )
             if cached is not None and not has_fresh_decode:
                 cached_count += 1
                 cached_issue = cached["issue"]
                 results[path] = (
-                    ValidationIssue(path, cached_issue, target.reference)
+                    ValidationIssue(
+                        path,
+                        cached_issue,
+                        target.reference,
+                    )
                     if cached_issue is not None
                     else None
                 )
@@ -199,9 +220,22 @@ class InputValidator:
 
         return report
 
-    def _has_analysis_decode(self, path: str) -> bool:
+    @staticmethod
+    def _merge_stream_indices(
+        first: tuple[int, ...] | None,
+        second: tuple[int, ...] | None,
+    ) -> tuple[int, ...] | None:
+        if first is None or second is None:
+            return None
+        return tuple(sorted(set(first) | set(second)))
+
+    def _has_analysis_decode(
+        self,
+        path: str,
+        stream_indices: tuple[int, ...] | None,
+    ) -> bool:
         result = self.media_analysis.result_for(path)
-        return result is not None and result.validated_all_streams
+        return result is not None and result.validates_streams(stream_indices)
 
     def _validate_file(self, target: InputValidationTarget) -> ValidationIssue | None:
         path = target.path
@@ -213,11 +247,20 @@ class InputValidator:
                 target.reference,
             )
 
-        if self.policy.validate_all_streams and probe.has_decodable_stream:
+        selected_stream_indices = self._selected_decodable_stream_indices(
+            probe.data,
+            target.stream_indices,
+        )
+        if self.policy.validate_all_streams and selected_stream_indices:
             request = media_analysis.MediaAnalysisRequest(
                 path=path,
                 label=target.reference,
                 features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+                validation_stream_indices=(
+                    selected_stream_indices
+                    if target.stream_indices is not None
+                    else None
+                ),
             )
             scan = self.media_analysis.fulfill(request, raise_on_error=False)
             if scan.decode_error is not None:
@@ -226,10 +269,25 @@ class InputValidator:
                     self._describe_decode_failure(
                         probe.data,
                         scan.decode_error,
+                        selected_stream_indices,
                     ),
                     target.reference,
                 )
         return None
+
+    @staticmethod
+    def _selected_decodable_stream_indices(
+        probe_data: dict,
+        requested_indices: tuple[int, ...] | None,
+    ) -> tuple[int, ...]:
+        requested = set(requested_indices) if requested_indices is not None else None
+        return tuple(
+            index
+            for stream in probe_data.get("streams", [])
+            if stream.get("codec_type") in {"audio", "video"}
+            and isinstance((index := stream.get("index")), int)
+            and (requested is None or index in requested)
+        )
 
     @staticmethod
     def _summarize_error(output: str) -> str:
@@ -248,14 +306,20 @@ class InputValidator:
         selected = diagnostic_lines or lines[-3:]
         return " | ".join(dict.fromkeys(selected[:3]))
 
-    def _describe_decode_failure(self, probe_data: dict, output: str) -> str:
+    def _describe_decode_failure(
+        self,
+        probe_data: dict,
+        output: str,
+        selected_stream_indices: tuple[int, ...],
+    ) -> str:
         streams = [
             self._stream_description(stream)
             for stream in probe_data.get("streams", [])
             if stream.get("codec_type") in {"audio", "video"}
+            and stream.get("index") in selected_stream_indices
         ]
         stream_details = ", ".join(streams) if streams else "no decodable streams reported"
-        return f"Full decode failed ({stream_details}): {self._summarize_error(output)}"
+        return f"Selected-stream validation failed ({stream_details}): {self._summarize_error(output)}"
 
     @staticmethod
     def _stream_description(stream: dict) -> str:
@@ -271,7 +335,11 @@ class InputValidator:
             details.append(f"{stream['width']}x{stream['height']}")
         return " ".join(details)
 
-    def _cache_key(self, path: str) -> str:
+    def _cache_key(
+        self,
+        path: str,
+        stream_indices: tuple[int, ...] | None,
+    ) -> str:
         stat = os.stat(path)
         return json.dumps({
             "version": _CACHE_VERSION,
@@ -281,6 +349,7 @@ class InputValidator:
             "inode": stat.st_ino,
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
+            "stream_indices": stream_indices,
         }, sort_keys=True)
 
     def _load_cache(self) -> dict[str, dict[str, str | None]]:

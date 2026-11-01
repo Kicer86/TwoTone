@@ -90,6 +90,7 @@ class MediaAnalysisRequest:
     path: str
     label: str
     features: MediaAnalysisFeature
+    validation_stream_indices: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -137,13 +138,26 @@ class VideoScanResult:
     identity_samples: tuple[VideoSample, ...]
     decode_error: str | None
     scene_candidates: tuple[SceneCandidate, ...] = ()
+    validated_stream_indices: frozenset[int] | None = None
 
     def supports(self, features: MediaAnalysisFeature) -> bool:
         return self.features & features == features
 
     @property
     def validated_all_streams(self) -> bool:
-        return self.supports(MediaAnalysisFeature.VALIDATE_STREAMS)
+        return (
+            self.supports(MediaAnalysisFeature.VALIDATE_STREAMS)
+            and self.validated_stream_indices is None
+        )
+
+    def validates_streams(self, stream_indices: tuple[int, ...] | None) -> bool:
+        if not self.supports(MediaAnalysisFeature.VALIDATE_STREAMS):
+            return False
+        if self.validated_stream_indices is None:
+            return True
+        if stream_indices is None:
+            return False
+        return set(stream_indices).issubset(self.validated_stream_indices)
 
     def frames_copy(self) -> dict[int, dict]:
         """Return mutable frame metadata isolated from other consumers."""
@@ -242,6 +256,7 @@ class MediaAnalysisSession:
         path = request.path
         label = request.label
         features = request.features
+        validation_stream_indices = request.validation_stream_indices
         real_path = os.path.realpath(path)
         key = self._file_key(real_path)
         if features == MediaAnalysisFeature.NONE:
@@ -260,7 +275,11 @@ class MediaAnalysisSession:
         else:
             self._log_scan_result("Media analysis run cache contains data", label, cached)
 
-        missing_features = features & ~(cached.features if cached is not None else MediaAnalysisFeature.NONE)
+        missing_features = self._missing_features(
+            features,
+            validation_stream_indices,
+            cached,
+        )
         persistent = self._restore_persistent(real_path, missing_features)
         if persistent is not None:
             self._log_scan_result("Persistent media analysis cache restored data", label, persistent)
@@ -273,22 +292,40 @@ class MediaAnalysisSession:
                 _format_features(missing_features),
             )
 
-        if cached is not None and cached.supports(features):
+        if self._request_is_cached(
+            cached,
+            features,
+            validation_stream_indices,
+        ):
+            assert cached is not None
             self.logger.debug("Media scan for %s restored from cache.", label)
             self._log_scan_result("Media analysis satisfied without FFmpeg", label, cached)
             self._path_results[real_path] = cached
             return self._handle_scan_error(cached, label, raise_on_error)
 
-        missing_features = features
-        if cached is not None:
-            missing_features &= ~cached.features
+        missing_features = self._missing_features(
+            features,
+            validation_stream_indices,
+            cached,
+        )
 
         self.logger.debug(
             "Media analysis for %s requires a fresh scan: missing=[%s].",
             label,
             _format_features(missing_features),
         )
-        scanned = self._scan(real_path, label, missing_features)
+        if (
+            missing_features & MediaAnalysisFeature.VALIDATE_STREAMS
+            and validation_stream_indices is not None
+        ):
+            scanned = self._scan(
+                real_path,
+                label,
+                missing_features,
+                validation_stream_indices=validation_stream_indices,
+            )
+        else:
+            scanned = self._scan(real_path, label, missing_features)
         self._log_scan_result("Fresh media analysis collected", label, scanned)
         self._store_persistent(scanned)
         result = self._merge_results(cached, scanned) if cached is not None else scanned
@@ -296,6 +333,34 @@ class MediaAnalysisSession:
         self._path_results[real_path] = result
         self._log_scan_result("Media analysis satisfied", label, result)
         return self._handle_scan_error(result, label, raise_on_error)
+
+    @staticmethod
+    def _missing_features(
+        requested: MediaAnalysisFeature,
+        validation_stream_indices: tuple[int, ...] | None,
+        cached: VideoScanResult | None,
+    ) -> MediaAnalysisFeature:
+        if cached is None:
+            return requested
+        missing = requested & ~cached.features
+        if (
+            requested & MediaAnalysisFeature.VALIDATE_STREAMS
+            and not cached.validates_streams(validation_stream_indices)
+        ):
+            missing |= MediaAnalysisFeature.VALIDATE_STREAMS
+        return missing
+
+    @staticmethod
+    def _request_is_cached(
+        cached: VideoScanResult | None,
+        requested: MediaAnalysisFeature,
+        validation_stream_indices: tuple[int, ...] | None,
+    ) -> bool:
+        if cached is None or not cached.supports(requested):
+            return False
+        if requested & MediaAnalysisFeature.VALIDATE_STREAMS:
+            return cached.validates_streams(validation_stream_indices)
+        return True
 
     @staticmethod
     def _handle_scan_error(
@@ -465,6 +530,8 @@ class MediaAnalysisSession:
         path: str,
         label: str,
         features: MediaAnalysisFeature,
+        *,
+        validation_stream_indices: tuple[int, ...] | None = None,
     ) -> VideoScanResult:
         probe = self.probe(path)
         primary_video = probe.primary_video_track or {}
@@ -586,11 +653,20 @@ class MediaAnalysisSession:
                 args.extend(["-map", "[vvalidate]"])
 
         if features & MediaAnalysisFeature.VALIDATE_STREAMS:
-            if has_primary_video:
-                args.extend(["-map", "0:V?"])
-                if "vframes" in branches or "vvalidate" in branches:
-                    args.extend(["-map", "-0:v:0?"])
-            args.extend(["-map", "0:a?"])
+            if validation_stream_indices is not None:
+                if features != MediaAnalysisFeature.VALIDATE_STREAMS:
+                    raise ValueError(
+                        "Selective stream validation cannot share an FFmpeg scan "
+                        "with other media-analysis features"
+                    )
+                for stream_index in validation_stream_indices:
+                    args.extend(["-map", f"0:{stream_index}"])
+            else:
+                if has_primary_video:
+                    args.extend(["-map", "0:V?"])
+                    if "vframes" in branches or "vvalidate" in branches:
+                        args.extend(["-map", "-0:v:0?"])
+                args.extend(["-map", "0:a?"])
         elif needs_primary_null_output:
             args.append("-an")
 
@@ -639,7 +715,10 @@ class MediaAnalysisSession:
             _format_features(features),
             ", ".join(branches) if branches else "none",
             len(target_timestamps),
-            bool(features & MediaAnalysisFeature.VALIDATE_STREAMS),
+            bool(
+                features & MediaAnalysisFeature.VALIDATE_STREAMS
+                and validation_stream_indices is None
+            ),
         )
 
         duration_s = duration_ms / 1000 if duration_ms is not None and duration_ms > 0 else None
@@ -723,6 +802,12 @@ class MediaAnalysisSession:
             identity_samples=samples,
             decode_error=decode_error,
             scene_candidates=scene_candidates,
+            validated_stream_indices=(
+                frozenset(validation_stream_indices)
+                if features & MediaAnalysisFeature.VALIDATE_STREAMS
+                and validation_stream_indices is not None
+                else None
+            ),
         )
 
     @staticmethod
@@ -745,6 +830,17 @@ class MediaAnalysisSession:
                 if error is not None
             )
         )
+        validation_coverages = [
+            result.validated_stream_indices
+            for result in (cached, scanned)
+            if result.supports(MediaAnalysisFeature.VALIDATE_STREAMS)
+        ]
+        if any(coverage is None for coverage in validation_coverages):
+            validated_stream_indices = None
+        else:
+            validated_stream_indices = frozenset().union(
+                *(coverage for coverage in validation_coverages if coverage is not None)
+            )
         return VideoScanResult(
             path=scanned.path,
             features=cached.features | scanned.features,
@@ -764,6 +860,7 @@ class MediaAnalysisSession:
                 if scanned.supports(MediaAnalysisFeature.SCENE_CHANGES)
                 else cached.scene_candidates
             ),
+            validated_stream_indices=validated_stream_indices,
         )
 
     @staticmethod

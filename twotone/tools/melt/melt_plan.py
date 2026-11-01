@@ -46,8 +46,24 @@ class MeltPlan:
                     if multiple_candidates:
                         context += f", candidate #{group_index}"
                     reference += f" ({context})"
+                streams = group.get("streams")
+                stream_indices = (
+                    tuple(sorted({
+                        ffprobe_stream_index
+                        for stream_type in ("video", "audio")
+                        for stream_path, _tid, ffprobe_stream_index, _lang
+                        in streams.get(stream_type, [])
+                        if stream_path == path
+                    }))
+                    if streams is not None
+                    else None
+                )
                 targets.append(
-                    input_validation.InputValidationTarget(path, reference),
+                    input_validation.InputValidationTarget(
+                        path,
+                        reference,
+                        stream_indices,
+                    ),
                 )
         return tuple(targets)
 

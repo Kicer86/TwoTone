@@ -32,6 +32,35 @@ class MeltPlanMediaAnalysisTest(unittest.TestCase):
 
 
 class MeltPlanInputValidationTest(unittest.TestCase):
+    def test_validates_only_selected_audio_and_video_streams(self):
+        plan = MeltPlan(items=[{
+            "title": "Movie",
+            "groups": [{
+                "files": ["/media/first.mkv", "/media/second.mkv"],
+                "streams": {
+                    "video": [("/media/second.mkv", 0, 4, None)],
+                    "audio": [
+                        ("/media/first.mkv", 2, 7, "eng"),
+                        ("/media/second.mkv", 1, 5, "pol"),
+                    ],
+                    "subtitle": [("/media/first.mkv", 3, 9, "eng")],
+                },
+            }],
+        }], output_dir="/output")
+
+        self.assertEqual(plan.input_validation_targets(), (
+            input_validation.InputValidationTarget(
+                "/media/first.mkv",
+                "#1",
+                stream_indices=(7,),
+            ),
+            input_validation.InputValidationTarget(
+                "/media/second.mkv",
+                "#2",
+                stream_indices=(4, 5),
+            ),
+        ))
+
     def test_single_group_uses_the_existing_file_numbers(self):
         plan = MeltPlan(items=[{
             "title": "Movie",
