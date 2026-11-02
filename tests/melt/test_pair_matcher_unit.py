@@ -2544,8 +2544,52 @@ class PairMatcherUnitTest(unittest.TestCase):
                     frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
                 )
                 self.assertEqual([gap[4] for gap in gaps], [600, -600])
-                with self.assertRaisesRegex(RuntimeError, "Unresolved suspected content discontinuities"):
+                self.assertEqual(pm._group_content_discontinuities(gaps), [gaps])
+                with self.assertLogs(pm.logger, level="ERROR") as captured, \
+                     self.assertRaisesRegex(
+                         RuntimeError,
+                         "local frame-sequence differences",
+                     ):
                     pm._raise_for_unresolved_content_discontinuities(gaps)
+                self.assertTrue(any(
+                    "compensating adjacent frame-step errors" in message
+                    for message in captured.output
+                ))
+
+    def test_extract_content_discontinuity_frames_requests_complete_spans(self):
+        pm = self._make_pair_matcher()
+        pm.lhs_all_frames = {
+            timestamp: {"frame_id": frame_id, "path": None}
+            for frame_id, timestamp in enumerate((0, 40, 80, 120, 160))
+        }
+        pm.rhs_all_frames = {
+            timestamp: {"frame_id": frame_id, "path": None}
+            for frame_id, timestamp in enumerate((0, 40, 80, 120, 160, 200))
+        }
+        groups = [[
+            (40, 80, 40, 120, -40),
+            (80, 120, 120, 160, 40),
+        ]]
+
+        def fake_extract(_path, target_dir, ranges, metadata, **_kwargs):
+            for timestamp, info in metadata.items():
+                if any(start <= info["frame_id"] <= end for start, end in ranges):
+                    info["path"] = f"{target_dir}/{timestamp}.png"
+
+        with patch.object(video_utils, "extract_frames_at_ranges", side_effect=fake_extract) as extract:
+            pm._extract_content_discontinuity_frames(groups)
+
+        self.assertEqual(extract.call_count, 2)
+        self.assertEqual(extract.call_args_list[0].args[2], [(1, 3)])
+        self.assertEqual(extract.call_args_list[1].args[2], [(1, 4)])
+        self.assertTrue(all(
+            pm.lhs_all_frames[timestamp]["path"] is not None
+            for timestamp in (40, 80, 120)
+        ))
+        self.assertTrue(all(
+            pm.rhs_all_frames[timestamp]["path"] is not None
+            for timestamp in (40, 80, 120, 160)
+        ))
 
     def test_false_pair_requires_independent_replacement_samples_on_both_sides(self):
         for before in (True, False):

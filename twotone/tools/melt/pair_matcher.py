@@ -2163,28 +2163,140 @@ class PairMatcher:
     def _raise_for_unresolved_content_discontinuities(
         self,
         discontinuities: list[tuple[int, int, int, int, int]],
+        debug_path: str | None = None,
     ) -> None:
-        for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in discontinuities:
-            self.logger.error(
-                "Suspected content discontinuity between matched anchors: %s-%s in %s "
-                "↔ %s-%s in %s "
-                "(%+d ms, %+.1f frames)",
-                generic_utils.ms_to_time(lhs_from),
-                generic_utils.ms_to_time(lhs_to),
-                self.lhs_label,
-                generic_utils.ms_to_time(rhs_from),
-                generic_utils.ms_to_time(rhs_to),
-                self.rhs_label,
-                deficit_ms,
-                deficit_ms * self.rhs_fps / 1000,
+        for group in self._group_content_discontinuities(discontinuities):
+            frame_errors = [
+                deficit_ms * self.rhs_fps / 1000
+                for *_, deficit_ms in group
+            ]
+            compensating = (
+                len(group) > 1
+                and min(frame_errors) < 0 < max(frame_errors)
+                and abs(sum(frame_errors))
+                <= self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
             )
+            if compensating:
+                lhs_from, _, rhs_from, _, _ = group[0]
+                _, lhs_to, _, rhs_to, _ = group[-1]
+                self.logger.error(
+                    "Localized frame-sequence difference across matched anchors: "
+                    "%s-%s in %s ↔ %s-%s in %s; compensating adjacent "
+                    "frame-step errors %s restore the outer alignment, but the "
+                    "videos differ inside this region.",
+                    generic_utils.ms_to_time(lhs_from),
+                    generic_utils.ms_to_time(lhs_to),
+                    self.lhs_label,
+                    generic_utils.ms_to_time(rhs_from),
+                    generic_utils.ms_to_time(rhs_to),
+                    self.rhs_label,
+                    ", ".join(f"{error:+.1f}" for error in frame_errors),
+                )
+            for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in group:
+                lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
+                lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
+                rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
+                rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
+                self.logger.error(
+                    "Suspected content discontinuity between matched anchors: %s-%s "
+                    "(decoded frames %d-%d) in %s ↔ %s-%s "
+                    "(decoded frames %d-%d) in %s (%+d ms, %+.1f frames)",
+                    generic_utils.ms_to_time(lhs_from),
+                    generic_utils.ms_to_time(lhs_to),
+                    lhs_frame_from,
+                    lhs_frame_to,
+                    self.lhs_label,
+                    generic_utils.ms_to_time(rhs_from),
+                    generic_utils.ms_to_time(rhs_to),
+                    rhs_frame_from,
+                    rhs_frame_to,
+                    self.rhs_label,
+                    deficit_ms,
+                    deficit_ms * self.rhs_fps / 1000,
+                )
+        if debug_path is not None:
+            self.logger.error("Full frame diagnostics: %s", debug_path)
         raise RuntimeError(
-            "Unresolved suspected content discontinuities: insufficient evidence to rule out "
-            "holes in the scene sequence "
+            "Unresolved suspected content discontinuities: matched videos contain "
+            "local frame-sequence differences or ambiguous matches "
             f"(absolute frame-step error exceeds "
             f"{self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:g} frames) — patching "
             "audio across such discontinuities is not supported yet"
         )
+
+    @staticmethod
+    def _group_content_discontinuities(
+        discontinuities: list[tuple[int, int, int, int, int]],
+    ) -> list[list[tuple[int, int, int, int, int]]]:
+        """Group adjacent errors that share their middle matched anchor."""
+        groups: list[list[tuple[int, int, int, int, int]]] = []
+        for discontinuity in sorted(discontinuities):
+            if (
+                groups
+                and groups[-1][-1][1] == discontinuity[0]
+                and groups[-1][-1][3] == discontinuity[2]
+            ):
+                groups[-1].append(discontinuity)
+            else:
+                groups.append([discontinuity])
+        return groups
+
+    def _extract_content_discontinuity_frames(
+        self,
+        groups: list[list[tuple[int, int, int, int, int]]],
+    ) -> None:
+        """Extract every missing decoded frame in final error regions."""
+        for video_path, target_dir, frames, label, side in (
+            (
+                self.lhs_path,
+                self.lhs_all_wd,
+                self.lhs_all_frames,
+                self.lhs_label,
+                "lhs",
+            ),
+            (
+                self.rhs_path,
+                self.rhs_all_wd,
+                self.rhs_all_frames,
+                self.rhs_label,
+                "rhs",
+            ),
+        ):
+            requested: set[int] = set()
+            for group in groups:
+                if side == "lhs":
+                    start_ms, end_ms = group[0][0], group[-1][1]
+                else:
+                    start_ms, end_ms = group[0][2], group[-1][3]
+                requested.update(
+                    timestamp
+                    for timestamp in frames
+                    if start_ms <= timestamp <= end_ms
+                )
+            missing = sorted(
+                timestamp
+                for timestamp in requested
+                if frames[timestamp].get("path") is None
+            )
+            if not missing:
+                continue
+            ranges = self._compute_frame_ranges(missing, frames, margin=0)
+            self.logger.info(
+                "Extracting %d missing diagnostic frame(s) for %s",
+                len(missing),
+                label,
+            )
+            video_utils.extract_frames_at_ranges(
+                video_path,
+                target_dir,
+                ranges,
+                frames,
+                scale=(960, -2),
+                format="png",
+                interruption=self.interruption,
+                desc=f"Extracting discontinuity diagnostics: {label}",
+                logger=self.logger,
+            )
 
     def create_segments_mapping(self) -> SegmentsMappingResult:
 
@@ -2299,8 +2411,27 @@ class PairMatcher:
 
                 if discontinuity_report.content:
                     debug.dump_matches(refined_pairs, "localized discontinuities")
-                    self._raise_for_unresolved_content_discontinuities(
+                    discontinuity_groups = self._group_content_discontinuities(
                         discontinuity_report.content
+                    )
+                    debug_path = debug.dump_content_discontinuities(
+                        discontinuity_groups,
+                        lhs_label=self.lhs_label,
+                        rhs_label=self.rhs_label,
+                        lhs_fps=self.lhs_fps,
+                        rhs_fps=self.rhs_fps,
+                        compensation_tolerance_frames=(
+                            self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
+                        ),
+                        prepare_frames=lambda: (
+                            self._extract_content_discontinuity_frames(
+                                discontinuity_groups
+                            )
+                        ),
+                    )
+                    self._raise_for_unresolved_content_discontinuities(
+                        discontinuity_report.content,
+                        debug_path,
                     )
                 matching_pairs = refined_pairs
                 global_linear_fit = refined_fit

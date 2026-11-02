@@ -1,8 +1,15 @@
 
-import platform
 import os
+import platform
+
+from collections.abc import Callable
 
 from .melt_common import FramesInfo
+from ..utils import generic_utils
+
+
+ContentDiscontinuity = tuple[int, int, int, int, int]
+ContentDiscontinuityGroup = list[ContentDiscontinuity]
 
 
 class DebugRoutines:
@@ -66,3 +73,132 @@ class DebugRoutines:
                 path = info.get("path") if info else None
                 if path:
                     os.symlink(path, os.path.join(target_dir, f"{i:06d}_{tag}"))
+
+    def dump_content_discontinuities(
+        self,
+        groups: list[ContentDiscontinuityGroup],
+        *,
+        lhs_label: str,
+        rhs_label: str,
+        lhs_fps: float,
+        rhs_fps: float,
+        prepare_frames: Callable[[], None],
+        compensation_tolerance_frames: float = 4.0,
+    ) -> str | None:
+        """Write final error details and complete frame spans for every region."""
+        if not self.work:
+            return None
+
+        prepare_frames()
+        target_dir = os.path.join(
+            self.debug_dir,
+            f"#{self.it} content discontinuity error",
+        )
+        self.it += 1
+        os.makedirs(target_dir)
+
+        details = [
+            "Content discontinuity diagnostics",
+            "",
+            "Every decoded frame in each inclusive region is linked below.",
+            "A compensating region restores the outer alignment but still means",
+            "that the videos contain different local frame sequences.",
+            f"{lhs_label} nominal frame rate: {lhs_fps:.6f} fps",
+            f"{rhs_label} nominal frame rate: {rhs_fps:.6f} fps",
+            "",
+        ]
+        for region_index, group in enumerate(groups):
+            lhs_from, _, rhs_from, _, _ = group[0]
+            _, lhs_to, _, rhs_to, _ = group[-1]
+            frame_errors = [
+                deficit_ms * rhs_fps / 1000
+                for *_, deficit_ms in group
+            ]
+            compensating = (
+                len(group) > 1
+                and min(frame_errors) < 0 < max(frame_errors)
+                and abs(sum(frame_errors)) <= compensation_tolerance_frames
+            )
+            kind = (
+                "compensating adjacent frame-step errors"
+                if compensating
+                else "unresolved frame-step error"
+            )
+            lhs_first_id = int(self.lhs_all_frames[lhs_from]["frame_id"])
+            lhs_last_id = int(self.lhs_all_frames[lhs_to]["frame_id"])
+            rhs_first_id = int(self.rhs_all_frames[rhs_from]["frame_id"])
+            rhs_last_id = int(self.rhs_all_frames[rhs_to]["frame_id"])
+
+            details.extend([
+                f"Region {region_index}: {kind}",
+                (
+                    f"  {lhs_label}: {generic_utils.ms_to_time(lhs_from)}-"
+                    f"{generic_utils.ms_to_time(lhs_to)}; decoded frames "
+                    f"{lhs_first_id} -> {lhs_last_id}"
+                ),
+                (
+                    f"  {rhs_label}: {generic_utils.ms_to_time(rhs_from)}-"
+                    f"{generic_utils.ms_to_time(rhs_to)}; decoded frames "
+                    f"{rhs_first_id} -> {rhs_last_id}"
+                ),
+                "  Steps:",
+            ])
+            for step_index, (
+                step_lhs_from,
+                step_lhs_to,
+                step_rhs_from,
+                step_rhs_to,
+                deficit_ms,
+            ) in enumerate(group):
+                step_lhs_first = int(self.lhs_all_frames[step_lhs_from]["frame_id"])
+                step_lhs_last = int(self.lhs_all_frames[step_lhs_to]["frame_id"])
+                step_rhs_first = int(self.rhs_all_frames[step_rhs_from]["frame_id"])
+                step_rhs_last = int(self.rhs_all_frames[step_rhs_to]["frame_id"])
+                details.append(
+                    f"    {step_index + 1}: {lhs_label} {step_lhs_first}->{step_lhs_last} "
+                    f"({step_lhs_from}->{step_lhs_to} ms) <-> "
+                    f"{rhs_label} {step_rhs_first}->{step_rhs_last} "
+                    f"({step_rhs_from}->{step_rhs_to} ms); "
+                    f"error {deficit_ms:+d} ms "
+                    f"({deficit_ms * rhs_fps / 1000:+.1f} rhs frames)"
+                )
+            details.append("")
+
+            region_dir = os.path.join(target_dir, f"region_{region_index:03d}")
+            self._link_frame_span(
+                os.path.join(region_dir, "lhs"),
+                self.lhs_all_frames,
+                lhs_from,
+                lhs_to,
+            )
+            self._link_frame_span(
+                os.path.join(region_dir, "rhs"),
+                self.rhs_all_frames,
+                rhs_from,
+                rhs_to,
+            )
+
+        with open(os.path.join(target_dir, "details.txt"), "w", encoding="utf-8") as details_file:
+            details_file.write("\n".join(details))
+        return target_dir
+
+    @staticmethod
+    def _link_frame_span(
+        target_dir: str,
+        frames: FramesInfo,
+        start_ms: int,
+        end_ms: int,
+    ) -> None:
+        os.makedirs(target_dir)
+        for timestamp, info in sorted(frames.items()):
+            if not start_ms <= timestamp <= end_ms:
+                continue
+            path = info.get("path")
+            if path is None:
+                continue
+            extension = os.path.splitext(path)[1]
+            name = (
+                f"frame_{int(info['frame_id']):06d}_"
+                f"{timestamp:010d}{extension}"
+            )
+            os.symlink(path, os.path.join(target_dir, name))
