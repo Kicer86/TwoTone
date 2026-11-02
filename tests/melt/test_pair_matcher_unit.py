@@ -1130,7 +1130,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                      patch.object(PairMatcher, 'summarize_pairs'), \
                      patch.object(pm, '_extrapolate_and_verify_global_linear', return_value=pairs) as extrapolate, \
                      patch('twotone.tools.melt.pair_matcher.DebugRoutines'), \
-                     self.assertRaisesRegex(RuntimeError, "discontinuit.*not supported yet"):
+                     self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
                     pm.create_segments_mapping()
                 extrapolate.assert_not_called()
 
@@ -1166,7 +1166,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                          patch.object(PairMatcher, 'summarize_pairs'), \
                          patch.object(pm, '_extrapolate_and_verify_global_linear', return_value=pairs) as extrapolate, \
                          patch('twotone.tools.melt.pair_matcher.DebugRoutines'), \
-                         self.assertRaisesRegex(RuntimeError, "Unresolved suspected content discontinuities"):
+                         self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
                         pm.create_segments_mapping()
                     extrapolate.assert_not_called()
 
@@ -2545,16 +2545,66 @@ class PairMatcherUnitTest(unittest.TestCase):
                 )
                 self.assertEqual([gap[4] for gap in gaps], [600, -600])
                 self.assertEqual(pm._group_content_discontinuities(gaps), [gaps])
-                with self.assertLogs(pm.logger, level="ERROR") as captured, \
+                with self.assertLogs(pm.logger, level="DEBUG") as captured, \
                      self.assertRaisesRegex(
                          RuntimeError,
-                         "local frame-sequence differences",
+                         "local frame-sequence difference",
                      ):
                     pm._raise_for_unresolved_content_discontinuities(gaps)
                 self.assertTrue(any(
-                    "compensating adjacent frame-step errors" in message
+                    "first and last matched frames use the same 0-frame offset" in message
+                    and "inside this range the match shifts by 15 frames" in message
                     for message in captured.output
                 ))
+                self.assertTrue(any(
+                    "Suspected content discontinuity between matched anchors" in message
+                    and "DEBUG" in message
+                    for message in captured.output
+                ))
+
+    def test_compensating_discontinuity_reports_outer_offset_and_inner_shift(self):
+        pm = self._make_pair_matcher()
+        pm.lhs_label = "#2"
+        pm.rhs_label = "#1"
+        pm.rhs_fps = 25.0
+        pm.lhs_all_frames = {
+            2473639: {"frame_id": 59307},
+            2476726: {"frame_id": 59381},
+            2485901: {"frame_id": 59601},
+        }
+        pm.rhs_all_frames = {
+            2473558: {"frame_id": 59306},
+            2476853: {"frame_id": 59385},
+            2485821: {"frame_id": 59600},
+        }
+        gaps = [
+            (2473639, 2476726, 2473558, 2476853, -209),
+            (2476726, 2485901, 2476853, 2485821, 209),
+        ]
+
+        with self.assertLogs(pm.logger, level="DEBUG") as captured, \
+             self.assertRaises(RuntimeError):
+            pm._raise_for_unresolved_content_discontinuities(
+                gaps,
+                "/tmp/debug",
+            )
+
+        summary = next(
+            message for message in captured.output
+            if "Local frame-sequence difference" in message
+        )
+        self.assertIn(
+            "first and last matched frames use the same 1-frame offset "
+            "(#2 = #1 + 1)",
+            summary,
+        )
+        self.assertIn("inside this range the match shifts by 5 frames", summary)
+        self.assertIn("#2: frames 59307-59601 (2473639-2485901 ms)", summary)
+        self.assertIn("#1: frames 59306-59600 (2473558-2485821 ms)", summary)
+        self.assertTrue(any(
+            "Full frame diagnostics: /tmp/debug/details.txt" in message
+            for message in captured.output
+        ))
 
     def test_extract_content_discontinuity_frames_requests_complete_spans(self):
         pm = self._make_pair_matcher()

@@ -2170,34 +2170,88 @@ class PairMatcher:
                 deficit_ms * self.rhs_fps / 1000
                 for *_, deficit_ms in group
             ]
+            lhs_from, _, rhs_from, _, _ = group[0]
+            _, lhs_to, _, rhs_to, _ = group[-1]
+            lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
+            lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
+            rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
+            rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
             compensating = (
                 len(group) > 1
                 and min(frame_errors) < 0 < max(frame_errors)
                 and abs(sum(frame_errors))
                 <= self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
             )
-            if compensating:
-                lhs_from, _, rhs_from, _, _ = group[0]
-                _, lhs_to, _, rhs_to, _ = group[-1]
+            outer_start_offset = lhs_frame_from - rhs_frame_from
+            outer_end_offset = lhs_frame_to - rhs_frame_to
+            if compensating and outer_start_offset == outer_end_offset:
+                anchor_offsets = [outer_start_offset] + [
+                    int(self.lhs_all_frames[step_lhs_to]["frame_id"])
+                    - int(self.rhs_all_frames[step_rhs_to]["frame_id"])
+                    for _, step_lhs_to, _, step_rhs_to, _ in group
+                ]
+                inner_shift = max(
+                    abs(offset - outer_start_offset)
+                    for offset in anchor_offsets[1:-1]
+                )
+                if outer_start_offset > 0:
+                    offset_relation = (
+                        f" ({self.lhs_label} = {self.rhs_label} "
+                        f"+ {outer_start_offset})"
+                    )
+                elif outer_start_offset < 0:
+                    offset_relation = (
+                        f" ({self.lhs_label} = {self.rhs_label} "
+                        f"- {abs(outer_start_offset)})"
+                    )
+                else:
+                    offset_relation = ""
                 self.logger.error(
-                    "Localized frame-sequence difference across matched anchors: "
-                    "%s-%s in %s ↔ %s-%s in %s; compensating adjacent "
-                    "frame-step errors %s restore the outer alignment, but the "
-                    "videos differ inside this region.",
-                    generic_utils.ms_to_time(lhs_from),
-                    generic_utils.ms_to_time(lhs_to),
+                    "Local frame-sequence difference: the first and last matched "
+                    "frames use the same %d-frame offset%s, but inside this range "
+                    "the match shifts by %d frame%s.\n"
+                    "  %s: frames %d-%d (%d-%d ms)\n"
+                    "  %s: frames %d-%d (%d-%d ms)",
+                    abs(outer_start_offset),
+                    offset_relation,
+                    inner_shift,
+                    "" if inner_shift == 1 else "s",
                     self.lhs_label,
-                    generic_utils.ms_to_time(rhs_from),
-                    generic_utils.ms_to_time(rhs_to),
+                    lhs_frame_from,
+                    lhs_frame_to,
+                    lhs_from,
+                    lhs_to,
                     self.rhs_label,
-                    ", ".join(f"{error:+.1f}" for error in frame_errors),
+                    rhs_frame_from,
+                    rhs_frame_to,
+                    rhs_from,
+                    rhs_to,
+                )
+            else:
+                max_frame_error = max(abs(error) for error in frame_errors)
+                self.logger.error(
+                    "Local frame-sequence difference: matched-frame alignment "
+                    "changes by up to %.1f frames inside this range.\n"
+                    "  %s: frames %d-%d (%d-%d ms)\n"
+                    "  %s: frames %d-%d (%d-%d ms)",
+                    max_frame_error,
+                    self.lhs_label,
+                    lhs_frame_from,
+                    lhs_frame_to,
+                    lhs_from,
+                    lhs_to,
+                    self.rhs_label,
+                    rhs_frame_from,
+                    rhs_frame_to,
+                    rhs_from,
+                    rhs_to,
                 )
             for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in group:
                 lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
                 lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
                 rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
                 rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
-                self.logger.error(
+                self.logger.debug(
                     "Suspected content discontinuity between matched anchors: %s-%s "
                     "(decoded frames %d-%d) in %s ↔ %s-%s "
                     "(decoded frames %d-%d) in %s (%+d ms, %+.1f frames)",
@@ -2215,13 +2269,13 @@ class PairMatcher:
                     deficit_ms * self.rhs_fps / 1000,
                 )
         if debug_path is not None:
-            self.logger.error("Full frame diagnostics: %s", debug_path)
+            self.logger.error(
+                "Full frame diagnostics: %s",
+                os.path.join(debug_path, "details.txt"),
+            )
         raise RuntimeError(
-            "Unresolved suspected content discontinuities: matched videos contain "
-            "local frame-sequence differences or ambiguous matches "
-            f"(absolute frame-step error exceeds "
-            f"{self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:g} frames) — patching "
-            "audio across such discontinuities is not supported yet"
+            "Matched videos contain a local frame-sequence difference; "
+            "see the diagnostics above"
         )
 
     @staticmethod
