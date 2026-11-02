@@ -5,7 +5,7 @@ import os
 from bisect import bisect_right
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from math import ceil, floor
+from math import ceil, floor, isfinite
 from typing import NamedTuple, TypedDict
 
 import cv2 as cv
@@ -18,6 +18,9 @@ from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
 from .melt_common import FrameInfo, FramesInfo
 from .phash_cache import PhashCache
+
+
+DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = 4.0
 
 
 class MappingRelation(enum.Enum):
@@ -380,7 +383,16 @@ class PairMatcher:
         cache: MeltCache | None = None,
         *,
         media_analysis_session: media_analysis.MediaAnalysisSession,
+        max_temporary_frame_offset: float = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
     ) -> None:
+        if (
+            not isfinite(max_temporary_frame_offset)
+            or max_temporary_frame_offset < DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
+        ):
+            raise ValueError(
+                "Maximum temporary frame offset must be finite and at least "
+                f"{DEFAULT_MAX_TEMPORARY_FRAME_OFFSET:g}."
+            )
         self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
         self.lhs_path = lhs_path
@@ -390,6 +402,7 @@ class PairMatcher:
         self.logger = logger
         self.cache = cache
         self.media_analysis = media_analysis_session
+        self.max_temporary_frame_offset = max_temporary_frame_offset
         self.phash = PhashCache()
         lhs_video_data = video_utils.get_video_data(lhs_path, logger=self.logger)["video"][0]
         rhs_video_data = video_utils.get_video_data(rhs_path, logger=self.logger)["video"][0]
@@ -510,6 +523,7 @@ class PairMatcher:
     # Unlike the GENERIC time-domain tolerance below, this limit must not grow
     # with gap length: a content cut is a step in frame offset, not drift.
     _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 4.0
+    DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
     _SCENE_THRESHOLD = 0.30
 
     @staticmethod
@@ -2295,6 +2309,54 @@ class PairMatcher:
                 groups.append([discontinuity])
         return groups
 
+    def _filter_allowed_temporary_frame_offset_excursions(
+        self,
+        discontinuities: list[tuple[int, int, int, int, int]],
+    ) -> list[tuple[int, int, int, int, int]]:
+        """Allow one temporary offset excursion that returns at the next anchor."""
+        remaining: list[tuple[int, int, int, int, int]] = []
+        for group in self._group_content_discontinuities(discontinuities):
+            allowed = False
+            if len(group) == 2:
+                lhs_from, lhs_middle, rhs_from, rhs_middle, _ = group[0]
+                _, lhs_to, _, rhs_to, _ = group[1]
+                lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
+                lhs_frame_middle = int(self.lhs_all_frames[lhs_middle]["frame_id"])
+                lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
+                rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
+                rhs_frame_middle = int(self.rhs_all_frames[rhs_middle]["frame_id"])
+                rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
+                outer_offset = lhs_frame_from - rhs_frame_from
+                returns_to_outer_offset = (
+                    lhs_frame_to - rhs_frame_to == outer_offset
+                )
+                temporary_offset = abs(
+                    (lhs_frame_middle - rhs_frame_middle) - outer_offset
+                )
+                allowed = (
+                    returns_to_outer_offset
+                    and self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
+                    < temporary_offset
+                    <= self.max_temporary_frame_offset
+                )
+            if allowed:
+                self.logger.warning(
+                    "Accepting temporary %d-frame alignment offset between "
+                    "%s frame %d (%d ms) and %s frame %d (%d ms); the next "
+                    "matched frames return to the same outer offset of %+d frame(s).",
+                    temporary_offset,
+                    self.lhs_label,
+                    lhs_frame_middle,
+                    lhs_middle,
+                    self.rhs_label,
+                    rhs_frame_middle,
+                    rhs_middle,
+                    outer_offset,
+                )
+            else:
+                remaining.extend(group)
+        return remaining
+
     def _extract_content_discontinuity_frames(
         self,
         groups: list[list[tuple[int, int, int, int, int]]],
@@ -2462,6 +2524,13 @@ class PairMatcher:
                     lhs_fps=self.lhs_fps,
                     rhs_fps=self.rhs_fps,
                 )
+
+                if discontinuity_report.content:
+                    discontinuity_report = discontinuity_report._replace(
+                        content=self._filter_allowed_temporary_frame_offset_excursions(
+                            discontinuity_report.content
+                        )
+                    )
 
                 if discontinuity_report.content:
                     debug.dump_matches(refined_pairs, "localized discontinuities")

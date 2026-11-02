@@ -2105,6 +2105,51 @@ class PairMatcherUnitTest(unittest.TestCase):
             (3000, 4000, 2600, 4000, -400),
         ])
 
+    def test_temporary_frame_offset_limit_allows_only_compensated_excursion(self):
+        lhs_timestamps = [0, 1000, 2000, 3000]
+        rhs_timestamps = [0, 1000, 1800, 3000]
+        mapping = list(zip(lhs_timestamps, rhs_timestamps))
+        lhs_frames = {
+            timestamp: {"frame_id": frame_id, "path": None}
+            for timestamp, frame_id in zip(lhs_timestamps, [0, 25, 50, 75])
+        }
+        rhs_frames = {
+            timestamp: {"frame_id": frame_id, "path": None}
+            for timestamp, frame_id in zip(rhs_timestamps, [0, 25, 45, 75])
+        }
+
+        default_result = PairMatcher.find_global_linear_content_discontinuities(
+            mapping,
+            lhs_frames,
+            rhs_frames,
+            frame_slope=1.0,
+            lhs_fps=25.0,
+            rhs_fps=25.0,
+        )
+        self.assertEqual([gap[4] for gap in default_result], [200, -200])
+
+        pm = self._make_pair_matcher()
+        pm.max_temporary_frame_offset = 5.0
+        pm.lhs_all_frames = lhs_frames
+        pm.rhs_all_frames = rhs_frames
+
+        with self.assertLogs(pm.logger, level="WARNING") as captured:
+            remaining = pm._filter_allowed_temporary_frame_offset_excursions(
+                default_result
+            )
+
+        self.assertEqual(remaining, [])
+        self.assertTrue(any(
+            "Accepting temporary 5-frame alignment offset" in message
+            for message in captured.output
+        ))
+        self.assertEqual(
+            pm._filter_allowed_temporary_frame_offset_excursions(
+                default_result[:1]
+            ),
+            default_result[:1],
+        )
+
     def test_global_linear_discontinuity_preserves_step_near_first_matched_pair(self):
         mapping = [(0, 0), (400, 400), (10000, 9600), (20000, 19600)]
         lhs_frames = {

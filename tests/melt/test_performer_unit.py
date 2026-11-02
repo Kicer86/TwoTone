@@ -106,6 +106,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             logger=logging.getLogger("test.MeltPerformer"),
             context=context,
             output_dir=output.root,
+            max_temporary_frame_offset=5.0,
         )
         base_path = "/media/base.mkv"
         source_path = "/media/source.mkv"
@@ -128,6 +129,10 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertIs(
             matcher_type.call_args.kwargs["media_analysis_session"],
             media_analysis_session,
+        )
+        self.assertEqual(
+            matcher_type.call_args.kwargs["max_temporary_frame_offset"],
+            5.0,
         )
 
     def test_process_duplicates_rejects_output_aliasing_input(self):
