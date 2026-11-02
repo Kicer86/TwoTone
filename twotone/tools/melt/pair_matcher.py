@@ -748,7 +748,7 @@ class PairMatcher:
         else:
             sides = (rhs_side, lhs_side)
 
-        self.logger.info(
+        self.logger.debug(
             "Refining suspicious region: %s %s-%s (%d scene(s)) "
             "↔ %s %s-%s (%d scene(s)); checking the sparser side first",
             self.lhs_label, generic_utils.ms_to_time(lhs_from),
@@ -780,7 +780,7 @@ class PairMatcher:
 
             ranked_scores = sorted(candidates.values(), reverse=True)
             if not ranked_scores:
-                self.logger.info(
+                self.logger.debug(
                     "Local scene refinement %s found no new candidates",
                     label,
                 )
@@ -802,14 +802,14 @@ class PairMatcher:
             )
             scenes.extend(new_scenes)
             scenes_added = True
-            self.logger.info(
+            self.logger.debug(
                 "Local scene refinement %s selected %d scene(s) at score %.6f",
                 label, len(new_scenes), cutoff,
             )
             break
 
         if not scenes_added:
-            self.logger.info(
+            self.logger.debug(
                 "Local scene refinement found no new candidates on either side; "
                 "region remains unresolved",
             )
@@ -3441,13 +3441,11 @@ class PairMatcher:
             return matching_pairs
 
         self.logger.info(
-            "Starting local scene refinement for suspicious timing regions: %s ↔ %s",
+            "Starting local scene refinement for %d suspicious timing region(s): "
+            "%s ↔ %s",
+            len(discontinuities),
             self.lhs_label,
             self.rhs_label,
-        )
-        self.logger.info(
-            "Refining %d suspicious region(s) using cached scene scores",
-            len(discontinuities),
         )
 
         refined = set(matching_pairs)

@@ -2412,7 +2412,7 @@ class PairMatcherUnitTest(unittest.TestCase):
              patch.object(pm, '_extract_scene_frames') as extract, \
              patch.object(pm, '_normalize_extracted') as normalize, \
              patch.object(pm, '_make_pairs') as match, \
-             self.assertLogs(pm.logger, level='INFO') as logs:
+             self.assertLogs(pm.logger, level='DEBUG') as logs:
             refined = pm._refine_global_linear_discontinuities(
                 original,
                 dict(pm.lhs_all_frames),
@@ -2438,9 +2438,23 @@ class PairMatcherUnitTest(unittest.TestCase):
             [call.args[0] for call in select.call_args_list],
             [pm.lhs_path, pm.rhs_path],
         )
-        self.assertTrue(any('Refining suspicious region:' in line for line in logs.output))
-        self.assertTrue(any('found no new candidates' in line for line in logs.output))
-        self.assertTrue(any('Local scene refinement complete:' in line for line in logs.output))
+        self.assertTrue(any(
+            'INFO' in line
+            and 'Starting local scene refinement for 1 suspicious timing region(s)' in line
+            for line in logs.output
+        ))
+        self.assertTrue(any(
+            'DEBUG' in line and 'Refining suspicious region:' in line
+            for line in logs.output
+        ))
+        self.assertTrue(any(
+            'DEBUG' in line and 'found no new candidates' in line
+            for line in logs.output
+        ))
+        self.assertTrue(any(
+            'INFO' in line and 'Local scene refinement complete:' in line
+            for line in logs.output
+        ))
 
     # ---- _drop_pairs_breaking_local_linearity ----
 
