@@ -22,14 +22,20 @@ class DebugRoutinesUnitTest(unittest.TestCase):
                     result[timestamp] = {"frame_id": frame_id, "path": path}
                 return result
 
-            lhs_frames = frames("lhs", [0, 40, 80, 120, 160])
-            rhs_frames = frames("rhs", [0, 40, 80, 120, 160, 200])
+            lhs_frames = frames("lhs", [0, 40, 80, 120, 160, 200, 240])
+            rhs_frames = frames("rhs", [0, 40, 80, 120, 160, 200, 240, 280])
             debug = DebugRoutines(debug_dir, lhs_frames, rhs_frames)
             prepared = []
-            groups = [[
-                (40, 80, 40, 120, -40),
-                (80, 120, 120, 120, 40),
-            ]]
+            groups = [
+                [
+                    (40, 80, 40, 120, -40),
+                    (80, 120, 120, 120, 40),
+                ],
+                [
+                    (160, 200, 160, 240, -40),
+                    (200, 240, 240, 280, 40),
+                ],
+            ]
 
             target_dir = debug.dump_content_discontinuities(
                 groups,
@@ -49,6 +55,9 @@ class DebugRoutinesUnitTest(unittest.TestCase):
             self.assertIn("compensating adjacent frame-step errors", details)
             self.assertIn("#2: 00:00:00,040-00:00:00,120; decoded frames 1 -> 3", details)
             self.assertIn("#1: 00:00:00,040-00:00:00,120; decoded frames 1 -> 3", details)
+            self.assertIn("Region 1: compensating adjacent frame-step errors", details)
+            self.assertIn("#2: 00:00:00,160-00:00:00,240; decoded frames 4 -> 6", details)
+            self.assertIn("#1: 00:00:00,160-00:00:00,280; decoded frames 4 -> 7", details)
 
             lhs_dump = os.listdir(os.path.join(target_dir, "region_000", "lhs"))
             rhs_dump = os.listdir(os.path.join(target_dir, "region_000", "rhs"))
@@ -57,6 +66,14 @@ class DebugRoutinesUnitTest(unittest.TestCase):
             self.assertTrue(all(os.path.islink(
                 os.path.join(target_dir, "region_000", "lhs", name)
             ) for name in lhs_dump))
+            self.assertEqual(
+                len(os.listdir(os.path.join(target_dir, "region_001", "lhs"))),
+                3,
+            )
+            self.assertEqual(
+                len(os.listdir(os.path.join(target_dir, "region_001", "rhs"))),
+                4,
+            )
 
 
 if __name__ == "__main__":

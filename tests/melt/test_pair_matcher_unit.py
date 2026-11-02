@@ -2662,7 +2662,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         ]
 
         with self.assertLogs(pm.logger, level="DEBUG") as captured, \
-             self.assertRaises(RuntimeError):
+             self.assertRaises(RuntimeError) as raised:
             pm._raise_for_unresolved_content_discontinuities(
                 gaps,
                 "/tmp/debug",
@@ -2684,6 +2684,37 @@ class PairMatcherUnitTest(unittest.TestCase):
             "Full frame diagnostics: /tmp/debug/details.txt" in message
             for message in captured.output
         ))
+        self.assertIn("Inspect the reported region", str(raised.exception))
+        self.assertIn("/tmp/debug/details.txt", str(raised.exception))
+        self.assertIn(
+            "--max-temporary-frame-offset 5",
+            str(raised.exception),
+        )
+        self.assertIn("report a PairMatcher bug", str(raised.exception))
+        self.assertIn("include /tmp/debug", str(raised.exception))
+
+    def test_permanent_discontinuity_does_not_suggest_temporary_offset_option(self):
+        pm = self._make_pair_matcher()
+        pm.lhs_all_frames = {
+            0: {"frame_id": 0},
+            1000: {"frame_id": 25},
+        }
+        pm.rhs_all_frames = {
+            0: {"frame_id": 0},
+            1200: {"frame_id": 30},
+        }
+
+        with self.assertLogs(pm.logger, level="DEBUG"), \
+             self.assertRaises(RuntimeError) as raised:
+            pm._raise_for_unresolved_content_discontinuities(
+                [(0, 1000, 0, 1200, -200)],
+                "/tmp/debug",
+            )
+
+        message = str(raised.exception)
+        self.assertIn("Inspect the reported region", message)
+        self.assertIn("report a PairMatcher bug", message)
+        self.assertNotIn("--max-temporary-frame-offset", message)
 
     def test_extract_content_discontinuity_frames_requests_complete_spans(self):
         pm = self._make_pair_matcher()

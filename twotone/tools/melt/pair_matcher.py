@@ -2179,7 +2179,15 @@ class PairMatcher:
         discontinuities: list[tuple[int, int, int, int, int]],
         debug_path: str | None = None,
     ) -> None:
-        for group in self._group_content_discontinuities(discontinuities):
+        groups = self._group_content_discontinuities(discontinuities)
+        suggested_temporary_offsets: list[int] = []
+        for group in groups:
+            excursion = self._temporary_frame_offset_excursion(group)
+            if (
+                excursion is not None
+                and excursion[0] > self.max_temporary_frame_offset
+            ):
+                suggested_temporary_offsets.append(excursion[0])
             frame_errors = [
                 deficit_ms * self.rhs_fps / 1000
                 for *_, deficit_ms in group
@@ -2283,14 +2291,47 @@ class PairMatcher:
                     deficit_ms * self.rhs_fps / 1000,
                 )
         if debug_path is not None:
+            details_path = os.path.join(debug_path, "details.txt")
             self.logger.error(
                 "Full frame diagnostics: %s",
-                os.path.join(debug_path, "details.txt"),
+                details_path,
             )
-        raise RuntimeError(
-            "Matched videos contain a local frame-sequence difference; "
-            "see the diagnostics above"
+            investigation_target = details_path
+            report_material = debug_path
+        else:
+            investigation_target = "the frame ranges logged above"
+            report_material = "the complete melt log"
+
+        region_count = len(groups)
+        region_word = "region" if region_count == 1 else "regions"
+        investigation_scope = (
+            "the reported region"
+            if region_count == 1
+            else f"all {region_count} reported regions"
         )
+        error = (
+            "Matched videos contain a local frame-sequence difference in "
+            f"{region_count} unresolved {region_word}. Inspect {investigation_scope} "
+            f"in {investigation_target}."
+        )
+        if suggested_temporary_offsets:
+            suggested_limit = max(suggested_temporary_offsets)
+            error += (
+                " If the frames confirm that each listed compensating temporary "
+                "shift is a real, acceptable difference between the videos, rerun with "
+                f"--max-temporary-frame-offset {suggested_limit}."
+            )
+            if len(suggested_temporary_offsets) < region_count:
+                error += (
+                    " This option applies only to those compensating shifts; it "
+                    "will not suppress the other reported regions."
+                )
+        error += (
+            " If the extracted frames do not confirm the reported sequence "
+            "difference, report a PairMatcher bug and include "
+            f"{report_material}."
+        )
+        raise RuntimeError(error)
 
     @staticmethod
     def _group_content_discontinuities(
@@ -2316,30 +2357,19 @@ class PairMatcher:
         """Allow one temporary offset excursion that returns at the next anchor."""
         remaining: list[tuple[int, int, int, int, int]] = []
         for group in self._group_content_discontinuities(discontinuities):
-            allowed = False
-            if len(group) == 2:
-                lhs_from, lhs_middle, rhs_from, rhs_middle, _ = group[0]
-                _, lhs_to, _, rhs_to, _ = group[1]
-                lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
-                lhs_frame_middle = int(self.lhs_all_frames[lhs_middle]["frame_id"])
-                lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
-                rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
-                rhs_frame_middle = int(self.rhs_all_frames[rhs_middle]["frame_id"])
-                rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
-                outer_offset = lhs_frame_from - rhs_frame_from
-                returns_to_outer_offset = (
-                    lhs_frame_to - rhs_frame_to == outer_offset
-                )
-                temporary_offset = abs(
-                    (lhs_frame_middle - rhs_frame_middle) - outer_offset
-                )
-                allowed = (
-                    returns_to_outer_offset
-                    and self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-                    < temporary_offset
-                    <= self.max_temporary_frame_offset
-                )
+            excursion = self._temporary_frame_offset_excursion(group)
+            allowed = (
+                excursion is not None
+                and self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
+                < excursion[0]
+                <= self.max_temporary_frame_offset
+            )
             if allowed:
+                assert excursion is not None
+                temporary_offset, outer_offset = excursion
+                _, lhs_middle, _, rhs_middle, _ = group[0]
+                lhs_frame_middle = int(self.lhs_all_frames[lhs_middle]["frame_id"])
+                rhs_frame_middle = int(self.rhs_all_frames[rhs_middle]["frame_id"])
                 self.logger.warning(
                     "Accepting temporary %d-frame alignment offset between "
                     "%s frame %d (%d ms) and %s frame %d (%d ms); the next "
@@ -2356,6 +2386,31 @@ class PairMatcher:
             else:
                 remaining.extend(group)
         return remaining
+
+    def _temporary_frame_offset_excursion(
+        self,
+        group: list[tuple[int, int, int, int, int]],
+    ) -> tuple[int, int] | None:
+        """Return the temporary shift and outer offset for one restored jump."""
+        if len(group) != 2:
+            return None
+
+        lhs_from, lhs_middle, rhs_from, rhs_middle, _ = group[0]
+        _, lhs_to, _, rhs_to, _ = group[1]
+        lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
+        lhs_frame_middle = int(self.lhs_all_frames[lhs_middle]["frame_id"])
+        lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
+        rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
+        rhs_frame_middle = int(self.rhs_all_frames[rhs_middle]["frame_id"])
+        rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
+        outer_offset = lhs_frame_from - rhs_frame_from
+        if lhs_frame_to - rhs_frame_to != outer_offset:
+            return None
+
+        temporary_offset = abs(
+            (lhs_frame_middle - rhs_frame_middle) - outer_offset
+        )
+        return temporary_offset, outer_offset
 
     def _extract_content_discontinuity_frames(
         self,
