@@ -152,7 +152,7 @@ class MeltToolContextTest(unittest.TestCase):
             "5",
         ])
 
-        self.assertEqual(default_args.max_temporary_frame_offset, 4.0)
+        self.assertEqual(default_args.max_temporary_frame_offset, 2.0)
         self.assertEqual(custom_args.max_temporary_frame_offset, 5.0)
 
     def test_analyze_and_perform_share_runtime_context(self):

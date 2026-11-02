@@ -1915,9 +1915,10 @@ class PairMatcherUnitTest(unittest.TestCase):
     def test_global_linear_discontinuity_uses_absolute_frame_error(self):
         # Real matched anchors from Le Gendarme de Saint-Tropez (24 fps 4K
         # master vs 25 fps PAL transfer). The global fit accepts the mapping
-        # because its later 20 gaps are within 3.01 frames, but the first three
-        # advances miss that same fit by 15.23, 6.02 and 13.84 frames. The
-        # first gap contains the reported 06:36 / 06:05 edit.
+        # despite several local errors. The first three advances miss that fit
+        # by 15.23, 6.02 and 13.84 frames; two later advances also exceed the
+        # stricter two-frame default. The first gap contains the reported
+        # 06:36 / 06:05 edit.
         rows = [
             (182126, 159080, 4371, 3976),
             (484418, 448600, 11626, 11214),
@@ -1963,7 +1964,10 @@ class PairMatcherUnitTest(unittest.TestCase):
             (182126, 484418, 159080, 448600, 609),
             (484418, 1333626, 448600, 1263400, 241),
             (1333626, 2214126, 1263400, 2107920, 553),
+            (2556460, 3668168, 2436600, 3503480, 99),
+            (3930001, 3975543, 3754840, 3798440, 109),
         ])
+
     def test_global_linear_discontinuity_tolerates_four_frame_endpoint_error(self):
         mapping = [(0, 0), (10000, 9840), (20000, 19840)]
         lhs_frames = {
@@ -2148,6 +2152,36 @@ class PairMatcherUnitTest(unittest.TestCase):
                 default_result[:1]
             ),
             default_result[:1],
+        )
+
+    def test_default_temporary_frame_offset_limit_rejects_three_frames(self):
+        lhs_timestamps = [0, 1000, 2000, 3000]
+        rhs_timestamps = [0, 1000, 1880, 3000]
+        mapping = list(zip(lhs_timestamps, rhs_timestamps))
+        lhs_frames = {
+            timestamp: {"frame_id": frame_id, "path": None}
+            for timestamp, frame_id in zip(lhs_timestamps, [0, 25, 50, 75])
+        }
+        rhs_frames = {
+            timestamp: {"frame_id": frame_id, "path": None}
+            for timestamp, frame_id in zip(rhs_timestamps, [0, 25, 47, 75])
+        }
+        discontinuities = PairMatcher.find_global_linear_content_discontinuities(
+            mapping,
+            lhs_frames,
+            rhs_frames,
+            frame_slope=1.0,
+            lhs_fps=25.0,
+            rhs_fps=25.0,
+        )
+        pm = self._make_pair_matcher()
+        pm.lhs_all_frames = lhs_frames
+        pm.rhs_all_frames = rhs_frames
+
+        self.assertEqual([gap[4] for gap in discontinuities], [120, -120])
+        self.assertEqual(
+            pm._filter_allowed_temporary_frame_offset_excursions(discontinuities),
+            discontinuities,
         )
 
     def test_global_linear_discontinuity_preserves_step_near_first_matched_pair(self):

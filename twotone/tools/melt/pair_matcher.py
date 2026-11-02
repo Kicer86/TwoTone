@@ -20,7 +20,7 @@ from .melt_common import FrameInfo, FramesInfo
 from .phash_cache import PhashCache
 
 
-DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = 4.0
+DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = 2.0
 
 
 class MappingRelation(enum.Enum):
@@ -517,12 +517,12 @@ class PairMatcher:
     # a content cut (e.g. a commercial break) is one-sided and multi-second.
     _MAX_GAP_TIME_DEFICIT_MS = 2000
     _MAX_GAP_TIME_DEFICIT_RATIO = 0.02
-    # A GLOBAL_LINEAR mapping promises frame-accurate progression. Each
-    # endpoint may be uncertain by at most two frames, so the advance between
-    # two anchors may differ from the fitted relation by at most four frames.
+    # A GLOBAL_LINEAR mapping promises frame-accurate progression. A local
+    # advance may differ from the fitted relation by at most two frames before
+    # it requires refinement or an explicit temporary-excursion override.
     # Unlike the GENERIC time-domain tolerance below, this limit must not grow
     # with gap length: a content cut is a step in frame offset, not drift.
-    _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 4.0
+    _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 2.0
     DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
     _SCENE_THRESHOLD = 0.30
 
