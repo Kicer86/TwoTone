@@ -64,7 +64,6 @@ class InputValidatorTest(unittest.TestCase):
             path=os.path.realpath(self.path),
             features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
             frames={},
-            scene_changes=(),
             identity_samples=(),
             decode_error=decode_error,
         )
@@ -114,7 +113,6 @@ class InputValidatorTest(unittest.TestCase):
             path=self.path,
             features=media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             frames={},
-            scene_changes=(),
             identity_samples=(),
             decode_error=None,
         )
