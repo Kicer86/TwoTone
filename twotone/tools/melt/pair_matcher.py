@@ -92,6 +92,7 @@ class SegmentsMappingResult(NamedTuple):
     # verdict explicit lets downstream execution defend that contract without
     # reclassifying the mapping.
     content_discontinuities: tuple[tuple[int, int, int, int, int], ...] = ()
+    timing_discontinuity_debug_path: str | None = None
 
 
 class _BoundarySearchContext(NamedTuple):
@@ -2406,7 +2407,7 @@ class PairMatcher:
         )
         return temporary_offset, outer_offset
 
-    def _extract_content_discontinuity_frames(
+    def _extract_discontinuity_frames(
         self,
         groups: list[list[tuple[int, int, int, int, int]]],
     ) -> None:
@@ -2596,7 +2597,7 @@ class PairMatcher:
                             self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
                         ),
                         prepare_frames=lambda: (
-                            self._extract_content_discontinuity_frames(
+                            self._extract_discontinuity_frames(
                                 discontinuity_groups
                             )
                         ),
@@ -2664,11 +2665,26 @@ class PairMatcher:
                 matching_pairs = self.snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
 
         if timing_discontinuities:
+            debug.dump_matches(matching_pairs, "timing discontinuities")
+            timing_discontinuity_groups = self._group_content_discontinuities(
+                list(timing_discontinuities)
+            )
+            timing_discontinuity_debug_path = debug.dump_timing_discontinuities(
+                timing_discontinuity_groups,
+                lhs_label=self.lhs_label,
+                rhs_label=self.rhs_label,
+                lhs_fps=self.lhs_fps,
+                rhs_fps=self.rhs_fps,
+                prepare_frames=lambda: self._extract_discontinuity_frames(
+                    timing_discontinuity_groups
+                ),
+            )
             self.logger.warning(
                 "Matched content has continuous decoded advances but discontinuous presentation timestamps; "
                 "the candidate %s frame relation is unsafe for audio execution.", relation.value,
             )
         else:
+            timing_discontinuity_debug_path = None
             self.logger.info("Mapping relation chosen: %s", relation.value)
 
         return SegmentsMappingResult(
@@ -2680,6 +2696,7 @@ class PairMatcher:
             rhs_fps=self.rhs_fps,
             frame_slope=frame_slope,
             timing_discontinuities=timing_discontinuities,
+            timing_discontinuity_debug_path=timing_discontinuity_debug_path,
         )
 
     def _log_relation_diagnostics(self, matching_pairs: list[tuple[int, int]]) -> None:

@@ -3,10 +3,11 @@ import os
 import platform
 
 from collections.abc import Callable
+from typing import Literal
 
 from .melt_common import FramesInfo, format_timestamp_range
-ContentDiscontinuity = tuple[int, int, int, int, int]
-ContentDiscontinuityGroup = list[ContentDiscontinuity]
+Discontinuity = tuple[int, int, int, int, int]
+DiscontinuityGroup = list[Discontinuity]
 
 
 class DebugRoutines:
@@ -73,7 +74,7 @@ class DebugRoutines:
 
     def dump_content_discontinuities(
         self,
-        groups: list[ContentDiscontinuityGroup],
+        groups: list[DiscontinuityGroup],
         *,
         lhs_label: str,
         rhs_label: str,
@@ -83,27 +84,82 @@ class DebugRoutines:
         compensation_tolerance_frames: float = 4.0,
     ) -> str | None:
         """Write final error details and complete frame spans for every region."""
+        return self._dump_discontinuities(
+            groups,
+            lhs_label=lhs_label,
+            rhs_label=rhs_label,
+            lhs_fps=lhs_fps,
+            rhs_fps=rhs_fps,
+            prepare_frames=prepare_frames,
+            diagnostic_type="content",
+            compensation_tolerance_frames=compensation_tolerance_frames,
+        )
+
+    def dump_timing_discontinuities(
+        self,
+        groups: list[DiscontinuityGroup],
+        *,
+        lhs_label: str,
+        rhs_label: str,
+        lhs_fps: float,
+        rhs_fps: float,
+        prepare_frames: Callable[[], None],
+    ) -> str | None:
+        """Write complete frame spans for unsupported matched-timeline steps."""
+        return self._dump_discontinuities(
+            groups,
+            lhs_label=lhs_label,
+            rhs_label=rhs_label,
+            lhs_fps=lhs_fps,
+            rhs_fps=rhs_fps,
+            prepare_frames=prepare_frames,
+            diagnostic_type="timing",
+        )
+
+    def _dump_discontinuities(
+        self,
+        groups: list[DiscontinuityGroup],
+        *,
+        lhs_label: str,
+        rhs_label: str,
+        lhs_fps: float,
+        rhs_fps: float,
+        prepare_frames: Callable[[], None],
+        diagnostic_type: Literal["content", "timing"],
+        compensation_tolerance_frames: float = 4.0,
+    ) -> str | None:
         if not self.work:
             return None
 
         prepare_frames()
         target_dir = os.path.join(
             self.debug_dir,
-            f"#{self.it} content discontinuity error",
+            f"#{self.it} {diagnostic_type} discontinuity error",
         )
         self.it += 1
         os.makedirs(target_dir)
 
-        details = [
-            "Content discontinuity diagnostics",
-            "",
-            "Every decoded frame in each inclusive region is linked below.",
-            "A compensating region restores the outer alignment but still means",
-            "that the videos contain different local frame sequences.",
+        if diagnostic_type == "content":
+            details = [
+                "Content discontinuity diagnostics",
+                "",
+                "Every decoded frame in each inclusive region is linked below.",
+                "A compensating region restores the outer alignment but still means",
+                "that the videos contain different local frame sequences.",
+            ]
+        else:
+            details = [
+                "Timing discontinuity diagnostics",
+                "",
+                "Every decoded frame in each inclusive region is linked below.",
+                "These matched regions change the observed timeline relation and",
+                "cannot be represented by one supported audio transform.",
+            ]
+        details.extend([
             f"{lhs_label} nominal frame rate: {lhs_fps:.6f} fps",
             f"{rhs_label} nominal frame rate: {rhs_fps:.6f} fps",
             "",
-        ]
+        ])
         for region_index, group in enumerate(groups):
             lhs_from, _, rhs_from, _, _ = group[0]
             _, lhs_to, _, rhs_to, _ = group[-1]
@@ -116,11 +172,14 @@ class DebugRoutines:
                 and min(frame_errors) < 0 < max(frame_errors)
                 and abs(sum(frame_errors)) <= compensation_tolerance_frames
             )
-            kind = (
-                "compensating adjacent frame-step errors"
-                if compensating
-                else "unresolved frame-step error"
-            )
+            if diagnostic_type == "timing":
+                kind = "unresolved matched-timeline step"
+            else:
+                kind = (
+                    "compensating adjacent frame-step errors"
+                    if compensating
+                    else "unresolved frame-step error"
+                )
             lhs_first_id = int(self.lhs_all_frames[lhs_from]["frame_id"])
             lhs_last_id = int(self.lhs_all_frames[lhs_to]["frame_id"])
             rhs_first_id = int(self.rhs_all_frames[rhs_from]["frame_id"])

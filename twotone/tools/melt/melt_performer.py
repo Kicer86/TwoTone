@@ -1715,6 +1715,14 @@ class MeltPerformer(TrackTimelineMixin):
                     file_ids[source_path],
                     deficit,
                 )
+            if matching.timing_discontinuity_debug_path is not None:
+                self.logger.error(
+                    "Full frame diagnostics: %s",
+                    os.path.join(
+                        matching.timing_discontinuity_debug_path,
+                        "details.txt",
+                    ),
+                )
             raise RuntimeError(
                 f"Unsupported {consumer} timeline discontinuity: the matched PTS mapping "
                 "has a PTS step despite continuous decoded video"

@@ -1209,11 +1209,17 @@ class PairMatcherUnitTest(unittest.TestCase):
                      patch.object(PairMatcher, 'summarize_pairs'), \
                      patch.object(pm, '_extrapolate_and_verify_global_linear', return_value=pairs) as extrapolate, \
                      patch.object(pm, '_extract_and_refine_boundaries', return_value=pairs) as generic, \
-                     patch('twotone.tools.melt.pair_matcher.DebugRoutines'):
+                     patch('twotone.tools.melt.pair_matcher.DebugRoutines') as debug_type:
+                    debug_type.return_value.dump_timing_discontinuities.return_value = "/tmp/timing-debug"
                     result = pm.create_segments_mapping()
                 self.assertEqual(result.mapping, pairs)
                 self.assertEqual(len(result.timing_discontinuities), 1)
                 self.assertEqual(abs(result.timing_discontinuities[0][-1]), 3000)
+                self.assertEqual(
+                    result.timing_discontinuity_debug_path,
+                    "/tmp/timing-debug",
+                )
+                debug_type.return_value.dump_timing_discontinuities.assert_called_once()
                 extrapolate.assert_not_called()
                 generic.assert_not_called()
 
@@ -2726,7 +2732,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertIn("report a PairMatcher bug", message)
         self.assertNotIn("--max-temporary-frame-offset", message)
 
-    def test_extract_content_discontinuity_frames_requests_complete_spans(self):
+    def test_extract_discontinuity_frames_requests_complete_spans(self):
         pm = self._make_pair_matcher()
         pm.lhs_all_frames = {
             timestamp: {"frame_id": frame_id, "path": None}
@@ -2747,7 +2753,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                     info["path"] = f"{target_dir}/{timestamp}.png"
 
         with patch.object(video_utils, "extract_frames_at_ranges", side_effect=fake_extract) as extract:
-            pm._extract_content_discontinuity_frames(groups)
+            pm._extract_discontinuity_frames(groups)
 
         self.assertEqual(extract.call_count, 2)
         self.assertEqual(extract.call_args_list[0].args[2], [(1, 3)])

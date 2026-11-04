@@ -2270,6 +2270,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 relation=relation,
                 lhs_fps=25.0, rhs_fps=25.0, frame_slope=1.0,
                 timing_discontinuities=(timing_step,),
+                timing_discontinuity_debug_path="/tmp/timing-debug",
             ),
             source_duration=2000000,
         )
@@ -2285,6 +2286,10 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertTrue(any(
             "00:26:40,000-00:28:20,000 (1600000-1700000 ms)" in message
             and "00:26:40,000-00:28:23,000 (1600000-1703000 ms)" in message
+            for message in captured.output
+        ))
+        self.assertTrue(any(
+            "Full frame diagnostics: /tmp/timing-debug/details.txt" in message
             for message in captured.output
         ))
 

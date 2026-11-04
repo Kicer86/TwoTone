@@ -91,6 +91,70 @@ class DebugRoutinesUnitTest(unittest.TestCase):
                 4,
             )
 
+    def test_dump_timing_discontinuities_keeps_every_frame_and_writes_details(self):
+        with tempfile.TemporaryDirectory() as root:
+            source_dir = os.path.join(root, "source")
+            debug_dir = os.path.join(root, "debug")
+            os.makedirs(source_dir)
+            os.makedirs(debug_dir)
+
+            def frames(side: str, timestamps: list[int]) -> dict[int, dict]:
+                result = {}
+                for frame_id, timestamp in enumerate(timestamps):
+                    path = os.path.join(source_dir, f"{side}_{frame_id}.png")
+                    with open(path, "wb"):
+                        pass
+                    result[timestamp] = {"frame_id": frame_id, "path": path}
+                return result
+
+            lhs_frames = frames("lhs", [0, 40, 80, 120, 160, 200, 240])
+            rhs_frames = frames("rhs", [0, 40, 80, 120, 160, 200, 240, 280])
+            debug = DebugRoutines(debug_dir, lhs_frames, rhs_frames)
+            prepared = []
+
+            target_dir = debug.dump_timing_discontinuities(
+                [
+                    [(40, 120, 40, 160, -40)],
+                    [(200, 240, 240, 280, 40)],
+                ],
+                lhs_label="#2",
+                rhs_label="#1",
+                lhs_fps=25.0,
+                rhs_fps=25.0,
+                prepare_frames=lambda: prepared.append(True),
+            )
+
+            self.assertEqual(prepared, [True])
+            self.assertIsNotNone(target_dir)
+            assert target_dir is not None
+            self.assertEqual(os.path.basename(target_dir), "#0 timing discontinuity error")
+            with open(os.path.join(target_dir, "details.txt"), encoding="utf-8") as details_file:
+                details = details_file.read()
+            self.assertIn("Timing discontinuity diagnostics", details)
+            self.assertIn("Region 0: unresolved matched-timeline step", details)
+            self.assertIn(
+                "#2: 00:00:00,040-00:00:00,120 (40-120 ms); "
+                "decoded frames 1 -> 3",
+                details,
+            )
+            self.assertEqual(
+                len(os.listdir(os.path.join(target_dir, "region_000", "lhs"))),
+                3,
+            )
+            self.assertEqual(
+                len(os.listdir(os.path.join(target_dir, "region_000", "rhs"))),
+                4,
+            )
+            self.assertIn("Region 1: unresolved matched-timeline step", details)
+            self.assertEqual(
+                len(os.listdir(os.path.join(target_dir, "region_001", "lhs"))),
+                2,
+            )
+            self.assertEqual(
+                len(os.listdir(os.path.join(target_dir, "region_001", "rhs"))),
+                2,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
