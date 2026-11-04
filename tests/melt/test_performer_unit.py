@@ -16,6 +16,7 @@ from twotone.tools.melt.melt import MeltPerformer, StaticSource, StreamsPicker
 from twotone.tools.melt.melt_common import (
     AttachmentRef,
     AudioStreamRef,
+    FramesInfo,
     SubtitleStreamRef,
     VideoStreamRef,
 )
@@ -422,11 +423,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         mapping: list[tuple[int, int]],
         relation: MappingRelation,
     ) -> SegmentsMappingResult:
-        lhs_frames = {
+        lhs_frames: FramesInfo = {
             lhs: {"frame_id": index, "path": None}
             for index, (lhs, _rhs) in enumerate(mapping)
         }
-        rhs_frames = {
+        rhs_frames: FramesInfo = {
             rhs: {"frame_id": index, "path": None}
             for index, (_lhs, rhs) in enumerate(mapping)
         }
