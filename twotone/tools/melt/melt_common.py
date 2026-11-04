@@ -22,6 +22,20 @@ FramesInfo = dict[int, FrameInfo]
 StreamType = Literal["video", "audio", "subtitle"]
 
 
+def format_timestamp(timestamp_ms: int) -> str:
+    """Render one media position for people and exact diagnostics."""
+    return f"{generic_utils.ms_to_time(timestamp_ms)} ({timestamp_ms} ms)"
+
+
+def format_timestamp_range(start_ms: int, end_ms: int) -> str:
+    """Render a media range in clock and raw-millisecond forms."""
+    return (
+        f"{generic_utils.ms_to_time(start_ms)}-"
+        f"{generic_utils.ms_to_time(end_ms)} "
+        f"({start_ms}-{end_ms} ms)"
+    )
+
+
 @dataclass(frozen=True)
 class MeltInputFiles:
     """Stable, one-based references to the files in one Melt input group."""

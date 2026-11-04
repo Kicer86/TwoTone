@@ -16,7 +16,7 @@ from tqdm import tqdm
 from ..utils import files_utils, generic_utils, image_utils, media_analysis, video_utils
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
-from .melt_common import FrameInfo, FramesInfo
+from .melt_common import FrameInfo, FramesInfo, format_timestamp, format_timestamp_range
 from .phash_cache import PhashCache
 
 
@@ -2232,8 +2232,8 @@ class PairMatcher:
                     "Local frame-sequence difference: the first and last matched "
                     "frames use the same %d-frame offset%s, but inside this range "
                     "the match shifts by %d frame%s.\n"
-                    "  %s: frames %d-%d (%d-%d ms)\n"
-                    "  %s: frames %d-%d (%d-%d ms)",
+                    "  %s: frames %d-%d; %s\n"
+                    "  %s: frames %d-%d; %s",
                     abs(outer_start_offset),
                     offset_relation,
                     inner_shift,
@@ -2241,32 +2241,28 @@ class PairMatcher:
                     self.lhs_label,
                     lhs_frame_from,
                     lhs_frame_to,
-                    lhs_from,
-                    lhs_to,
+                    format_timestamp_range(lhs_from, lhs_to),
                     self.rhs_label,
                     rhs_frame_from,
                     rhs_frame_to,
-                    rhs_from,
-                    rhs_to,
+                    format_timestamp_range(rhs_from, rhs_to),
                 )
             else:
                 max_frame_error = max(abs(error) for error in frame_errors)
                 self.logger.error(
                     "Local frame-sequence difference: matched-frame alignment "
                     "changes by up to %.1f frames inside this range.\n"
-                    "  %s: frames %d-%d (%d-%d ms)\n"
-                    "  %s: frames %d-%d (%d-%d ms)",
+                    "  %s: frames %d-%d; %s\n"
+                    "  %s: frames %d-%d; %s",
                     max_frame_error,
                     self.lhs_label,
                     lhs_frame_from,
                     lhs_frame_to,
-                    lhs_from,
-                    lhs_to,
+                    format_timestamp_range(lhs_from, lhs_to),
                     self.rhs_label,
                     rhs_frame_from,
                     rhs_frame_to,
-                    rhs_from,
-                    rhs_to,
+                    format_timestamp_range(rhs_from, rhs_to),
                 )
             for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in group:
                 lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
@@ -2274,16 +2270,14 @@ class PairMatcher:
                 rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
                 rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
                 self.logger.debug(
-                    "Suspected content discontinuity between matched anchors: %s-%s "
-                    "(decoded frames %d-%d) in %s ↔ %s-%s "
+                    "Suspected content discontinuity between matched anchors: %s "
+                    "(decoded frames %d-%d) in %s ↔ %s "
                     "(decoded frames %d-%d) in %s (%+d ms, %+.1f frames)",
-                    generic_utils.ms_to_time(lhs_from),
-                    generic_utils.ms_to_time(lhs_to),
+                    format_timestamp_range(lhs_from, lhs_to),
                     lhs_frame_from,
                     lhs_frame_to,
                     self.lhs_label,
-                    generic_utils.ms_to_time(rhs_from),
-                    generic_utils.ms_to_time(rhs_to),
+                    format_timestamp_range(rhs_from, rhs_to),
                     rhs_frame_from,
                     rhs_frame_to,
                     self.rhs_label,
@@ -2372,15 +2366,15 @@ class PairMatcher:
                 rhs_frame_middle = int(self.rhs_all_frames[rhs_middle]["frame_id"])
                 self.logger.warning(
                     "Accepting temporary %d-frame alignment offset between "
-                    "%s frame %d (%d ms) and %s frame %d (%d ms); the next "
+                    "%s frame %d at %s and %s frame %d at %s; the next "
                     "matched frames return to the same outer offset of %+d frame(s).",
                     temporary_offset,
                     self.lhs_label,
                     lhs_frame_middle,
-                    lhs_middle,
+                    format_timestamp(lhs_middle),
                     self.rhs_label,
                     rhs_frame_middle,
-                    rhs_middle,
+                    format_timestamp(rhs_middle),
                     outer_offset,
                 )
             else:

@@ -2145,6 +2145,8 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(remaining, [])
         self.assertTrue(any(
             "Accepting temporary 5-frame alignment offset" in message
+            and "00:00:02,000 (2000 ms)" in message
+            and "00:00:01,800 (1800 ms)" in message
             for message in captured.output
         ))
         self.assertEqual(
@@ -2678,8 +2680,16 @@ class PairMatcherUnitTest(unittest.TestCase):
             summary,
         )
         self.assertIn("inside this range the match shifts by 5 frames", summary)
-        self.assertIn("#2: frames 59307-59601 (2473639-2485901 ms)", summary)
-        self.assertIn("#1: frames 59306-59600 (2473558-2485821 ms)", summary)
+        self.assertIn(
+            "#2: frames 59307-59601; "
+            "00:41:13,639-00:41:25,901 (2473639-2485901 ms)",
+            summary,
+        )
+        self.assertIn(
+            "#1: frames 59306-59600; "
+            "00:41:13,558-00:41:25,821 (2473558-2485821 ms)",
+            summary,
+        )
         self.assertTrue(any(
             "Full frame diagnostics: /tmp/debug/details.txt" in message
             for message in captured.output

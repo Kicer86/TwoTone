@@ -32,6 +32,7 @@ from .melt_common import (
     StreamType,
     SubtitleStreamRef,
     VideoStreamRef,
+    format_timestamp_range,
 )
 from .pair_matcher import (
     CoverageSummary,
@@ -1705,14 +1706,12 @@ class MeltPerformer(TrackTimelineMixin):
         if matching.timing_discontinuities:
             for lhs_from, lhs_to, rhs_from, rhs_to, deficit in matching.timing_discontinuities:
                 self.logger.error(
-                    "  Unsupported %s timeline discontinuity: %s-%s in #%d ↔ %s-%s in #%d "
+                    "  Unsupported %s timeline discontinuity: %s in #%d ↔ %s in #%d "
                     "(%+d ms)",
                     consumer,
-                    generic_utils.ms_to_time(lhs_from),
-                    generic_utils.ms_to_time(lhs_to),
+                    format_timestamp_range(lhs_from, lhs_to),
                     file_ids[base_path],
-                    generic_utils.ms_to_time(rhs_from),
-                    generic_utils.ms_to_time(rhs_to),
+                    format_timestamp_range(rhs_from, rhs_to),
                     file_ids[source_path],
                     deficit,
                 )
@@ -1728,13 +1727,11 @@ class MeltPerformer(TrackTimelineMixin):
                     if matching.relation is MappingRelation.GLOBAL_LINEAR else ""
                 )
                 self.logger.error(
-                    "  Suspected content discontinuity: %s-%s in #%d ↔ %s-%s in #%d "
+                    "  Suspected content discontinuity: %s in #%d ↔ %s in #%d "
                     "(%+d ms%s)",
-                    generic_utils.ms_to_time(lhs_from),
-                    generic_utils.ms_to_time(lhs_to),
+                    format_timestamp_range(lhs_from, lhs_to),
                     file_ids[base_path],
-                    generic_utils.ms_to_time(rhs_from),
-                    generic_utils.ms_to_time(rhs_to),
+                    format_timestamp_range(rhs_from, rhs_to),
                     file_ids[source_path],
                     deficit,
                     suffix,

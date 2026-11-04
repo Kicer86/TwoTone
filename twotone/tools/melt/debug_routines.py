@@ -4,10 +4,7 @@ import platform
 
 from collections.abc import Callable
 
-from .melt_common import FramesInfo
-from ..utils import generic_utils
-
-
+from .melt_common import FramesInfo, format_timestamp_range
 ContentDiscontinuity = tuple[int, int, int, int, int]
 ContentDiscontinuityGroup = list[ContentDiscontinuity]
 
@@ -132,13 +129,13 @@ class DebugRoutines:
             details.extend([
                 f"Region {region_index}: {kind}",
                 (
-                    f"  {lhs_label}: {generic_utils.ms_to_time(lhs_from)}-"
-                    f"{generic_utils.ms_to_time(lhs_to)}; decoded frames "
+                    f"  {lhs_label}: {format_timestamp_range(lhs_from, lhs_to)}; "
+                    "decoded frames "
                     f"{lhs_first_id} -> {lhs_last_id}"
                 ),
                 (
-                    f"  {rhs_label}: {generic_utils.ms_to_time(rhs_from)}-"
-                    f"{generic_utils.ms_to_time(rhs_to)}; decoded frames "
+                    f"  {rhs_label}: {format_timestamp_range(rhs_from, rhs_to)}; "
+                    "decoded frames "
                     f"{rhs_first_id} -> {rhs_last_id}"
                 ),
                 "  Steps:",
@@ -156,9 +153,9 @@ class DebugRoutines:
                 step_rhs_last = int(self.rhs_all_frames[step_rhs_to]["frame_id"])
                 details.append(
                     f"    {step_index + 1}: {lhs_label} {step_lhs_first}->{step_lhs_last} "
-                    f"({step_lhs_from}->{step_lhs_to} ms) <-> "
+                    f"at {format_timestamp_range(step_lhs_from, step_lhs_to)} <-> "
                     f"{rhs_label} {step_rhs_first}->{step_rhs_last} "
-                    f"({step_rhs_from}->{step_rhs_to} ms); "
+                    f"at {format_timestamp_range(step_rhs_from, step_rhs_to)}; "
                     f"error {deficit_ms:+d} ms "
                     f"({deficit_ms * rhs_fps / 1000:+.1f} rhs frames)"
                 )

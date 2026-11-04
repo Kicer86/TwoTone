@@ -53,11 +53,27 @@ class DebugRoutinesUnitTest(unittest.TestCase):
             with open(os.path.join(target_dir, "details.txt"), encoding="utf-8") as details_file:
                 details = details_file.read()
             self.assertIn("compensating adjacent frame-step errors", details)
-            self.assertIn("#2: 00:00:00,040-00:00:00,120; decoded frames 1 -> 3", details)
-            self.assertIn("#1: 00:00:00,040-00:00:00,120; decoded frames 1 -> 3", details)
+            self.assertIn(
+                "#2: 00:00:00,040-00:00:00,120 (40-120 ms); "
+                "decoded frames 1 -> 3",
+                details,
+            )
+            self.assertIn(
+                "#1: 00:00:00,040-00:00:00,120 (40-120 ms); "
+                "decoded frames 1 -> 3",
+                details,
+            )
             self.assertIn("Region 1: compensating adjacent frame-step errors", details)
-            self.assertIn("#2: 00:00:00,160-00:00:00,240; decoded frames 4 -> 6", details)
-            self.assertIn("#1: 00:00:00,160-00:00:00,280; decoded frames 4 -> 7", details)
+            self.assertIn(
+                "#2: 00:00:00,160-00:00:00,240 (160-240 ms); "
+                "decoded frames 4 -> 6",
+                details,
+            )
+            self.assertIn(
+                "#1: 00:00:00,160-00:00:00,280 (160-280 ms); "
+                "decoded frames 4 -> 7",
+                details,
+            )
 
             lhs_dump = os.listdir(os.path.join(target_dir, "region_000", "lhs"))
             rhs_dump = os.listdir(os.path.join(target_dir, "region_000", "rhs"))
