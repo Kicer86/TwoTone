@@ -3,12 +3,14 @@ import logging
 import math
 import os
 import statistics
+from bisect import bisect_right
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any, NamedTuple
 
+import pysubs2
 from tqdm import tqdm
 
 from ..tool import ToolRuntimeContext
@@ -17,6 +19,7 @@ from ..utils import (
     generic_utils,
     language_utils,
     process_utils,
+    subtitles_utils,
     video_utils,
 )
 from .debug_routines import DebugRoutines
@@ -58,6 +61,9 @@ class _StreamEntry(NamedTuple):
     path: str
     language: str | None
     sync_offset_ms: int | None = None
+    name: str | None = None
+    forced: bool | None = None
+    default: bool | None = None
 
 
 class _AudioStrategy(enum.Enum):
@@ -364,6 +370,9 @@ class MeltPerformer(TrackTimelineMixin):
                 "attachments": [],
                 "languages": {},
                 "defaults": set(),
+                "default_overrides": {},
+                "names": {},
+                "forced": {},
                 "sync_offsets": {},
             }
             for path in required_input_files
@@ -377,6 +386,12 @@ class MeltPerformer(TrackTimelineMixin):
             fo["languages"][stream.mkvmerge_track_id] = stream.language or "und"
             if stream.stream_type in ("audio", "subtitle") and preferred_audio and stream == preferred_audio:
                 fo["defaults"].add(stream.mkvmerge_track_id)
+            if stream.default is not None:
+                fo["default_overrides"][stream.mkvmerge_track_id] = stream.default
+            if stream.name is not None:
+                fo["names"][stream.mkvmerge_track_id] = stream.name
+            if stream.forced is not None:
+                fo["forced"][stream.mkvmerge_track_id] = stream.forced
             if stream.sync_offset_ms is not None:
                 fo["sync_offsets"][stream.mkvmerge_track_id] = stream.sync_offset_ms
             file_index = generic_utils.get_key_position(files_opts, stream.path)
@@ -404,10 +419,19 @@ class MeltPerformer(TrackTimelineMixin):
             for tid, lang in fo["languages"].items():
                 generation_args.extend(["--language", f"{tid}:{lang}"])
 
+            for tid, name in fo["names"].items():
+                generation_args.extend(["--track-name", f"{tid}:{name}"])
+
+            for tid, forced in fo["forced"].items():
+                generation_args.extend(["--forced-display-flag", f"{tid}:{'yes' if forced else 'no'}"])
+
             if preferred_audio:
                 for tid in fo["audio"] + fo["subtitle"]:
                     flag = "yes" if tid in fo["defaults"] else "no"
                     generation_args.extend(["--default-track", f"{tid}:{flag}"])
+            else:
+                for tid, default in fo["default_overrides"].items():
+                    generation_args.extend(["--default-track", f"{tid}:{'yes' if default else 'no'}"])
 
             for tid, offset_ms in fo["sync_offsets"].items():
                 generation_args.extend(["--sync", f"{tid}:{offset_ms}"])
@@ -1638,6 +1662,92 @@ class MeltPerformer(TrackTimelineMixin):
             )
         return match_result
 
+    def _validated_pair_match(
+        self,
+        working_dir: str,
+        base_path: str,
+        source_path: str,
+        base_duration_ms: int,
+        file_ids: dict[str, int],
+        *,
+        consumer: str,
+    ) -> _PairMatchResult:
+        """Return one safe, cached mapping for an aligned source track."""
+        first_match = (base_path, source_path) not in self._pair_match_cache
+        match_result = self._pair_match(
+            working_dir,
+            base_path,
+            source_path,
+            file_ids,
+        )
+        matching = match_result.matching
+
+        if first_match and matching.mapping:
+            self._log_coverage(
+                matching.mapping,
+                base_duration_ms,
+                match_result.source_duration,
+                matching.lhs_fps,
+                matching.rhs_fps,
+                file_ids[base_path],
+                file_ids[source_path],
+            )
+
+        discontinuities = matching.content_discontinuities
+        if matching.relation is MappingRelation.GENERIC:
+            discontinuities = discontinuities or tuple(
+                PairMatcher.find_content_discontinuities(matching.mapping)
+            )
+
+        if matching.timing_discontinuities:
+            for lhs_from, lhs_to, rhs_from, rhs_to, deficit in matching.timing_discontinuities:
+                self.logger.error(
+                    "  Unsupported %s timeline discontinuity: %s-%s in #%d ↔ %s-%s in #%d "
+                    "(%+d ms)",
+                    consumer,
+                    generic_utils.ms_to_time(lhs_from),
+                    generic_utils.ms_to_time(lhs_to),
+                    file_ids[base_path],
+                    generic_utils.ms_to_time(rhs_from),
+                    generic_utils.ms_to_time(rhs_to),
+                    file_ids[source_path],
+                    deficit,
+                )
+            raise RuntimeError(
+                f"Unsupported {consumer} timeline discontinuity: the matched PTS mapping "
+                "has a PTS step despite continuous decoded video"
+            )
+
+        if discontinuities:
+            for lhs_from, lhs_to, rhs_from, rhs_to, deficit in discontinuities:
+                suffix = (
+                    f", {deficit * matching.rhs_fps / 1000:+.1f} frames"
+                    if matching.relation is MappingRelation.GLOBAL_LINEAR else ""
+                )
+                self.logger.error(
+                    "  Suspected content discontinuity: %s-%s in #%d ↔ %s-%s in #%d "
+                    "(%+d ms%s)",
+                    generic_utils.ms_to_time(lhs_from),
+                    generic_utils.ms_to_time(lhs_to),
+                    file_ids[base_path],
+                    generic_utils.ms_to_time(rhs_from),
+                    generic_utils.ms_to_time(rhs_to),
+                    file_ids[source_path],
+                    deficit,
+                    suffix,
+                )
+            raise RuntimeError(
+                "Unresolved suspected content discontinuities: insufficient evidence to rule out "
+                "holes in the scene sequence (e.g. commercial-break cuts) — patching "
+                f"{consumer} across such discontinuities is not supported yet"
+            )
+
+        if not matching.mapping:
+            raise RuntimeError(
+                f"Cannot align {consumer}: no shared video timeline mapping was found."
+            )
+        return match_result
+
     def _patch_mismatched_audio(
         self,
         base_video: VideoStreamRef,
@@ -1655,79 +1765,19 @@ class MeltPerformer(TrackTimelineMixin):
         ffprobe_stream_index = audio_stream.ffprobe_stream_index
         with self.workspace.scoped_dir("matching") as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
-            first_match = (video_path_base, audio_path) not in self._pair_match_cache
-            match_result = self._pair_match(mwd, video_path_base, audio_path, file_ids)
+            match_result = self._validated_pair_match(
+                mwd,
+                video_path_base,
+                audio_path,
+                base_duration,
+                file_ids,
+                consumer="audio",
+            )
 
             matching = match_result.matching
             lhs_all_frames = matching.lhs_all_frames
             rhs_all_frames = matching.rhs_all_frames
             duration = match_result.source_duration
-
-            # Coverage is a property of the file pair, not of the chosen audio
-            # strategy — report it right after the matcher, once per pair.
-            if first_match and matching.mapping:
-                self._log_coverage(
-                    matching.mapping,
-                    base_duration,
-                    duration,
-                    matching.lhs_fps,
-                    matching.rhs_fps,
-                    file_ids[video_path_base],
-                    file_ids[audio_path],
-                )
-
-            # PairMatcher owns global-linear certification. The generic path
-            # has no such certificate: its gap check remains an execution-time
-            # safeguard before an audio strategy can consume the mapping.
-            discontinuities = matching.content_discontinuities
-            timing_discontinuities = matching.timing_discontinuities
-            if matching.relation is MappingRelation.GENERIC:
-                discontinuities = discontinuities or tuple(
-                    PairMatcher.find_content_discontinuities(matching.mapping)
-                )
-            if timing_discontinuities:
-                for lhs_from, lhs_to, rhs_from, rhs_to, deficit in timing_discontinuities:
-                    self.logger.error(
-                        "  Unsupported audio timeline discontinuity: %s-%s in #%d ↔ %s-%s in #%d "
-                        "(%+d ms)",
-                        generic_utils.ms_to_time(lhs_from),
-                        generic_utils.ms_to_time(lhs_to),
-                        file_ids[video_path_base],
-                        generic_utils.ms_to_time(rhs_from),
-                        generic_utils.ms_to_time(rhs_to),
-                        file_ids[audio_path],
-                        deficit,
-                    )
-                raise RuntimeError(
-                    "Unsupported audio timeline discontinuity: the matched PTS mapping "
-                    "has a PTS step despite continuous decoded video; the supported audio executors "
-                    "cannot preserve alignment on both sides of that step"
-                )
-
-            if discontinuities:
-                for lhs_from, lhs_to, rhs_from, rhs_to, deficit in discontinuities:
-                    suffix = (
-                        f", {deficit * matching.rhs_fps / 1000:+.1f} frames"
-                        if matching.relation is MappingRelation.GLOBAL_LINEAR else ""
-                    )
-                    self.logger.error(
-                        "  Suspected content discontinuity: %s-%s in #%d ↔ %s-%s in #%d "
-                        "(%+d ms%s)",
-                        generic_utils.ms_to_time(lhs_from),
-                        generic_utils.ms_to_time(lhs_to),
-                        file_ids[video_path_base],
-                        generic_utils.ms_to_time(rhs_from),
-                        generic_utils.ms_to_time(rhs_to),
-                        file_ids[audio_path],
-                        deficit,
-                        suffix,
-                    )
-                raise RuntimeError(
-                    "Unresolved suspected content discontinuities: insufficient evidence to rule out "
-                    "holes in the scene sequence "
-                    "(e.g. commercial-break cuts) — patching audio across such "
-                    "discontinuities is not supported yet"
-                )
 
             strategy = self._choose_audio_strategy(
                 video_path_base, audio_path, matching,
@@ -1872,7 +1922,7 @@ class MeltPerformer(TrackTimelineMixin):
         if strategy == _AudioStrategy.UNSCALED:
             return matching.mapping
 
-        mapping = self._strict_audio_mapping(matching.mapping)
+        mapping = self._strict_mapping(matching.mapping)
         if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
             return mapping
 
@@ -1985,8 +2035,8 @@ class MeltPerformer(TrackTimelineMixin):
         return round(median_delta)
 
     @staticmethod
-    def _strict_audio_mapping(mapping: list[tuple[int, int]]) -> list[tuple[int, int]]:
-        """Collapse duplicate boundary matches before deriving audio trim ranges."""
+    def _strict_mapping(mapping: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Collapse duplicate or non-monotonic matches before retiming tracks."""
         if len(mapping) < 2:
             return mapping
 
@@ -2299,6 +2349,187 @@ class MeltPerformer(TrackTimelineMixin):
                 )
         raise RuntimeError(f"No fully identified video track found in {path}.")
 
+    @staticmethod
+    def _subtitle_track_details(
+        stream: SubtitleStreamRef,
+        files_details: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        tracks = files_details.get(stream.path, {}).get("tracks", {}).get("subtitle", [])
+        return next(
+            (track for track in tracks if track.get("tid") == stream.mkvmerge_track_id),
+            {},
+        )
+
+    @staticmethod
+    def _map_subtitle_timestamp(
+        timestamp_ms: int,
+        mapping: Sequence[tuple[int, int]],
+        relation: MappingRelation,
+    ) -> int:
+        """Map one RHS subtitle timestamp to the LHS video timeline."""
+        if len(mapping) < 2:
+            raise RuntimeError("Subtitle timeline mapping needs at least two anchors.")
+
+        if relation is MappingRelation.GLOBAL_LINEAR:
+            lhs_start, rhs_start = mapping[0]
+            lhs_end, rhs_end = mapping[-1]
+        else:
+            rhs_values = [pair[1] for pair in mapping]
+            index = min(max(0, bisect_right(rhs_values, timestamp_ms) - 1), len(mapping) - 2)
+            lhs_start, rhs_start = mapping[index]
+            lhs_end, rhs_end = mapping[index + 1]
+
+        rhs_span = rhs_end - rhs_start
+        if rhs_span <= 0:
+            raise RuntimeError("Subtitle timeline mapping is not strictly monotonic.")
+        lhs_span = lhs_end - lhs_start
+        return round(lhs_start + (timestamp_ms - rhs_start) * lhs_span / rhs_span)
+
+    def _retime_subtitle_content(
+        self,
+        content: pysubs2.SSAFile,
+        matching: SegmentsMappingResult,
+        *,
+        source_mapping_to_video_ms: int,
+        output_mapping_to_video_ms: int,
+        source_description: str,
+    ) -> None:
+        mapping = self._strict_mapping(matching.mapping)
+        if len(mapping) < 2:
+            raise RuntimeError(
+                f"Cannot align {source_description}: fewer than two monotonic mapping anchors."
+            )
+
+        first_rhs = mapping[0][1]
+        last_rhs = mapping[-1][1]
+        frame_ms = 1000 / matching.rhs_fps
+        edge_tolerance_ms = round(PairMatcher._MAX_BOUNDARY_ERROR_FRAMES * frame_ms)
+        rhs_frame_times = sorted(matching.rhs_all_frames)
+        accepted_start = first_rhs
+        accepted_end = last_rhs
+        if rhs_frame_times:
+            if first_rhs - rhs_frame_times[0] <= edge_tolerance_ms:
+                accepted_start = rhs_frame_times[0]
+            if rhs_frame_times[-1] - last_rhs <= edge_tolerance_ms:
+                accepted_end = round(rhs_frame_times[-1] + frame_ms)
+
+        for index, event in enumerate(content, start=1):
+            source_start = event.start - source_mapping_to_video_ms
+            source_end = event.end - source_mapping_to_video_ms
+            if source_start < accepted_start or source_end > accepted_end:
+                raise RuntimeError(
+                    f"Cannot align {source_description}: subtitle event #{index} "
+                    f"({event.start}-{event.end} ms) extends beyond verified shared content "
+                    f"({accepted_start + source_mapping_to_video_ms}-"
+                    f"{accepted_end + source_mapping_to_video_ms} ms)."
+                )
+
+            mapped_start = self._map_subtitle_timestamp(
+                min(max(source_start, first_rhs), last_rhs),
+                mapping,
+                matching.relation,
+            )
+            mapped_end = self._map_subtitle_timestamp(
+                min(max(source_end, first_rhs), last_rhs),
+                mapping,
+                matching.relation,
+            )
+            event.start = mapped_start + output_mapping_to_video_ms
+            event.end = mapped_end + output_mapping_to_video_ms
+            if event.end <= event.start:
+                raise RuntimeError(
+                    f"Cannot align {source_description}: subtitle event #{index} "
+                    "has no positive duration after retiming."
+                )
+
+    def _patch_mismatched_subtitle(
+        self,
+        base_video: VideoStreamRef,
+        source_video: VideoStreamRef,
+        subtitle_stream: SubtitleStreamRef,
+        base_duration_ms: int,
+        file_ids: dict[str, int],
+        files_details: Mapping[str, Any],
+    ) -> tuple[SubtitleStreamRef, dict[str, Any]]:
+        details = self._subtitle_track_details(subtitle_stream, files_details)
+        subtitle_format = str(details.get("format") or details.get("codec") or "unknown")
+        normalized_format = subtitle_format.lower()
+        image_format_markers = ("pgs", "vobsub", "dvd_subtitle", "dvb_subtitle")
+        description = (
+            f"subtitle track #{subtitle_stream.mkvmerge_track_id} "
+            f"from file #{file_ids[subtitle_stream.path]}"
+        )
+        if any(marker in normalized_format for marker in image_format_markers):
+            raise RuntimeError(
+                f"Cannot align {description}: image-based subtitle format "
+                f"'{subtitle_format}' is not supported."
+            )
+
+        with self.workspace.scoped_dir("matching") as matching_dir:
+            match_result = self._validated_pair_match(
+                matching_dir,
+                base_video.path,
+                source_video.path,
+                base_duration_ms,
+                file_ids,
+                consumer="subtitle",
+            )
+
+        extension = os.path.splitext(subtitle_stream.path)[1].lower()
+        if extension in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
+            extracted_base = self.workspace.unique_file("subtitle_source")
+            extracted = video_utils.extract_subtitle_to_temp(
+                subtitle_stream.path,
+                [subtitle_stream.mkvmerge_track_id],
+                extracted_base,
+                logger=self.logger,
+            ).get(subtitle_stream.mkvmerge_track_id)
+        else:
+            extracted = self.workspace.unique_file("subtitle_source", "ass")
+            process_utils.raise_on_error(
+                process_utils.start_process(
+                    "ffmpeg",
+                    [
+                        "-y",
+                        "-i", subtitle_stream.path,
+                        "-map", f"0:{subtitle_stream.ffprobe_stream_index}",
+                        "-c:s", "ass",
+                        extracted,
+                    ],
+                    logger=self.logger,
+                )
+            )
+        if extracted is None or not os.path.exists(extracted):
+            raise RuntimeError(f"Cannot align {description}: subtitle extraction failed.")
+
+        content = subtitles_utils.open_subtitle_file(extracted, logger=self.logger)
+        if content is None:
+            raise RuntimeError(
+                f"Cannot align {description}: extracted format '{subtitle_format}' "
+                "cannot be parsed as text subtitles."
+            )
+
+        matching = match_result.matching
+        self._retime_subtitle_content(
+            content,
+            matching,
+            source_mapping_to_video_ms=self._mapping_to_video_ms(
+                source_video,
+                matching.rhs_all_frames,
+            ),
+            output_mapping_to_video_ms=self._mapping_to_video_ms(
+                base_video,
+                matching.lhs_all_frames,
+            ),
+            source_description=description,
+        )
+        output_path = self.workspace.unique_file("aligned_subtitle", "ass")
+        content.save(output_path, format_="ass", encoding="utf-8")
+        return (
+            SubtitleStreamRef(output_path, 0, 0, subtitle_stream.language),
+            details,
+        )
+
     def _prepare_stream_entries(
         self,
         video_streams: Sequence[VideoStreamRef],
@@ -2436,21 +2667,47 @@ class MeltPerformer(TrackTimelineMixin):
             ))
 
         for subtitle_stream in subtitle_streams:
-            desired_start_ms = self._source_stream_start_offset_ms(
-                subtitle_stream.path,
-                "subtitle",
-                subtitle_stream.ffprobe_stream_index,
-            )
-            streams_list.append(_StreamEntry(
-                "subtitle",
-                subtitle_stream.mkvmerge_track_id,
-                subtitle_stream.path,
-                subtitle_stream.language,
-                self._track_sync_offset_ms(
+            subtitle_output_stream = subtitle_stream
+            details_for_output: dict[str, Any] = {}
+            desired_start_ms: int | None
+            if subtitle_stream.path in alignment_paths:
+                assert base_duration is not None
+                source_video = self._primary_video_ref(subtitle_stream.path, details)
+                subtitle_output_stream, details_for_output = self._patch_mismatched_subtitle(
+                    base_video,
+                    source_video,
+                    subtitle_stream,
+                    base_duration,
+                    file_ids,
+                    details,
+                )
+                # The rewritten ASS events already use the base output PTS.
+                desired_start_ms = None
+            else:
+                desired_start_ms = self._source_stream_start_offset_ms(
                     subtitle_stream.path,
                     "subtitle",
                     subtitle_stream.ffprobe_stream_index,
+                )
+            streams_list.append(_StreamEntry(
+                "subtitle",
+                subtitle_output_stream.mkvmerge_track_id,
+                subtitle_output_stream.path,
+                subtitle_output_stream.language,
+                self._track_sync_offset_ms(
+                    subtitle_output_stream.path,
+                    "subtitle",
+                    subtitle_output_stream.ffprobe_stream_index,
                     desired_start_ms,
+                ),
+                details_for_output.get("name") or details_for_output.get("title"),
+                (
+                    bool(details_for_output["forced"])
+                    if "forced" in details_for_output else None
+                ),
+                (
+                    bool(details_for_output["default"])
+                    if "default" in details_for_output else None
                 ),
             ))
 

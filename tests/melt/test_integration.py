@@ -2,6 +2,8 @@
 import os
 import unittest
 
+import pysubs2
+
 from twotone.tools.utils import generic_utils, video_utils
 from twotone.tools.melt.melt import StaticSource
 from common import (
@@ -12,6 +14,7 @@ from common import (
     list_files,
     run_ffmpeg,
     run_twotone,
+    write_srt_subtitle,
 )
 from melt.helpers import (
     MeltTestBase,
@@ -225,6 +228,69 @@ class MeltIntegrationTest(MeltTestBase):
         output_file = next(iter(output_file_hash))
         output_file_data = video_utils.get_video_data_mkvmerge(output_file)
         self.assertEqual(len(output_file_data["tracks"]["audio"]), 2)
+
+    def test_allow_video_timeline_mismatch_retimes_subtitles(self):
+        base_source, subtitle_source = self.edge_fixtures["diff_intro_diff"]
+        base_file = add_to_test_dir(self.wd.path, base_source)
+        subtitle_video = os.path.join(self.wd.path, "subtitle-source.mkv")
+        subtitle_path = os.path.join(self.wd.path, "source.srt")
+        write_srt_subtitle(subtitle_path, [(8000, 9000, "Shared dialogue")])
+        run_ffmpeg(
+            [
+                "-y",
+                "-i", subtitle_source,
+                "-i", subtitle_path,
+                "-map", "0",
+                "-map", "1",
+                "-c", "copy",
+                subtitle_video,
+            ],
+            expected_path=subtitle_video,
+        )
+
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        duplicates.add_entry("Video", base_file)
+        duplicates.add_entry("Video", subtitle_video)
+        duplicates.add_metadata(base_file, "use_video", True)
+        duplicates.add_metadata(base_file, "audio_lang", "eng")
+        duplicates.add_metadata(subtitle_video, "audio_lang", "pol")
+        duplicates.add_metadata(subtitle_video, "subtitle_lang", "pol")
+
+        output_dir = os.path.join(self.wd.path, "output")
+        os.makedirs(output_dir)
+        logger = self.logger.getChild("Melter")
+        plan = analyze_duplicates_helper(
+            logger,
+            duplicates,
+            self.workspace,
+            allow_video_timeline_mismatch=True,
+        )
+        process_duplicates_helper(
+            logger,
+            interruption,
+            self.workspace,
+            output_dir,
+            plan,
+        )
+
+        output_file = next(iter(hashes(output_dir)))
+        extracted_path = os.path.join(self.wd.path, "aligned.srt")
+        run_ffmpeg(
+            [
+                "-y",
+                "-i", output_file,
+                "-map", "0:s:0",
+                extracted_path,
+            ],
+            expected_path=extracted_path,
+        )
+        subtitles = pysubs2.load(extracted_path)
+
+        self.assertEqual(len(subtitles), 1)
+        self.assertEqual(subtitles[0].text, "Shared dialogue")
+        self.assertAlmostEqual(subtitles[0].start, 5090, delta=150)
+        self.assertAlmostEqual(subtitles[0].end, 6120, delta=150)
 
     def test_mismatch_unused_file_ignored(self):
         file1 = build_test_video(

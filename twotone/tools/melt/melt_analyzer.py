@@ -518,13 +518,6 @@ class MeltAnalyzer:
 
         requirements = self._find_alignment_requirements(tracks, ids, video_streams, audio_streams, subtitle_streams)
         alignment_paths = {requirement.path for requirement in requirements}
-        subtitle_paths_requiring_alignment = {stream.path for stream in subtitle_streams if stream.path in alignment_paths}
-
-        if subtitle_paths_requiring_alignment:
-            file_ids = ", ".join(f"#{ids[path]}" for path in sorted(subtitle_paths_requiring_alignment, key=ids.__getitem__))
-            return None, (
-                f"Subtitle streams from {file_ids} require video timeline alignment, which is not supported yet."
-            ), details_full
 
         if requirements:
             if self.allow_video_timeline_mismatch:
