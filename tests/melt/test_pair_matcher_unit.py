@@ -1,6 +1,7 @@
 
 import logging
 import unittest
+from collections.abc import Callable
 from typing import cast
 from unittest.mock import Mock, patch
 
@@ -19,6 +20,15 @@ from twotone.tools.utils import (
     media_analysis,
     video_utils,
 )
+
+
+class _SyntheticHash:
+    def __init__(self, path: str, distance: Callable[[str, str], int]):
+        self.path = path
+        self.distance = distance
+
+    def __sub__(self, other: "_SyntheticHash") -> int:
+        return self.distance(self.path, other.path)
 
 
 class PairMatcherUnitTest(unittest.TestCase):
@@ -65,6 +75,98 @@ class PairMatcherUnitTest(unittest.TestCase):
     @staticmethod
     def _timestamp_for_frame(frame_id: int, fps: float) -> int:
         return round(frame_id * 1000 / fps)
+
+    def _frame_adjustment_case(
+        self,
+        pm: PairMatcher,
+        distance: Callable[[int, int], int],
+        *,
+        lhs_timestamps: list[int] | None = None,
+        rhs_timestamps: list[int] | None = None,
+    ) -> tuple[dict[int, dict], dict[int, dict]]:
+        lhs = self._make_frames(
+            lhs_timestamps or [0, 40, 80, 120, 160, 200, 240], "lhs",
+        )
+        rhs = self._make_frames(
+            rhs_timestamps or [0, 40, 80, 120, 160, 200, 240], "rhs",
+        )
+        frame_ids = {
+            **{info["path"]: info["frame_id"] for info in lhs.values()},
+            **{info["path"]: info["frame_id"] for info in rhs.values()},
+        }
+        pm.phash.get = Mock(side_effect=lambda path: _SyntheticHash(
+            path,
+            lambda lhs_path, rhs_path: distance(
+                frame_ids[lhs_path], frame_ids[rhs_path],
+            ),
+        ))
+        return lhs, rhs
+
+    def test_frame_adjustment_uses_local_sequence_instead_of_single_best_frame(self):
+        pm = self._make_pair_matcher()
+        def distance(lhs_id: int, rhs_id: int) -> int:
+            if lhs_id == 3 and rhs_id == 3:
+                return 6
+            if lhs_id - rhs_id == 1:
+                return 8
+            return 120
+
+        lhs, rhs = self._frame_adjustment_case(pm, distance)
+
+        pair = pm._best_phash_match(
+            120, 80, lhs, rhs, timeline_ratio=1.0,
+        )
+
+        self.assertEqual(pair, (120, 80))
+
+    def test_frame_adjustment_breaks_single_frame_tie_with_sequence_consistency(self):
+        pm = self._make_pair_matcher()
+        def distance(lhs_id: int, rhs_id: int) -> int:
+            if lhs_id == 4 and rhs_id in (2, 3):
+                return 10
+            if lhs_id - rhs_id == 1:
+                return 12
+            return 120
+
+        lhs, rhs = self._frame_adjustment_case(pm, distance)
+
+        pair = pm._best_phash_match(
+            120, 80, lhs, rhs, timeline_ratio=1.0,
+        )
+
+        self.assertEqual(pair, (120, 80))
+
+    def test_frame_adjustment_can_still_correct_a_misaligned_scene_anchor(self):
+        pm = self._make_pair_matcher()
+        def distance(lhs_id: int, rhs_id: int) -> int:
+            if lhs_id == 3 and rhs_id == 3:
+                return 6
+            if lhs_id - rhs_id == 1:
+                return 8
+            return 120
+
+        lhs, rhs = self._frame_adjustment_case(pm, distance)
+
+        pair = pm._best_phash_match(
+            120, 120, lhs, rhs, timeline_ratio=1.0,
+        )
+
+        self.assertEqual(pair, (120, 80))
+
+    def test_frame_adjustment_applies_observed_timeline_ratio_to_sequence(self):
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=20.0)
+        lhs, rhs = self._frame_adjustment_case(
+            pm,
+            lambda lhs_id, rhs_id: 8 if lhs_id - rhs_id == 1 else 120,
+            lhs_timestamps=[0, 40, 80, 120, 160, 200, 240],
+            rhs_timestamps=[0, 50, 100, 150, 200, 250, 300],
+        )
+
+        pair = pm._best_phash_match(
+            120, 100, lhs, rhs, timeline_ratio=0.8,
+        )
+
+        self.assertEqual(pair, (120, 100))
 
     @staticmethod
     def _scene_analysis(

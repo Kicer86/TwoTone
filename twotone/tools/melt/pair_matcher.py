@@ -2989,19 +2989,85 @@ class PairMatcher:
             candidates.append(keys[idx])
         return min(candidates, key=lambda k: abs(k - target))
 
-    def _best_phash_match(self, lhs_ts: int, rhs_ts_guess: int, lhs_all_set: FramesInfo, rhs_all_set: FramesInfo) -> tuple[int, int] | None:
-        lhs_near = self._nearest_three(list(lhs_all_set.keys()), lhs_ts)
-        rhs_near = self._nearest_three(list(rhs_all_set.keys()), rhs_ts_guess)
-        best = None
-        best_dist = float("inf")
-        for l in lhs_near:
-            for r in rhs_near:
-                if l in lhs_all_set and r in rhs_all_set:
-                    d = abs(self.phash.get(self._extracted_path(lhs_all_set[l])) - self.phash.get(self._extracted_path(rhs_all_set[r])))
-                    if d < best_dist:
-                        best = (l, r)
-                        best_dist = d
-        return best
+    def _best_phash_match(
+        self,
+        lhs_ts: int,
+        rhs_ts_guess: int,
+        lhs_all_set: FramesInfo,
+        rhs_all_set: FramesInfo,
+        *,
+        timeline_ratio: float = 1.0,
+    ) -> tuple[int, int] | None:
+        """Refine one scene anchor using its local frame sequence.
+
+        A single perceptual hash cannot reliably distinguish adjacent frames
+        in a mostly static shot.  Score each candidate alignment across the
+        five-frame neighbourhood of the original lhs anchor instead.  This
+        keeps a scene cut aligned even when one wrong adjacent-frame pair has
+        a slightly smaller hash distance (or ties the correct pair).
+        """
+        lhs_keys = sorted(lhs_all_set)
+        rhs_keys = sorted(rhs_all_set)
+        lhs_near = self._nearest_three(lhs_keys, lhs_ts)
+        rhs_near = self._nearest_three(rhs_keys, rhs_ts_guess)
+        if not lhs_near or not rhs_near:
+            return None
+
+        if not isfinite(timeline_ratio) or timeline_ratio <= 0:
+            timeline_ratio = 1.0
+
+        lhs_anchor_frame = int(lhs_all_set[lhs_ts]["frame_id"])
+        lhs_samples = sorted(
+            timestamp
+            for timestamp, info in lhs_all_set.items()
+            if abs(int(info["frame_id"]) - lhs_anchor_frame) <= 2
+        )
+        max_rhs_snap_error = max(2.0, 750.0 / self.rhs_fps)
+
+        sequence_candidates: list[tuple[float, float, int, int]] = []
+        single_frame_candidates: list[tuple[float, float, int, int]] = []
+        for lhs_candidate in lhs_near:
+            for rhs_candidate in rhs_near:
+                movement = (
+                    abs(lhs_candidate - lhs_ts) * self.lhs_fps
+                    + abs(rhs_candidate - rhs_ts_guess) * self.rhs_fps
+                ) / 1000
+                single_distance = abs(
+                    self.phash.get(self._extracted_path(lhs_all_set[lhs_candidate]))
+                    - self.phash.get(self._extracted_path(rhs_all_set[rhs_candidate]))
+                )
+                single_frame_candidates.append((
+                    float(single_distance), movement,
+                    lhs_candidate, rhs_candidate,
+                ))
+
+                distances = []
+                for lhs_sample in lhs_samples:
+                    predicted_rhs = (
+                        rhs_candidate
+                        + (lhs_sample - lhs_candidate) / timeline_ratio
+                    )
+                    rhs_sample = self._snap_to_nearest_frame(
+                        rhs_keys, round(predicted_rhs),
+                    )
+                    if abs(rhs_sample - predicted_rhs) > max_rhs_snap_error:
+                        break
+                    distances.append(abs(
+                        self.phash.get(self._extracted_path(lhs_all_set[lhs_sample]))
+                        - self.phash.get(self._extracted_path(rhs_all_set[rhs_sample]))
+                    ))
+
+                if len(distances) == len(lhs_samples) and len(distances) >= 3:
+                    sequence_candidates.append((
+                        float(np.mean(distances)), movement,
+                        lhs_candidate, rhs_candidate,
+                    ))
+
+        candidates = sequence_candidates or single_frame_candidates
+        if not candidates:
+            return None
+        _, _, best_lhs, best_rhs = min(candidates)
+        return best_lhs, best_rhs
 
     def _build_matches(self, lhs: FramesInfo, rhs: FramesInfo) -> list[tuple[int, int, int]]:
         lhs_items = list(lhs.items())
@@ -3186,9 +3252,16 @@ class PairMatcher:
         extrapolated = self._extrapolate_matches(stable, lhs, rhs, self.phash)
         self.logger.debug(f"Extrapolation:             {PairMatcher.summarize_pairs(self.phash, extrapolated, lhs_all, rhs_all)}")
 
+        timeline_ratio = (
+            PairMatcher.calculate_ratio(extrapolated)
+            if len(extrapolated) >= 2 else 1.0
+        )
         extrapolated_refined: list[tuple[int, int]] = []
         for l, r in extrapolated:
-            best_match = self._best_phash_match(l, r, lhs_all, rhs_all)
+            best_match = self._best_phash_match(
+                l, r, lhs_all, rhs_all,
+                timeline_ratio=timeline_ratio,
+            )
             if best_match is not None:
                 extrapolated_refined.append(best_match)
         self.logger.debug(f"Frame adjustment:          {PairMatcher.summarize_pairs(self.phash, extrapolated_refined, lhs_all, rhs_all)}")
