@@ -3004,7 +3004,11 @@ class PairMatcher:
         in a mostly static shot.  Score each candidate alignment across the
         five-frame neighbourhood of the original lhs anchor instead.  This
         keeps a scene cut aligned even when one wrong adjacent-frame pair has
-        a slightly smaller hash distance (or ties the correct pair).
+        a slightly smaller hash distance (or ties the correct pair).  Moving
+        the scene anchor additionally requires the winning sequence to look
+        like genuinely shared pictures.  With different picture geometry,
+        every raw-frame hash can be poor and tiny decoder-dependent differences
+        between those poor scores are not evidence of a one-frame correction.
         """
         lhs_keys = sorted(lhs_all_set)
         rhs_keys = sorted(rhs_all_set)
@@ -3063,10 +3067,15 @@ class PairMatcher:
                         lhs_candidate, rhs_candidate,
                     ))
 
-        candidates = sequence_candidates or single_frame_candidates
-        if not candidates:
+        if sequence_candidates:
+            best = min(sequence_candidates)
+            if best[0] > self._MIN_PHASH_CUTOFF:
+                return lhs_ts, rhs_ts_guess
+        elif single_frame_candidates:
+            best = min(single_frame_candidates)
+        else:
             return None
-        _, _, best_lhs, best_rhs = min(candidates)
+        _, _, best_lhs, best_rhs = best
         return best_lhs, best_rhs
 
     def _build_matches(self, lhs: FramesInfo, rhs: FramesInfo) -> list[tuple[int, int, int]]:

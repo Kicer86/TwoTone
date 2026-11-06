@@ -153,6 +153,24 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertEqual(pair, (120, 80))
 
+    def test_frame_adjustment_keeps_scene_anchor_when_sequence_similarity_is_weak(self):
+        pm = self._make_pair_matcher()
+
+        def distance(lhs_id: int, rhs_id: int) -> int:
+            if lhs_id == rhs_id:
+                return 78
+            if lhs_id - rhs_id == 1:
+                return 80
+            return 120
+
+        lhs, rhs = self._frame_adjustment_case(pm, distance)
+
+        pair = pm._best_phash_match(
+            120, 80, lhs, rhs, timeline_ratio=1.0,
+        )
+
+        self.assertEqual(pair, (120, 80))
+
     def test_frame_adjustment_applies_observed_timeline_ratio_to_sequence(self):
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=20.0)
         lhs, rhs = self._frame_adjustment_case(
