@@ -193,6 +193,42 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         self.assertEqual(pair, (120, 100))
 
+    def test_history_uses_shorter_available_side(self):
+        pm = self._make_pair_matcher()
+        lhs = self._make_frames([0, 40, 80, 120], "lhs")
+        rhs = self._make_frames([0, 80, 120], "rhs")
+
+        def distance(lhs_path: str, rhs_path: str) -> int:
+            lhs_timestamp = int(lhs_path.rsplit("/", 1)[1].split(".", 1)[0])
+            rhs_timestamp = int(rhs_path.rsplit("/", 1)[1].split(".", 1)[0])
+            return 4 if lhs_timestamp == rhs_timestamp else 100
+
+        with patch.object(
+            pm.phash,
+            "get",
+            side_effect=lambda path: _SyntheticHash(path, distance),
+        ):
+            accepted = pm._check_history((120, 120), lhs, rhs, cutoff=16)
+
+        self.assertTrue(accepted)
+
+    def test_history_rejects_unmatched_shorter_available_side(self):
+        pm = self._make_pair_matcher()
+        lhs = self._make_frames([0, 40, 80, 120], "lhs")
+        rhs = self._make_frames([0, 80, 120], "rhs")
+
+        with patch.object(
+            pm.phash,
+            "get",
+            side_effect=lambda path: _SyntheticHash(
+                path,
+                lambda _lhs_path, _rhs_path: 100,
+            ),
+        ):
+            accepted = pm._check_history((120, 120), lhs, rhs, cutoff=16)
+
+        self.assertFalse(accepted)
+
     @staticmethod
     def _scene_analysis(
         path: str,

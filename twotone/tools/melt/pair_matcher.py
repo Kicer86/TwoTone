@@ -3126,10 +3126,12 @@ class PairMatcher:
 
         if len(lhs_three) < 3 and len(rhs_three) < 3:
             return True
-        elif len(lhs_three) < 3 or len(rhs_three) < 3:
-            raise NotImplementedError("Asymmetric history check not implemented")
+        if not lhs_three or not rhs_three:
+            return True
 
-        # at least one match before current pair is required
+        # At least one available match before the current pair is required.
+        # Sparse or irregular PTS can leave one side with only one or two
+        # earlier frames even though the other side has the full three.
         lhs_frames = {l: lhs_pool[l] for l in lhs_three}
         rhs_frames = {r: rhs_pool[r] for r in rhs_three}
         matches = self._build_matches(lhs_frames, rhs_frames)
