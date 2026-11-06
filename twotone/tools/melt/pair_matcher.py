@@ -6,7 +6,7 @@ from bisect import bisect_right
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from math import ceil, floor, isfinite
-from typing import NamedTuple, TypedDict
+from typing import NamedTuple
 
 import cv2 as cv
 import numpy as np
@@ -14,9 +14,11 @@ from sklearn.linear_model import LinearRegression, RANSACRegressor
 from tqdm import tqdm
 
 from ..utils import files_utils, generic_utils, image_utils, media_analysis, video_utils
+from . import debug_routines, matching_analysis
 from .debug_routines import DebugRoutines
+from .matching_analysis import CoverageSummary, GlobalLinearDiscontinuityReport
 from .melt_cache import MeltCache
-from .melt_common import FrameInfo, FramesInfo, format_timestamp, format_timestamp_range
+from .melt_common import FrameInfo, FramesInfo, format_timestamp
 from .phash_cache import PhashCache
 
 
@@ -51,31 +53,6 @@ class GlobalLinearFit(NamedTuple):
     intercept: float
     is_constant_offset: bool
     time_scale: float
-
-
-class GlobalLinearDiscontinuityReport(NamedTuple):
-    """Suspected content cuts and timestamp steps with continuous decode order.
-
-    Content entries remain unresolved until verified against images. Timing
-    entries also prohibit audio execution: equal decoded advances do not make
-    the source PTS representable by one supported audio transform. Inferred
-    frame steps nominate refinement regions but alone prove neither verdict.
-    """
-
-    content: list[tuple[int, int, int, int, int]]
-    timing: list[tuple[int, int, int, int, int]]
-    frame_steps: tuple[tuple[int, int, int, int, int], ...] = ()
-
-
-class CoverageSummary(TypedDict):
-    """Human-readable coverage report for two matched files."""
-
-    full_coverage: bool
-    lhs_start_gap_s: float
-    rhs_start_gap_s: float
-    lhs_end_gap_s: float
-    rhs_end_gap_s: float
-    ratio: float
 
 
 class SegmentsMappingResult(NamedTuple):
@@ -145,7 +122,7 @@ class _BoundaryVerifyContext(NamedTuple):
 
 class PairMatcher:
 
-    _MAX_BOUNDARY_ERROR_FRAMES = 2
+    _MAX_BOUNDARY_ERROR_FRAMES = matching_analysis.MAX_BOUNDARY_ERROR_FRAMES
     # Minimum phash distance treated as "still the same frame".  The adaptive
     # cutoff (median + 2*std of the matched pairs) collapses to 0 when the
     # surviving matches are pixel-perfect; without a floor, any check keyed on it
@@ -465,109 +442,39 @@ class PairMatcher:
 
     @staticmethod
     def calculate_ratio(pairs: list[tuple[int, int]]) -> float:
-        ratios = [(r[0] - l[0]) / (r[1] - l[1]) for l, r in zip(pairs[:-1], pairs[1:]) if (r[1] - l[1]) != 0]
-        if not ratios:
-            return float("nan")
-        median_ratio = np.median(ratios)
-        return float(median_ratio)
+        return matching_analysis.calculate_ratio(pairs)
 
     @staticmethod
     def _timeline_frame_ids(frames: FramesInfo, fps: float) -> dict[int, int]:
-        """Map timestamps to decode ordinals augmented with empty timeline slots.
-
-        A nominal FPS can be slightly inaccurate, so using ``timestamp * fps``
-        as an absolute coordinate accumulates a false drift across long videos.
-        Instead, retain decoder ordinals and infer empty presentation slots
-        from local PTS gaps. This preserves sparse AVI coordinates, but rounding
-        variable cadence can also invent slots. A slot difference alone cannot
-        establish a timing discontinuity; that requires observed timestamp evidence.
-        """
-        timestamps = sorted(frames)
-        if not timestamps:
-            return {}
-
-        first_timestamp = timestamps[0]
-        coordinate = int(frames[first_timestamp]["frame_id"])
-        result = {first_timestamp: coordinate}
-        previous_timestamp = first_timestamp
-        previous_decode_id = coordinate
-
-        for timestamp in timestamps[1:]:
-            decode_id = int(frames[timestamp]["frame_id"])
-            decode_advance = max(1, decode_id - previous_decode_id)
-            timeline_advance = max(1, round((timestamp - previous_timestamp) * fps / 1000))
-            coordinate += max(decode_advance, timeline_advance)
-            result[timestamp] = coordinate
-            previous_timestamp = timestamp
-            previous_decode_id = decode_id
-
-        return result
+        return matching_analysis.timeline_frame_ids(frames, fps)
 
     # Maximum relative deviation between an observed pair ratio and the
     # expected one before a match is considered inconsistent.
-    _MAX_RELATIVE_RATIO_ERROR = 0.05
+    _MAX_RELATIVE_RATIO_ERROR = matching_analysis.MAX_RELATIVE_RATIO_ERROR
 
     @staticmethod
     def is_ratio_acceptable(ratio: float, perfect_ratio: float) -> bool:
-        return abs(ratio - perfect_ratio) < PairMatcher._MAX_RELATIVE_RATIO_ERROR * perfect_ratio
+        return matching_analysis.is_ratio_acceptable(ratio, perfect_ratio)
 
     # A gap between consecutive matched pairs may miss the mapping's median
     # local slope by at most this much (absolute, and relative for long gaps)
     # before it counts as a hole in the shared scene sequence.  Speed waviness
     # (a VHS-style source) oscillates around the median and stays well below;
     # a content cut (e.g. a commercial break) is one-sided and multi-second.
-    _MAX_GAP_TIME_DEFICIT_MS = 2000
-    _MAX_GAP_TIME_DEFICIT_RATIO = 0.02
+    _MAX_GAP_TIME_DEFICIT_MS = matching_analysis.MAX_GAP_TIME_DEFICIT_MS
+    _MAX_GAP_TIME_DEFICIT_RATIO = matching_analysis.MAX_GAP_TIME_DEFICIT_RATIO
     # A GLOBAL_LINEAR mapping promises frame-accurate progression. A local
     # advance may differ from the fitted relation by at most two frames before
     # it requires refinement or an explicit temporary-excursion override.
     # Unlike the GENERIC time-domain tolerance below, this limit must not grow
     # with gap length: a content cut is a step in frame offset, not drift.
-    _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 2.0
+    _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = matching_analysis.MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
     DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
     _SCENE_THRESHOLD = 0.30
 
     @staticmethod
     def _flagged_gap_deficits(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
-        """Gaps of sorted *pairs* whose rhs advance defies the median slope.
-
-        For every gap between consecutive pairs the expected rhs advance is
-        the lhs advance times the mapping's median local slope — a robust
-        reference that a few corrupted gaps cannot drag away.  A gap whose
-        rhs advance misses that expectation by more than
-        ``max(_MAX_GAP_TIME_DEFICIT_MS, _MAX_GAP_TIME_DEFICIT_RATIO * gap)``
-        in either direction gets flagged.
-
-        Returns ``(gap_index, deficit_ms)`` per flagged gap, where gap ``i``
-        spans ``pairs[i]`` → ``pairs[i + 1]``; a positive deficit means rhs
-        advances less than the slope predicts there, a negative one means
-        lhs does.
-        """
-        if len(pairs) < 3:
-            return []
-
-        slopes = [
-            (r2 - r1) / (l2 - l1)
-            for (l1, r1), (l2, r2) in zip(pairs[:-1], pairs[1:])
-            if l2 > l1
-        ]
-        if not slopes:
-            return []
-        median_slope = float(np.median(slopes))
-
-        flagged: list[tuple[int, int]] = []
-        for i, ((l1, r1), (l2, r2)) in enumerate(zip(pairs[:-1], pairs[1:])):
-            gap = l2 - l1
-            if gap <= 0:
-                continue
-            deficit = round(gap * median_slope - (r2 - r1))
-            threshold = max(
-                PairMatcher._MAX_GAP_TIME_DEFICIT_MS,
-                PairMatcher._MAX_GAP_TIME_DEFICIT_RATIO * gap,
-            )
-            if abs(deficit) > threshold:
-                flagged.append((i, deficit))
-        return flagged
+        return matching_analysis._flagged_gap_deficits(pairs)
 
     @staticmethod
     def find_content_discontinuities(
@@ -582,11 +489,7 @@ class PairMatcher:
         offending gap; a positive deficit means rhs is missing content there,
         a negative one means lhs is.
         """
-        pairs = sorted(mapping)
-        return [
-            (pairs[i][0], pairs[i + 1][0], pairs[i][1], pairs[i + 1][1], deficit)
-            for i, deficit in PairMatcher._flagged_gap_deficits(pairs)
-        ]
+        return matching_analysis.find_content_discontinuities(mapping)
 
     @staticmethod
     def find_global_linear_content_discontinuities(
@@ -621,16 +524,15 @@ class PairMatcher:
         must consume the full report from ``_classify_global_linear_discontinuities``,
         whose timing entries measure deviations from the observed timestamp slope.
         """
-        report = PairMatcher._classify_global_linear_discontinuities(
-            mapping, lhs_all_frames, rhs_all_frames,
-            frame_slope=frame_slope, lhs_fps=lhs_fps, rhs_fps=rhs_fps,
+        return matching_analysis.find_global_linear_content_discontinuities(
+            mapping,
+            lhs_all_frames,
+            rhs_all_frames,
+            frame_slope=frame_slope,
+            lhs_fps=lhs_fps,
+            rhs_fps=rhs_fps,
+            require_decoded_confirmation=require_decoded_confirmation,
         )
-        if require_decoded_confirmation:
-            return report.content
-        # Refinement still needs slot-based candidates, even when the current
-        # timestamp observations do not establish an unsupported timing step.
-        gaps = {gap[:4]: gap for gap in (*report.frame_steps, *report.content, *report.timing)}
-        return sorted(gaps.values())
 
     @staticmethod
     def _classify_global_linear_discontinuities(
@@ -642,102 +544,14 @@ class PairMatcher:
         lhs_fps: float,
         rhs_fps: float,
     ) -> GlobalLinearDiscontinuityReport:
-        pairs = sorted(mapping)
-        if len(pairs) < 2 or frame_slope <= 0 or lhs_fps <= 0 or rhs_fps <= 0:
-            return GlobalLinearDiscontinuityReport([], [])
-
-        lhs_ids = PairMatcher._timeline_frame_ids(lhs_all_frames, lhs_fps)
-        rhs_ids = PairMatcher._timeline_frame_ids(rhs_all_frames, rhs_fps)
-        try:
-            frame_pairs = [
-                (lhs_ids[lhs_ts], rhs_ids[rhs_ts])
-                for lhs_ts, rhs_ts in pairs
-            ]
-            decoded_frame_pairs = [
-                (
-                    int(lhs_all_frames[lhs_ts]["frame_id"]),
-                    int(rhs_all_frames[rhs_ts]["frame_id"]),
-                )
-                for lhs_ts, rhs_ts in pairs
-            ]
-        except KeyError:
-            return GlobalLinearDiscontinuityReport(
-                PairMatcher.find_content_discontinuities(pairs), [],
-            )
-
-        decoded_slopes = [
-            (rhs2 - rhs1) / (lhs2 - lhs1)
-            for (lhs1, rhs1), (lhs2, rhs2) in zip(
-                decoded_frame_pairs,
-                decoded_frame_pairs[1:],
-            )
-            if lhs2 > lhs1 and rhs2 > rhs1
-        ]
-        decoded_slope = float(np.median(decoded_slopes)) if decoded_slopes else None
-        timestamp_slopes = [
-            (rhs2 - rhs1) / (lhs2 - lhs1)
-            for (lhs1, rhs1), (lhs2, rhs2) in zip(pairs, pairs[1:])
-            if lhs2 > lhs1 and rhs2 > rhs1
-        ]
-        timestamp_slope = float(np.median(timestamp_slopes)) if timestamp_slopes else None
-
-        content_result: list[tuple[int, int, int, int, int]] = []
-        timing_result: list[tuple[int, int, int, int, int]] = []
-        frame_steps = []
-        for index, (
-            (lhs1, rhs1),
-            (lhs2, rhs2),
-            (lhs_decoded1, rhs_decoded1),
-            (lhs_decoded2, rhs_decoded2),
-        ) in enumerate(
-            zip(
-                frame_pairs,
-                frame_pairs[1:],
-                decoded_frame_pairs,
-                decoded_frame_pairs[1:],
-            )
-        ):
-            lhs_advance = lhs2 - lhs1
-            rhs_advance = rhs2 - rhs1
-            if lhs_advance <= 0 or rhs_advance <= 0:
-                continue
-            deficit_frames = lhs_advance * frame_slope - rhs_advance
-            if abs(deficit_frames) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:
-                frame_steps.append((
-                    pairs[index][0], pairs[index + 1][0],
-                    pairs[index][1], pairs[index + 1][1], round(deficit_frames * 1000 / rhs_fps),
-                ))
-            decoded_deficit = None
-            if decoded_slope is not None:
-                decoded_lhs_advance = lhs_decoded2 - lhs_decoded1
-                decoded_rhs_advance = rhs_decoded2 - rhs_decoded1
-                if decoded_lhs_advance > 0 and decoded_rhs_advance > 0:
-                    decoded_deficit = (
-                        decoded_lhs_advance * decoded_slope - decoded_rhs_advance
-                    )
-            if (
-                decoded_deficit is not None
-                and abs(decoded_deficit) <= PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-            ):
-                # Continuous decode order rules out a content step, but audio
-                # safety depends on PTS. Use the observed tempo, not rounded
-                # slots or the nominal-FPS conversion of the frame slope.
-                if timestamp_slope is None:
-                    continue
-                lhs_from, rhs_from = pairs[index]
-                lhs_to, rhs_to = pairs[index + 1]
-                deficit_ms = (lhs_to - lhs_from) * timestamp_slope - (rhs_to - rhs_from)
-                deficit_frames = deficit_ms * rhs_fps / 1000
-                result = timing_result
-            else:
-                deficit_ms = deficit_frames * 1000 / rhs_fps
-                result = content_result
-            if abs(deficit_frames) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:
-                result.append((
-                    pairs[index][0], pairs[index + 1][0],
-                    pairs[index][1], pairs[index + 1][1], round(deficit_ms),
-                ))
-        return GlobalLinearDiscontinuityReport(content_result, timing_result, tuple(frame_steps))
+        return matching_analysis.classify_global_linear_discontinuities(
+            mapping,
+            lhs_all_frames,
+            rhs_all_frames,
+            frame_slope=frame_slope,
+            lhs_fps=lhs_fps,
+            rhs_fps=rhs_fps,
+        )
 
     def _refine_scenes_in_region(
         self,
@@ -983,38 +797,6 @@ class PairMatcher:
                 return True
         return False
 
-    # A mapping counts as effectively linear when every pair sits within this
-    # distance of the line through its endpoints.
-    _MAX_LINEAR_RESIDUAL_MS = 1000
-
-    @staticmethod
-    def _linear_mapping_slope(pairs: list[tuple[int, int]]) -> float | None:
-        """Slope of the line through the endpoints of sorted *pairs*.
-
-        Returns None when any interior pair sits further than
-        ``_MAX_LINEAR_RESIDUAL_MS`` from that line — the mapping is not
-        linear and no line-based repair may be applied to it.
-        """
-        if len(pairs) < 2:
-            return None
-
-        first_lhs, first_rhs = pairs[0]
-        last_lhs, last_rhs = pairs[-1]
-        lhs_span = last_lhs - first_lhs
-        if lhs_span <= 0:
-            return None
-
-        slope = (last_rhs - first_rhs) / lhs_span
-        if slope <= 0:
-            return None
-
-        for lhs_time, rhs_time in pairs[1:-1]:
-            predicted_rhs = first_rhs + (lhs_time - first_lhs) * slope
-            if abs(predicted_rhs - rhs_time) > PairMatcher._MAX_LINEAR_RESIDUAL_MS:
-                return None
-        return slope
-
-
     @staticmethod
     def coverage_summary(
         mappings: list[tuple[int, int]],
@@ -1031,45 +813,13 @@ class PairMatcher:
         unmatched seconds at each edge and ``ratio`` the speed ratio between
         the two files.
         """
-        first = mappings[0]
-        last = mappings[-1]
-
-        lhs_start_gap = first[0]
-        rhs_start_gap = first[1]
-        lhs_end_gap = max(0, lhs_duration_ms - last[0])
-        rhs_end_gap = max(0, rhs_duration_ms - last[1])
-
-        if lhs_fps <= 0 or rhs_fps <= 0:
-            raise ValueError("FPS values must be positive")
-
-        lhs_frame_duration_ms = 1000 / lhs_fps
-        rhs_frame_duration_ms = 1000 / rhs_fps
-        lhs_edge_tolerance_ms = (
-            PairMatcher._MAX_BOUNDARY_ERROR_FRAMES * lhs_frame_duration_ms
+        return matching_analysis.coverage_summary(
+            mappings,
+            lhs_duration_ms,
+            rhs_duration_ms,
+            lhs_fps=lhs_fps,
+            rhs_fps=rhs_fps,
         )
-        rhs_edge_tolerance_ms = (
-            PairMatcher._MAX_BOUNDARY_ERROR_FRAMES * rhs_frame_duration_ms
-        )
-
-        # A frame timestamp marks the start of the frame. The expected timestamp
-        # of the final frame is therefore one frame duration before the stream end.
-        lhs_end_error = max(0, lhs_end_gap - lhs_frame_duration_ms)
-        rhs_end_error = max(0, rhs_end_gap - rhs_frame_duration_ms)
-        full_coverage = (
-            lhs_start_gap <= lhs_edge_tolerance_ms
-            and lhs_end_error <= lhs_edge_tolerance_ms
-            and rhs_start_gap <= rhs_edge_tolerance_ms
-            and rhs_end_error <= rhs_edge_tolerance_ms
-        )
-
-        return {
-            "full_coverage": full_coverage,
-            "lhs_start_gap_s": lhs_start_gap / 1000,
-            "rhs_start_gap_s": rhs_start_gap / 1000,
-            "lhs_end_gap_s": lhs_end_gap / 1000,
-            "rhs_end_gap_s": rhs_end_gap / 1000,
-            "ratio": PairMatcher.calculate_ratio(mappings),
-        }
 
     @staticmethod
     def filter_phash_outliers(phash: PhashCache, pairs: list[tuple[int, int]], lhs_set: FramesInfo, rhs_set: FramesInfo) -> list[tuple[int, int]]:
@@ -1089,102 +839,18 @@ class PairMatcher:
 
     @staticmethod
     def summarize_pairs(phash: PhashCache, pairs: list[tuple[int, int]], lhs: FramesInfo, rhs: FramesInfo, verbose: bool = False) -> str:
-        if not pairs:
-            return "Pairs: 0"
-
-        distances = []
-        for lhs_ts, rhs_ts in pairs:
-            lhs_path = PairMatcher._path_or_none(lhs, lhs_ts)
-            rhs_path = PairMatcher._path_or_none(rhs, rhs_ts)
-            if lhs_path is None or rhs_path is None:
-                continue
-            d = abs(phash.get(lhs_path) - phash.get(rhs_path))
-            distances.append((d, lhs_ts, rhs_ts))
-
-        if not distances:
-            return f"Pairs: {len(pairs)} (no extracted paths for summary)"
-
-        arr = np.array([d[0] for d in distances])
-        median = np.median(arr)
-        mean = np.mean(arr)
-        std = np.std(arr)
-        max_val = np.max(arr)
-        min_val = np.min(arr)
-
-        # Identify the max pair
-        max_entry = max(distances, key=lambda x: x[0])
-        max_lhs_path = PairMatcher._path_or_none(lhs, max_entry[1]) or "?"
-        max_rhs_path = PairMatcher._path_or_none(rhs, max_entry[2]) or "?"
-
-        summary = (
-            f"Pairs: {len(pairs)} | "
-            f"Median: {median:.2f} | "
-            f"Mean: {mean:.2f} | "
-            f"Std Dev: {std:.2f} | "
-            f"Min: {min_val} | "
-            f"Max: {max_val} | "
-            f"Max Pair: {max_lhs_path} <-> {max_rhs_path}"
-        )
-
-        if verbose:
-            details = []
-            for dist, lhs_ts, rhs_ts in distances:
-                lp = PairMatcher._path_or_none(lhs, lhs_ts) or "?"
-                rp = PairMatcher._path_or_none(rhs, rhs_ts) or "?"
-                details.append(f"  {lp} <-> {rp} | Diff: {dist}")
-            summary += "\nDetailed pairs:" + "\n" + "\n".join(details)
-
-        return summary
+        return debug_routines.summarize_pairs(phash, pairs, lhs, rhs, verbose)
 
     @staticmethod
     def summarize_segments(pairs: list[tuple[int, int]], lhs_fps: float, rhs_fps: float, verbose: bool = True, lhs_label: str = "#1", rhs_label: str = "#2") -> str:
-        if len(pairs) < 2:
-            return "Not enough pairs to build segments."
-
-        pairs_sorted = sorted(pairs)
-        segments = []
-
-        lhs_frame_step = 1000.0 / lhs_fps
-        rhs_frame_step = 1000.0 / rhs_fps
-        max_quant_error = max(lhs_frame_step, rhs_frame_step)
-
-        for (lhs1, rhs1), (lhs2, rhs2) in zip(pairs_sorted[:-1], pairs_sorted[1:]):
-            lhs_delta = lhs2 - lhs1
-            rhs_delta = rhs2 - rhs1
-            if rhs_delta <= 0:
-                continue
-            ratio = lhs_delta / rhs_delta
-
-            # Estimate ratio uncertainty
-            min_delta = min(lhs_delta, rhs_delta)
-            ratio_error = (2 * max_quant_error) / min_delta if min_delta > 0 else float("inf")
-            confidence = "LOW" if ratio_error > 0.1 else "OK"
-
-            segments.append((lhs1, lhs2, rhs1, rhs2, lhs_delta, rhs_delta, ratio, ratio_error, confidence))
-
-        if not segments:
-            return "No valid segments."
-
-        ratios = np.array([s[6] for s in segments])
-        out = [
-            f"Segments: {len(segments)} | "
-            f"Median ratio: {np.median(ratios):.4f} | "
-            f"Mean ratio: {np.mean(ratios):.4f} | "
-            f"Std Dev: {np.std(ratios):.4f} | "
-            f"Min: {np.min(ratios):.4f} | Max: {np.max(ratios):.4f}"
-        ]
-
-        if verbose:
-            out.append("\nDetailed segments:")
-            for lhs1, lhs2, rhs1, rhs2, ldelta, rdelta, ratio, err, conf in segments:
-                out.append(
-                    f"  {lhs_label} {lhs1}->{lhs2} ({ldelta:4} ms), "
-                    f"{rhs_label} {rhs1}->{rhs2} ({rdelta:4} ms), "
-                    f"Ratio: {ratio:.4f}, "
-                    f"Error~{err:.2%}, Confidence: {conf}"
-                )
-
-        return '\n'.join(out)
+        return debug_routines.summarize_segments(
+            pairs,
+            lhs_fps,
+            rhs_fps,
+            verbose,
+            lhs_label,
+            rhs_label,
+        )
 
     def look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: tuple[int, int], last: tuple[int, int], cutoff: float, max_gap_seconds: float = 15.0, extrapolate: bool = True):
         """Find the first and last common frame pair by walking outward from known matches.
@@ -1405,19 +1071,29 @@ class PairMatcher:
         except KeyError:
             return None
 
-        fit = self._fit_constant_offset(
-            lhs_frame_ids, rhs_frame_ids, matching_pairs,
-            max_std=max_constant_offset_std, min_two_pair_span=min_span_frames,
+        fit = matching_analysis.fit_constant_offset(
+            lhs_frame_ids,
+            rhs_frame_ids,
+            matching_pairs,
+            lhs_fps=self.lhs_fps,
+            rhs_fps=self.rhs_fps,
+            max_std=max_constant_offset_std,
+            min_two_pair_span=min_span_frames,
+            logger=self.logger,
         )
         is_constant_offset = fit is not None
         if fit is None:
-            fit = self._fit_linear_drift(
-                lhs_frame_ids, rhs_frame_ids,
+            fit = matching_analysis.fit_linear_drift(
+                lhs_frame_ids,
+                rhs_frame_ids,
+                lhs_fps=self.lhs_fps,
+                rhs_fps=self.rhs_fps,
                 max_slope_delta=max_slope_delta,
                 max_median_residual_frames=max_median_residual_frames,
                 max_p95_residual_frames=max_p95_residual_frames,
                 max_outlier_ratio=max_outlier_ratio,
                 min_span_frames=min_span_frames,
+                logger=self.logger,
             )
         if fit is None:
             return None
@@ -1431,172 +1107,17 @@ class PairMatcher:
             )
             return None
 
-        self._log_global_linear(slope, intercept, time_scale, is_constant_offset)
+        debug_routines.log_global_linear_relation(
+            self.logger,
+            lhs_label=self.lhs_label,
+            rhs_label=self.rhs_label,
+            slope=slope,
+            intercept=intercept,
+            time_scale=time_scale,
+            is_constant_offset=is_constant_offset,
+        )
         return GlobalLinearFit(slope=slope, intercept=intercept,
                                is_constant_offset=is_constant_offset, time_scale=time_scale)
-
-    def _fit_constant_offset(
-        self,
-        lhs_frame_ids: np.ndarray,
-        rhs_frame_ids: np.ndarray,
-        matching_pairs: list[tuple[int, int]],
-        *,
-        max_std: float,
-        min_two_pair_span: int,
-    ) -> tuple[float, float] | None:
-        """Fit a constant frame offset (slope == 1).
-
-        Returns ``(slope=1.0, intercept)`` where ``rhs_frame ~= lhs_frame +
-        intercept``, or ``None`` when the offset is not sufficiently constant.
-        """
-        if len(matching_pairs) == 2:
-            span = min(int(np.ptp(lhs_frame_ids)), int(np.ptp(rhs_frame_ids)))
-            if span < min_two_pair_span:
-                self.logger.debug(
-                    f"Constant-offset check: only two pairs spanning {span} frames — skipping"
-                )
-                return None
-
-        offsets = lhs_frame_ids - rhs_frame_ids
-        std_offset = float(np.std(offsets))
-        if std_offset > max_std:
-            self.logger.debug(
-                f"Constant-offset check: frame-number std={std_offset:.2f} exceeds {max_std:.1f} — skipping"
-            )
-            return None
-
-        ratio = PairMatcher.calculate_ratio(matching_pairs)
-        expected_ratio = self.rhs_fps / self.lhs_fps
-        if not PairMatcher.is_ratio_acceptable(ratio, expected_ratio):
-            self.logger.debug(
-                f"Constant-offset check: ratio={ratio:.4f} too far from expected {expected_ratio:.4f} — skipping"
-            )
-            return None
-
-        k = round(float(np.median(offsets)))  # lhs_frame - rhs_frame
-        self.logger.debug(
-            "Constant offset detected: %d frame(s) (median=%.1f, std=%.2f).",
-            k, float(np.median(offsets)), std_offset,
-        )
-        return (1.0, float(-k))
-
-    def _fit_linear_drift(
-        self,
-        lhs_frame_ids: np.ndarray,
-        rhs_frame_ids: np.ndarray,
-        *,
-        max_slope_delta: float,
-        max_median_residual_frames: float,
-        max_p95_residual_frames: float,
-        max_outlier_ratio: float,
-        min_span_frames: int,
-    ) -> tuple[float, float] | None:
-        """Fit a drift line with RANSAC.
-
-        Returns ``(slope, intercept)`` for ``rhs_frame ~= slope*lhs_frame +
-        intercept`` with ``slope`` close to 1.0 or to the nominal fps ratio
-        (a playback-time-preserving frame-rate conversion), or ``None`` when
-        the matches do not fit a clean line.
-        """
-        if len(lhs_frame_ids) < 4:
-            return None
-
-        lhs_span = float(np.max(lhs_frame_ids) - np.min(lhs_frame_ids))
-        if lhs_span < min_span_frames:
-            self.logger.debug(
-                f"Linear-drift check: matched frame span {lhs_span:.0f} is below {min_span_frames} frames — skipping"
-            )
-            return None
-
-        ransac = RANSACRegressor(
-            LinearRegression(), residual_threshold=max_p95_residual_frames, random_state=0,
-        )
-        ransac.fit(lhs_frame_ids.reshape(-1, 1), rhs_frame_ids)
-        inliers = ransac.inlier_mask_
-        if inliers is None:
-            inliers = np.ones(len(lhs_frame_ids), dtype=bool)
-
-        inlier_count = int(np.sum(inliers))
-        if inlier_count < 4:
-            self.logger.debug(
-                f"Linear-drift check: only {inlier_count}/{len(lhs_frame_ids)} pairs fit the model — skipping"
-            )
-            return None
-
-        outlier_ratio = 1.0 - inlier_count / len(lhs_frame_ids)
-        if outlier_ratio > max_outlier_ratio:
-            self.logger.debug(
-                f"Linear-drift check: outlier ratio {outlier_ratio:.1%} exceeds {max_outlier_ratio:.1%} — skipping"
-            )
-            return None
-
-        model = LinearRegression()
-        model.fit(lhs_frame_ids[inliers].reshape(-1, 1), rhs_frame_ids[inliers])
-        slope = float(model.coef_[0])
-        intercept = float(model.intercept_)
-
-        if slope <= 0:
-            self.logger.debug(f"Linear-drift check: non-positive slope {slope:.6f} — skipping")
-            return None
-
-        # A physically meaningful frame slope is anchored either at 1.0 (the
-        # same frame indices — a PAL-type speedup carries the difference in
-        # the declared fps) or at the nominal fps ratio (a frame-rate
-        # conversion that preserves playback time re-times every frame).
-        # Anything far from both anchors is not a plausible global relation.
-        nominal_fps_ratio = self.rhs_fps / self.lhs_fps if self.lhs_fps else 1.0
-        slope_delta = min(
-            abs(slope / anchor - 1.0) for anchor in (1.0, nominal_fps_ratio)
-        )
-        if slope_delta > max_slope_delta:
-            self.logger.debug(
-                f"Linear-drift check: slope={slope:.6f} differs from both 1.0 and "
-                f"the fps ratio {nominal_fps_ratio:.6f} by more than {max_slope_delta:.6f} — skipping"
-            )
-            return None
-
-        predicted_rhs = model.predict(lhs_frame_ids[inliers].reshape(-1, 1))
-        residuals = np.abs(rhs_frame_ids[inliers] - predicted_rhs)
-        median_residual = float(np.median(residuals))
-        p95_residual = float(np.percentile(residuals, 95))
-        if median_residual > max_median_residual_frames or p95_residual > max_p95_residual_frames:
-            self.logger.debug(
-                f"Linear-drift check: residuals too high "
-                f"(median={median_residual:.2f}, p95={p95_residual:.2f}) — skipping"
-            )
-            return None
-
-        return (slope, intercept)
-
-    def _log_global_linear(
-        self,
-        slope: float,
-        intercept: float,
-        time_scale: float,
-        is_constant_offset: bool,
-    ) -> None:
-        """Log the detected global linear relation (the fit, not the boundaries)."""
-        if is_constant_offset:
-            k = int(round(-intercept))  # lhs_frame - rhs_frame
-            if k > 0:
-                relation_text = (
-                    f"a small constant frame offset of {k} frame(s); "
-                    f"{self.lhs_label} starts the shared content later than {self.rhs_label}"
-                )
-            elif k < 0:
-                relation_text = (
-                    f"a small constant frame offset of {-k} frame(s); "
-                    f"{self.rhs_label} starts the shared content later than {self.lhs_label}"
-                )
-            else:
-                relation_text = "no frame offset"
-        else:
-            relation_text = f"a linear frame drift (slope={slope:.6f}, intercept={intercept:+.1f})"
-
-        if abs(time_scale - 1.0) > 0.005:
-            relation_text += f", audio time-scaled by {time_scale:.5f}"
-
-        self.logger.info("Files %s and %s share content with %s.", self.lhs_label, self.rhs_label, relation_text)
 
     def _extrapolate_and_verify_global_linear(
         self,
@@ -2189,142 +1710,17 @@ class PairMatcher:
                 and excursion[0] > self.max_temporary_frame_offset
             ):
                 suggested_temporary_offsets.append(excursion[0])
-            frame_errors = [
-                deficit_ms * self.rhs_fps / 1000
-                for *_, deficit_ms in group
-            ]
-            lhs_from, _, rhs_from, _, _ = group[0]
-            _, lhs_to, _, rhs_to, _ = group[-1]
-            lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
-            lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
-            rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
-            rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
-            compensating = (
-                len(group) > 1
-                and min(frame_errors) < 0 < max(frame_errors)
-                and abs(sum(frame_errors))
-                <= self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-            )
-            outer_start_offset = lhs_frame_from - rhs_frame_from
-            outer_end_offset = lhs_frame_to - rhs_frame_to
-            if compensating and outer_start_offset == outer_end_offset:
-                anchor_offsets = [outer_start_offset] + [
-                    int(self.lhs_all_frames[step_lhs_to]["frame_id"])
-                    - int(self.rhs_all_frames[step_rhs_to]["frame_id"])
-                    for _, step_lhs_to, _, step_rhs_to, _ in group
-                ]
-                inner_shift = max(
-                    abs(offset - outer_start_offset)
-                    for offset in anchor_offsets[1:-1]
-                )
-                if outer_start_offset > 0:
-                    offset_relation = (
-                        f" ({self.lhs_label} = {self.rhs_label} "
-                        f"+ {outer_start_offset})"
-                    )
-                elif outer_start_offset < 0:
-                    offset_relation = (
-                        f" ({self.lhs_label} = {self.rhs_label} "
-                        f"- {abs(outer_start_offset)})"
-                    )
-                else:
-                    offset_relation = ""
-                self.logger.error(
-                    "Local frame-sequence difference: the first and last matched "
-                    "frames use the same %d-frame offset%s, but inside this range "
-                    "the match shifts by %d frame%s.\n"
-                    "  %s: frames %d-%d; %s\n"
-                    "  %s: frames %d-%d; %s",
-                    abs(outer_start_offset),
-                    offset_relation,
-                    inner_shift,
-                    "" if inner_shift == 1 else "s",
-                    self.lhs_label,
-                    lhs_frame_from,
-                    lhs_frame_to,
-                    format_timestamp_range(lhs_from, lhs_to),
-                    self.rhs_label,
-                    rhs_frame_from,
-                    rhs_frame_to,
-                    format_timestamp_range(rhs_from, rhs_to),
-                )
-            else:
-                max_frame_error = max(abs(error) for error in frame_errors)
-                self.logger.error(
-                    "Local frame-sequence difference: matched-frame alignment "
-                    "changes by up to %.1f frames inside this range.\n"
-                    "  %s: frames %d-%d; %s\n"
-                    "  %s: frames %d-%d; %s",
-                    max_frame_error,
-                    self.lhs_label,
-                    lhs_frame_from,
-                    lhs_frame_to,
-                    format_timestamp_range(lhs_from, lhs_to),
-                    self.rhs_label,
-                    rhs_frame_from,
-                    rhs_frame_to,
-                    format_timestamp_range(rhs_from, rhs_to),
-                )
-            for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in group:
-                lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
-                lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
-                rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
-                rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
-                self.logger.debug(
-                    "Suspected content discontinuity between matched anchors: %s "
-                    "(decoded frames %d-%d) in %s ↔ %s "
-                    "(decoded frames %d-%d) in %s (%+d ms, %+.1f frames)",
-                    format_timestamp_range(lhs_from, lhs_to),
-                    lhs_frame_from,
-                    lhs_frame_to,
-                    self.lhs_label,
-                    format_timestamp_range(rhs_from, rhs_to),
-                    rhs_frame_from,
-                    rhs_frame_to,
-                    self.rhs_label,
-                    deficit_ms,
-                    deficit_ms * self.rhs_fps / 1000,
-                )
-        if debug_path is not None:
-            details_path = os.path.join(debug_path, "details.txt")
-            self.logger.error(
-                "Full frame diagnostics: %s",
-                details_path,
-            )
-            investigation_target = details_path
-            report_material = debug_path
-        else:
-            investigation_target = "the frame ranges logged above"
-            report_material = "the complete melt log"
-
-        region_count = len(groups)
-        region_word = "region" if region_count == 1 else "regions"
-        investigation_scope = (
-            "the reported region"
-            if region_count == 1
-            else f"all {region_count} reported regions"
-        )
-        error = (
-            "Matched videos contain a local frame-sequence difference in "
-            f"{region_count} unresolved {region_word}. Inspect {investigation_scope} "
-            f"in {investigation_target}."
-        )
-        if suggested_temporary_offsets:
-            suggested_limit = max(suggested_temporary_offsets)
-            error += (
-                " If the frames confirm that each listed compensating temporary "
-                "shift is a real, acceptable difference between the videos, rerun with "
-                f"--max-temporary-frame-offset {suggested_limit}."
-            )
-            if len(suggested_temporary_offsets) < region_count:
-                error += (
-                    " This option applies only to those compensating shifts; it "
-                    "will not suppress the other reported regions."
-                )
-        error += (
-            " If the extracted frames do not confirm the reported sequence "
-            "difference, report a PairMatcher bug and include "
-            f"{report_material}."
+        error = debug_routines.unresolved_content_discontinuities_error(
+            self.logger,
+            groups,
+            self.lhs_all_frames,
+            self.rhs_all_frames,
+            lhs_label=self.lhs_label,
+            rhs_label=self.rhs_label,
+            rhs_fps=self.rhs_fps,
+            compensation_tolerance_frames=self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES,
+            suggested_temporary_offsets=suggested_temporary_offsets,
+            debug_path=debug_path,
         )
         raise RuntimeError(error)
 
@@ -2332,18 +1728,7 @@ class PairMatcher:
     def _group_content_discontinuities(
         discontinuities: list[tuple[int, int, int, int, int]],
     ) -> list[list[tuple[int, int, int, int, int]]]:
-        """Group adjacent errors that share their middle matched anchor."""
-        groups: list[list[tuple[int, int, int, int, int]]] = []
-        for discontinuity in sorted(discontinuities):
-            if (
-                groups
-                and groups[-1][-1][1] == discontinuity[0]
-                and groups[-1][-1][3] == discontinuity[2]
-            ):
-                groups[-1].append(discontinuity)
-            else:
-                groups.append([discontinuity])
-        return groups
+        return matching_analysis.group_content_discontinuities(discontinuities)
 
     def _filter_allowed_temporary_frame_offset_excursions(
         self,
@@ -2700,60 +2085,17 @@ class PairMatcher:
         )
 
     def _log_relation_diagnostics(self, matching_pairs: list[tuple[int, int]]) -> None:
-        """Log the frame-space metrics that drive the mapping-relation choice.
-
-        Emitted at INFO so the constant-offset / linear-drift / generic decision
-        (and the audio strategy that follows from it) is visible without
-        --verbose.  The individual ``try_*`` methods still log their precise
-        rejection reasons at DEBUG.
-        """
-        expected_ratio = self.rhs_fps / self.lhs_fps if self.lhs_fps else float("nan")
-        self.logger.debug(
-            "Relation diagnostics: %s fps=%.4f, %s fps=%.4f, "
-            "expected lhs/rhs time ratio=%.4f, matched pairs=%d",
-            self.lhs_label, self.lhs_fps, self.rhs_label, self.rhs_fps,
-            expected_ratio, len(matching_pairs),
-        )
-
-        if len(matching_pairs) < 2:
-            self.logger.debug("  too few matched pairs for offset/drift analysis")
-            return
-
-        try:
-            lhs_frame_ids_by_timestamp = self._timeline_frame_ids(self.lhs_all_frames, self.lhs_fps)
-            rhs_frame_ids_by_timestamp = self._timeline_frame_ids(self.rhs_all_frames, self.rhs_fps)
-            lhs_frame_ids = np.array(
-                [lhs_frame_ids_by_timestamp[l] for l, _ in matching_pairs],
-                dtype=float,
-            )
-            rhs_frame_ids = np.array(
-                [rhs_frame_ids_by_timestamp[r] for _, r in matching_pairs],
-                dtype=float,
-            )
-        except KeyError:
-            self.logger.debug("  matched frames lack frame coordinates; skipping offset/drift analysis")
-            return
-
-        frame_offsets = lhs_frame_ids - rhs_frame_ids
-        median_offset = float(np.median(frame_offsets))
-        std_offset = float(np.std(frame_offsets))
-        lhs_span = float(np.ptp(lhs_frame_ids))
-        ratio = PairMatcher.calculate_ratio(matching_pairs)
-
-        if lhs_span > 0:
-            slope = float(np.polyfit(lhs_frame_ids, rhs_frame_ids, 1)[0])
-        else:
-            slope = float("nan")
-        time_scale = slope * self.lhs_fps / self.rhs_fps if self.rhs_fps else float("nan")
-
-        self.logger.debug(
-            "  frame-offset median=%.2f std=%.2f (constant offset needs std<=%.1f, "
-            "else RANSAC drift with slope within %.2f of 1.0 or of the fps ratio); "
-            "matched frame span=%.0f; observed time ratio=%.4f; "
-            "frame slope=%.5f -> audio time scale=%.5f (audio is globally "
-            "time-scaled by this factor)",
-            median_offset, std_offset, self._MAX_CONSTANT_OFFSET_STD,
-            self._MAX_DRIFT_SLOPE_DELTA, lhs_span, ratio, slope, time_scale,
+        debug_routines.log_relation_diagnostics(
+            self.logger,
+            matching_pairs,
+            self.lhs_all_frames,
+            self.rhs_all_frames,
+            lhs_label=self.lhs_label,
+            rhs_label=self.rhs_label,
+            lhs_fps=self.lhs_fps,
+            rhs_fps=self.rhs_fps,
+            max_constant_offset_std=self._MAX_CONSTANT_OFFSET_STD,
+            max_drift_slope_delta=self._MAX_DRIFT_SLOPE_DELTA,
         )
 
     @staticmethod

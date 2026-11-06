@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import cast
 from unittest.mock import Mock, patch
 
+from twotone.tools.melt import matching_analysis
 from twotone.tools.melt.melt import MappingRelation, PairMatcher
 from twotone.tools.melt.pair_matcher import (
     GlobalLinearDiscontinuityReport,
@@ -2629,7 +2630,11 @@ class PairMatcherUnitTest(unittest.TestCase):
              patch.object(video_utils, 'extract_frames_at_ranges', side_effect=extract), \
              patch.object(pm, '_normalize_frames', side_effect=normalize), \
              patch.object(pm, '_make_pairs', side_effect=match) as matching, \
-             patch.object(PairMatcher, '_timeline_frame_ids', wraps=PairMatcher._timeline_frame_ids) as coordinates:
+             patch.object(
+                 matching_analysis,
+                 'timeline_frame_ids',
+                 wraps=matching_analysis.timeline_frame_ids,
+             ) as coordinates:
             refined = pm._refine_global_linear_discontinuities(
                 original, lhs_normalized, rhs_normalized, lhs_scenes, rhs_scenes,
                 frame_slope=1.0,
