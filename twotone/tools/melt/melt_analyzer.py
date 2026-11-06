@@ -337,11 +337,9 @@ class MeltAnalyzer:
         tracks: dict[str, Any],
         ids: dict[str, int],
     ) -> tuple[list[VideoStreamRef], list[AudioStreamRef], list[SubtitleStreamRef]]:
-        picker_wd = self.workspace.unique_dir("stream_picker")
         streams_picker = StreamsPicker(
             self.logger,
             self.duplicates_source,
-            picker_wd,
         )
         return streams_picker.pick_streams(tracks, ids)
 
@@ -539,7 +537,7 @@ class MeltAnalyzer:
         chapter_source = self._pick_chapter_source(details_full, tracks, video_streams, ids)
 
         # Attachments picking
-        picked_attachments = AttachmentsPicker(self.logger).pick_attachments(attachments)
+        picked_attachments = AttachmentsPicker().pick_attachments(attachments)
         audio_prod_lang = self.duplicates_source.get_metadata_for(video_streams[0].path).get("audio_prod_lang")
 
         # Present proposed output

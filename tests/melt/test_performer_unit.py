@@ -1876,7 +1876,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
             picker = StreamsPicker(
                 performer.logger.getChild("StreamsPicker"),
                 duplicates,
-                tmpdir,
             )
             selected_video, selected_audio, _ = picker.pick_streams(
                 {ordered_path: details["tracks"]},
@@ -2017,8 +2016,10 @@ class MeltPerformerUnitTest(unittest.TestCase):
             for stream_index in stream_order
         ]
 
-        def needs_normalization(stream):
-            return stream.mkvmerge_track_id == 1
+        def normalization_reason(stream):
+            if stream.mkvmerge_track_id == 1:
+                return "normalizing AAC timing"
+            return None
 
         def normalize(stream, **_kwargs):
             return AudioStreamRef(normalized_path, 0, 0, stream.language)
@@ -2031,7 +2032,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
              patch.object(performer, "_audio_content_start_ms", return_value=0), \
              patch.object(performer, "_stream_info", return_value={}), \
              patch.object(performer, "_track_sync_offset_ms", return_value=None), \
-             patch.object(performer, "_audio_needs_mkvmerge_normalization", side_effect=needs_normalization), \
+             patch.object(performer, "_audio_mkvmerge_normalization_reason", side_effect=normalization_reason), \
              patch.object(performer, "_prepare_normalized_unscaled_audio", side_effect=normalize):
             prepared = performer._prepare_stream_entries(
                 video_streams=[VideoStreamRef(base_video, 0, 0, None)],
@@ -2459,14 +2460,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         request = AudioPatchRequest(
             working_dir="/tmp/work",
             output_path="/tmp/out.mka",
-            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
-            source_video=VideoStreamRef("/tmp/source.mkv", 0, 0, None),
             source_audio=source_audio,
             base_audio=None,
             mapping=((0, 0), (62792, 62792)),
             target_interval=TimelineInterval(0, 62792),
             output_interval=TimelineInterval(0, 62792),
-            base_duration_ms=62792,
             source_timeline=VideoToAudioTimeline(0, 478, 62792),
             base_timeline=None,
             fill_gaps_from_base=False,
@@ -2507,14 +2505,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         request = AudioPatchRequest(
             working_dir="/tmp/work",
             output_path="/tmp/out.mka",
-            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
-            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
             source_audio=source_audio,
             base_audio=None,
             mapping=((0, 0), (60000, 60000)),
             target_interval=TimelineInterval(0, 60000),
             output_interval=TimelineInterval(0, 60000),
-            base_duration_ms=60000,
             source_timeline=VideoToAudioTimeline(500, 500),
             base_timeline=None,
             fill_gaps_from_base=False,
@@ -2549,14 +2544,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         request = AudioPatchRequest(
             working_dir="/tmp/work",
             output_path="/tmp/out.mka",
-            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
-            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
             source_audio=source_audio,
             base_audio=None,
             mapping=((22, 0), (60022, 60000)),
             target_interval=TimelineInterval(22, 60022),
             output_interval=TimelineInterval(0, 60022),
-            base_duration_ms=60022,
             source_timeline=VideoToAudioTimeline(500, 500),
             base_timeline=None,
             fill_gaps_from_base=False,
@@ -2585,14 +2577,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         request = AudioPatchRequest(
             working_dir="/tmp/work",
             output_path="/tmp/out.mka",
-            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
-            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
             source_audio=source_audio,
             base_audio=None,
             mapping=((0, 0), (60000, 60000)),
             target_interval=TimelineInterval(0, 60000),
             output_interval=TimelineInterval(0, 60000),
-            base_duration_ms=60000,
             source_timeline=VideoToAudioTimeline(0, 0),
             base_timeline=None,
             fill_gaps_from_base=False,
@@ -2868,14 +2857,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         request = AudioPatchRequest(
             working_dir="/tmp/work",
             output_path="/tmp/out.mka",
-            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
-            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
             source_audio=source_audio,
             base_audio=None,
             mapping=((0, 0), (target_duration_ms, source_duration_ms)),
             target_interval=TimelineInterval(0, target_duration_ms),
             output_interval=TimelineInterval(0, target_duration_ms),
-            base_duration_ms=target_duration_ms,
             source_timeline=VideoToAudioTimeline(0, 0),
             base_timeline=None,
             fill_gaps_from_base=False,
@@ -2924,14 +2910,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         request = AudioPatchRequest(
             working_dir="/tmp/work",
             output_path="/tmp/out.mka",
-            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
-            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
             source_audio=source_audio,
             base_audio=None,
             mapping=((0, 0), (60000, 60030)),
             target_interval=TimelineInterval(0, 60000),
             output_interval=TimelineInterval(0, 60000),
-            base_duration_ms=60000,
             source_timeline=VideoToAudioTimeline(0, 0, 60000),
             base_timeline=None,
             fill_gaps_from_base=False,
@@ -2980,14 +2963,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         request = AudioPatchRequest(
             working_dir="/tmp/work",
             output_path="/tmp/out.mka",
-            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
-            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
             source_audio=source_audio,
             base_audio=None,
             mapping=((0, 0), (60000, 60001)),
             target_interval=TimelineInterval(0, 60000),
             output_interval=TimelineInterval(0, 60000),
-            base_duration_ms=60000,
             source_timeline=VideoToAudioTimeline(0, 0),
             base_timeline=None,
             fill_gaps_from_base=False,
@@ -3035,8 +3015,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
         request = AudioPatchRequest(
             working_dir="/tmp/work",
             output_path="/tmp/out.mka",
-            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
-            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
             source_audio=source_audio,
             base_audio=None,
             mapping=(
@@ -3046,7 +3024,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
             ),
             target_interval=TimelineInterval(0, 2 * target_segment_duration_ms),
             output_interval=TimelineInterval(0, 2 * target_segment_duration_ms),
-            base_duration_ms=2 * target_segment_duration_ms,
             source_timeline=VideoToAudioTimeline(0, 0),
             base_timeline=None,
             fill_gaps_from_base=False,
@@ -3108,14 +3085,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         request = AudioPatchRequest(
             working_dir="/tmp/work",
             output_path="/tmp/out.mka",
-            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
-            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
             source_audio=source_audio,
             base_audio=None,
             mapping=((0, 0), (60000, 60000)),
             target_interval=TimelineInterval(0, 60000),
             output_interval=TimelineInterval(0, 60000),
-            base_duration_ms=60000,
             source_timeline=VideoToAudioTimeline(0, 0, 59000),
             base_timeline=None,
             fill_gaps_from_base=False,
@@ -3246,20 +3220,16 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
     def test_subsegment_patcher_decodes_selected_later_audio_stream(self):
         performer = self._make_performer()
-        base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
         source_audio = AudioStreamRef("/tmp/source.mkv", 2, 2, "pol")
         decoded_streams = []
         request = AudioPatchRequest(
             working_dir="/tmp/work",
             output_path="/tmp/out.mka",
-            base_video=base_video,
-            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
             source_audio=source_audio,
             base_audio=None,
             mapping=((0, 0), (60000, 60000)),
             target_interval=TimelineInterval(0, 60000),
             output_interval=TimelineInterval(0, 60000),
-            base_duration_ms=60000,
             source_timeline=VideoToAudioTimeline(0, 0),
             base_timeline=None,
             fill_gaps_from_base=False,
@@ -3291,14 +3261,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         request = AudioPatchRequest(
             working_dir="/tmp/work",
             output_path="/tmp/out.mka",
-            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
-            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
             source_audio=source_audio,
             base_audio=None,
             mapping=((2420, 40), (62420, 60040)),
             target_interval=TimelineInterval(2420, 62420),
             output_interval=TimelineInterval(0, 62420),
-            base_duration_ms=62420,
             source_timeline=VideoToAudioTimeline(0, 488),
             base_timeline=None,
             fill_gaps_from_base=False,
@@ -3344,14 +3311,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         request = AudioPatchRequest(
             working_dir="/tmp/work",
             output_path="/tmp/out.mka",
-            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
-            source_video=VideoStreamRef(source_audio.path, 0, 0, None),
             source_audio=source_audio,
             base_audio=None,
             mapping=((0, 0), (target_mid, source_mid), (target_end, source_end)),
             target_interval=TimelineInterval(0, target_end),
             output_interval=TimelineInterval(0, target_end),
-            base_duration_ms=target_end,
             source_timeline=VideoToAudioTimeline(0, 0),
             base_timeline=None,
             fill_gaps_from_base=False,
@@ -3570,14 +3534,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
         request = AudioPatchRequest(
             working_dir="/tmp/work",
             output_path="/tmp/out.mka",
-            base_video=VideoStreamRef("/tmp/base.mkv", 0, 0, None),
-            source_video=VideoStreamRef("/tmp/source.mkv", 0, 0, None),
             source_audio=AudioStreamRef("/tmp/source.mkv", 1, 1, "pol"),
             base_audio=None,
             mapping=((target_start, source_start), (target_end, source_end)),
             target_interval=TimelineInterval(target_start, target_end),
             output_interval=TimelineInterval(0, target_end),
-            base_duration_ms=target_end,
             source_timeline=VideoToAudioTimeline(mapping_to_video, audio_content_start),
             base_timeline=None,
             fill_gaps_from_base=False,

@@ -354,9 +354,6 @@ class TrackTimelineMixin:
             if adts_path and not self.workspace.keep and os.path.exists(adts_path):
                 os.remove(adts_path)
 
-    def _extract_audio_to_flac(self, video_path: str, output_path: str, logger: logging.Logger | None = None) -> None:
-        self._decode_source_audio_to_flac(video_path, output_path, sample_fmt="s32", logger=logger)
-
     def _decode_audio_stream_to_flac(
         self,
         stream: AudioStreamRef,
@@ -385,14 +382,6 @@ class TrackTimelineMixin:
             logger=logger,
             progress_source=self._audio_source_description(stream),
         )
-
-    def _extract_selected_audio_to_flac(
-        self,
-        stream: AudioStreamRef,
-        output_path: str,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        self._decode_audio_stream_to_flac(stream, output_path, sample_fmt="s32", logger=logger)
 
     def _audio_needs_mkvmerge_normalization(self, stream_ref: AudioStreamRef) -> bool:
         """Return True when direct mkvmerge remux can shift decoded AAC timing.

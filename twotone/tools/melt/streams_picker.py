@@ -12,10 +12,9 @@ from .melt_common import AudioStreamRef, SubtitleStreamRef, VideoStreamRef
 _UNDEFINED_LANGUAGE = "undefined"
 
 class StreamsPicker:
-    def __init__(self, logger: logging.Logger, duplicates_source: DuplicatesSource, wd: str):
+    def __init__(self, logger: logging.Logger, duplicates_source: DuplicatesSource):
         self.logger = logger
         self.duplicates_source = duplicates_source
-        self.wd = wd
 
     def pick_streams(
         self,
