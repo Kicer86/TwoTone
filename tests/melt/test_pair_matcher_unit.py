@@ -1,5 +1,6 @@
 
 import logging
+import os
 import unittest
 from collections.abc import Callable
 from typing import cast
@@ -2816,12 +2817,13 @@ class PairMatcherUnitTest(unittest.TestCase):
             "00:41:13,558-00:41:25,821 (2473558-2485821 ms)",
             summary,
         )
+        details_path = os.path.join("/tmp/debug", "details.txt")
         self.assertTrue(any(
-            "Full frame diagnostics: /tmp/debug/details.txt" in message
+            f"Full frame diagnostics: {details_path}" in message
             for message in captured.output
         ))
         self.assertIn("Inspect the reported region", str(raised.exception))
-        self.assertIn("/tmp/debug/details.txt", str(raised.exception))
+        self.assertIn(details_path, str(raised.exception))
         self.assertIn(
             "--max-temporary-frame-offset 5",
             str(raised.exception),

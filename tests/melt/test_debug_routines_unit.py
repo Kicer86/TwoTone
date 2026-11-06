@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from twotone.tools.melt.debug_routines import DebugRoutines
 
@@ -79,7 +80,7 @@ class DebugRoutinesUnitTest(unittest.TestCase):
             rhs_dump = os.listdir(os.path.join(target_dir, "region_000", "rhs"))
             self.assertEqual(len(lhs_dump), 3)
             self.assertEqual(len(rhs_dump), 3)
-            self.assertTrue(all(os.path.islink(
+            self.assertTrue(all(os.path.isfile(
                 os.path.join(target_dir, "region_000", "lhs", name)
             ) for name in lhs_dump))
             self.assertEqual(
@@ -90,6 +91,19 @@ class DebugRoutinesUnitTest(unittest.TestCase):
                 len(os.listdir(os.path.join(target_dir, "region_001", "rhs"))),
                 4,
             )
+
+    def test_debug_frame_uses_hardlink_when_symlinks_are_unavailable(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = os.path.join(root, "source.png")
+            target = os.path.join(root, "target.png")
+            with open(source, "wb") as source_file:
+                source_file.write(b"frame")
+
+            with patch.object(os, "symlink", side_effect=OSError("not permitted")):
+                DebugRoutines._link_file(source, target)
+
+            self.assertTrue(os.path.isfile(target))
+            self.assertTrue(os.path.samefile(source, target))
 
     def test_dump_timing_discontinuities_keeps_every_frame_and_writes_details(self):
         with tempfile.TemporaryDirectory() as root:

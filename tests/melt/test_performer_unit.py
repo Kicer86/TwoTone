@@ -2288,8 +2288,9 @@ class MeltPerformerUnitTest(unittest.TestCase):
             and "00:26:40,000-00:28:23,000 (1600000-1703000 ms)" in message
             for message in captured.output
         ))
+        details_path = os.path.join("/tmp/timing-debug", "details.txt")
         self.assertTrue(any(
-            "Full frame diagnostics: /tmp/timing-debug/details.txt" in message
+            f"Full frame diagnostics: {details_path}" in message
             for message in captured.output
         ))
 

@@ -1,6 +1,6 @@
 
 import os
-import platform
+import shutil
 
 from collections.abc import Callable
 from typing import Literal
@@ -16,12 +16,8 @@ class DebugRoutines:
         self.debug_dir = debug_dir
         self.lhs_all_frames = lhs_all_frames
         self.rhs_all_frames = rhs_all_frames
-        self.work = platform.system() != "Windows"
 
     def dump_frames(self, matches: FramesInfo, phase: str) -> None:
-        if not self.work:
-            return
-
         target_dir = os.path.join(self.debug_dir, f"#{self.it} {phase}")
         self.it += 1
 
@@ -30,12 +26,12 @@ class DebugRoutines:
         for i, (ts, info) in enumerate(matches.items()):
             path = info.get("path")
             if path:
-                os.symlink(path, os.path.join(target_dir, f"{i:06d}_lhs_{ts:08d}"))
+                self._link_file(
+                    path,
+                    os.path.join(target_dir, f"{i:06d}_lhs_{ts:08d}"),
+                )
 
     def dump_matches(self, matches: list[tuple[int, int]], phase: str) -> None:
-        if not self.work:
-            return
-
         target_dir = os.path.join(self.debug_dir, f"#{self.it} {phase}")
         self.it += 1
 
@@ -47,14 +43,17 @@ class DebugRoutines:
             lhs_path = lhs_info.get("path") if lhs_info else None
             rhs_path = rhs_info.get("path") if rhs_info else None
             if lhs_path:
-                os.symlink(lhs_path, os.path.join(target_dir, f"{i:06d}_lhs_{lhs_ts:08d}"))
+                self._link_file(
+                    lhs_path,
+                    os.path.join(target_dir, f"{i:06d}_lhs_{lhs_ts:08d}"),
+                )
             if rhs_path:
-                os.symlink(rhs_path, os.path.join(target_dir, f"{i:06d}_rhs_{rhs_ts:08d}"))
+                self._link_file(
+                    rhs_path,
+                    os.path.join(target_dir, f"{i:06d}_rhs_{rhs_ts:08d}"),
+                )
 
     def dump_pairs(self, matches: list[tuple[int, int, int, int]]) -> None:
-        if not self.work:
-            return
-
         target_dir = os.path.join(self.debug_dir, f"#{self.it} subsegments")
         self.it += 1
 
@@ -70,7 +69,10 @@ class DebugRoutines:
                 info = side.get(ts)
                 path = info.get("path") if info else None
                 if path:
-                    os.symlink(path, os.path.join(target_dir, f"{i:06d}_{tag}"))
+                    self._link_file(
+                        path,
+                        os.path.join(target_dir, f"{i:06d}_{tag}"),
+                    )
 
     def dump_content_discontinuities(
         self,
@@ -128,9 +130,6 @@ class DebugRoutines:
         diagnostic_type: Literal["content", "timing"],
         compensation_tolerance_frames: float = 4.0,
     ) -> str | None:
-        if not self.work:
-            return None
-
         prepare_frames()
         target_dir = os.path.join(
             self.debug_dir,
@@ -238,8 +237,9 @@ class DebugRoutines:
             details_file.write("\n".join(details))
         return target_dir
 
-    @staticmethod
+    @classmethod
     def _link_frame_span(
+        cls,
         target_dir: str,
         frames: FramesInfo,
         start_ms: int,
@@ -257,4 +257,15 @@ class DebugRoutines:
                 f"frame_{int(info['frame_id']):06d}_"
                 f"{timestamp:010d}{extension}"
             )
-            os.symlink(path, os.path.join(target_dir, name))
+            cls._link_file(path, os.path.join(target_dir, name))
+
+    @staticmethod
+    def _link_file(source: str, target: str) -> None:
+        """Link a debug frame, with portable fallbacks for Windows hosts."""
+        try:
+            os.symlink(source, target)
+        except (NotImplementedError, OSError):
+            try:
+                os.link(source, target)
+            except OSError:
+                shutil.copy2(source, target)
