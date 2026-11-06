@@ -25,33 +25,32 @@ original timestamps and CodecDelay and does not enter this flow:
 - ``_audio_needs_mkvmerge_normalization`` says when a raw mkvmerge remux would
   re-introduce the build dependency and the FLAC-domain flow is required.
 
-The mixin also owns the plain stream-timeline helpers (ffprobe start/end
+The service also owns the plain stream-timeline helpers (ffprobe start/end
 offsets and the mkvmerge ``--sync`` computation) that the priming logic builds
 on.
 """
 
 import logging
 import os
-
 from typing import Any
 
 from ..utils import files_utils, generic_utils, process_utils, video_utils
 from .melt_common import AudioStreamRef
 
 
-class TrackTimelineMixin:
-    """Stream-timeline and AAC-priming helpers for :class:`MeltPerformer`.
+class TrackTimeline:
+    """Run-scoped stream-timeline and AAC-priming service."""
 
-    Requires the host class to provide ``workspace`` and ``logger``.
-    """
+    def __init__(self, workspace: files_utils.Workspace, logger: logging.Logger) -> None:
+        self.workspace = workspace
+        self.logger = logger
+        self._media_info_cache: dict[str, dict[str, Any]] = {}
+        self._stream_info_cache: dict[tuple[str, str, int], dict[str, Any] | None] = {}
+        self._input_file_ids: dict[str, int] = {}
+        self._aac_priming_exposed_cache: bool | None = None
 
-    workspace: files_utils.Workspace
-    logger: logging.Logger
-    _media_info_cache: dict[str, dict[str, Any]]
-    _stream_info_cache: dict[tuple[str, str, int], dict[str, Any] | None]
-    _input_file_ids: dict[str, int]
-
-    _aac_priming_exposed_cache: bool | None = None
+    def set_input_file_ids(self, file_ids: dict[str, int]) -> None:
+        self._input_file_ids = dict(file_ids)
 
     # Containers whose stream start offsets mkvmerge preserves on remux.
     _MKVMERGE_PRESERVES_START_EXTENSIONS = frozenset({".mkv", ".mk3d", ".mka", ".webm"})
@@ -115,7 +114,7 @@ class TrackTimelineMixin:
         duration = stream.get("duration")
         if duration is not None:
             try:
-                return TrackTimelineMixin._stream_start_offset_ms(stream) + round(float(duration) * 1000)
+                return TrackTimeline._stream_start_offset_ms(stream) + round(float(duration) * 1000)
             except (TypeError, ValueError):
                 pass
 

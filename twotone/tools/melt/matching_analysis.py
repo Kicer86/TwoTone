@@ -8,7 +8,6 @@ from sklearn.linear_model import LinearRegression, RANSACRegressor
 
 from .melt_common import FramesInfo
 
-
 MAX_BOUNDARY_ERROR_FRAMES = 2
 MAX_RELATIVE_RATIO_ERROR = 0.05
 MAX_GAP_TIME_DEFICIT_MS = 2000
@@ -535,3 +534,20 @@ def group_content_discontinuities(
         else:
             groups.append([discontinuity])
     return groups
+
+
+def strict_mapping(mapping: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Collapse duplicate or non-monotonic matches before retiming tracks."""
+    if len(mapping) < 2:
+        return mapping
+
+    result: list[tuple[int, int]] = []
+    for lhs_time, rhs_time in sorted(mapping):
+        if result and rhs_time == result[-1][1]:
+            result[-1] = (lhs_time, rhs_time)
+            continue
+        if result and (lhs_time <= result[-1][0] or rhs_time < result[-1][1]):
+            continue
+        result.append((lhs_time, rhs_time))
+
+    return result if result else mapping
