@@ -247,6 +247,93 @@ class MediaAnalysisSessionTest(unittest.TestCase):
         self.assertTrue(result.validated_all_streams)
         self.assertIsNone(result.decode_error)
 
+    def test_validation_can_decode_only_requested_stream_indices(self):
+        streams = [
+            {"index": 0, "codec_type": "video"},
+            {"index": 1, "codec_type": "audio"},
+            {"index": 5, "codec_type": "audio"},
+        ]
+
+        with patch.object(self.session, "probe", return_value=self._probe_result(streams)), \
+             patch.object(
+                 video_utils,
+                 "_start_ffmpeg_streaming",
+                 return_value=(
+                     SimpleNamespace(returncode=0),
+                     [
+                         "Application provided invalid, non monotonically increasing dts "
+                         "to muxer in stream 1: 42 >= 41",
+                     ],
+                 ),
+             ) as start:
+            result = self.session.fulfill(
+                media_analysis.MediaAnalysisRequest(
+                    path=self.path,
+                    label="#1",
+                    features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+                    validation_stream_indices=(0, 5),
+                ),
+                raise_on_error=False,
+            )
+
+        args = start.call_args.args[0]
+        mapped_streams = [
+            args[index + 1]
+            for index, value in enumerate(args)
+            if value == "-map"
+        ]
+        self.assertEqual(mapped_streams, ["0:0", "0:5"])
+        self.assertNotIn("0:a?", args)
+        self.assertEqual(result.validated_stream_indices, frozenset({0, 5}))
+        self.assertFalse(result.validated_all_streams)
+        self.assertIn("output stream 1 (input stream #5)", result.decode_error or "")
+
+    def test_validation_cache_tracks_partial_stream_coverage(self):
+        first_result = media_analysis.VideoScanResult(
+            path=os.path.realpath(self.path),
+            features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+            frames={},
+            identity_samples=(),
+            decode_error=None,
+            validated_stream_indices=frozenset({0}),
+        )
+        second_result = media_analysis.VideoScanResult(
+            path=os.path.realpath(self.path),
+            features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+            frames={},
+            identity_samples=(),
+            decode_error=None,
+            validated_stream_indices=frozenset({0, 5}),
+        )
+
+        with patch.object(
+            self.session,
+            "_scan",
+            side_effect=(first_result, second_result),
+        ) as scan:
+            first = self.session.fulfill(media_analysis.MediaAnalysisRequest(
+                path=self.path,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+                validation_stream_indices=(0,),
+            ))
+            cached = self.session.fulfill(media_analysis.MediaAnalysisRequest(
+                path=self.path,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+                validation_stream_indices=(0,),
+            ))
+            expanded = self.session.fulfill(media_analysis.MediaAnalysisRequest(
+                path=self.path,
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+                validation_stream_indices=(0, 5),
+            ))
+
+        self.assertIs(first, cached)
+        self.assertEqual(scan.call_count, 2)
+        self.assertEqual(expanded.validated_stream_indices, frozenset({0, 5}))
+
     def test_validation_excludes_attached_pictures_from_video_timeline(self):
         streams = [
             {"index": 0, "codec_type": "video"},

@@ -71,7 +71,7 @@ class InputValidatorTest(unittest.TestCase):
         return result
 
     def test_full_validation_requests_probe_and_stream_decode_from_media_analysis(self):
-        self._probe([{"codec_type": "audio", "codec_name": "ac3"}])
+        self._probe([{"index": 0, "codec_type": "audio", "codec_name": "ac3"}])
         self._scan()
 
         report = self._validator(input_validation.ValidationMode.FULL).validate([self.path])
@@ -89,10 +89,111 @@ class InputValidatorTest(unittest.TestCase):
             raise_on_error=False,
         )
 
+    def test_full_validation_requests_only_selected_decodable_streams(self):
+        self._probe([
+            {"index": 0, "codec_type": "video", "codec_name": "h264"},
+            {"index": 1, "codec_type": "audio", "codec_name": "dts"},
+            {"index": 2, "codec_type": "audio", "codec_name": "aac"},
+            {"index": 3, "codec_type": "subtitle", "codec_name": "subrip"},
+        ])
+        self._scan()
+        target = input_validation.InputValidationTarget(
+            self.path,
+            "#1",
+            stream_indices=(0, 2, 3),
+        )
+
+        report = self._validator(input_validation.ValidationMode.FULL).validate([target])
+
+        self.assertTrue(report.is_valid)
+        self.media_analysis.fulfill.assert_called_once_with(
+            media_analysis.MediaAnalysisRequest(
+                path=os.path.realpath(self.path),
+                label="#1",
+                features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+                validation_stream_indices=(0, 2),
+            ),
+            raise_on_error=False,
+        )
+
+    def test_full_validation_skips_decode_without_selected_audio_or_video(self):
+        self._probe([
+            {"index": 0, "codec_type": "video", "codec_name": "h264"},
+            {"index": 3, "codec_type": "subtitle", "codec_name": "subrip"},
+        ])
+        target = input_validation.InputValidationTarget(
+            self.path,
+            "#1",
+            stream_indices=(3,),
+        )
+
+        report = self._validator(input_validation.ValidationMode.FULL).validate([target])
+
+        self.assertTrue(report.is_valid)
+        self.media_analysis.fulfill.assert_not_called()
+
+    def test_duplicate_targets_merge_selected_streams_for_one_decode(self):
+        self._probe([
+            {"index": 0, "codec_type": "video", "codec_name": "h264"},
+            {"index": 2, "codec_type": "audio", "codec_name": "aac"},
+        ])
+        self._scan()
+
+        report = self._validator(input_validation.ValidationMode.FULL).validate([
+            input_validation.InputValidationTarget(
+                self.path,
+                "#1 (first output)",
+                stream_indices=(0,),
+            ),
+            input_validation.InputValidationTarget(
+                self.path,
+                "#2 (second output)",
+                stream_indices=(2,),
+            ),
+        ])
+
+        self.assertTrue(report.is_valid)
+        self.media_analysis.fulfill.assert_called_once_with(
+            media_analysis.MediaAnalysisRequest(
+                path=os.path.realpath(self.path),
+                label="#1 (first output)",
+                features=media_analysis.MediaAnalysisFeature.VALIDATE_STREAMS,
+                validation_stream_indices=(0, 2),
+            ),
+            raise_on_error=False,
+        )
+
+    def test_validation_cache_is_scoped_to_selected_streams(self):
+        self._probe([
+            {"index": 0, "codec_type": "video", "codec_name": "h264"},
+            {"index": 2, "codec_type": "audio", "codec_name": "aac"},
+        ])
+        self._scan()
+        validator = self._validator(input_validation.ValidationMode.FULL)
+
+        first = validator.validate([
+            input_validation.InputValidationTarget(
+                self.path,
+                "#1",
+                stream_indices=(0,),
+            ),
+        ])
+        second = validator.validate([
+            input_validation.InputValidationTarget(
+                self.path,
+                "#1",
+                stream_indices=(2,),
+            ),
+        ])
+
+        self.assertTrue(first.is_valid)
+        self.assertTrue(second.is_valid)
+        self.assertEqual(self.media_analysis.fulfill.call_count, 2)
+
     def test_full_validation_accepts_successful_decode_from_media_analysis(self):
         scan = self._scan()
         self.media_analysis.result_for.return_value = scan
-        self._probe([{"codec_type": "video", "codec_name": "h264"}])
+        self._probe([{"index": 0, "codec_type": "video", "codec_name": "h264"}])
 
         report = self._validator(input_validation.ValidationMode.FULL).validate([self.path])
 
@@ -108,6 +209,40 @@ class InputValidatorTest(unittest.TestCase):
         self.assertFalse(report.is_valid)
         self.assertIn("Invalid data found", report.issues[0].message)
 
+    def test_timestamp_error_reports_affected_stream_and_safe_repair_guidance(self):
+        self._probe([
+            {"index": 0, "codec_type": "video", "codec_name": "h264"},
+            {
+                "index": 5,
+                "codec_type": "audio",
+                "codec_name": "dts",
+                "sample_rate": "48000",
+                "channels": 6,
+            },
+        ])
+        self._scan(
+            "Application provided invalid, non monotonically increasing dts "
+            "to muxer in output stream 0 (input stream #5): 42 >= 41"
+        )
+        target = input_validation.InputValidationTarget(
+            self.path,
+            "#1",
+            stream_indices=(5,),
+        )
+
+        report = self._validator(input_validation.ValidationMode.FULL).validate([target])
+
+        self.assertFalse(report.is_valid)
+        issue = report.issues[0]
+        self.assertIn("audio #5: dts 48000 Hz 6 channels", issue.message)
+        self.assertIsNotNone(issue.repair_suggestion)
+        assert issue.repair_suggestion is not None
+        self.assertIn("remux", issue.repair_suggestion.lower())
+        self.assertIn("new", issue.repair_suggestion.lower())
+        with self.assertLogs(self.logger, "ERROR") as logs:
+            report.render(self.logger)
+        self.assertIn("Suggested repair", "\n".join(logs.output))
+
     def test_full_validation_does_not_treat_partial_analysis_as_cached_validation(self):
         self.media_analysis.result_for.return_value = media_analysis.VideoScanResult(
             path=self.path,
@@ -116,7 +251,7 @@ class InputValidatorTest(unittest.TestCase):
             identity_samples=(),
             decode_error=None,
         )
-        self._probe([{"codec_type": "video", "codec_name": "h264"}])
+        self._probe([{"index": 0, "codec_type": "video", "codec_name": "h264"}])
         self._scan()
 
         report = self._validator(input_validation.ValidationMode.FULL).validate([self.path])
@@ -167,8 +302,9 @@ class InputValidatorTest(unittest.TestCase):
         self.assertIn("Invalid data found", first.issues[0].message)
         with self.assertLogs(self.logger, "ERROR") as logs:
             first.render(self.logger)
-        self.assertNotIn("Suggested repair", "\n".join(logs.output))
+        self.assertIn("Suggested repair", "\n".join(logs.output))
         self.assertFalse(second.is_valid)
+        self.assertIsNotNone(second.issues[0].repair_suggestion)
         self.assertEqual(second.checked_count, 0)
         self.assertEqual(second.cached_count, 1)
         self.media_analysis.probe.assert_not_called()
@@ -189,6 +325,7 @@ class InputValidatorTest(unittest.TestCase):
 
         self.assertFalse(report.is_valid)
         self.assertIn("Invalid data found", report.issues[0].message)
+        self.assertIsNotNone(report.issues[0].repair_suggestion)
         self.media_analysis.fulfill.assert_not_called()
 
     def test_fast_validation_only_requests_probe(self):
@@ -278,7 +415,7 @@ class InputValidatorTest(unittest.TestCase):
         self.assertNotIn("All input files are valid.", output)
 
     def test_uses_the_supplied_reference_in_logs_and_media_analysis(self):
-        self._probe([{"codec_type": "audio", "codec_name": "ac3"}])
+        self._probe([{"index": 0, "codec_type": "audio", "codec_name": "ac3"}])
         self._scan()
         target = input_validation.InputValidationTarget(self.path, "#7")
 
