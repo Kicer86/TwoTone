@@ -95,12 +95,18 @@ class PairMatcherUnitTest(unittest.TestCase):
             **{info["path"]: info["frame_id"] for info in lhs.values()},
             **{info["path"]: info["frame_id"] for info in rhs.values()},
         }
-        pm.phash.get = Mock(side_effect=lambda path: _SyntheticHash(
-            path,
-            lambda lhs_path, rhs_path: distance(
-                frame_ids[lhs_path], frame_ids[rhs_path],
+        phash_get = patch.object(
+            pm.phash,
+            "get",
+            side_effect=lambda path: _SyntheticHash(
+                path,
+                lambda lhs_path, rhs_path: distance(
+                    frame_ids[lhs_path], frame_ids[rhs_path],
+                ),
             ),
-        ))
+        )
+        phash_get.start()
+        self.addCleanup(phash_get.stop)
         return lhs, rhs
 
     def test_frame_adjustment_uses_local_sequence_instead_of_single_best_frame(self):
