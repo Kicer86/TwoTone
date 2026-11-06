@@ -22,6 +22,7 @@ from ..utils import (
     subtitles_utils,
     video_utils,
 )
+from . import debug_routines, matching_analysis
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
 from .melt_common import (
@@ -32,10 +33,8 @@ from .melt_common import (
     StreamType,
     SubtitleStreamRef,
     VideoStreamRef,
-    format_timestamp_range,
 )
 from .pair_matcher import (
-    CoverageSummary,
     MappingRelation,
     PairMatcher,
     SegmentsMappingResult,
@@ -1170,200 +1169,6 @@ class MeltPerformer(TrackTimelineMixin):
         )
 
     @staticmethod
-    def _fmt_time(seconds: float) -> str:
-        """Format seconds as a compact human-readable time string."""
-        if seconds < 0:
-            return f"-{MeltPerformer._fmt_time(-seconds)}"
-        h = int(seconds // 3600)
-        remainder = seconds - h * 3600
-        m = int(remainder // 60)
-        s = remainder - m * 60
-        if h > 0:
-            return f"{h}:{m:02d}:{s:04.1f}"
-        if m > 0:
-            return f"{m}:{s:04.1f}"
-        return f"{s:.1f}s"
-
-    def _render_overlap_diagram(
-        self,
-        lhs_id: int,
-        rhs_id: int,
-        lhs_duration_ms: int,
-        rhs_duration_ms: int,
-        summary: CoverageSummary,
-    ) -> list[str]:
-        """Build ASCII overlap diagram lines for two partially-overlapping files.
-
-        All positions are projected onto the lhs (base) timeline so that speed
-        differences between files don't distort the visual overlap.  That
-        projection can surprise: the rhs bar and its timestamps are stretched
-        or shrunk by the speed factor, so they may exceed the file's real
-        duration — when the factor is not 1, a trailing note spells this out.
-        """
-        lhs_dur = lhs_duration_ms / 1000
-        rhs_dur = rhs_duration_ms / 1000
-        lhs_sg = summary["lhs_start_gap_s"]
-        rhs_sg = summary["rhs_start_gap_s"]
-        lhs_eg = summary["lhs_end_gap_s"]
-        rhs_eg = summary["rhs_end_gap_s"]
-
-        # Compute speed factor to project rhs times onto lhs timeline.
-        # shared_dur_lhs / shared_dur_rhs gives how much rhs time stretches on the lhs axis.
-        shared_dur_lhs = lhs_dur - lhs_sg - lhs_eg
-        shared_dur_rhs = rhs_dur - rhs_sg - rhs_eg
-        speed = shared_dur_lhs / shared_dur_rhs if shared_dur_rhs > 0 else 1.0
-
-        # Unified timeline positions (lhs starts at t=0, rhs projected onto lhs time)
-        lhs_s, lhs_e = 0.0, lhs_dur
-        rhs_s = lhs_sg - rhs_sg * speed
-        rhs_e = (lhs_dur - lhs_eg) + rhs_eg * speed
-
-        t_min = min(lhs_s, rhs_s)
-        t_max = max(lhs_e, rhs_e)
-        if t_max - t_min <= 0:
-            return []
-
-        _THRESH = 0.0  # ignore gaps smaller than _THRESH
-        _MIN_GAP = 6   # minimum column width for a visible gap
-        _W = 70        # total diagram width in columns
-
-        left_gap = abs(lhs_s - rhs_s)
-        right_gap = abs(lhs_e - rhs_e)
-        has_left = left_gap > _THRESH
-        has_right = right_gap > _THRESH
-
-        left_w = _MIN_GAP if has_left else 0
-        right_w = _MIN_GAP if has_right else 0
-        mid_w = _W - left_w - right_w
-
-        # Determine bar column ranges; when there's no gap both bars share that edge
-        lhs_c0 = 0 if (lhs_s <= rhs_s or not has_left) else left_w
-        rhs_c0 = 0 if (rhs_s <= lhs_s or not has_left) else left_w
-        lhs_c1 = _W if (lhs_e >= rhs_e or not has_right) else left_w + mid_w
-        rhs_c1 = _W if (rhs_e >= lhs_e or not has_right) else left_w + mid_w
-
-        def _make_bar(c0: int, c1: int, label: str) -> str:
-            width = max(c1 - c0, len(label) + 2)
-            inner = width - 2
-            pl = (inner - len(label)) // 2
-            pr = inner - len(label) - pl
-            return " " * c0 + "|" + "_" * pl + label + "_" * pr + "|"
-
-        bar_lhs = _make_bar(lhs_c0, lhs_c1, f"#{lhs_id}")
-        bar_rhs = _make_bar(rhs_c0, rhs_c1, f"#{rhs_id}")
-
-        # Collect edge timestamps on the unified timeline (relative to t_min)
-        edge_list: list[tuple[int, float]] = [
-            (lhs_c0, lhs_s - t_min), (rhs_c0, rhs_s - t_min),
-            (lhs_c1, lhs_e - t_min), (rhs_c1, rhs_e - t_min),
-        ]
-        seen: set[tuple[int, int]] = set()
-        edges: list[tuple[int, str]] = []
-        for col, t in sorted(edge_list):
-            key = (col, round(t * 10))
-            if key not in seen:
-                seen.add(key)
-                edges.append((col, self._fmt_time(t)))
-
-        # Place labels on up to two rows, avoiding overlap
-        rows: list[list[str]] = [
-            [" "] * (_W + 20),
-            [" "] * (_W + 20),
-        ]
-        row_end = [-1, -1]
-        for c, label in edges:
-            for r in range(2):
-                if c >= row_end[r] and c + len(label) <= len(rows[r]):
-                    for i, ch in enumerate(label):
-                        rows[r][c + i] = ch
-                    row_end[r] = c + len(label) + 1
-                    break
-
-        lines = [bar_lhs, bar_rhs]
-        for row in rows:
-            s = "".join(row).rstrip()
-            if s:
-                lines.append(s)
-        if abs(speed - 1.0) >= 0.001:
-            lines.append(
-                f"(#{rhs_id} plays at a different speed; its bar and times are projected "
-                f"onto #{lhs_id}'s timeline — {self._fmt_time(rhs_dur)} of #{rhs_id} "
-                f"spans {self._fmt_time(rhs_e - rhs_s)} there)"
-            )
-        return lines
-
-    def _log_coverage(
-        self,
-        mappings: list[tuple[int, int]],
-        lhs_duration_ms: int,
-        rhs_duration_ms: int,
-        lhs_fps: float,
-        rhs_fps: float,
-        lhs_id: int,
-        rhs_id: int,
-    ) -> None:
-        """Log an exact coverage report for a compared pair of files.
-
-        Files of equal length that share all content are dismissed in one
-        line.  Everything else gets the full report: exact edge gaps (to the
-        millisecond, no thresholds hide small differences), both durations,
-        the speed ratio, and the overlap diagram.  Files of different length
-        are by definition not identical — with one exception spelled out
-        explicitly: the same frames end to end played at a different frame
-        rate.
-        """
-        summary = PairMatcher.coverage_summary(
-            mappings,
-            lhs_duration_ms,
-            rhs_duration_ms,
-            lhs_fps=lhs_fps,
-            rhs_fps=rhs_fps,
-        )
-        ratio = summary["ratio"]
-        same_speed = abs(ratio - 1.0) < 0.001
-        same_length = lhs_duration_ms == rhs_duration_ms
-
-        if same_length and same_speed and summary["full_coverage"]:
-            self.logger.info(
-                "Files are 100%% visually identical: #%d ↔ #%d",
-                lhs_id, rhs_id,
-            )
-            return
-
-        lhs_len = generic_utils.ms_to_time(lhs_duration_ms)
-        rhs_len = generic_utils.ms_to_time(rhs_duration_ms)
-        if summary["full_coverage"]:
-            # The only way identical content yields different lengths: the
-            # same frames played at a different frame rate.
-            self.logger.info(
-                "Files share all content but play at different speeds "
-                "(same frames, different frame rate; speed ratio %.5f): "
-                "#%d (%s) ↔ #%d (%s)",
-                ratio, lhs_id, lhs_len, rhs_id, rhs_len,
-            )
-        else:
-            self.logger.info(
-                "Files are NOT fully identical: #%d (%s) ↔ #%d (%s)",
-                lhs_id, lhs_len, rhs_id, rhs_len,
-            )
-            if not same_speed:
-                self.logger.info("  speed ratio: %.5f", ratio)
-        self.logger.info(
-            "  shared content starts at %.3f s in #%d and at %.3f s in #%d",
-            summary["lhs_start_gap_s"], lhs_id, summary["rhs_start_gap_s"], rhs_id,
-        )
-        self.logger.info(
-            "  shared content ends %.3f s before end of #%d and %.3f s before end of #%d",
-            summary["lhs_end_gap_s"], lhs_id, summary["rhs_end_gap_s"], rhs_id,
-        )
-
-        diagram = self._render_overlap_diagram(
-            lhs_id, rhs_id, lhs_duration_ms, rhs_duration_ms, summary,
-        )
-        if diagram:
-            self.logger.info("Overlap diagram:\n%s", "\n".join(diagram))
-
-    @staticmethod
     def _segment_range(pairs: Sequence[tuple[int, int]]) -> _SegmentRange:
         """Return the bounding lhs/rhs range from a list of (lhs, rhs) pairs."""
         left, right = zip(*pairs)
@@ -1634,7 +1439,8 @@ class MeltPerformer(TrackTimelineMixin):
         matching = match_result.matching
 
         if first_match and matching.mapping:
-            self._log_coverage(
+            debug_routines.log_coverage(
+                self.logger,
                 matching.mapping,
                 base_duration_ms,
                 match_result.source_duration,
@@ -1647,50 +1453,34 @@ class MeltPerformer(TrackTimelineMixin):
         discontinuities = matching.content_discontinuities
         if matching.relation is MappingRelation.GENERIC:
             discontinuities = discontinuities or tuple(
-                PairMatcher.find_content_discontinuities(matching.mapping)
+                matching_analysis.find_content_discontinuities(matching.mapping)
             )
 
         if matching.timing_discontinuities:
-            for lhs_from, lhs_to, rhs_from, rhs_to, deficit in matching.timing_discontinuities:
-                self.logger.error(
-                    "  Unsupported %s timeline discontinuity: %s in #%d ↔ %s in #%d "
-                    "(%+d ms)",
-                    consumer,
-                    format_timestamp_range(lhs_from, lhs_to),
-                    file_ids[base_path],
-                    format_timestamp_range(rhs_from, rhs_to),
-                    file_ids[source_path],
-                    deficit,
-                )
-            if matching.timing_discontinuity_debug_path is not None:
-                self.logger.error(
-                    "Full frame diagnostics: %s",
-                    os.path.join(
-                        matching.timing_discontinuity_debug_path,
-                        "details.txt",
-                    ),
-                )
+            debug_routines.log_timing_discontinuities(
+                self.logger,
+                matching.timing_discontinuities,
+                consumer=consumer,
+                lhs_id=file_ids[base_path],
+                rhs_id=file_ids[source_path],
+                debug_path=matching.timing_discontinuity_debug_path,
+            )
             raise RuntimeError(
                 f"Unsupported {consumer} timeline discontinuity: the matched PTS mapping "
                 "has a PTS step despite continuous decoded video"
             )
 
         if discontinuities:
-            for lhs_from, lhs_to, rhs_from, rhs_to, deficit in discontinuities:
-                suffix = (
-                    f", {deficit * matching.rhs_fps / 1000:+.1f} frames"
-                    if matching.relation is MappingRelation.GLOBAL_LINEAR else ""
-                )
-                self.logger.error(
-                    "  Suspected content discontinuity: %s in #%d ↔ %s in #%d "
-                    "(%+d ms%s)",
-                    format_timestamp_range(lhs_from, lhs_to),
-                    file_ids[base_path],
-                    format_timestamp_range(rhs_from, rhs_to),
-                    file_ids[source_path],
-                    deficit,
-                    suffix,
-                )
+            debug_routines.log_content_discontinuities(
+                self.logger,
+                discontinuities,
+                lhs_id=file_ids[base_path],
+                rhs_id=file_ids[source_path],
+                rhs_fps=matching.rhs_fps,
+                include_frame_deficit=(
+                    matching.relation is MappingRelation.GLOBAL_LINEAR
+                ),
+            )
             raise RuntimeError(
                 "Unresolved suspected content discontinuities: insufficient evidence to rule out "
                 "holes in the scene sequence (e.g. commercial-break cuts) — patching "
@@ -2080,7 +1870,7 @@ class MeltPerformer(TrackTimelineMixin):
             return None
 
         pairs = sorted(mapping)
-        slope = PairMatcher._linear_mapping_slope(pairs)
+        slope = matching_analysis.linear_mapping_slope(pairs)
         if slope is None:
             return None
         if abs(tempo_ratio / slope - 1.0) >= MeltPerformer._MAX_FPS_VS_OBSERVED_RATIO_ERROR:

@@ -12,6 +12,7 @@ from common import run_ffmpeg, write_srt_subtitle
 from parameterized import parameterized
 
 from melt.helpers import _FAKE_PROCESS_OK
+from twotone.tools.melt import debug_routines
 from twotone.tools.melt.melt import MeltPerformer, StaticSource, StreamsPicker
 from twotone.tools.melt.melt_common import (
     AttachmentRef,
@@ -1128,13 +1129,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
         ("negative",      -5.0,      "-5.0s"),
     ])
     def test_fmt_time(self, _name, seconds, expected):
-        self.assertEqual(MeltPerformer._fmt_time(seconds), expected)
+        self.assertEqual(debug_routines.format_time(seconds), expected)
 
     # ---- _render_overlap_diagram ----
 
     def test_render_overlap_diagram_both_gaps(self):
         """Diagram with gaps: lhs starts at 2s, rhs starts at 0s → lhs indented, rhs at col 0."""
-        performer = self._make_performer()
         # rhs_start_gap_s=0 means rhs starts at beginning of shared content
         # lhs_start_gap_s=2 means lhs starts 2s before shared content → lhs at col 0
         summary = {
@@ -1144,7 +1144,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             "rhs_end_gap_s": 3.0,
             "full_coverage": False,
         }
-        lines = performer._render_overlap_diagram(1, 2, 100_000, 101_000, summary)
+        lines = debug_routines.render_overlap_diagram(1, 2, 100_000, 101_000, summary)
         self.assertGreaterEqual(len(lines), 2, "Should have at least 2 bar lines")
         # lhs has start_gap=2 → shared content starts 2s into lhs → lhs starts first
         self.assertTrue(lines[0].startswith("|"), "#1 bar starts at col 0")
@@ -1155,7 +1155,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
     def test_render_overlap_diagram_rhs_starts_first(self):
         """When rhs has the initial gap → rhs starts later in the diagram, lhs at col 0."""
-        performer = self._make_performer()
         # lhs_start_gap=0 means shared content starts at beginning of lhs
         # rhs_start_gap=3 means shared content starts 3s into rhs → rhs starts earlier
         summary = {
@@ -1165,7 +1164,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             "rhs_end_gap_s": 0.0,
             "full_coverage": False,
         }
-        lines = performer._render_overlap_diagram(1, 2, 100_000, 100_000, summary)
+        lines = debug_routines.render_overlap_diagram(1, 2, 100_000, 100_000, summary)
         self.assertGreaterEqual(len(lines), 2)
         # rhs_s = lhs_sg - rhs_sg = 0 - 3 = -3 → rhs starts before lhs
         # So rhs is at col 0, lhs is indented
@@ -1174,7 +1173,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
     def test_render_overlap_diagram_no_gaps_returns_empty(self):
         """When gaps are tiny (< threshold), no diagram should be produced."""
-        performer = self._make_performer()
         summary = {
             "lhs_start_gap_s": 0.0,
             "rhs_start_gap_s": 0.0,
@@ -1182,7 +1180,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             "rhs_end_gap_s": 0.0,
             "full_coverage": False,
         }
-        lines = performer._render_overlap_diagram(1, 2, 100_000, 100_000, summary)
+        lines = debug_routines.render_overlap_diagram(1, 2, 100_000, 100_000, summary)
         # Bars should be at the same columns (no offset)
         if lines:
             lhs_start = len(lines[0]) - len(lines[0].lstrip())
@@ -1191,7 +1189,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
     def test_render_overlap_diagram_has_timestamps(self):
         """Diagram should contain time labels."""
-        performer = self._make_performer()
         summary = {
             "lhs_start_gap_s": 0.0,
             "rhs_start_gap_s": 5.0,
@@ -1199,7 +1196,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             "rhs_end_gap_s": 0.0,
             "full_coverage": False,
         }
-        lines = performer._render_overlap_diagram(1, 2, 120_000, 115_000, summary)
+        lines = debug_routines.render_overlap_diagram(1, 2, 120_000, 115_000, summary)
         all_text = "\n".join(lines)
         # Should have at least "0.0s" somewhere in the timestamp rows
         self.assertIn("0.0s", all_text, "Should contain the start timestamp")
@@ -1211,7 +1208,6 @@ class MeltPerformerUnitTest(unittest.TestCase):
         shared_lhs=97, shared_rhs=96, speed=97/96≈1.0104.
         rhs projected: start=2.0, end=99.0 (=100-1). End gap on diagram ≈1s, not 4s.
         """
-        performer = self._make_performer()
         summary = {
             "lhs_start_gap_s": 2.0,
             "rhs_start_gap_s": 0.0,
@@ -1219,7 +1215,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             "rhs_end_gap_s": 0.0,
             "full_coverage": False,
         }
-        lines = performer._render_overlap_diagram(1, 2, 100_000, 96_000, summary)
+        lines = debug_routines.render_overlap_diagram(1, 2, 100_000, 96_000, summary)
         self.assertGreaterEqual(len(lines), 2)
         # lhs starts first (lhs_sg=2 means has content before shared region)
         self.assertTrue(lines[0].startswith("|"), "#1 bar at col 0")
@@ -2127,7 +2123,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             )
 
         file_ids = {base_video: 1, audio_a: 2, audio_b: 3}
-        with patch.object(performer, "_log_coverage", lambda *args, **kwargs: None), \
+        with patch.object(debug_routines, "log_coverage", lambda *args, **kwargs: None), \
              patch.object(performer, "_create_audio_patch_request", side_effect=fake_request), \
             patch.object(performer, "_execute_audio_patch", side_effect=fake_execute):
             first = performer._patch_mismatched_audio(
@@ -2208,7 +2204,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             source_duration=500000,
         )
 
-        with patch.object(performer, "_log_coverage"), \
+        with patch.object(debug_routines, "log_coverage"), \
              self.assertRaisesRegex(RuntimeError, "holes in the scene sequence"):
             performer._patch_mismatched_audio(
                 base_video,
@@ -2243,7 +2239,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             ),
             source_duration=600000,
         )
-        with patch.object(performer, "_log_coverage"), \
+        with patch.object(debug_routines, "log_coverage"), \
              patch.object(performer, "_choose_audio_strategy", side_effect=AssertionError("unsafe mapping reached audio strategy")) as choose, \
              patch.object(performer, "_execute_audio_patch") as execute, \
              self.assertRaisesRegex(RuntimeError, "discontinuit.*not supported yet"):
