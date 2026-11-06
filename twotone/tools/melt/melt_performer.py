@@ -130,14 +130,11 @@ class AudioPatchRequest:
 
     working_dir: str
     output_path: str
-    base_video: VideoStreamRef
-    source_video: VideoStreamRef
     source_audio: AudioStreamRef
     base_audio: AudioStreamRef | None
     mapping: tuple[tuple[int, int], ...]
     target_interval: TimelineInterval
     output_interval: TimelineInterval
-    base_duration_ms: int
     source_timeline: VideoToAudioTimeline
     base_timeline: VideoToAudioTimeline | None
     fill_gaps_from_base: bool
@@ -523,14 +520,11 @@ class MeltPerformer(TrackTimelineMixin):
         return AudioPatchRequest(
             working_dir=working_dir,
             output_path=output_path,
-            base_video=base_video,
-            source_video=source_video,
             source_audio=source_audio,
             base_audio=base_audio,
             mapping=mapping_tuple,
             target_interval=TimelineInterval(segment.lhs_start, segment.lhs_end),
             output_interval=TimelineInterval(0, output_end_ms if output_end_ms is not None else base_duration_ms),
-            base_duration_ms=base_duration_ms,
             source_timeline=source_timeline,
             base_timeline=base_timeline,
             fill_gaps_from_base=fill_gaps_from_base,
@@ -691,12 +685,13 @@ class MeltPerformer(TrackTimelineMixin):
                 + request.base_timeline.rebased_audio_to_video_ms(head_start_on_base)
             )
 
+        ordered_parts = (
+            ([head_part.path] if head_part is not None else [])
+            + [part.path for part in source_parts]
+            + ([tail_part.path] if tail_part is not None else [])
+        )
         self._concat_and_encode(
-            [part.path for part in source_parts],
-            head_part is not None,
-            head_part.path if head_part is not None else "",
-            tail_part is not None,
-            tail_part.path if tail_part is not None else "",
+            ordered_parts,
             os.path.join(working_dir, "concat.txt"),
             request.output_path,
             channel_layout=self._get_audio_channel_layout(request.source_audio),
@@ -1533,10 +1528,6 @@ class MeltPerformer(TrackTimelineMixin):
     @staticmethod
     def _concat_and_encode(
         parts: list[str],
-        has_head: bool,
-        head_path: str,
-        has_tail: bool,
-        tail_path: str,
         concat_list_path: str,
         output_path: str,
         channel_layout: str | None = None,
@@ -1556,12 +1547,8 @@ class MeltPerformer(TrackTimelineMixin):
             return p.replace("'", "'\\''" )
 
         with open(concat_list_path, "w", encoding="utf-8") as f:
-            if has_head:
-                f.write(f"file '{_esc(head_path)}'\n")
-            for seg in parts:
-                f.write(f"file '{_esc(seg)}'\n")
-            if has_tail:
-                f.write(f"file '{_esc(tail_path)}'\n")
+            for part in parts:
+                f.write(f"file '{_esc(part)}'\n")
 
         needs_layout_fix = (
             channel_layout is not None
@@ -1583,46 +1570,6 @@ class MeltPerformer(TrackTimelineMixin):
                 output_path,
             ], show_progress=True, progress_description=progress_description, logger=logger)
         )
-
-    def _patch_audio_segment(
-        self,
-        wd: str,
-        base_video: VideoStreamRef,
-        source_video: VideoStreamRef,
-        source_audio: AudioStreamRef,
-        base_audio: AudioStreamRef | None,
-        output_path: str,
-        segment_pairs: list[tuple[int, int]],
-        segment_count: int,
-        lhs_frames: FramesInfo,
-        rhs_frames: FramesInfo,
-        min_subsegment_duration: float = 30.0,
-        *,
-        fill_gaps_from_base: bool = True,
-    ) -> int:
-        """Compatibility entry point for a subsegment patch request."""
-        base_duration_ms = video_utils.get_video_duration(base_video.path, logger=self.logger)
-        if base_duration_ms is None:
-            raise RuntimeError(f"Could not determine base video duration for {base_video.path}.")
-        request = self._create_audio_patch_request(
-            wd,
-            base_video,
-            source_video,
-            source_audio,
-            base_audio,
-            output_path,
-            segment_pairs,
-            base_duration_ms,
-            lhs_frames=lhs_frames,
-            rhs_frames=rhs_frames,
-            fill_gaps_from_base=fill_gaps_from_base,
-        )
-        return self._execute_audio_patch(
-            request,
-            _AudioStrategy.SUBSEGMENT,
-            segment_count=segment_count,
-            min_subsegment_duration=min_subsegment_duration,
-        ).timeline_start_ms
 
     def _build_output_path(self, title: str, output_name: str) -> str:
         return os.path.join(self.output_dir, title, output_name + ".mkv")
@@ -2279,7 +2226,7 @@ class MeltPerformer(TrackTimelineMixin):
         output_path = self._temporary_audio_path("normalized_unscaled_audio", ffprobe_stream_index)
         channel_layout = self._get_audio_channel_layout(source_stream)
         self._concat_and_encode(
-            [prepared_flac], False, "", False, "",
+            [prepared_flac],
             self.workspace.unique_file(
                 f"normalized_unscaled_concat_{ffprobe_stream_index}",
                 "txt",
@@ -2623,15 +2570,12 @@ class MeltPerformer(TrackTimelineMixin):
                 # the FLAC-domain normalization flow only when direct mkvmerge
                 # would change timing semantics or the track must be trimmed to
                 # the output timeline.
-                needs_mkvmerge_normalization = (
-                    not preserves_base_container_timing
-                    and self._audio_needs_mkvmerge_normalization(audio_stream)
-                )
                 normalization_reason = (
                     self._audio_mkvmerge_normalization_reason(audio_stream)
-                    if needs_mkvmerge_normalization
+                    if not preserves_base_container_timing
                     else None
                 )
+                needs_mkvmerge_normalization = normalization_reason is not None
                 trim_end_ms: int | None = None
                 if path != video_path_base and audio_desired_start_ms is not None and base_output_end_ms is not None:
                     audio_end_ms = self._source_stream_end_offset_ms(
