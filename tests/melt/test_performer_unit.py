@@ -106,6 +106,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             logger=logging.getLogger("test.MeltPerformer"),
             context=context,
             output_dir=output.root,
+            max_temporary_frame_offset=5.0,
         )
         base_path = "/media/base.mkv"
         source_path = "/media/source.mkv"
@@ -128,6 +129,10 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertIs(
             matcher_type.call_args.kwargs["media_analysis_session"],
             media_analysis_session,
+        )
+        self.assertEqual(
+            matcher_type.call_args.kwargs["max_temporary_frame_offset"],
+            5.0,
         )
 
     def test_process_duplicates_rejects_output_aliasing_input(self):
@@ -2265,17 +2270,29 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 relation=relation,
                 lhs_fps=25.0, rhs_fps=25.0, frame_slope=1.0,
                 timing_discontinuities=(timing_step,),
+                timing_discontinuity_debug_path="/tmp/timing-debug",
             ),
             source_duration=2000000,
         )
 
         with patch.object(performer, "_choose_audio_strategy", side_effect=AssertionError("unsafe mapping reached audio strategy")) as choose, \
+             self.assertLogs(performer.logger, level="ERROR") as captured, \
              self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity"):
             performer._patch_mismatched_audio(
                 base_video, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
                 None, 2000000, None, {base_video.path: 1, source_video.path: 2},
             )
         choose.assert_not_called()
+        self.assertTrue(any(
+            "00:26:40,000-00:28:20,000 (1600000-1700000 ms)" in message
+            and "00:26:40,000-00:28:23,000 (1600000-1703000 ms)" in message
+            for message in captured.output
+        ))
+        details_path = os.path.join("/tmp/timing-debug", "details.txt")
+        self.assertTrue(any(
+            f"Full frame diagnostics: {details_path}" in message
+            for message in captured.output
+        ))
 
     def test_patch_mismatched_audio_rejects_pts_step_with_real_global_fit(self):
         performer = self._make_performer()

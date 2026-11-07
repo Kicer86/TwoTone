@@ -1,5 +1,6 @@
 import argparse
 import logging
+import math
 import os
 from collections.abc import Iterable
 
@@ -14,7 +15,21 @@ from .melt_cache import MeltCache
 from .melt_common import _split_path_fix
 from .melt_performer import MeltPerformer
 from .melt_plan import MeltPlan
+from .pair_matcher import PairMatcher
 from .static_source import StaticSource
+
+
+def _temporary_frame_offset_limit(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a number") from error
+    minimum = PairMatcher.DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
+    if not math.isfinite(parsed) or parsed < minimum:
+        raise argparse.ArgumentTypeError(
+            f"must be a finite number greater than or equal to {minimum:g}"
+        )
+    return parsed
 
 
 class RequireJellyfinServer(argparse.Action):
@@ -128,6 +143,18 @@ class MeltTool(Tool):
                             help='[EXPERIMENTAL] Allow matching video sources whose common content has different '\
                                  'timeline placement, duration, or playback speed.\n'
                                  'This may require additional processing that can consume significant time and disk space.')
+
+        parser.add_argument(
+            '--max-temporary-frame-offset',
+            type=_temporary_frame_offset_limit,
+            default=PairMatcher.DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
+            metavar='FRAMES',
+            help=(
+                'Maximum temporary video frame-offset excursion accepted when an adjacent opposite step '
+                'returns to exactly the same outer offset (default: %(default)s). Permanent offset changes '
+                'are always rejected. Increasing this value can accept a short inserted or missing fragment.'
+            ),
+        )
 
         parser.add_argument('--fill-audio-gaps', action='store_true',
                             help='When audio comes from a file with different length, fill head/tail gaps\n'
@@ -259,5 +286,6 @@ class MeltTool(Tool):
             plan.output_dir,
             cache=cache,
             fill_audio_gaps=args.fill_audio_gaps,
+            max_temporary_frame_offset=args.max_temporary_frame_offset,
         )
         performer.process_duplicates(plan.items)

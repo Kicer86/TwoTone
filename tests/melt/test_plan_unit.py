@@ -1,4 +1,5 @@
 
+import argparse
 import logging
 import unittest
 from types import SimpleNamespace
@@ -139,6 +140,21 @@ class MeltPlanInputValidationTest(unittest.TestCase):
 
 
 class MeltToolContextTest(unittest.TestCase):
+    def test_parser_accepts_custom_temporary_frame_offset_limit(self):
+        parser = argparse.ArgumentParser()
+        MeltTool().setup_parser(parser)
+
+        default_args = parser.parse_args(["-o", "/output"])
+        custom_args = parser.parse_args([
+            "-o",
+            "/output",
+            "--max-temporary-frame-offset",
+            "5",
+        ])
+
+        self.assertEqual(default_args.max_temporary_frame_offset, 2.0)
+        self.assertEqual(custom_args.max_temporary_frame_offset, 5.0)
+
     def test_analyze_and_perform_share_runtime_context(self):
         tool = MeltTool()
         tool.parser = Mock()
@@ -150,6 +166,7 @@ class MeltToolContextTest(unittest.TestCase):
             input_entries=[{"path": "/input.mkv"}],
             title="Movie",
             allow_video_timeline_mismatch=False,
+            max_temporary_frame_offset=5.0,
             output_dir="/output",
             fill_audio_gaps=False,
         )
@@ -172,6 +189,10 @@ class MeltToolContextTest(unittest.TestCase):
             display_roots=("/input.mkv",),
         )
         self.assertIs(performer.call_args.args[1], context)
+        self.assertEqual(
+            performer.call_args.kwargs["max_temporary_frame_offset"],
+            5.0,
+        )
         self.assertIs(source.call_args.kwargs["interruption"], context.interruption)
 
 

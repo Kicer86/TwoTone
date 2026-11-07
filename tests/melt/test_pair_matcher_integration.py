@@ -80,7 +80,7 @@ class DiscontinuityContentTest(unittest.TestCase):
                 self.assertEqual(result.mapping[0], (0, 0))
                 self.assertEqual(result.mapping[-1], (12000, 12000))
             else:
-                with self.assertRaisesRegex(RuntimeError, "Unresolved suspected content discontinuities"):
+                with self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
                     pm.create_segments_mapping()
 
     @parameterized.expand(["false_match", "opposite_edits", "sparse_cut", "ambiguous_black"])
@@ -127,7 +127,7 @@ class DiscontinuityContentTest(unittest.TestCase):
                 self.assertEqual(result.mapping[0], (0, 0))
                 self.assertEqual(result.mapping[-1], (12000, 12000))
             else:
-                with self.assertRaisesRegex(RuntimeError, "Unresolved suspected content discontinuities"):
+                with self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
                     pm.create_segments_mapping()
 
     @parameterized.expand([
@@ -172,7 +172,7 @@ class DiscontinuityContentTest(unittest.TestCase):
         with patch.object(pm, '_detect_scenes', return_value=([l for l, _ in pairs], [r for _, r in pairs])), \
              patch.object(pm, '_make_pairs', side_effect=seed_initial_pairs) as matching, \
              patch('twotone.tools.melt.pair_matcher.DebugRoutines'), \
-             self.assertRaisesRegex(RuntimeError, "Unresolved suspected content discontinuities"):
+             self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
             pm.create_segments_mapping()
 
     def _make_content_matcher(self, frames, rhs_frames):

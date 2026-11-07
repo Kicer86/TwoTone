@@ -32,6 +32,7 @@ from .melt_common import (
     StreamType,
     SubtitleStreamRef,
     VideoStreamRef,
+    format_timestamp_range,
 )
 from .pair_matcher import (
     CoverageSummary,
@@ -212,12 +213,14 @@ class MeltPerformer(TrackTimelineMixin):
         output_dir: str,
         cache: MeltCache | None = None,
         fill_audio_gaps: bool = False,
+        max_temporary_frame_offset: float = PairMatcher.DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
     ) -> None:
         self.logger = logger
         self.interruption = context.interruption
         self.output_dir = output_dir
         self.cache = cache
         self.fill_audio_gaps = fill_audio_gaps
+        self.max_temporary_frame_offset = max_temporary_frame_offset
         self._normalized_audio_cache: dict[tuple[str, int, int | None, int | None], str] = {}
         self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
         self._media_info_cache: dict[str, dict[str, Any]] = {}
@@ -1649,6 +1652,7 @@ class MeltPerformer(TrackTimelineMixin):
                 lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
                 cache=self.cache,
                 media_analysis_session=self.media_analysis,
+                max_temporary_frame_offset=self.max_temporary_frame_offset,
             )
             match_result = _PairMatchResult(
                 matching=matcher.create_segments_mapping(),
@@ -1702,16 +1706,22 @@ class MeltPerformer(TrackTimelineMixin):
         if matching.timing_discontinuities:
             for lhs_from, lhs_to, rhs_from, rhs_to, deficit in matching.timing_discontinuities:
                 self.logger.error(
-                    "  Unsupported %s timeline discontinuity: %s-%s in #%d ↔ %s-%s in #%d "
+                    "  Unsupported %s timeline discontinuity: %s in #%d ↔ %s in #%d "
                     "(%+d ms)",
                     consumer,
-                    generic_utils.ms_to_time(lhs_from),
-                    generic_utils.ms_to_time(lhs_to),
+                    format_timestamp_range(lhs_from, lhs_to),
                     file_ids[base_path],
-                    generic_utils.ms_to_time(rhs_from),
-                    generic_utils.ms_to_time(rhs_to),
+                    format_timestamp_range(rhs_from, rhs_to),
                     file_ids[source_path],
                     deficit,
+                )
+            if matching.timing_discontinuity_debug_path is not None:
+                self.logger.error(
+                    "Full frame diagnostics: %s",
+                    os.path.join(
+                        matching.timing_discontinuity_debug_path,
+                        "details.txt",
+                    ),
                 )
             raise RuntimeError(
                 f"Unsupported {consumer} timeline discontinuity: the matched PTS mapping "
@@ -1725,13 +1735,11 @@ class MeltPerformer(TrackTimelineMixin):
                     if matching.relation is MappingRelation.GLOBAL_LINEAR else ""
                 )
                 self.logger.error(
-                    "  Suspected content discontinuity: %s-%s in #%d ↔ %s-%s in #%d "
+                    "  Suspected content discontinuity: %s in #%d ↔ %s in #%d "
                     "(%+d ms%s)",
-                    generic_utils.ms_to_time(lhs_from),
-                    generic_utils.ms_to_time(lhs_to),
+                    format_timestamp_range(lhs_from, lhs_to),
                     file_ids[base_path],
-                    generic_utils.ms_to_time(rhs_from),
-                    generic_utils.ms_to_time(rhs_to),
+                    format_timestamp_range(rhs_from, rhs_to),
                     file_ids[source_path],
                     deficit,
                     suffix,

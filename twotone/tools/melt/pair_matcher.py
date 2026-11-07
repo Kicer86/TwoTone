@@ -5,7 +5,7 @@ import os
 from bisect import bisect_right
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from math import ceil, floor
+from math import ceil, floor, isfinite
 from typing import NamedTuple, TypedDict
 
 import cv2 as cv
@@ -16,8 +16,11 @@ from tqdm import tqdm
 from ..utils import files_utils, generic_utils, image_utils, media_analysis, video_utils
 from .debug_routines import DebugRoutines
 from .melt_cache import MeltCache
-from .melt_common import FrameInfo, FramesInfo
+from .melt_common import FrameInfo, FramesInfo, format_timestamp, format_timestamp_range
 from .phash_cache import PhashCache
+
+
+DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = 2.0
 
 
 class MappingRelation(enum.Enum):
@@ -89,6 +92,7 @@ class SegmentsMappingResult(NamedTuple):
     # verdict explicit lets downstream execution defend that contract without
     # reclassifying the mapping.
     content_discontinuities: tuple[tuple[int, int, int, int, int], ...] = ()
+    timing_discontinuity_debug_path: str | None = None
 
 
 class _BoundarySearchContext(NamedTuple):
@@ -380,7 +384,16 @@ class PairMatcher:
         cache: MeltCache | None = None,
         *,
         media_analysis_session: media_analysis.MediaAnalysisSession,
+        max_temporary_frame_offset: float = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
     ) -> None:
+        if (
+            not isfinite(max_temporary_frame_offset)
+            or max_temporary_frame_offset < DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
+        ):
+            raise ValueError(
+                "Maximum temporary frame offset must be finite and at least "
+                f"{DEFAULT_MAX_TEMPORARY_FRAME_OFFSET:g}."
+            )
         self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
         self.lhs_path = lhs_path
@@ -390,6 +403,7 @@ class PairMatcher:
         self.logger = logger
         self.cache = cache
         self.media_analysis = media_analysis_session
+        self.max_temporary_frame_offset = max_temporary_frame_offset
         self.phash = PhashCache()
         lhs_video_data = video_utils.get_video_data(lhs_path, logger=self.logger)["video"][0]
         rhs_video_data = video_utils.get_video_data(rhs_path, logger=self.logger)["video"][0]
@@ -504,12 +518,13 @@ class PairMatcher:
     # a content cut (e.g. a commercial break) is one-sided and multi-second.
     _MAX_GAP_TIME_DEFICIT_MS = 2000
     _MAX_GAP_TIME_DEFICIT_RATIO = 0.02
-    # A GLOBAL_LINEAR mapping promises frame-accurate progression. Each
-    # endpoint may be uncertain by at most two frames, so the advance between
-    # two anchors may differ from the fitted relation by at most four frames.
+    # A GLOBAL_LINEAR mapping promises frame-accurate progression. A local
+    # advance may differ from the fitted relation by at most two frames before
+    # it requires refinement or an explicit temporary-excursion override.
     # Unlike the GENERIC time-domain tolerance below, this limit must not grow
     # with gap length: a content cut is a step in frame offset, not drift.
-    _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 4.0
+    _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 2.0
+    DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
     _SCENE_THRESHOLD = 0.30
 
     @staticmethod
@@ -2163,28 +2178,291 @@ class PairMatcher:
     def _raise_for_unresolved_content_discontinuities(
         self,
         discontinuities: list[tuple[int, int, int, int, int]],
+        debug_path: str | None = None,
     ) -> None:
-        for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in discontinuities:
-            self.logger.error(
-                "Suspected content discontinuity between matched anchors: %s-%s in %s "
-                "↔ %s-%s in %s "
-                "(%+d ms, %+.1f frames)",
-                generic_utils.ms_to_time(lhs_from),
-                generic_utils.ms_to_time(lhs_to),
-                self.lhs_label,
-                generic_utils.ms_to_time(rhs_from),
-                generic_utils.ms_to_time(rhs_to),
-                self.rhs_label,
-                deficit_ms,
-                deficit_ms * self.rhs_fps / 1000,
+        groups = self._group_content_discontinuities(discontinuities)
+        suggested_temporary_offsets: list[int] = []
+        for group in groups:
+            excursion = self._temporary_frame_offset_excursion(group)
+            if (
+                excursion is not None
+                and excursion[0] > self.max_temporary_frame_offset
+            ):
+                suggested_temporary_offsets.append(excursion[0])
+            frame_errors = [
+                deficit_ms * self.rhs_fps / 1000
+                for *_, deficit_ms in group
+            ]
+            lhs_from, _, rhs_from, _, _ = group[0]
+            _, lhs_to, _, rhs_to, _ = group[-1]
+            lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
+            lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
+            rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
+            rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
+            compensating = (
+                len(group) > 1
+                and min(frame_errors) < 0 < max(frame_errors)
+                and abs(sum(frame_errors))
+                <= self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
             )
-        raise RuntimeError(
-            "Unresolved suspected content discontinuities: insufficient evidence to rule out "
-            "holes in the scene sequence "
-            f"(absolute frame-step error exceeds "
-            f"{self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:g} frames) — patching "
-            "audio across such discontinuities is not supported yet"
+            outer_start_offset = lhs_frame_from - rhs_frame_from
+            outer_end_offset = lhs_frame_to - rhs_frame_to
+            if compensating and outer_start_offset == outer_end_offset:
+                anchor_offsets = [outer_start_offset] + [
+                    int(self.lhs_all_frames[step_lhs_to]["frame_id"])
+                    - int(self.rhs_all_frames[step_rhs_to]["frame_id"])
+                    for _, step_lhs_to, _, step_rhs_to, _ in group
+                ]
+                inner_shift = max(
+                    abs(offset - outer_start_offset)
+                    for offset in anchor_offsets[1:-1]
+                )
+                if outer_start_offset > 0:
+                    offset_relation = (
+                        f" ({self.lhs_label} = {self.rhs_label} "
+                        f"+ {outer_start_offset})"
+                    )
+                elif outer_start_offset < 0:
+                    offset_relation = (
+                        f" ({self.lhs_label} = {self.rhs_label} "
+                        f"- {abs(outer_start_offset)})"
+                    )
+                else:
+                    offset_relation = ""
+                self.logger.error(
+                    "Local frame-sequence difference: the first and last matched "
+                    "frames use the same %d-frame offset%s, but inside this range "
+                    "the match shifts by %d frame%s.\n"
+                    "  %s: frames %d-%d; %s\n"
+                    "  %s: frames %d-%d; %s",
+                    abs(outer_start_offset),
+                    offset_relation,
+                    inner_shift,
+                    "" if inner_shift == 1 else "s",
+                    self.lhs_label,
+                    lhs_frame_from,
+                    lhs_frame_to,
+                    format_timestamp_range(lhs_from, lhs_to),
+                    self.rhs_label,
+                    rhs_frame_from,
+                    rhs_frame_to,
+                    format_timestamp_range(rhs_from, rhs_to),
+                )
+            else:
+                max_frame_error = max(abs(error) for error in frame_errors)
+                self.logger.error(
+                    "Local frame-sequence difference: matched-frame alignment "
+                    "changes by up to %.1f frames inside this range.\n"
+                    "  %s: frames %d-%d; %s\n"
+                    "  %s: frames %d-%d; %s",
+                    max_frame_error,
+                    self.lhs_label,
+                    lhs_frame_from,
+                    lhs_frame_to,
+                    format_timestamp_range(lhs_from, lhs_to),
+                    self.rhs_label,
+                    rhs_frame_from,
+                    rhs_frame_to,
+                    format_timestamp_range(rhs_from, rhs_to),
+                )
+            for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in group:
+                lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
+                lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
+                rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
+                rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
+                self.logger.debug(
+                    "Suspected content discontinuity between matched anchors: %s "
+                    "(decoded frames %d-%d) in %s ↔ %s "
+                    "(decoded frames %d-%d) in %s (%+d ms, %+.1f frames)",
+                    format_timestamp_range(lhs_from, lhs_to),
+                    lhs_frame_from,
+                    lhs_frame_to,
+                    self.lhs_label,
+                    format_timestamp_range(rhs_from, rhs_to),
+                    rhs_frame_from,
+                    rhs_frame_to,
+                    self.rhs_label,
+                    deficit_ms,
+                    deficit_ms * self.rhs_fps / 1000,
+                )
+        if debug_path is not None:
+            details_path = os.path.join(debug_path, "details.txt")
+            self.logger.error(
+                "Full frame diagnostics: %s",
+                details_path,
+            )
+            investigation_target = details_path
+            report_material = debug_path
+        else:
+            investigation_target = "the frame ranges logged above"
+            report_material = "the complete melt log"
+
+        region_count = len(groups)
+        region_word = "region" if region_count == 1 else "regions"
+        investigation_scope = (
+            "the reported region"
+            if region_count == 1
+            else f"all {region_count} reported regions"
         )
+        error = (
+            "Matched videos contain a local frame-sequence difference in "
+            f"{region_count} unresolved {region_word}. Inspect {investigation_scope} "
+            f"in {investigation_target}."
+        )
+        if suggested_temporary_offsets:
+            suggested_limit = max(suggested_temporary_offsets)
+            error += (
+                " If the frames confirm that each listed compensating temporary "
+                "shift is a real, acceptable difference between the videos, rerun with "
+                f"--max-temporary-frame-offset {suggested_limit}."
+            )
+            if len(suggested_temporary_offsets) < region_count:
+                error += (
+                    " This option applies only to those compensating shifts; it "
+                    "will not suppress the other reported regions."
+                )
+        error += (
+            " If the extracted frames do not confirm the reported sequence "
+            "difference, report a PairMatcher bug and include "
+            f"{report_material}."
+        )
+        raise RuntimeError(error)
+
+    @staticmethod
+    def _group_content_discontinuities(
+        discontinuities: list[tuple[int, int, int, int, int]],
+    ) -> list[list[tuple[int, int, int, int, int]]]:
+        """Group adjacent errors that share their middle matched anchor."""
+        groups: list[list[tuple[int, int, int, int, int]]] = []
+        for discontinuity in sorted(discontinuities):
+            if (
+                groups
+                and groups[-1][-1][1] == discontinuity[0]
+                and groups[-1][-1][3] == discontinuity[2]
+            ):
+                groups[-1].append(discontinuity)
+            else:
+                groups.append([discontinuity])
+        return groups
+
+    def _filter_allowed_temporary_frame_offset_excursions(
+        self,
+        discontinuities: list[tuple[int, int, int, int, int]],
+    ) -> list[tuple[int, int, int, int, int]]:
+        """Allow one temporary offset excursion that returns at the next anchor."""
+        remaining: list[tuple[int, int, int, int, int]] = []
+        for group in self._group_content_discontinuities(discontinuities):
+            excursion = self._temporary_frame_offset_excursion(group)
+            allowed = (
+                excursion is not None
+                and self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
+                < excursion[0]
+                <= self.max_temporary_frame_offset
+            )
+            if allowed:
+                assert excursion is not None
+                temporary_offset, outer_offset = excursion
+                _, lhs_middle, _, rhs_middle, _ = group[0]
+                lhs_frame_middle = int(self.lhs_all_frames[lhs_middle]["frame_id"])
+                rhs_frame_middle = int(self.rhs_all_frames[rhs_middle]["frame_id"])
+                self.logger.warning(
+                    "Accepting temporary %d-frame alignment offset between "
+                    "%s frame %d at %s and %s frame %d at %s; the next "
+                    "matched frames return to the same outer offset of %+d frame(s).",
+                    temporary_offset,
+                    self.lhs_label,
+                    lhs_frame_middle,
+                    format_timestamp(lhs_middle),
+                    self.rhs_label,
+                    rhs_frame_middle,
+                    format_timestamp(rhs_middle),
+                    outer_offset,
+                )
+            else:
+                remaining.extend(group)
+        return remaining
+
+    def _temporary_frame_offset_excursion(
+        self,
+        group: list[tuple[int, int, int, int, int]],
+    ) -> tuple[int, int] | None:
+        """Return the temporary shift and outer offset for one restored jump."""
+        if len(group) != 2:
+            return None
+
+        lhs_from, lhs_middle, rhs_from, rhs_middle, _ = group[0]
+        _, lhs_to, _, rhs_to, _ = group[1]
+        lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
+        lhs_frame_middle = int(self.lhs_all_frames[lhs_middle]["frame_id"])
+        lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
+        rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
+        rhs_frame_middle = int(self.rhs_all_frames[rhs_middle]["frame_id"])
+        rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
+        outer_offset = lhs_frame_from - rhs_frame_from
+        if lhs_frame_to - rhs_frame_to != outer_offset:
+            return None
+
+        temporary_offset = abs(
+            (lhs_frame_middle - rhs_frame_middle) - outer_offset
+        )
+        return temporary_offset, outer_offset
+
+    def _extract_discontinuity_frames(
+        self,
+        groups: list[list[tuple[int, int, int, int, int]]],
+    ) -> None:
+        """Extract every missing decoded frame in final error regions."""
+        for video_path, target_dir, frames, label, side in (
+            (
+                self.lhs_path,
+                self.lhs_all_wd,
+                self.lhs_all_frames,
+                self.lhs_label,
+                "lhs",
+            ),
+            (
+                self.rhs_path,
+                self.rhs_all_wd,
+                self.rhs_all_frames,
+                self.rhs_label,
+                "rhs",
+            ),
+        ):
+            requested: set[int] = set()
+            for group in groups:
+                if side == "lhs":
+                    start_ms, end_ms = group[0][0], group[-1][1]
+                else:
+                    start_ms, end_ms = group[0][2], group[-1][3]
+                requested.update(
+                    timestamp
+                    for timestamp in frames
+                    if start_ms <= timestamp <= end_ms
+                )
+            missing = sorted(
+                timestamp
+                for timestamp in requested
+                if frames[timestamp].get("path") is None
+            )
+            if not missing:
+                continue
+            ranges = self._compute_frame_ranges(missing, frames, margin=0)
+            self.logger.info(
+                "Extracting %d missing diagnostic frame(s) for %s",
+                len(missing),
+                label,
+            )
+            video_utils.extract_frames_at_ranges(
+                video_path,
+                target_dir,
+                ranges,
+                frames,
+                scale=(960, -2),
+                format="png",
+                interruption=self.interruption,
+                desc=f"Extracting discontinuity diagnostics: {label}",
+                logger=self.logger,
+            )
 
     def create_segments_mapping(self) -> SegmentsMappingResult:
 
@@ -2298,9 +2576,35 @@ class PairMatcher:
                 )
 
                 if discontinuity_report.content:
+                    discontinuity_report = discontinuity_report._replace(
+                        content=self._filter_allowed_temporary_frame_offset_excursions(
+                            discontinuity_report.content
+                        )
+                    )
+
+                if discontinuity_report.content:
                     debug.dump_matches(refined_pairs, "localized discontinuities")
-                    self._raise_for_unresolved_content_discontinuities(
+                    discontinuity_groups = self._group_content_discontinuities(
                         discontinuity_report.content
+                    )
+                    debug_path = debug.dump_content_discontinuities(
+                        discontinuity_groups,
+                        lhs_label=self.lhs_label,
+                        rhs_label=self.rhs_label,
+                        lhs_fps=self.lhs_fps,
+                        rhs_fps=self.rhs_fps,
+                        compensation_tolerance_frames=(
+                            self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
+                        ),
+                        prepare_frames=lambda: (
+                            self._extract_discontinuity_frames(
+                                discontinuity_groups
+                            )
+                        ),
+                    )
+                    self._raise_for_unresolved_content_discontinuities(
+                        discontinuity_report.content,
+                        debug_path,
                     )
                 matching_pairs = refined_pairs
                 global_linear_fit = refined_fit
@@ -2361,11 +2665,26 @@ class PairMatcher:
                 matching_pairs = self.snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
 
         if timing_discontinuities:
+            debug.dump_matches(matching_pairs, "timing discontinuities")
+            timing_discontinuity_groups = self._group_content_discontinuities(
+                list(timing_discontinuities)
+            )
+            timing_discontinuity_debug_path = debug.dump_timing_discontinuities(
+                timing_discontinuity_groups,
+                lhs_label=self.lhs_label,
+                rhs_label=self.rhs_label,
+                lhs_fps=self.lhs_fps,
+                rhs_fps=self.rhs_fps,
+                prepare_frames=lambda: self._extract_discontinuity_frames(
+                    timing_discontinuity_groups
+                ),
+            )
             self.logger.warning(
                 "Matched content has continuous decoded advances but discontinuous presentation timestamps; "
                 "the candidate %s frame relation is unsafe for audio execution.", relation.value,
             )
         else:
+            timing_discontinuity_debug_path = None
             self.logger.info("Mapping relation chosen: %s", relation.value)
 
         return SegmentsMappingResult(
@@ -2377,6 +2696,7 @@ class PairMatcher:
             rhs_fps=self.rhs_fps,
             frame_slope=frame_slope,
             timing_discontinuities=timing_discontinuities,
+            timing_discontinuity_debug_path=timing_discontinuity_debug_path,
         )
 
     def _log_relation_diagnostics(self, matching_pairs: list[tuple[int, int]]) -> None:
@@ -2669,19 +2989,94 @@ class PairMatcher:
             candidates.append(keys[idx])
         return min(candidates, key=lambda k: abs(k - target))
 
-    def _best_phash_match(self, lhs_ts: int, rhs_ts_guess: int, lhs_all_set: FramesInfo, rhs_all_set: FramesInfo) -> tuple[int, int] | None:
-        lhs_near = self._nearest_three(list(lhs_all_set.keys()), lhs_ts)
-        rhs_near = self._nearest_three(list(rhs_all_set.keys()), rhs_ts_guess)
-        best = None
-        best_dist = float("inf")
-        for l in lhs_near:
-            for r in rhs_near:
-                if l in lhs_all_set and r in rhs_all_set:
-                    d = abs(self.phash.get(self._extracted_path(lhs_all_set[l])) - self.phash.get(self._extracted_path(rhs_all_set[r])))
-                    if d < best_dist:
-                        best = (l, r)
-                        best_dist = d
-        return best
+    def _best_phash_match(
+        self,
+        lhs_ts: int,
+        rhs_ts_guess: int,
+        lhs_all_set: FramesInfo,
+        rhs_all_set: FramesInfo,
+        *,
+        timeline_ratio: float = 1.0,
+    ) -> tuple[int, int] | None:
+        """Refine one scene anchor using its local frame sequence.
+
+        A single perceptual hash cannot reliably distinguish adjacent frames
+        in a mostly static shot.  Score each candidate alignment across the
+        five-frame neighbourhood of the original lhs anchor instead.  This
+        keeps a scene cut aligned even when one wrong adjacent-frame pair has
+        a slightly smaller hash distance (or ties the correct pair).  Moving
+        the scene anchor additionally requires the winning sequence to look
+        like genuinely shared pictures.  With different picture geometry,
+        every raw-frame hash can be poor and tiny decoder-dependent differences
+        between those poor scores are not evidence of a one-frame correction.
+        """
+        lhs_keys = sorted(lhs_all_set)
+        rhs_keys = sorted(rhs_all_set)
+        lhs_near = self._nearest_three(lhs_keys, lhs_ts)
+        rhs_near = self._nearest_three(rhs_keys, rhs_ts_guess)
+        if not lhs_near or not rhs_near:
+            return None
+
+        if not isfinite(timeline_ratio) or timeline_ratio <= 0:
+            timeline_ratio = 1.0
+
+        lhs_anchor_frame = int(lhs_all_set[lhs_ts]["frame_id"])
+        lhs_samples = sorted(
+            timestamp
+            for timestamp, info in lhs_all_set.items()
+            if abs(int(info["frame_id"]) - lhs_anchor_frame) <= 2
+        )
+        max_rhs_snap_error = max(2.0, 750.0 / self.rhs_fps)
+
+        sequence_candidates: list[tuple[float, float, int, int]] = []
+        single_frame_candidates: list[tuple[float, float, int, int]] = []
+        for lhs_candidate in lhs_near:
+            for rhs_candidate in rhs_near:
+                movement = (
+                    abs(lhs_candidate - lhs_ts) * self.lhs_fps
+                    + abs(rhs_candidate - rhs_ts_guess) * self.rhs_fps
+                ) / 1000
+                single_distance = abs(
+                    self.phash.get(self._extracted_path(lhs_all_set[lhs_candidate]))
+                    - self.phash.get(self._extracted_path(rhs_all_set[rhs_candidate]))
+                )
+                single_frame_candidates.append((
+                    float(single_distance), movement,
+                    lhs_candidate, rhs_candidate,
+                ))
+
+                distances = []
+                for lhs_sample in lhs_samples:
+                    predicted_rhs = (
+                        rhs_candidate
+                        + (lhs_sample - lhs_candidate) / timeline_ratio
+                    )
+                    rhs_sample = self._snap_to_nearest_frame(
+                        rhs_keys, round(predicted_rhs),
+                    )
+                    if abs(rhs_sample - predicted_rhs) > max_rhs_snap_error:
+                        break
+                    distances.append(abs(
+                        self.phash.get(self._extracted_path(lhs_all_set[lhs_sample]))
+                        - self.phash.get(self._extracted_path(rhs_all_set[rhs_sample]))
+                    ))
+
+                if len(distances) == len(lhs_samples) and len(distances) >= 3:
+                    sequence_candidates.append((
+                        float(np.mean(distances)), movement,
+                        lhs_candidate, rhs_candidate,
+                    ))
+
+        if sequence_candidates:
+            best = min(sequence_candidates)
+            if best[0] > self._MIN_PHASH_CUTOFF:
+                return lhs_ts, rhs_ts_guess
+        elif single_frame_candidates:
+            best = min(single_frame_candidates)
+        else:
+            return None
+        _, _, best_lhs, best_rhs = best
+        return best_lhs, best_rhs
 
     def _build_matches(self, lhs: FramesInfo, rhs: FramesInfo) -> list[tuple[int, int, int]]:
         lhs_items = list(lhs.items())
@@ -2731,10 +3126,12 @@ class PairMatcher:
 
         if len(lhs_three) < 3 and len(rhs_three) < 3:
             return True
-        elif len(lhs_three) < 3 or len(rhs_three) < 3:
-            raise NotImplementedError("Asymmetric history check not implemented")
+        if not lhs_three or not rhs_three:
+            return True
 
-        # at least one match before current pair is required
+        # At least one available match before the current pair is required.
+        # Sparse or irregular PTS can leave one side with only one or two
+        # earlier frames even though the other side has the full three.
         lhs_frames = {l: lhs_pool[l] for l in lhs_three}
         rhs_frames = {r: rhs_pool[r] for r in rhs_three}
         matches = self._build_matches(lhs_frames, rhs_frames)
@@ -2866,9 +3263,16 @@ class PairMatcher:
         extrapolated = self._extrapolate_matches(stable, lhs, rhs, self.phash)
         self.logger.debug(f"Extrapolation:             {PairMatcher.summarize_pairs(self.phash, extrapolated, lhs_all, rhs_all)}")
 
+        timeline_ratio = (
+            PairMatcher.calculate_ratio(extrapolated)
+            if len(extrapolated) >= 2 else 1.0
+        )
         extrapolated_refined: list[tuple[int, int]] = []
         for l, r in extrapolated:
-            best_match = self._best_phash_match(l, r, lhs_all, rhs_all)
+            best_match = self._best_phash_match(
+                l, r, lhs_all, rhs_all,
+                timeline_ratio=timeline_ratio,
+            )
             if best_match is not None:
                 extrapolated_refined.append(best_match)
         self.logger.debug(f"Frame adjustment:          {PairMatcher.summarize_pairs(self.phash, extrapolated_refined, lhs_all, rhs_all)}")
