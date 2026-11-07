@@ -140,6 +140,12 @@ class MeltPlanInputValidationTest(unittest.TestCase):
 
 
 class MeltToolContextTest(unittest.TestCase):
+    def test_required_tools_include_extracted_audio_and_subtitle_dependencies(self):
+        self.assertEqual(
+            MeltTool().required_tools(),
+            {"ffmpeg", "ffprobe", "mkvextract", "mkvmerge"},
+        )
+
     def test_parser_accepts_custom_temporary_frame_offset_limit(self):
         parser = argparse.ArgumentParser()
         MeltTool().setup_parser(parser)

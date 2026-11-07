@@ -31,7 +31,7 @@ class StreamsPickerTest(MeltTestBase):
     def test_streams_picker_prefers_higher_sample_rate_audio(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates)
 
         file1 = os.path.join(self.wd.path, "audio_48k.mkv")
         file2 = os.path.join(self.wd.path, "audio_24k.mkv")
@@ -104,7 +104,7 @@ class StreamsPickerTest(MeltTestBase):
     def test_streams_picker_keeps_requested_audio_subtitle_streams_including_unknown_language(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates)
 
         file_forced = os.path.join(self.wd.path, "forced.mkv")
         file_other = os.path.join(self.wd.path, "other.mkv")
@@ -152,7 +152,7 @@ class StreamsPickerTest(MeltTestBase):
     def test_streams_picker_supports_deprecated_force_all_streams_metadata(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates)
 
         file_forced = os.path.join(self.wd.path, "forced.mkv")
         duplicates.add_metadata(file_forced, "force_all_streams", True)
@@ -175,7 +175,7 @@ class StreamsPickerTest(MeltTestBase):
     def test_streams_picker_raises_on_unknown_language_without_force_flag(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates)
 
         file1 = os.path.join(self.wd.path, "unknown_audio_1.mkv")
         file2 = os.path.join(self.wd.path, "unknown_audio_2.mkv")
@@ -201,7 +201,7 @@ class StreamsPickerTest(MeltTestBase):
         """Keep-all-audio/subtitle flag does not affect video selection."""
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates)
 
         file_forced = os.path.join(self.wd.path, "forced_lo.mkv")
         file_other = os.path.join(self.wd.path, "other_hi.mkv")
@@ -232,7 +232,7 @@ class StreamsPickerTest(MeltTestBase):
     def test_use_video_forces_video_selection(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates)
 
         file_forced = os.path.join(self.wd.path, "forced_lo.mkv")
         file_other = os.path.join(self.wd.path, "other_hi.mkv")
@@ -262,7 +262,7 @@ class StreamsPickerTest(MeltTestBase):
     def test_use_video_rejects_multiple_forced_inputs(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates)
 
         file_a = os.path.join(self.wd.path, "forced_a.mkv")
         file_b = os.path.join(self.wd.path, "forced_b.mkv")
@@ -291,7 +291,7 @@ class StreamsPickerTest(MeltTestBase):
         """'und' language is normalized to None, then treated as undefined for kept inputs."""
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates)
 
         file_forced = os.path.join(self.wd.path, "forced_und.mkv")
 
@@ -342,7 +342,7 @@ class StreamsPickerTest(MeltTestBase):
         """Two kept inputs with the same language keep all streams from both."""
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates)
 
         file_a = os.path.join(self.wd.path, "forced_a.mkv")
         file_b = os.path.join(self.wd.path, "forced_b.mkv")
@@ -377,7 +377,7 @@ class StreamsPickerTest(MeltTestBase):
         """When kept input covers all unique keys, non-forced contributes nothing."""
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates)
 
         file_forced = os.path.join(self.wd.path, "forced_full.mkv")
         file_other = os.path.join(self.wd.path, "other.mkv")
@@ -422,7 +422,7 @@ class StreamsPickerTest(MeltTestBase):
     def test_streams_picker_prefers_higher_resolution_video(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates, self.wd.path)
+        sp = StreamsPicker(self.logger.getChild("StreamsPicker"), duplicates)
 
         file1 = os.path.join(self.wd.path, "video_800.mkv")
         file2 = os.path.join(self.wd.path, "video_796.mkv")
@@ -553,7 +553,7 @@ class StreamsPickerTest(MeltTestBase):
     def test_streams_pick_decision(self, name, input, expected_streams):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        streams_picker = StreamsPicker(self.logger.getChild("Melter"), duplicates, self.wd.path)
+        streams_picker = StreamsPicker(self.logger.getChild("Melter"), duplicates)
 
         ids = _build_path_to_id_map(input)
 
