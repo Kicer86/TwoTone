@@ -6,13 +6,16 @@ from collections.abc import Callable
 from typing import cast
 from unittest.mock import Mock, patch
 
-from twotone.tools.melt import matching_analysis
+from twotone.tools.melt import frame_comparison, matching_analysis
+from twotone.tools.melt.boundary_search import BoundarySearch
+from twotone.tools.melt.frame_comparison import (
+    BoundaryVerifyContext,
+    VerifySide,
+)
 from twotone.tools.melt.melt import MappingRelation, PairMatcher
 from twotone.tools.melt.pair_matcher import (
     GlobalLinearDiscontinuityReport,
     GlobalLinearFit,
-    _BoundaryVerifyContext,
-    _VerifySide,
 )
 from twotone.tools.melt.phash_cache import PhashCache
 from twotone.tools.utils import (
@@ -440,7 +443,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         boundary = (2000, 2000)
         reference = (3000, 3000)
 
-        with patch.object(PairMatcher, '_is_rich', return_value=False):
+        with patch.object(frame_comparison, 'is_rich', return_value=False):
             result = pm.extrapolate_through_low_entropy(
                 lhs, rhs, boundary, reference, ratio=1.0,
                 direction=-1, entered_low_entropy=True,
@@ -471,7 +474,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         rhs = self._make_frames(list(range(0, 4000, 40)))
         boundary = (2000, 2000)
 
-        with patch.object(PairMatcher, '_is_rich', return_value=True):
+        with patch.object(frame_comparison, 'is_rich', return_value=True):
             result = pm.extrapolate_through_low_entropy(
                 lhs, rhs, boundary, (3000, 3000), ratio=1.0,
                 direction=-1, entered_low_entropy=True,
@@ -497,7 +500,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             ts = int(path.split("/")[-1].replace(".png", ""))
             return ts in noisy_timestamps
 
-        with patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich):
+        with patch.object(frame_comparison, 'is_rich', side_effect=mock_is_rich):
             result = pm.extrapolate_through_low_entropy(
                 lhs, rhs, boundary, (6000, 6000), ratio=1.0,
                 direction=-1, entered_low_entropy=True,
@@ -523,7 +526,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             ts = int(path.split("/")[-1].replace(".png", ""))
             return ts in noisy_timestamps
 
-        with patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich):
+        with patch.object(frame_comparison, 'is_rich', side_effect=mock_is_rich):
             result = pm.extrapolate_through_low_entropy(
                 lhs, rhs, boundary, (6000, 6000), ratio=1.0,
                 direction=-1, entered_low_entropy=True,
@@ -544,7 +547,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         boundary = (4000, 4000)
         reference = (2000, 2000)
 
-        with patch.object(PairMatcher, '_is_rich', return_value=False):
+        with patch.object(frame_comparison, 'is_rich', return_value=False):
             result = pm.extrapolate_through_low_entropy(
                 lhs, rhs, boundary, reference, ratio=1.0,
                 direction=1, entered_low_entropy=True,
@@ -571,7 +574,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                 return True    # RHS gap: all high-entropy
             return False
 
-        with patch.object(PairMatcher, '_is_rich', side_effect=smart_mock):
+        with patch.object(frame_comparison, 'is_rich', side_effect=smart_mock):
             result = pm.extrapolate_through_low_entropy(
                 lhs, rhs, boundary, (6000, 6000), ratio=1.0,
                 direction=-1, entered_low_entropy=True,
@@ -1017,12 +1020,12 @@ class PairMatcherUnitTest(unittest.TestCase):
     def test_create_segments_mapping_verified_extrapolation_for_global_linear(self):
         """Global-linear uses the fit's verified extrapolation, not the refine walk."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
-        pm.lhs_all_wd = "/tmp/lhs_all"
-        pm.rhs_all_wd = "/tmp/rhs_all"
-        pm.lhs_boundary_wd = "/tmp/lhs_boundary"
-        pm.rhs_boundary_wd = "/tmp/rhs_boundary"
-        pm.lhs_normalized_wd = "/tmp/lhs_norm"
-        pm.rhs_normalized_wd = "/tmp/rhs_norm"
+        pm.lhs.all_dir = "/tmp/lhs_all"
+        pm.rhs.all_dir = "/tmp/rhs_all"
+        pm.lhs.boundary_dir = "/tmp/lhs_boundary"
+        pm.rhs.boundary_dir = "/tmp/rhs_boundary"
+        pm.lhs.normalized_dir = "/tmp/lhs_norm"
+        pm.rhs.normalized_dir = "/tmp/rhs_norm"
         pm.debug_wd = "/tmp/debug"
 
         class FakePhash:
@@ -1433,22 +1436,26 @@ class PairMatcherUnitTest(unittest.TestCase):
         """Patch the verify-context builder — the tests patch the consumer
         (_boundary_content_matches), so the real builder's image work is
         neither needed nor possible on the fake frame paths."""
-        return patch.object(PairMatcher, '_build_boundary_verify_context', return_value=None)
+        return patch.object(
+            frame_comparison.FrameComparison,
+            'build_boundary_verify_context',
+            return_value=None,
+        )
 
     def _make_verify_ctx(self, phash_values: dict, cutoff: float,
-                         lhs_images: dict, rhs_images: dict) -> _BoundaryVerifyContext:
+                         lhs_images: dict, rhs_images: dict) -> BoundaryVerifyContext:
         """Build a context with pre-seeded comparison images and a fake phash."""
         class FakePhash:
             def get(self, path):
                 return phash_values[path]
 
         def side(images):
-            return _VerifySide(
+            return VerifySide(
                 video_path="/fake", raw_dir="/fake_raw", all_frames={}, normalized={},
                 crop_fn=None, comparison_dir="/fake_cmp", comparison_cache=dict(images),
             )
 
-        return _BoundaryVerifyContext(
+        return BoundaryVerifyContext(
             lhs=side(lhs_images), rhs=side(rhs_images),
             phash=cast(PhashCache, FakePhash()), cutoff=cutoff,
         )
@@ -1461,7 +1468,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         fit = GlobalLinearFit(slope=1.0, intercept=0.0, is_constant_offset=True, time_scale=1.0)
 
         with self._patch_verify_ctx(), \
-             patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
+             patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True):
             result = pm._extrapolate_and_verify_global_linear(
                 fit, matching_pairs, pm.lhs_all_frames, pm.rhs_all_frames)
 
@@ -1489,7 +1496,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         ))
 
         with self._patch_verify_ctx(), patch.object(
-            PairMatcher, '_maybe_insert_verified_boundary',
+            BoundarySearch, '_maybe_insert_verified_boundary',
         ) as insert_boundary:
             pm._extrapolate_and_verify_global_linear(
                 GlobalLinearFit(1.0, -12.0, True, 1.0),
@@ -1517,7 +1524,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(2000, 2600), (4000, 4200), (6000, 5800), (8000, 7400)]
 
         with self._patch_verify_ctx(), patch.object(
-            PairMatcher, '_maybe_insert_verified_boundary',
+            BoundarySearch, '_maybe_insert_verified_boundary',
         ) as insert_boundary:
             pm._extrapolate_and_verify_global_linear(
                 GlobalLinearFit(1.0, 25.0, True, 0.8),
@@ -1550,7 +1557,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         ))
 
         with self._patch_verify_ctx(), patch.object(
-            PairMatcher, '_boundary_content_matches', return_value=True,
+            frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True,
         ):
             result = pm._extrapolate_and_verify_global_linear(
                 GlobalLinearFit(1.0, -12.0, True, 1.0),
@@ -1575,7 +1582,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         )
 
         with self._patch_verify_ctx(), \
-             patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
+             patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True):
             result = pm._extrapolate_and_verify_global_linear(
                 fit, matching_pairs, pm.lhs_all_frames, pm.rhs_all_frames,
             )
@@ -1593,7 +1600,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                     )
                     fit = GlobalLinearFit(1.0, 0.0, True, 1.0)
                     with self._patch_verify_ctx(), \
-                         patch.object(PairMatcher, '_boundary_content_matches', return_value=True) as verify:
+                         patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True) as verify:
                         result = pm._extrapolate_and_verify_global_linear(
                             fit, [(4000, 4000), (6000, 6000)], pm.lhs_all_frames, pm.rhs_all_frames,
                         )
@@ -1613,7 +1620,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         )
 
         with self._patch_verify_ctx(), \
-             patch.object(PairMatcher, '_boundary_content_matches', return_value=True) as verify:
+             patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True) as verify:
             result = pm._extrapolate_and_verify_global_linear(
                 GlobalLinearFit(1.0, 0.0, True, 1.0),
                 [(4000, 4000), (6000, 6000)],
@@ -1641,7 +1648,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                 fit = GlobalLinearFit(1.0, -10.0 if side == "lhs" else 10.0, True, 1.0)
                 pairs = [(4000, 3600), (6000, 5600)] if side == "lhs" else [(3600, 4000), (5600, 6000)]
                 with self._patch_verify_ctx(), \
-                     patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
+                     patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True):
                     result = pm._extrapolate_and_verify_global_linear(
                         fit, pairs, pm.lhs_all_frames, pm.rhs_all_frames,
                     )
@@ -1663,7 +1670,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                     return lhs_ts == rhs_ts
 
                 with self._patch_verify_ctx(), \
-                     patch.object(PairMatcher, '_boundary_content_matches', side_effect=matches) as verify:
+                     patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', side_effect=matches) as verify:
                     result = pm._extrapolate_and_verify_global_linear(
                         GlobalLinearFit(1.0, 0.0, True, 1.0), [(2000, 2000), (6000, 6000)],
                         pm.lhs_all_frames, pm.rhs_all_frames,
@@ -1692,7 +1699,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             return lhs_ts == rhs_ts and (lhs_ts == 0 or lhs_ts >= 1000)
 
         with self._patch_verify_ctx(), \
-             patch.object(PairMatcher, '_boundary_content_matches', side_effect=content_matches):
+             patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', side_effect=content_matches):
             result = pm._extrapolate_and_verify_global_linear(
                 fit, matching_pairs, pm.lhs_all_frames, pm.rhs_all_frames,
             )
@@ -1706,7 +1713,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         fit = GlobalLinearFit(slope=1.0, intercept=0.0, is_constant_offset=True, time_scale=1.0)
 
         with self._patch_verify_ctx(), \
-             patch.object(PairMatcher, '_boundary_content_matches', return_value=False):
+             patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=False):
             result = pm._extrapolate_and_verify_global_linear(
                 fit, matching_pairs, pm.lhs_all_frames, pm.rhs_all_frames)
 
@@ -1723,7 +1730,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         fit = GlobalLinearFit(slope=1.0, intercept=3.0, is_constant_offset=True, time_scale=1.0)
 
         with self._patch_verify_ctx(), \
-             patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
+             patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True):
             result = pm._extrapolate_and_verify_global_linear(
                 fit, matching_pairs, pm.lhs_all_frames, pm.rhs_all_frames)
 
@@ -1738,7 +1745,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         fit = GlobalLinearFit(slope=1.0, intercept=50.0, is_constant_offset=True, time_scale=1.0)
 
         with self._patch_verify_ctx(), \
-             patch.object(PairMatcher, '_boundary_content_matches', return_value=True):
+             patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True):
             result = pm._extrapolate_and_verify_global_linear(
                 fit, matching_pairs, pm.lhs_all_frames, pm.rhs_all_frames)
 
@@ -1756,7 +1763,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         ctx = self._make_verify_ctx({}, cutoff=16,
                                     lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
         with self._patch_entropy({"/l.png": 0.5, "/r.png": 0.5}):
-            self.assertTrue(pm._boundary_content_matches(ctx, 0, 0))
+            self.assertTrue(pm.frame_comparison.boundary_content_matches(ctx, 0, 0))
 
     def test_boundary_content_matches_rejects_black_vs_content(self):
         """A decisively black frame vs a rich frame never verifies (one lead-in is black)."""
@@ -1764,7 +1771,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         ctx = self._make_verify_ctx({}, cutoff=16,
                                     lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
         with self._patch_entropy({"/l.png": 0.5, "/r.png": 5.0}):
-            self.assertFalse(pm._boundary_content_matches(ctx, 0, 0))
+            self.assertFalse(pm.frame_comparison.boundary_content_matches(ctx, 0, 0))
 
     def test_boundary_content_matches_flat_vs_rich_falls_through_to_phash(self):
         """A flat-but-lit frame (title card, sky) vs a rich one is not a
@@ -1778,7 +1785,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         ctx = self._make_verify_ctx({"/l.png": 0, "/r.png": 12}, cutoff=16,
                                     lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
         with self._patch_entropy({"/l.png": 3.2, "/r.png": 5.0}):
-            self.assertTrue(pm._boundary_content_matches(ctx, 0, 0))
+            self.assertTrue(pm.frame_comparison.boundary_content_matches(ctx, 0, 0))
 
     def test_boundary_content_matches_accepts_within_cutoff(self):
         """A distance within the pair-calibrated cutoff verifies as the same frame."""
@@ -1786,7 +1793,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         ctx = self._make_verify_ctx({"/l.png": 0, "/r.png": 12}, cutoff=16,
                                     lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
         with self._patch_entropy({"/l.png": 5.0, "/r.png": 5.0}):
-            self.assertTrue(pm._boundary_content_matches(ctx, 0, 0))
+            self.assertTrue(pm.frame_comparison.boundary_content_matches(ctx, 0, 0))
 
     def test_boundary_content_matches_rejects_beyond_cutoff(self):
         """Divergent content (e.g. grass vs atoms intros) lands far above the
@@ -1796,14 +1803,14 @@ class PairMatcherUnitTest(unittest.TestCase):
         ctx = self._make_verify_ctx({"/l.png": 0, "/r.png": 124}, cutoff=16,
                                     lhs_images={0: "/l.png"}, rhs_images={0: "/r.png"})
         with self._patch_entropy({"/l.png": 5.0, "/r.png": 5.0}):
-            self.assertFalse(pm._boundary_content_matches(ctx, 0, 0))
+            self.assertFalse(pm.frame_comparison.boundary_content_matches(ctx, 0, 0))
 
     def test_boundary_content_matches_rejects_missing_comparison_image(self):
         """A frame whose comparison image cannot be produced never verifies."""
         pm = self._make_pm_with_frames([0, 40], [0, 40])
         ctx = self._make_verify_ctx({}, cutoff=16,
                                     lhs_images={0: None}, rhs_images={0: "/r.png"})
-        self.assertFalse(pm._boundary_content_matches(ctx, 0, 0))
+        self.assertFalse(pm.frame_comparison.boundary_content_matches(ctx, 0, 0))
 
     def test_boundary_image_extraction_uses_decoded_frame_id(self):
         """A presentation timestamp must resolve to its decoder ordinal."""
@@ -1817,7 +1824,7 @@ class PairMatcherUnitTest(unittest.TestCase):
             probed_frames[2000]["path"] = "/decoded/frame_7.png"
 
         with patch.object(video_utils, 'extract_frames_at_ranges', side_effect=extract):
-            path = pm._ensure_boundary_image(
+            path = pm.frame_comparison.ensure_boundary_image(
                 "/fake/video.avi", "/fake/boundary", frames, 2000,
             )
 
@@ -1829,12 +1836,14 @@ class PairMatcherUnitTest(unittest.TestCase):
         with patch.object(video_utils, "extract_frames_at_ranges",
                           side_effect=RuntimeError("missing frame at 501ms")) as extract:
             with self.assertRaisesRegex(RuntimeError, "missing frame at 501ms"):
-                pm._prefetch_boundary_images("/fake/video.mkv", "/fake/boundary", frames, [501])
+                pm.frame_comparison.prefetch_images(
+                    "/fake/video.mkv", "/fake/boundary", frames, [501],
+                )
         extract.assert_called_once()
 
     def test_boundary_comparison_propagates_extraction_failure(self):
         pm = self._make_pair_matcher()
-        side = _VerifySide(
+        side = VerifySide(
             video_path="/fake/video.mkv", raw_dir="/fake/boundary",
             all_frames={501: {"path": None, "frame_id": 12}}, normalized={},
             crop_fn=None, comparison_dir="/fake/comparison", comparison_cache={},
@@ -1842,7 +1851,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         with patch.object(video_utils, "extract_frames_at_ranges",
                           side_effect=RuntimeError("missing frame at 501ms")) as extract:
             with self.assertRaisesRegex(RuntimeError, "missing frame at 501ms"):
-                pm._comparison_image(side, 501)
+                pm.frame_comparison.comparison_image(side, 501)
         extract.assert_called_once()
         self.assertNotIn(501, side.comparison_cache)
 
@@ -1857,7 +1866,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         class FakePhashCache:
             def __init__(self, hash_size=16): pass
             def get(self, path): return FakeHash()
-        return patch('twotone.tools.melt.pair_matcher.PhashCache', FakePhashCache)
+        return patch('twotone.tools.melt.boundary_search.PhashCache', FakePhashCache)
 
     def test_boundary_search_survives_transient_dark_frame(self):
         """A single dark frame at a scene cut should not stop boundary search."""
@@ -1878,8 +1887,8 @@ class PairMatcherUnitTest(unittest.TestCase):
         last = (8000, 8000)
 
         with (
-            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
-            patch.object(pm, '_edge_content_matches', return_value=True),
+            patch.object(frame_comparison, 'is_rich', side_effect=mock_is_rich),
+            patch.object(pm.boundary_search, '_edge_content_matches', return_value=True),
             self._mock_phash_always_match(),
         ):
             result_first, _ = pm.look_for_boundaries(
@@ -1908,8 +1917,8 @@ class PairMatcherUnitTest(unittest.TestCase):
         last = (8000, 8000)
 
         with (
-            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
-            patch.object(pm, '_edge_content_matches', return_value=True),
+            patch.object(frame_comparison, 'is_rich', side_effect=mock_is_rich),
+            patch.object(pm.boundary_search, '_edge_content_matches', return_value=True),
             self._mock_phash_always_match(),
         ):
             result_first, _ = pm.look_for_boundaries(
@@ -1938,8 +1947,8 @@ class PairMatcherUnitTest(unittest.TestCase):
         last = (8000, 8000)
 
         with (
-            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
-            patch.object(pm, '_edge_content_matches', return_value=True),
+            patch.object(frame_comparison, 'is_rich', side_effect=mock_is_rich),
+            patch.object(pm.boundary_search, '_edge_content_matches', return_value=True),
             self._mock_phash_always_match(),
         ):
             result_first, _ = pm.look_for_boundaries(
@@ -1975,8 +1984,8 @@ class PairMatcherUnitTest(unittest.TestCase):
         last = (18000, 18000)
 
         with (
-            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
-            patch.object(pm, '_edge_content_matches', return_value=True),
+            patch.object(frame_comparison, 'is_rich', side_effect=mock_is_rich),
+            patch.object(pm.boundary_search, '_edge_content_matches', return_value=True),
             self._mock_phash_always_match(),
         ):
             result_first, _ = pm.look_for_boundaries(
@@ -2026,9 +2035,9 @@ class PairMatcherUnitTest(unittest.TestCase):
                 })()
 
         with (
-            patch.object(PairMatcher, '_is_rich', side_effect=mock_is_rich),
-            patch.object(pm, '_edge_content_matches', return_value=True),
-            patch('twotone.tools.melt.pair_matcher.PhashCache', SelectivePhashCache),
+            patch.object(frame_comparison, 'is_rich', side_effect=mock_is_rich),
+            patch.object(pm.boundary_search, '_edge_content_matches', return_value=True),
+            patch('twotone.tools.melt.boundary_search.PhashCache', SelectivePhashCache),
         ):
             result_first, _ = pm.look_for_boundaries(
                 lhs, rhs, first, last, cutoff=16, extrapolate=False,
@@ -2411,7 +2420,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         with patch.object(video_utils, "extract_frames_at_ranges", side_effect=extract) as extraction:
             for ranges in ([(0, 2)], [(0, 3)], [(0, 3)]):
                 pm._extract_scene_frames_for(
-                    pm.lhs_path, pm.lhs_all_wd, ranges, pm.lhs_all_frames, pm.lhs_label,
+                    pm.lhs_path, pm.lhs.all_dir, ranges, pm.lhs_all_frames, pm.lhs_label,
                 )
 
         self.assertEqual([call.args[2] for call in extraction.call_args_list], [
@@ -2653,8 +2662,8 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(sorted(rhs_scenes), [ts for ts, _ in candidates])
         self.assertEqual(matching.call_count, 2 * len(candidates))
         self.assertEqual(coordinates.call_count, 2)
-        self.assertEqual(set(lhs_normalized), normalized_timestamps[pm.lhs_normalized_wd])
-        self.assertEqual(set(rhs_normalized), normalized_timestamps[pm.rhs_normalized_wd])
+        self.assertEqual(set(lhs_normalized), normalized_timestamps[pm.lhs.normalized_dir])
+        self.assertEqual(set(rhs_normalized), normalized_timestamps[pm.rhs.normalized_dir])
 
     def test_local_scene_refinement_without_new_scenes_keeps_original_gap(self):
         timestamps = list(range(0, 40001, 40))
@@ -2739,8 +2748,8 @@ class PairMatcherUnitTest(unittest.TestCase):
                 if unavailable:
                     ctx.rhs.comparison_cache[original] = None
 
-                with patch.object(pm, '_build_boundary_verify_context', return_value=ctx), \
-                     patch.object(pm, '_prefetch_boundary_images') as prefetch, \
+                with patch.object(pm.frame_comparison, 'build_boundary_verify_context', return_value=ctx), \
+                     patch.object(pm.frame_comparison, 'prefetch') as prefetch, \
                      patch.object(image_utils, 'image_entropy', side_effect=entropies.__getitem__):
                     result = pm._drop_pairs_breaking_local_linearity(
                         pairs, pm.lhs_all_frames, pm.rhs_all_frames, frame_slope=1.0,
@@ -2753,7 +2762,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                 ), [])
                 # Extend in local batches, retaining the same comparison cache.
                 self.assertGreater(prefetch.call_count, 2)
-                self.assertTrue(all(len(call.args[3]) <= 10 for call in prefetch.call_args_list))
+                self.assertTrue(all(len(call.args[1]) <= 10 for call in prefetch.call_args_list))
                 pm.media_analysis.fulfill.assert_not_called()
 
     def test_false_pair_ignores_low_entropy_replacement_without_counting_it(self):
@@ -2763,8 +2772,8 @@ class PairMatcherUnitTest(unittest.TestCase):
                 for ts, path in ctx.rhs.comparison_cache.items():
                     if ts == 8000 or (black_region == "after" and 8000 < ts < 14000):
                         entropies[path] = 0.0
-                with patch.object(pm, '_build_boundary_verify_context', return_value=ctx), \
-                     patch.object(pm, '_prefetch_boundary_images'), \
+                with patch.object(pm.frame_comparison, 'build_boundary_verify_context', return_value=ctx), \
+                     patch.object(pm.frame_comparison, 'prefetch'), \
                      patch.object(image_utils, 'image_entropy', side_effect=entropies.__getitem__):
                     self.assertEqual(pm._verify_false_pair(
                         pairs[1], pairs[2], pairs[3], pm.lhs_all_frames, pm.rhs_all_frames,
@@ -2787,8 +2796,8 @@ class PairMatcherUnitTest(unittest.TestCase):
                         if 6000 <= ts <= 10000:
                             hashes[path] = (ts + 600) * 10
 
-                with patch.object(pm, '_build_boundary_verify_context', return_value=ctx), \
-                     patch.object(pm, '_prefetch_boundary_images'), \
+                with patch.object(pm.frame_comparison, 'build_boundary_verify_context', return_value=ctx), \
+                     patch.object(pm.frame_comparison, 'prefetch'), \
                      patch.object(image_utils, 'image_entropy', side_effect=entropies.__getitem__):
                     result = pm._drop_pairs_breaking_local_linearity(
                         pairs, pm.lhs_all_frames, pm.rhs_all_frames, frame_slope=1.0,
@@ -2946,8 +2955,8 @@ class PairMatcherUnitTest(unittest.TestCase):
                 for ts in ctx.lhs.comparison_cache:
                     if ts != retained and ((2000 < ts < 8000) if before else (8000 < ts < 14000)):
                         ctx.lhs.comparison_cache[ts] = None
-                with patch.object(pm, '_build_boundary_verify_context', return_value=ctx), \
-                     patch.object(pm, '_prefetch_boundary_images'), \
+                with patch.object(pm.frame_comparison, 'build_boundary_verify_context', return_value=ctx), \
+                     patch.object(pm.frame_comparison, 'prefetch'), \
                      patch.object(image_utils, 'image_entropy', side_effect=entropies.__getitem__):
                     self.assertFalse(pm._verify_false_pair(
                         pairs[1], pairs[2], pairs[3], pm.lhs_all_frames, pm.rhs_all_frames,
