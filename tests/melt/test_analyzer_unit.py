@@ -16,6 +16,7 @@ from twotone.tools.melt.melt_common import (
     SubtitleStreamRef,
     VideoStreamRef,
 )
+from twotone.tools.melt.melt_plan import MeltGroupPlan, MeltTitlePlan
 from twotone.tools.tool import ToolRuntimeContext
 from twotone.tools.utils import generic_utils, media_analysis, video_utils
 
@@ -146,7 +147,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
         raw_info = self._make_mkvmerge_info(**raw_overrides)
 
         with patch.object(video_utils, "get_video_full_info_mkvmerge", return_value=raw_info), \
-             patch.object(video_utils, "get_video_full_info") as probe_info, \
+             patch.object(self.media_analysis, "probe") as probe_info, \
              patch.object(video_utils, "normalize_mkvmerge_data") as normalize:
             with self.assertRaises(UnsupportedMeltInputError) as raised:
                 self.analyzer._probe_inputs([input_path], {input_path: 1})
@@ -180,7 +181,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
             video_utils,
             "get_video_full_info_mkvmerge",
             side_effect=[first_info, second_info],
-        ), patch.object(video_utils, "get_video_full_info") as probe_info, \
+        ), patch.object(self.media_analysis, "probe") as probe_info, \
              patch.object(video_utils, "normalize_mkvmerge_data") as normalize:
             with self.assertRaisesRegex(
                 UnsupportedMeltInputError,
@@ -227,9 +228,13 @@ class MeltAnalyzerTest(TwoToneTestCase):
             "get_video_full_info_mkvmerge",
             return_value=raw_info,
         ) as raw_probe, patch.object(
-            video_utils,
-            "get_video_full_info",
-            return_value=probe_info,
+            self.media_analysis,
+            "probe",
+            return_value=media_analysis.MediaProbeResult(
+                input_path,
+                probe_info,
+                None,
+            ),
         ) as ffprobe, patch.object(
             video_utils,
             "normalize_mkvmerge_data",
@@ -244,7 +249,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
         self.assertEqual({input_path: parsed_info["attachments"]}, attachments)
         self.assertEqual({input_path: parsed_info["tracks"]}, tracks)
         raw_probe.assert_called_once_with(input_path, logger=self.logger)
-        ffprobe.assert_called_once_with(input_path, logger=self.logger)
+        ffprobe.assert_called_once_with(input_path)
         normalize.assert_called_once_with(
             raw_info,
             probe_info=probe_info,
@@ -368,14 +373,23 @@ class MeltAnalyzerTest(TwoToneTestCase):
     def test_analyze_duplicates_skips_only_group_with_unsupported_input(self):
         unsupported_path = os.path.join(self.wd.path, "unsupported.mkv")
         valid_path = os.path.join(self.wd.path, "valid.mkv")
-        base_plan = [{
-            "title": "Title",
-            "groups": [
-                {"files": [unsupported_path], "output_name": "unsupported"},
-                {"files": [valid_path], "output_name": "valid"},
-            ],
-        }]
-        valid_details = {"marker": "analyzed"}
+        unsupported_group = MeltGroupPlan(
+            input_files=MeltInputFiles((unsupported_path,)),
+            output_name="unsupported",
+        )
+        valid_group = MeltGroupPlan(
+            input_files=MeltInputFiles((valid_path,)),
+            output_name="valid",
+        )
+        analyzed_group = MeltGroupPlan(
+            input_files=valid_group.input_files,
+            output_name=valid_group.output_name,
+            video_streams=(VideoStreamRef(valid_path, 0, 0, None),),
+        )
+        base_plan = [MeltTitlePlan(
+            title="Title",
+            groups=(unsupported_group, valid_group),
+        )]
         unsupported_issue = "Buttons are not supported yet"
 
         with self.assertLogs(self.logger, level="INFO") as logged, \
@@ -388,7 +402,7 @@ class MeltAnalyzerTest(TwoToneTestCase):
                  "_analyze_group",
                  side_effect=[
                      UnsupportedMeltInputError(unsupported_issue),
-                     (valid_details, None, {}),
+                     (analyzed_group, None),
                  ],
              ):
             plan = self.analyzer.analyze_duplicates({})
@@ -399,28 +413,27 @@ class MeltAnalyzerTest(TwoToneTestCase):
         self.assertNotIn("Title Title: Buttons are not supported yet", logged.output[issue])
 
         self.assertEqual(
-            [{
-                "title": "Title",
-                "groups": [{
-                    "files": [valid_path],
-                    "output_name": "valid",
-                    **valid_details,
-                }],
-                "skipped_groups": [{
-                    "files": [unsupported_path],
-                    "output_name": "unsupported",
-                    "issue": unsupported_issue,
-                }],
-            }],
+            [MeltTitlePlan(
+                title="Title",
+                groups=(analyzed_group,),
+                skipped_groups=(MeltGroupPlan(
+                    input_files=unsupported_group.input_files,
+                    output_name="unsupported",
+                    issue=unsupported_issue,
+                ),),
+            )],
             plan,
         )
 
     def test_analyze_duplicates_propagates_unrelated_runtime_error(self):
         input_path = os.path.join(self.wd.path, "input.mkv")
-        base_plan = [{
-            "title": "Title",
-            "groups": [{"files": [input_path], "output_name": "input"}],
-        }]
+        base_plan = [MeltTitlePlan(
+            title="Title",
+            groups=(MeltGroupPlan(
+                input_files=MeltInputFiles((input_path,)),
+                output_name="input",
+            ),),
+        )]
 
         with patch.object(
             self.analyzer,
@@ -437,14 +450,21 @@ class MeltAnalyzerTest(TwoToneTestCase):
     def test_analyze_duplicates_displays_paths_relative_to_input(self):
         input_dir = os.path.join(self.wd.path, "input")
         input_path = os.path.join(input_dir, "nested", "input.mkv")
-        base_plan = [{
-            "title": "Title",
-            "groups": [{"files": [input_path], "output_name": "input"}],
-        }]
+        base_plan = [MeltTitlePlan(
+            title="Title",
+            groups=(MeltGroupPlan(
+                input_files=MeltInputFiles((input_path,), (input_dir,)),
+                output_name="input",
+            ),),
+        )]
 
         with self.assertLogs(self.logger, level="INFO") as logged, \
              patch.object(self.analyzer, "_prepare_duplicates_set", return_value=base_plan), \
-             patch.object(self.analyzer, "_analyze_group", return_value=({}, None, {})):
+             patch.object(
+                 self.analyzer,
+                 "_analyze_group",
+                 return_value=(base_plan[0].groups[0], None),
+             ):
             self.analyzer.analyze_duplicates({}, display_roots=(input_dir,))
 
         relative_path = os.path.join("nested", "input.mkv")
@@ -485,14 +505,15 @@ class MeltAnalyzerTest(TwoToneTestCase):
                  "_find_alignment_requirements",
                  return_value=[AlignmentRequirement(subtitle_path, requirement_issue)],
              ), patch.object(self.analyzer, "_matching_request") as matching_request:
-            plan, issue, _ = self.analyzer._analyze_group(
-                [base_path, subtitle_path], {base_path: 1, subtitle_path: 2}, "Title",
-            )
+            plan, issue = self.analyzer._analyze_group(MeltGroupPlan(
+                input_files=MeltInputFiles((base_path, subtitle_path)),
+            ))
 
         if allow_video_timeline_mismatch:
             self.assertIsNotNone(plan)
             self.assertIsNone(issue)
-            self.assertEqual(plan["alignment_paths"], [subtitle_path])
+            assert plan is not None
+            self.assertEqual(plan.alignment_paths, (subtitle_path,))
             self.assertEqual(matching_request.call_count, 2)
         else:
             self.assertIsNone(plan)
@@ -515,7 +536,6 @@ class MeltAnalyzerTest(TwoToneTestCase):
             },
         }
         details = {path: {"tracks": value, "attachments": []} for path, value in tracks.items()}
-        ids = {base_path: 1, source_path: 2}
         self.analyzer.allow_video_timeline_mismatch = True
 
         with patch.object(
@@ -535,15 +555,14 @@ class MeltAnalyzerTest(TwoToneTestCase):
             "_find_alignment_requirements",
             return_value=[AlignmentRequirement(source_path, "Video length mismatch")],
         ):
-            plan, issue, _ = self.analyzer._analyze_group(
-                [base_path, source_path], ids, "Title",
-            )
+            plan, issue = self.analyzer._analyze_group(MeltGroupPlan(
+                input_files=MeltInputFiles((base_path, source_path)),
+            ))
 
         self.assertIsNone(issue)
         self.assertIsNotNone(plan)
         assert plan is not None
-        self.assertNotIn("video_scans", plan)
-        requests = plan["media_analysis_requests"]
+        requests = plan.media_analysis_requests
         self.assertEqual([request.path for request in requests], [base_path, source_path])
         self.assertTrue(all(
             request.features == media_analysis.MediaAnalysisFeature.MATCHING

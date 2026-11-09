@@ -270,7 +270,7 @@ class MeltTool(Tool):
         )
 
         return MeltPlan(
-            items=analysis,
+            items=tuple(analysis),
             output_dir=args.output_dir,
         )
 

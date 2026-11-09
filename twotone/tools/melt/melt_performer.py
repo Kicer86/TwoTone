@@ -36,11 +36,11 @@ from .melt_common import (
     AttachmentRef,
     AudioStreamRef,
     FramesInfo,
-    MeltInputFiles,
     StreamType,
     SubtitleStreamRef,
     VideoStreamRef,
 )
+from .melt_plan import MeltTitlePlan
 from .pair_matcher import (
     MappingRelation,
     PairMatcher,
@@ -95,30 +95,25 @@ class MeltPerformer:
         self.audio_patcher = AudioPatcher(self.logger, self.timeline)
         self.subtitle_alignment = SubtitleAlignment(self.workspace, self.logger)
 
-    def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
-        planned_items = [item for item in plan if item.get("groups")]
+    def process_duplicates(self, plan: Sequence[MeltTitlePlan]) -> None:
+        planned_items = [item for item in plan if item.groups]
         for item in tqdm(planned_items, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
-            title = item["title"]
-            groups = item.get("groups", [])
+            title = item.title
+            groups = item.groups
 
             self.logger.info("Processing title: %s (%d group(s))", title, len(groups))
 
             for group in tqdm(groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
                 self.interruption.check_for_stop()
 
-                output_name = group["output_name"]
-                files = group.get("files", [])
-                input_files = MeltInputFiles(files)
+                input_files = group.input_files
                 file_ids = input_files.ids
 
                 # Use analysis results
-                streams_info = group.get("streams", {})
-                attachments = group.get("attachments", [])
-                video_streams = [VideoStreamRef(*stream) for stream in streams_info.get("video", [])]
-                audio_streams = [AudioStreamRef(*stream) for stream in streams_info.get("audio", [])]
-                subtitle_streams = [SubtitleStreamRef(*stream) for stream in streams_info.get("subtitle", [])]
-                attachment_refs = [AttachmentRef(*attachment) for attachment in attachments]
-                chapter_source = group.get("chapter_source")
+                video_streams = group.video_streams or ()
+                audio_streams = group.audio_streams or ()
+                subtitle_streams = group.subtitle_streams or ()
+                attachment_refs = group.attachments
                 required_input_files = self._collect_required_input_files(
                     video_streams,
                     audio_streams,
@@ -126,15 +121,18 @@ class MeltPerformer:
                     attachment_refs,
                 )
 
-                output = self._build_output_path(title, output_name)
-                self._reject_output_input_alias(output, set(files) | required_input_files)
+                output = self._build_output_path(title, group.output_name)
+                self._reject_output_input_alias(
+                    output,
+                    set(input_files.paths) | required_input_files,
+                )
 
                 output_parent = os.path.dirname(output)
                 os.makedirs(output_parent, exist_ok=True)
 
                 self.audio_patcher.reset_cache()
                 self._pair_match_cache.clear()
-                files_details = group.get("files_details", {})
+                files_details = group.files_details
 
                 with self.workspace.staging_for(output) as staged_output:
                     # Convert streams to unified list (and patch audios if needed)
@@ -145,7 +143,7 @@ class MeltPerformer:
                         attachment_refs,
                         file_ids,
                         files_details,
-                        alignment_paths=set(group.get("alignment_paths", [])),
+                        alignment_paths=set(group.alignment_paths),
                     )
 
                     # Sort streams by language alphabetically, unknown languages last
@@ -158,7 +156,7 @@ class MeltPerformer:
                     default_audio_stream = next((s for s in prepared_streams.entries if s.stream_type == "audio"), None)
                     default_audio_lang = default_audio_stream.language if default_audio_stream else None
                     preferred_audio = self._choose_preferred_audio(
-                        group.get("audio_prod_lang"),
+                        group.audio_prod_lang,
                         streams_list_sorted,
                         default_audio_lang,
                     )
@@ -169,7 +167,9 @@ class MeltPerformer:
                         attachment_refs,
                         preferred_audio,
                         prepared_streams.input_files,
-                        self._extract_chapters(chapter_source) if chapter_source else None,
+                        self._extract_chapters(group.chapter_source)
+                        if group.chapter_source
+                        else None,
                     )
 
                     self.logger.info("Generating file: %s", self._display_path(output))

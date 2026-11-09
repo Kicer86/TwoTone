@@ -39,7 +39,7 @@ class _SyntheticHash:
 class PairMatcherUnitTest(unittest.TestCase):
     """Unit tests for PairMatcher internal methods.
 
-    These tests mock get_video_data to avoid needing real video files,
+    These tests mock the shared metadata probe to avoid needing real video files,
     but use the real PairMatcher constructor. They target:
     - _extrapolate_through_low_entropy: 5% noise tolerance
     - snap_to_edges: snap threshold
@@ -53,17 +53,31 @@ class PairMatcherUnitTest(unittest.TestCase):
         wd = files_utils.Workspace.temporary()
         self.addCleanup(wd.close)
         media_analysis_session = Mock(spec=media_analysis.MediaAnalysisSession)
-        with patch.object(video_utils, 'get_video_data',
-                          side_effect=lambda p, **_kwargs: {"video": [{"fps": fps_map[p]}]}):
-            pm = PairMatcher(
-                interruption=generic_utils.InterruptibleProcess(),
-                wd=wd.root,
-                lhs_path="/fake/lhs.mp4",
-                rhs_path="/fake/rhs.mp4",
-                logger=logging.getLogger("test.PairMatcher"),
-                media_analysis_session=media_analysis_session,
-            )
+        media_analysis_session.probe.side_effect = lambda path: media_analysis.MediaProbeResult(
+            path,
+            {},
+            None,
+            {"video": [{"fps": fps_map[path]}]},
+        )
+        pm = PairMatcher(
+            interruption=generic_utils.InterruptibleProcess(),
+            wd=wd.root,
+            lhs_path="/fake/lhs.mp4",
+            rhs_path="/fake/rhs.mp4",
+            logger=logging.getLogger("test.PairMatcher"),
+            media_analysis_session=media_analysis_session,
+        )
         return pm
+
+    def test_constructor_reuses_shared_probe_metadata(self):
+        pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=24.0)
+
+        self.assertEqual(pm.lhs_fps, 25.0)
+        self.assertEqual(pm.rhs_fps, 24.0)
+        self.assertEqual(
+            [call.args[0] for call in pm.media_analysis.probe.call_args_list],
+            [pm.lhs_path, pm.rhs_path],
+        )
 
     @staticmethod
     def _make_frames(timestamps: list[int], prefix: str = "fake") -> dict[int, dict]:

@@ -18,6 +18,7 @@ from twotone.tools.melt.melt_common import (
     AttachmentRef,
     AudioStreamRef,
     FramesInfo,
+    MeltInputFiles,
     SubtitleStreamRef,
     VideoStreamRef,
 )
@@ -32,6 +33,7 @@ from twotone.tools.melt.melt_performer import (
     _PairMatchResult,
     _StreamEntry,
 )
+from twotone.tools.melt.melt_plan import MeltGroupPlan, MeltTitlePlan
 from twotone.tools.melt.pair_matcher import (
     MappingRelation,
     PairMatcher,
@@ -75,14 +77,25 @@ class MeltPerformerUnitTest(unittest.TestCase):
         prepared_entries: list[_StreamEntry],
     ) -> list[str]:
         performer = self._make_performer()
-        plan = [{
-            "title": "Title",
-            "groups": [{
-                "output_name": "Movie",
-                "files": [source_path],
-                "streams": selected_streams,
-            }],
-        }]
+        plan = (MeltTitlePlan(
+            title="Title",
+            groups=(MeltGroupPlan(
+                input_files=MeltInputFiles((source_path,)),
+                output_name="Movie",
+                video_streams=tuple(
+                    VideoStreamRef(*stream)
+                    for stream in selected_streams.get("video", [])
+                ),
+                audio_streams=tuple(
+                    AudioStreamRef(*stream)
+                    for stream in selected_streams.get("audio", [])
+                ),
+                subtitle_streams=tuple(
+                    SubtitleStreamRef(*stream)
+                    for stream in selected_streams.get("subtitle", [])
+                ),
+            ),),
+        ),)
         prepared = Mock(entries=prepared_entries, input_files={source_path})
         captured_args: list[str] = []
 
@@ -149,14 +162,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
             input_file.write(b"source")
         input_alias = os.path.join(performer.output_dir, "movie-source.mkv")
         os.symlink(input_path, input_alias)
-        plan = [{
-            "title": "Title",
-            "groups": [{
-                "output_name": "Movie",
-                "files": [input_alias],
-                "streams": {"video": [(input_alias, 0, 0, None)]},
-            }],
-        }]
+        plan = (MeltTitlePlan(
+            title="Title",
+            groups=(MeltGroupPlan(
+                input_files=MeltInputFiles((input_alias,)),
+                output_name="Movie",
+                video_streams=(VideoStreamRef(input_alias, 0, 0, None),),
+            ),),
+        ),)
 
         with patch.object(process_utils, "start_process") as start_process:
             with self.assertRaisesRegex(RuntimeError, "aliases input"):
@@ -212,15 +225,15 @@ class MeltPerformerUnitTest(unittest.TestCase):
     def test_process_duplicates_extracts_selected_chapters(self):
         performer = self._make_performer()
         source_path = "/library/Movie.mkv"
-        plan = [{
-            "title": "Title",
-            "groups": [{
-                "output_name": "Movie",
-                "files": [source_path],
-                "chapter_source": source_path,
-                "streams": {"video": [(source_path, 0, 0, None)]},
-            }],
-        }]
+        plan = (MeltTitlePlan(
+            title="Title",
+            groups=(MeltGroupPlan(
+                input_files=MeltInputFiles((source_path,)),
+                output_name="Movie",
+                chapter_source=source_path,
+                video_streams=(VideoStreamRef(source_path, 0, 0, None),),
+            ),),
+        ),)
         prepared = Mock(
             entries=[_StreamEntry("video", 0, source_path, None)],
             input_files={source_path},
@@ -257,17 +270,15 @@ class MeltPerformerUnitTest(unittest.TestCase):
         os.makedirs(os.path.dirname(output_path))
         with open(output_path, "wb") as output_file:
             output_file.write(b"previous output")
-        plan = [{
-            "title": "Title",
-            "groups": [{
-                "output_name": "Movie",
-                "files": [input_a, input_b],
-                "streams": {
-                    "video": [(input_a, 0, 0, None)],
-                    "audio": [(input_b, 1, 1, "eng")],
-                },
-            }],
-        }]
+        plan = (MeltTitlePlan(
+            title="Title",
+            groups=(MeltGroupPlan(
+                input_files=MeltInputFiles((input_a, input_b)),
+                output_name="Movie",
+                video_streams=(VideoStreamRef(input_a, 0, 0, None),),
+                audio_streams=(AudioStreamRef(input_b, 1, 1, "eng"),),
+            ),),
+        ),)
         prepared = Mock(entries=[
             _StreamEntry("video", 0, input_a, None),
             _StreamEntry("audio", 1, input_b, "eng"),
@@ -291,19 +302,19 @@ class MeltPerformerUnitTest(unittest.TestCase):
         os.makedirs(os.path.dirname(output_path))
         with open(output_path, "wb") as output_file:
             output_file.write(b"previous output")
-        plan = [{
-            "title": "Title",
-            "groups": [{
-                "output_name": "Movie",
-                "files": [input_path],
-                "streams": {"video": [(input_path, 0, 0, None)]},
-                "files_details": {
+        plan = (MeltTitlePlan(
+            title="Title",
+            groups=(MeltGroupPlan(
+                input_files=MeltInputFiles((input_path,)),
+                output_name="Movie",
+                video_streams=(VideoStreamRef(input_path, 0, 0, None),),
+                files_details={
                     input_path: {
                         "tracks": {"video": [{"tid": 0, "length": 2000}]},
                     },
                 },
-            }],
-        }]
+            ),),
+        ),)
         prepared = Mock(
             entries=[_StreamEntry("video", 0, input_path, None)],
             input_files={input_path},
@@ -2305,12 +2316,18 @@ class MeltPerformerUnitTest(unittest.TestCase):
             for i in range(48000)
         }
         pairs = [(j * 100000, j * 100000 + (3000 if j >= 16 else 0)) for j in range(20)]
-        with patch.object(video_utils, "get_video_data", return_value={"video": [{"fps": "25/1"}]}):
-            matcher = PairMatcher(
-                generic_utils.InterruptibleProcess(), performer.workspace.root,
-                base_video.path, source_video.path, performer.logger,
-                media_analysis_session=Mock(spec=media_analysis.MediaAnalysisSession),
-            )
+        analysis = Mock(spec=media_analysis.MediaAnalysisSession)
+        analysis.probe.side_effect = lambda path: media_analysis.MediaProbeResult(
+            path,
+            {},
+            None,
+            {"video": [{"fps": "25/1"}]},
+        )
+        matcher = PairMatcher(
+            generic_utils.InterruptibleProcess(), performer.workspace.root,
+            base_video.path, source_video.path, performer.logger,
+            media_analysis_session=analysis,
+        )
         fit = matcher.detect_global_linear(pairs, lhs_frames, rhs_frames)
         self.assertIsNotNone(fit)
         self.assertEqual(PairMatcher.find_global_linear_content_discontinuities(

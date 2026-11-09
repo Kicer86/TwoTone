@@ -825,8 +825,8 @@ class AudioAlignmentTest(TwoToneTestCase):
             for title, files in duplicates_raw.items()
         })
         for item in plan:
-            for group in item.get("groups", []):
-                for request in group.get("media_analysis_requests", []):
+            for group in item.groups:
+                for request in group.media_analysis_requests:
                     media_analysis_session.fulfill(request)
 
         performer = MeltPerformer(

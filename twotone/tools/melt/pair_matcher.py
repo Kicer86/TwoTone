@@ -18,7 +18,6 @@ from .melt_cache import MeltCache
 from .melt_common import FrameInfo, FramesInfo, format_timestamp
 from .phash_cache import PhashCache
 
-
 DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = 2.0
 
 
@@ -293,8 +292,10 @@ class PairMatcher:
         self.media_analysis = media_analysis_session
         self.max_temporary_frame_offset = max_temporary_frame_offset
         self.phash = PhashCache()
-        lhs_video_data = video_utils.get_video_data(lhs_path, logger=self.logger)["video"][0]
-        rhs_video_data = video_utils.get_video_data(rhs_path, logger=self.logger)["video"][0]
+        lhs_video_data, rhs_video_data = (
+            self._primary_video_data(path)
+            for path in (lhs_path, rhs_path)
+        )
         lhs_wd = os.path.join(self.wd, "lhs")
         rhs_wd = os.path.join(self.wd, "rhs")
         self.lhs = MatchingSide.create(
@@ -334,6 +335,12 @@ class PairMatcher:
             self.rhs,
             self.frame_comparison,
         )
+
+    def _primary_video_data(self, path: str) -> dict:
+        probe = self.media_analysis.probe(path)
+        if probe.error is not None:
+            raise RuntimeError(probe.error)
+        return probe.normalized_data["video"][0]
 
     # Preserve the established PairMatcher attribute surface while one
     # MatchingSide now owns each side's state.

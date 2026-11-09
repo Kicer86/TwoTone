@@ -1,6 +1,6 @@
 import logging
-
 from collections import defaultdict
+from dataclasses import dataclass
 from functools import cmp_to_key
 from typing import Any, Generator
 
@@ -8,8 +8,15 @@ from ..utils import generic_utils, language_utils
 from .duplicates_source import DuplicatesSource
 from .melt_common import AudioStreamRef, SubtitleStreamRef, VideoStreamRef
 
-
 _UNDEFINED_LANGUAGE = "undefined"
+
+
+@dataclass(frozen=True)
+class _StreamCandidate:
+    path: str
+    tid: int
+    details: dict[str, Any]
+
 
 class StreamsPicker:
     def __init__(self, logger: logging.Logger, duplicates_source: DuplicatesSource):
@@ -169,8 +176,11 @@ class StreamsPicker:
         ``get_language`` is a functor returning language for given stream and path.
         """
 
-        stream_index: defaultdict[tuple[Any, ...], defaultdict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
-        forced_streams: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        stream_index: defaultdict[
+            tuple[Any, ...],
+            defaultdict[str, list[_StreamCandidate]],
+        ] = defaultdict(lambda: defaultdict(list))
+        forced_streams: list[tuple[tuple[Any, ...], _StreamCandidate]] = []
         forced_keys: set[tuple[Any, ...]] = set()
 
         # organize all streams by unique_key and file
@@ -206,7 +216,7 @@ class StreamsPicker:
                 # put tid into top layer for easier access
                 tid = stream_view["tid"]
 
-                current = {"file": path, "tid": tid, "details": stream_view}
+                current = _StreamCandidate(path, tid, stream_view)
                 if keep_all_audio_subtitle_streams:
                     forced_streams.append((unique_key, current))
                     forced_keys.add(unique_key)
@@ -214,7 +224,7 @@ class StreamsPicker:
                     stream_index[unique_key][path].append(current)
 
         # process collected streams
-        picked_streams: list[tuple[tuple[Any, ...], dict[str, Any]]] = list(forced_streams)
+        picked_streams: list[tuple[tuple[Any, ...], _StreamCandidate]] = list(forced_streams)
         for key, file_streams in stream_index.items():
             if key in forced_keys:
                 continue
@@ -231,38 +241,48 @@ class StreamsPicker:
                 continue
 
             # two or more files provide streams of the same uniqness. choose better ones
-            def preference_sorting(lhs: dict, rhs: dict) -> int:
-                return preference(lhs["details"], rhs["details"])
+            def preference_sorting(
+                lhs: _StreamCandidate,
+                rhs: _StreamCandidate,
+            ) -> int:
+                return preference(lhs.details, rhs.details)
 
             # sort lists of details for each file
             sorted_file_streams = {k: sorted(v, key=cmp_to_key(preference_sorting)) for k, v in file_streams.items()}
 
-            def compare_items(lhs_item: tuple[str, list[dict[str, Any]]], rhs_item: tuple[str, list[dict[str, Any]]]) -> int:
-                return preference_sorting(lhs_item[1][0], rhs_item[1][0])
-
             # pick best details
+            def compare_candidate_lists(
+                lhs: list[_StreamCandidate],
+                rhs: list[_StreamCandidate],
+            ) -> int:
+                return preference_sorting(lhs[0], rhs[0])
+
             best_file_streams = max(
-                sorted_file_streams.items(),
-                key=cmp_to_key(compare_items)
+                sorted_file_streams.values(),
+                key=cmp_to_key(compare_candidate_lists),
             )
 
-            for stream in best_file_streams[1]:
+            for stream in best_file_streams:
                 picked_streams.append((key, stream))
 
         # Flatten result
         result: list[tuple[str, int, int, str | None]] = []
-        for unique_key, entry in picked_streams:
-            tid = entry["tid"]
-            path = entry["file"]
-            language = entry["details"].get("language")
-            ffprobe_stream_index = entry["details"].get("ffprobe_stream_index")
+        for _unique_key, entry in picked_streams:
+            language = entry.details.get("language")
+            ffprobe_stream_index = entry.details.get("ffprobe_stream_index")
             if not isinstance(ffprobe_stream_index, int):
                 raise RuntimeError(
-                    f"Missing ffprobe stream identity for {stream_type} track #{tid} in {path}."
+                    f"Missing ffprobe stream identity for {stream_type} "
+                    f"track #{entry.tid} in {entry.path}."
                 )
             if language == _UNDEFINED_LANGUAGE:
                 language = None
-            result.append((path, tid, ffprobe_stream_index, language))
+            result.append((
+                entry.path,
+                entry.tid,
+                ffprobe_stream_index,
+                language,
+            ))
 
         return result
 
