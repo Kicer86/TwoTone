@@ -22,8 +22,8 @@ original timestamps and CodecDelay and does not enter this flow:
   deterministically (via an ADTS remux that strips the CodecDelay signalling),
   so every downstream step works in a priming-free FLAC domain and AAC is
   encoded exactly once.
-- ``_audio_needs_mkvmerge_normalization`` says when a raw mkvmerge remux would
-  re-introduce the build dependency and the FLAC-domain flow is required.
+- ``_audio_mkvmerge_normalization_reason`` says when a raw mkvmerge remux would
+  re-introduce the build dependency and why the FLAC-domain flow is required.
 
 The service also owns the plain stream-timeline helpers (ffprobe start/end
 offsets and the mkvmerge ``--sync`` computation) that the priming logic builds
@@ -382,24 +382,14 @@ class TrackTimeline:
             progress_source=self._audio_source_description(stream),
         )
 
-    def _audio_needs_mkvmerge_normalization(self, stream_ref: AudioStreamRef) -> bool:
-        """Return True when direct mkvmerge remux can shift decoded AAC timing.
-
-        Non-Matroska AAC always needs a priming-free remux: mkvmerge would otherwise
-        drop the container start offset.  Matroska normally preserves start, so raw
-        passthrough is fine -- *except* when the AAC stream carries encoder-delay
-        priming (CodecDelay / ``initial_padding``).  Remuxed raw, such a stream is
-        placed build-dependently: builds that expose priming shift its decoded
-        content by one frame (~21 ms) relative to a priming-stripped base track.
-        Route those through the FLAC-domain flow too so the priming is removed
-        deterministically, exactly as for non-Matroska inputs.  The caller may
-        preserve an untouched track when its base video comes from the same
-        Matroska container; mkvmerge then keeps their original timing relation.
-        """
-        return self._audio_mkvmerge_normalization_reason(stream_ref) is not None
-
     def _audio_mkvmerge_normalization_reason(self, stream_ref: AudioStreamRef) -> str | None:
-        """Describe why direct mkvmerge passthrough would change AAC timing."""
+        """Describe why direct mkvmerge passthrough would change AAC timing.
+
+        Non-Matroska AAC needs a priming-free remux because mkvmerge would
+        otherwise drop the container start offset. Matroska normally preserves
+        start, except when AAC carries CodecDelay priming. The caller may keep
+        an untouched base-container track to preserve its original timing.
+        """
         stream = self._audio_stream_info(stream_ref)
         if stream is None or stream.get("codec_name") != "aac":
             return None

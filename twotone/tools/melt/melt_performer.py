@@ -22,10 +22,8 @@ from .audio_patcher import (
     AudioPatcher,
     AudioPatchRequest,
     AudioPatchResult,
-    AudioSourceWindow,  # noqa: F401 - compatibility re-export
     TimelineInterval,
     VideoToAudioTimeline,
-    _AudioPart,  # noqa: F401 - compatibility re-export
     segment_range,
 )
 from .audio_patcher import (
@@ -324,43 +322,6 @@ class MeltPerformer:
             )
         )
         return chapters_file
-
-    def patch_audio_constant_offset(
-        self,
-        wd: str,
-        base_video: VideoStreamRef,
-        source_video: VideoStreamRef,
-        source_audio: AudioStreamRef,
-        base_audio: AudioStreamRef | None,
-        output_path: str,
-        segment_pairs: list[tuple[int, int]],
-        *,
-        fill_gaps_from_base: bool = True,
-    ) -> int:
-        """Compatibility entry point for one globally scaled audio patch.
-
-        The production path constructs :class:`AudioPatchRequest` before
-        selecting a strategy.  Keeping this small wrapper preserves the focused
-        unit-level seam while ensuring it executes the exact same pipeline.
-        """
-        base_duration_ms = video_utils.get_video_duration(base_video.path, logger=self.logger)
-        if base_duration_ms is None:
-            raise RuntimeError(f"Could not determine base video duration for {base_video.path}.")
-        request = self._create_audio_patch_request(
-            wd,
-            base_video,
-            source_video,
-            source_audio,
-            base_audio,
-            output_path,
-            segment_pairs,
-            base_duration_ms,
-            fill_gaps_from_base=fill_gaps_from_base,
-        )
-        return self.audio_patcher.execute(
-            request,
-            _AudioStrategy.GLOBAL_TIME_SCALE,
-        ).timeline_start_ms
 
     def _create_audio_patch_request(
         self,
@@ -802,8 +763,7 @@ class MeltPerformer:
             )
         return mapping
 
-    @staticmethod
-    def _mapping_stream_bias_ms(path: str, frames: FramesInfo) -> int:
+    def _mapping_stream_bias_ms(self, path: str, frames: FramesInfo) -> int:
         """Offset from *path*'s mapping space to its stream space.
 
         The frame timestamps feeding the pair mapping are container-dependent:
@@ -815,7 +775,7 @@ class MeltPerformer:
         """
         if not frames:
             return 0
-        info = video_utils.get_video_full_info(path)
+        info = self.timeline._media_info(path)
         stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
         if stream is None:
             return 0
@@ -888,59 +848,48 @@ class MeltPerformer:
 
         return round(median_delta)
 
-    @staticmethod
-    def _video_playable_duration_ms(path: str) -> int | None:
-        info = video_utils.get_video_full_info(path)
-        stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
-        if stream is None:
-            return None
-
-        end_ms = TrackTimeline._stream_end_offset_ms(stream)
-        if end_ms is None:
-            return None
-        return max(0, end_ms - TrackTimeline._stream_start_offset_ms(stream))
-
-    @staticmethod
-    def _effective_video_fps(path: str, frames: FramesInfo) -> float | None:
+    def _effective_video_fps(self, path: str, frames: FramesInfo) -> float | None:
         if len(frames) < 2:
             return None
 
-        duration_ms = MeltPerformer._video_playable_duration_ms(path)
-        if duration_ms is None or duration_ms <= 0:
+        info = self.timeline._media_info(path)
+        stream = next(
+            (item for item in info.get("streams", []) if item.get("codec_type") == "video"),
+            None,
+        )
+        if stream is None:
+            return None
+        end_ms = TrackTimeline._stream_end_offset_ms(stream)
+        if end_ms is None:
+            return None
+        duration_ms = max(
+            0,
+            end_ms - TrackTimeline._stream_start_offset_ms(stream),
+        )
+        if duration_ms <= 0:
             return None
 
-        frame_span = MeltPerformer._video_frame_span(path, frames)
-        if frame_span <= 0:
-            return None
+        try:
+            frame_count = int(stream.get("nb_frames") or 0)
+        except (TypeError, ValueError):
+            frame_count = 0
+        frame_span = frame_count - 1 if frame_count > 1 else len(frames) - 1
 
         return frame_span * 1000 / duration_ms
 
-    @staticmethod
     def _effective_tempo_ratio(
+        self,
         base_video: str,
         source_video: str,
         lhs_all_frames: FramesInfo,
         rhs_all_frames: FramesInfo,
     ) -> float | None:
         """Tempo ratio implied by the two files' effective fps, or None when unknown."""
-        lhs_effective_fps = MeltPerformer._effective_video_fps(base_video, lhs_all_frames)
-        rhs_effective_fps = MeltPerformer._effective_video_fps(source_video, rhs_all_frames)
+        lhs_effective_fps = self._effective_video_fps(base_video, lhs_all_frames)
+        rhs_effective_fps = self._effective_video_fps(source_video, rhs_all_frames)
         if lhs_effective_fps is None or rhs_effective_fps is None or rhs_effective_fps <= 0:
             return None
         return lhs_effective_fps / rhs_effective_fps
-
-    @staticmethod
-    def _video_frame_span(path: str, frames: FramesInfo) -> int:
-        info = video_utils.get_video_full_info(path)
-        stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
-        if stream is not None:
-            try:
-                frame_count = int(stream.get("nb_frames") or 0)
-            except (TypeError, ValueError):
-                frame_count = 0
-            if frame_count > 1:
-                return frame_count - 1
-        return len(frames) - 1
 
     @staticmethod
     def _try_collapse_linear_mapping(
@@ -982,8 +931,8 @@ class MeltPerformer:
             (last_lhs, first_rhs + round(lhs_span * tempo_ratio)),
         ]
 
-    @staticmethod
     def _is_frame_rate_only_drift_mapping(
+        self,
         base_video: str,
         source_video: str,
         mapping: list[tuple[int, int]],
@@ -995,7 +944,7 @@ class MeltPerformer:
         if len(mapping) < 2 or lhs_nominal_fps is None or rhs_nominal_fps is None or rhs_nominal_fps <= 0:
             return False
 
-        tempo_ratio = MeltPerformer._effective_tempo_ratio(
+        tempo_ratio = self._effective_tempo_ratio(
             base_video, source_video, lhs_all_frames, rhs_all_frames,
         )
         if tempo_ratio is None:
@@ -1316,10 +1265,6 @@ class MeltPerformer:
         files_details: dict[str, Any] | None = None,
         alignment_paths: set[str] | None = None,
     ) -> _PreparedStreams:
-        video_streams = [VideoStreamRef(*stream) for stream in video_streams]
-        audio_streams = [AudioStreamRef(*stream) for stream in audio_streams]
-        subtitle_streams = [SubtitleStreamRef(*stream) for stream in subtitle_streams]
-        attachments = [AttachmentRef(*attachment) for attachment in attachments]
         self.timeline.set_input_file_ids(file_ids)
 
         base_video = video_streams[0]
