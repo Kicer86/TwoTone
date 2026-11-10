@@ -427,26 +427,25 @@ def unresolved_content_discontinuities_error(
     debug_path: str | None,
 ) -> str:
     """Log unresolved regions and build the corresponding user-facing error."""
-    for group in groups:
-        frame_errors = [deficit_ms * rhs_fps / 1000 for *_, deficit_ms in group]
-        lhs_from, _, rhs_from, _, _ = group[0]
-        _, lhs_to, _, rhs_to, _ = group[-1]
-        lhs_frame_from = int(lhs_all_frames[lhs_from]["frame_id"])
-        lhs_frame_to = int(lhs_all_frames[lhs_to]["frame_id"])
-        rhs_frame_from = int(rhs_all_frames[rhs_from]["frame_id"])
-        rhs_frame_to = int(rhs_all_frames[rhs_to]["frame_id"])
-        compensating = (
-            len(group) > 1
-            and min(frame_errors) < 0 < max(frame_errors)
-            and abs(sum(frame_errors)) <= compensation_tolerance_frames
-        )
+    descriptions = matching_analysis.describe_discontinuity_regions(
+        groups,
+        lhs_all_frames,
+        rhs_all_frames,
+        rhs_fps=rhs_fps,
+        compensation_tolerance_frames=compensation_tolerance_frames,
+    )
+    for description in descriptions:
+        group = description.group
+        lhs_from, lhs_to = description.lhs_range
+        rhs_from, rhs_to = description.rhs_range
+        lhs_frame_from, lhs_frame_to = description.lhs_frame_range
+        rhs_frame_from, rhs_frame_to = description.rhs_frame_range
         outer_start_offset = lhs_frame_from - rhs_frame_from
         outer_end_offset = lhs_frame_to - rhs_frame_to
-        if compensating and outer_start_offset == outer_end_offset:
+        if description.compensating and outer_start_offset == outer_end_offset:
             anchor_offsets = [outer_start_offset] + [
-                int(lhs_all_frames[step_lhs_to]["frame_id"])
-                - int(rhs_all_frames[step_rhs_to]["frame_id"])
-                for _, step_lhs_to, _, step_rhs_to, _ in group
+                lhs_frame_to - rhs_frame_to
+                for _, lhs_frame_to, _, rhs_frame_to in description.step_frame_ranges
             ]
             inner_shift = max(
                 abs(offset - outer_start_offset)
@@ -487,7 +486,7 @@ def unresolved_content_discontinuities_error(
                 "changes by up to %.1f frames inside this range.\n"
                 "  %s: frames %d-%d; %s\n"
                 "  %s: frames %d-%d; %s",
-                max(abs(error) for error in frame_errors),
+                max(abs(error) for error in description.frame_errors),
                 lhs_label,
                 lhs_frame_from,
                 lhs_frame_to,
@@ -498,21 +497,27 @@ def unresolved_content_discontinuities_error(
                 format_timestamp_range(rhs_from, rhs_to),
             )
 
-        for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in group:
+        for step, frame_range, frame_error in zip(
+            group,
+            description.step_frame_ranges,
+            description.frame_errors,
+        ):
+            lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms = step
+            lhs_frame_from, lhs_frame_to, rhs_frame_from, rhs_frame_to = frame_range
             logger.debug(
                 "Suspected content discontinuity between matched anchors: %s "
                 "(decoded frames %d-%d) in %s ↔ %s "
                 "(decoded frames %d-%d) in %s (%+d ms, %+.1f frames)",
                 format_timestamp_range(lhs_from, lhs_to),
-                int(lhs_all_frames[lhs_from]["frame_id"]),
-                int(lhs_all_frames[lhs_to]["frame_id"]),
+                lhs_frame_from,
+                lhs_frame_to,
                 lhs_label,
                 format_timestamp_range(rhs_from, rhs_to),
-                int(rhs_all_frames[rhs_from]["frame_id"]),
-                int(rhs_all_frames[rhs_to]["frame_id"]),
+                rhs_frame_from,
+                rhs_frame_to,
                 rhs_label,
                 deficit_ms,
-                deficit_ms * rhs_fps / 1000,
+                frame_error,
             )
 
     if debug_path is not None:
@@ -758,30 +763,26 @@ class DebugRoutines:
             f"{rhs_label} nominal frame rate: {rhs_fps:.6f} fps",
             "",
         ])
-        for region_index, group in enumerate(groups):
-            lhs_from, _, rhs_from, _, _ = group[0]
-            _, lhs_to, _, rhs_to, _ = group[-1]
-            frame_errors = [
-                deficit_ms * rhs_fps / 1000
-                for *_, deficit_ms in group
-            ]
-            compensating = (
-                len(group) > 1
-                and min(frame_errors) < 0 < max(frame_errors)
-                and abs(sum(frame_errors)) <= compensation_tolerance_frames
-            )
+        descriptions = matching_analysis.describe_discontinuity_regions(
+            groups,
+            self.lhs_all_frames,
+            self.rhs_all_frames,
+            rhs_fps=rhs_fps,
+            compensation_tolerance_frames=compensation_tolerance_frames,
+        )
+        for region_index, description in enumerate(descriptions):
+            lhs_from, lhs_to = description.lhs_range
+            rhs_from, rhs_to = description.rhs_range
             if diagnostic_type == "timing":
                 kind = "unresolved matched-timeline step"
             else:
                 kind = (
                     "compensating adjacent frame-step errors"
-                    if compensating
+                    if description.compensating
                     else "unresolved frame-step error"
                 )
-            lhs_first_id = int(self.lhs_all_frames[lhs_from]["frame_id"])
-            lhs_last_id = int(self.lhs_all_frames[lhs_to]["frame_id"])
-            rhs_first_id = int(self.rhs_all_frames[rhs_from]["frame_id"])
-            rhs_last_id = int(self.rhs_all_frames[rhs_to]["frame_id"])
+            lhs_first_id, lhs_last_id = description.lhs_frame_range
+            rhs_first_id, rhs_last_id = description.rhs_frame_range
 
             details.extend([
                 f"Region {region_index}: {kind}",
@@ -797,24 +798,20 @@ class DebugRoutines:
                 ),
                 "  Steps:",
             ])
-            for step_index, (
-                step_lhs_from,
-                step_lhs_to,
-                step_rhs_from,
-                step_rhs_to,
-                deficit_ms,
-            ) in enumerate(group):
-                step_lhs_first = int(self.lhs_all_frames[step_lhs_from]["frame_id"])
-                step_lhs_last = int(self.lhs_all_frames[step_lhs_to]["frame_id"])
-                step_rhs_first = int(self.rhs_all_frames[step_rhs_from]["frame_id"])
-                step_rhs_last = int(self.rhs_all_frames[step_rhs_to]["frame_id"])
+            for step_index, (step, frame_range, frame_error) in enumerate(zip(
+                description.group,
+                description.step_frame_ranges,
+                description.frame_errors,
+            )):
+                step_lhs_from, step_lhs_to, step_rhs_from, step_rhs_to, deficit_ms = step
+                step_lhs_first, step_lhs_last, step_rhs_first, step_rhs_last = frame_range
                 details.append(
                     f"    {step_index + 1}: {lhs_label} {step_lhs_first}->{step_lhs_last} "
                     f"at {format_timestamp_range(step_lhs_from, step_lhs_to)} <-> "
                     f"{rhs_label} {step_rhs_first}->{step_rhs_last} "
                     f"at {format_timestamp_range(step_rhs_from, step_rhs_to)}; "
                     f"error {deficit_ms:+d} ms "
-                    f"({deficit_ms * rhs_fps / 1000:+.1f} rhs frames)"
+                    f"({frame_error:+.1f} rhs frames)"
                 )
             details.append("")
 

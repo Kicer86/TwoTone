@@ -55,6 +55,62 @@ class RelationDiagnostics(NamedTuple):
     time_scale: float | None = None
 
 
+class DiscontinuityRegionDescription(NamedTuple):
+    """Shared calculated facts for one discontinuity diagnostic region."""
+
+    group: tuple[tuple[int, int, int, int, int], ...]
+    lhs_range: tuple[int, int]
+    rhs_range: tuple[int, int]
+    lhs_frame_range: tuple[int, int]
+    rhs_frame_range: tuple[int, int]
+    step_frame_ranges: tuple[tuple[int, int, int, int], ...]
+    frame_errors: tuple[float, ...]
+    compensating: bool
+
+
+def describe_discontinuity_regions(
+    groups: list[list[tuple[int, int, int, int, int]]],
+    lhs_all_frames: FramesInfo,
+    rhs_all_frames: FramesInfo,
+    *,
+    rhs_fps: float,
+    compensation_tolerance_frames: float,
+) -> tuple[DiscontinuityRegionDescription, ...]:
+    """Calculate facts shared by user-facing and debug diagnostics."""
+    descriptions = []
+    for group in groups:
+        lhs_from, _, rhs_from, _, _ = group[0]
+        _, lhs_to, _, rhs_to, _ = group[-1]
+        step_frame_ranges = tuple(
+            (
+                int(lhs_all_frames[step_lhs_from]["frame_id"]),
+                int(lhs_all_frames[step_lhs_to]["frame_id"]),
+                int(rhs_all_frames[step_rhs_from]["frame_id"]),
+                int(rhs_all_frames[step_rhs_to]["frame_id"]),
+            )
+            for step_lhs_from, step_lhs_to, step_rhs_from, step_rhs_to, _ in group
+        )
+        frame_errors = tuple(
+            deficit_ms * rhs_fps / 1000
+            for *_, deficit_ms in group
+        )
+        descriptions.append(DiscontinuityRegionDescription(
+            group=tuple(group),
+            lhs_range=(lhs_from, lhs_to),
+            rhs_range=(rhs_from, rhs_to),
+            lhs_frame_range=(step_frame_ranges[0][0], step_frame_ranges[-1][1]),
+            rhs_frame_range=(step_frame_ranges[0][2], step_frame_ranges[-1][3]),
+            step_frame_ranges=step_frame_ranges,
+            frame_errors=frame_errors,
+            compensating=(
+                len(group) > 1
+                and min(frame_errors) < 0 < max(frame_errors)
+                and abs(sum(frame_errors)) <= compensation_tolerance_frames
+            ),
+        ))
+    return tuple(descriptions)
+
+
 def calculate_ratio(pairs: list[tuple[int, int]]) -> float:
     ratios = [
         (right[0] - left[0]) / (right[1] - left[1])
