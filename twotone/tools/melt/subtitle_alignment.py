@@ -11,7 +11,7 @@ import pysubs2
 from ..utils import files_utils, process_utils, subtitles_utils, video_utils
 from . import matching_analysis
 from .melt_common import SubtitleStreamRef
-from .pair_matcher import MappingRelation, PairMatcher, SegmentsMappingResult
+from .pair_matcher import MappingRelation, SegmentsMappingResult
 from .track_timeline import TrackTimeline
 
 
@@ -97,7 +97,7 @@ class SubtitleAlignment:
         first_rhs = mapping[0][1]
         last_rhs = mapping[-1][1]
         frame_ms = 1000 / matching.rhs_fps
-        edge_tolerance_ms = round(PairMatcher._MAX_BOUNDARY_ERROR_FRAMES * frame_ms)
+        edge_tolerance_ms = round(matching_analysis.MAX_BOUNDARY_ERROR_FRAMES * frame_ms)
         rhs_frame_times = sorted(matching.rhs_all_frames)
         accepted_start = first_rhs
         accepted_end = last_rhs
