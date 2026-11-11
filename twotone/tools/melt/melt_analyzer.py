@@ -72,6 +72,7 @@ class MeltAnalyzer:
 
             analyzed_groups: list[MeltGroupPlan] = []
             skipped_groups: list[MeltGroupPlan] = []
+            groups_iter: Iterable[MeltGroupPlan]
             if len(groups) > 1:
                 groups_iter = tqdm(groups, desc="Candidates", unit="set", position=1, **generic_utils.get_tqdm_defaults())
             else:

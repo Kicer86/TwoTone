@@ -204,7 +204,8 @@ def compute_overlap(
     )
     lhs_mask = (lhs_image > 0).astype(np.uint8)
     rhs_mask = (warped_rhs > 0).astype(np.uint8)
-    return cv.boundingRect(cv.bitwise_and(lhs_mask, rhs_mask))
+    x, y, width, height = cv.boundingRect(cv.bitwise_and(lhs_mask, rhs_mask))
+    return x, y, width, height
 
 
 def interpolate_crop_rects(
