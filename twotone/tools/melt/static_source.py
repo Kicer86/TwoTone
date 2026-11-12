@@ -1,9 +1,14 @@
 
+import os
 from collections import defaultdict
 from overrides import override
 from pathlib import Path
 
 from .duplicates_source import DuplicatesSource
+
+
+def _normalize_path(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
 
 
 class StaticSource(DuplicatesSource):
@@ -13,10 +18,10 @@ class StaticSource(DuplicatesSource):
         self._metadata = defaultdict(dict)
 
     def add_entry(self, title: str, path: str):
-        self._entries[title].append(path)
+        self._entries[title].append(_normalize_path(path))
 
     def add_metadata(self, path: str, key: str, value: str | bool):
-        self._metadata[path][key] = value
+        self._metadata[_normalize_path(path)][key] = value
 
     @override
     def collect_duplicates(self) -> dict[str, tuple]:
@@ -24,7 +29,7 @@ class StaticSource(DuplicatesSource):
 
     @override
     def get_metadata_for(self, path: str) -> dict[str, str | bool | None]:
-        path_obj = Path(path)
+        path_obj = Path(_normalize_path(path))
 
         while path_obj != path_obj.parent:
             path_str = str(path_obj)
