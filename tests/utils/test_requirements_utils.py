@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from twotone.tools.tool import EmptyPlan, Tool
 from twotone.tools.utils import process_utils, requirements_utils
@@ -100,6 +101,20 @@ class RequirementsUtilsTests(unittest.TestCase):
     def test_collects_tools_from_tool_required_tools(self):
         tools = DummyRequirementsTool().required_tools()
         self.assertEqual(tools, {"ffmpeg", "ffprobe", "mkvextract", "mkvinfo"})
+
+    def test_inspects_each_reachable_function_once(self):
+        inspected = []
+        getsource = requirements_utils.inspect.getsource
+
+        def recording_getsource(func):
+            inspected.append(func)
+            return getsource(func)
+
+        with patch.object(requirements_utils.inspect, "getsource", side_effect=recording_getsource):
+            tools = requirements_utils.collect_required_tools(_entry_calls_helper)
+
+        self.assertEqual(tools, {"ffprobe"})
+        self.assertCountEqual(inspected, [_entry_calls_helper, _helper_uses_ffprobe])
 
 
 if __name__ == "__main__":

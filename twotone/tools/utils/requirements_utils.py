@@ -25,9 +25,10 @@ def collect_required_tools(*roots: Callable) -> set[str]:
         seen.add(func)
 
         required.update(getattr(func, _REQUIRED_TOOLS_ATTR, set()))
-        required.update(_infer_tools_from_start_process_calls(func))
+        inferred_deps, inferred_tools = _infer_requirements_from_calls(func)
+        required.update(inferred_tools)
         deps = set(getattr(func, _REQUIRED_DEPS_ATTR, set()))
-        deps.update(_infer_deps_from_calls(func))
+        deps.update(inferred_deps)
         for dep in deps:
             if dep not in seen:
                 stack.append(dep)
@@ -35,7 +36,7 @@ def collect_required_tools(*roots: Callable) -> set[str]:
     return required
 
 
-def _infer_deps_from_calls(func: Callable) -> set[Callable]:
+def _infer_requirements_from_calls(func: Callable) -> tuple[set[Callable], set[str]]:
     base = _normalize_callable(func)
     func_globals = getattr(base, "__globals__", {})
     owner_class = _resolve_owner_class(base)
@@ -43,59 +44,30 @@ def _infer_deps_from_calls(func: Callable) -> set[Callable]:
     try:
         source = inspect.getsource(base)
     except (OSError, TypeError):
-        return set()
+        return set(), set()
 
     try:
         tree = ast.parse(textwrap.dedent(source))
     except SyntaxError:
-        return set()
-
-    local_classes = _collect_local_class_assignments(tree, func_globals)
-    calls = _collect_calls(tree)
-    deps: set[Callable] = set()
-
-    for call in calls:
-        target = _resolve_call_target(call.func, func_globals, owner_class, local_classes)
-        target_func = _as_function(target)
-        if target_func is None or target_func is base:
-            continue
-        if _is_start_process(target_func):
-            continue
-        deps.add(target_func)
-
-    return deps
-
-
-def _infer_tools_from_start_process_calls(func: Callable) -> set[str]:
-    base = _normalize_callable(func)
-    func_globals = getattr(base, "__globals__", {})
-    owner_class = _resolve_owner_class(base)
-
-    try:
-        source = inspect.getsource(base)
-    except (OSError, TypeError):
-        return set()
-
-    try:
-        tree = ast.parse(textwrap.dedent(source))
-    except SyntaxError:
-        return set()
+        return set(), set()
 
     local_classes = _collect_local_class_assignments(tree, func_globals)
     local_strings = _collect_local_string_assignments(tree, func_globals)
     calls = _collect_calls(tree)
+    deps: set[Callable] = set()
     tools: set[str] = set()
 
     for call in calls:
         target = _resolve_call_target(call.func, func_globals, owner_class, local_classes)
         target_func = _as_function(target)
-        if not _is_start_process(target_func):
-            continue
-        tool = _resolve_start_process_tool(call, local_strings, func_globals)
-        if tool:
-            tools.add(tool)
+        if _is_start_process(target_func):
+            tool = _resolve_start_process_tool(call, local_strings, func_globals)
+            if tool:
+                tools.add(tool)
+        elif target_func is not None and target_func is not base:
+            deps.add(target_func)
 
-    return tools
+    return deps, tools
 
 
 def _is_start_process(func: Callable | None) -> bool:
