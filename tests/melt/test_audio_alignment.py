@@ -199,7 +199,7 @@ class AudioTimelineDiscontinuityTest(TwoToneTestCase):
              )), \
              patch.object(PairMatcher, "_match_key_frames", return_value=pairs), \
              patch.object(performer, "_create_audio_patch_request") as request, \
-             patch.object(performer, "_execute_audio_patch") as execute, \
+             patch.object(performer.audio_patcher, "execute") as execute, \
              self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity.*PTS step"):
             performer._patch_mismatched_audio(
                 VideoStreamRef(base, 0, 0, None), VideoStreamRef(source, 0, 0, None),
@@ -825,8 +825,8 @@ class AudioAlignmentTest(TwoToneTestCase):
             for title, files in duplicates_raw.items()
         })
         for item in plan:
-            for group in item.get("groups", []):
-                for request in group.get("media_analysis_requests", []):
+            for group in item.groups:
+                for request in group.media_analysis_requests:
                     media_analysis_session.fulfill(request)
 
         performer = MeltPerformer(

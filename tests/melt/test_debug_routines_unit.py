@@ -1,12 +1,90 @@
+import logging
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from twotone.tools.melt.debug_routines import DebugRoutines
+from twotone.tools.melt import debug_routines
+from twotone.tools.melt.debug_routines import (
+    DebugRoutines,
+    unresolved_content_discontinuities_error,
+)
 
 
 class DebugRoutinesUnitTest(unittest.TestCase):
+    def test_summary_logging_skips_calculation_above_debug(self):
+        logger = logging.getLogger("test.debug_routines.info_summaries")
+        logger.setLevel(logging.INFO)
+
+        with patch.object(debug_routines, "summarize_pairs") as pairs_summary:
+            debug_routines.log_pairs_summary(
+                logger, MagicMock(), {}, {}, "Pairs: ", [(0, 0)],
+            )
+
+        pairs_summary.assert_not_called()
+
+    def test_summary_logging_preserves_debug_prefix_and_verbose_detail(self):
+        logger = logging.getLogger("test.debug_routines.debug_summaries")
+        logger.setLevel(logging.DEBUG)
+        phash = MagicMock()
+        pairs = [(0, 0)]
+        lhs = {0: {"path": "/lhs.png", "frame_id": 0}}
+        rhs = {0: {"path": "/rhs.png", "frame_id": 0}}
+
+        with patch.object(
+            debug_routines, "summarize_pairs", return_value="rendered pairs",
+        ) as pairs_summary, self.assertLogs(logger, logging.DEBUG) as captured:
+            debug_routines.log_pairs_summary(
+                logger, phash, lhs, rhs, "Initial candidates:        ", pairs,
+                verbose=True,
+            )
+
+        self.assertEqual(
+            [record.getMessage() for record in captured.records],
+            ["Initial candidates:        rendered pairs"],
+        )
+        pairs_summary.assert_called_once_with(
+            phash, pairs, lhs, rhs, verbose=True,
+        )
+
+    def test_content_error_uses_same_region_facts_as_debug_details(self):
+        lhs_frames = {
+            40: {"frame_id": 10},
+            80: {"frame_id": 11},
+            120: {"frame_id": 12},
+        }
+        rhs_frames = {
+            40: {"frame_id": 9},
+            120: {"frame_id": 11},
+        }
+        groups = [[
+            (40, 80, 40, 120, -40),
+            (80, 120, 120, 120, 40),
+        ]]
+        logger = MagicMock()
+
+        error = unresolved_content_discontinuities_error(
+            logger,
+            groups,
+            lhs_frames,
+            rhs_frames,
+            lhs_label="#2",
+            rhs_label="#1",
+            rhs_fps=25.0,
+            compensation_tolerance_frames=2.0,
+            suggested_temporary_offsets=[],
+            debug_path=None,
+        )
+
+        summary = logger.error.call_args_list[0].args
+        self.assertEqual(summary[6:8], (10, 12))
+        self.assertEqual(summary[10:12], (9, 11))
+        step = logger.debug.call_args_list[0].args
+        self.assertEqual(step[2:4], (10, 11))
+        self.assertEqual(step[6:8], (9, 11))
+        self.assertEqual(step[-2:], (-40, -1.0))
+        self.assertIn("1 unresolved region", error)
+
     def test_dump_content_discontinuities_keeps_every_frame_and_writes_details(self):
         with tempfile.TemporaryDirectory() as root:
             source_dir = os.path.join(root, "source")

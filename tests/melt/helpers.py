@@ -79,8 +79,8 @@ def process_duplicates_helper(
     )
     context = ToolRuntimeContext(workspace, interruption, media_analysis_session)
     for item in plan:
-        for group in item.get("groups", []):
-            for request in group.get("media_analysis_requests", []):
+        for group in item.groups:
+            for request in group.media_analysis_requests:
                 media_analysis_session.fulfill(request)
 
     performer = MeltPerformer(

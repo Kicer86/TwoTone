@@ -1,9 +1,9 @@
 import logging
 import os
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from tqdm import tqdm
 
@@ -27,6 +27,7 @@ from .melt_common import (
     _is_length_mismatch,
     stream_short_details,
 )
+from .melt_plan import MeltGroupPlan, MeltTitlePlan
 from .pair_matcher import PairMatcher
 from .streams_picker import StreamsPicker
 
@@ -61,58 +62,49 @@ class MeltAnalyzer:
         duplicates: dict[str, list[str]],
         *,
         display_roots: tuple[str, ...] = (),
-    ) -> list[dict[str, Any]]:
-        base_plan = self._prepare_duplicates_set(duplicates)
+    ) -> list[MeltTitlePlan]:
+        base_plan = self._prepare_duplicates_set(duplicates, display_roots)
 
-        analysis_plan: list[dict[str, Any]] = []
+        analysis_plan: list[MeltTitlePlan] = []
         for item in tqdm(base_plan, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults()):
-            title = item["title"]
-            groups = item["groups"]
+            title = item.title
+            groups = item.groups
 
-            analyzed_groups: list[dict[str, Any]] = []
-            skipped_groups: list[dict[str, Any]] = []
+            analyzed_groups: list[MeltGroupPlan] = []
+            skipped_groups: list[MeltGroupPlan] = []
+            groups_iter: Iterable[MeltGroupPlan]
             if len(groups) > 1:
                 groups_iter = tqdm(groups, desc="Candidates", unit="set", position=1, **generic_utils.get_tqdm_defaults())
             else:
                 groups_iter = groups
 
             for group_index, group in enumerate(groups_iter, start=1):
-                files = group["files"]
-                output_name = group["output_name"]
-
-                input_files = MeltInputFiles(files, display_roots)
                 self._log_group_inputs(
                     title,
-                    input_files,
+                    group.input_files,
                     candidate_number=group_index if len(groups) > 1 else None,
                 )
 
                 # analysis for group
                 try:
-                    plan_details, issue, _ = self._analyze_group(files, input_files.ids, title)
+                    analyzed_group, issue = self._analyze_group(group)
                 except UnsupportedMeltInputError as err:
-                    plan_details = None
+                    analyzed_group = None
                     issue = str(err)
 
-                if plan_details is None:
+                if analyzed_group is None:
                     self._log_group_issue(issue or "Unknown issue.")
-                    skipped_groups.append({
-                        "files": files,
-                        "output_name": output_name,
-                        "issue": issue or "Unknown issue.",
-                    })
+                    skipped_groups.append(
+                        replace(group, issue=issue or "Unknown issue."),
+                    )
                 else:
-                    analyzed_groups.append({
-                        "files": files,
-                        "output_name": output_name,
-                        **plan_details,
-                    })
+                    analyzed_groups.append(analyzed_group)
 
-            analysis_plan.append({
-                "title": title,
-                "groups": analyzed_groups,
-                "skipped_groups": skipped_groups,
-            })
+            analysis_plan.append(MeltTitlePlan(
+                title=title,
+                groups=tuple(analyzed_groups),
+                skipped_groups=tuple(skipped_groups),
+            ))
 
         return analysis_plan
 
@@ -251,10 +243,12 @@ class MeltAnalyzer:
         }
         self._validate_supported_elements(raw_details, ids)
 
-        probe_details = {
-            file: video_utils.get_video_full_info(file, logger=self.logger)
-            for file in files
-        }
+        probe_details: dict[str, dict] = {}
+        for file in files:
+            probe = self.media_analysis.probe(file)
+            if probe.error is not None:
+                raise RuntimeError(probe.error)
+            probe_details[file] = probe.data
         details_full = {
             file: video_utils.normalize_mkvmerge_data(
                 raw_details[file],
@@ -269,15 +263,12 @@ class MeltAnalyzer:
         tracks = {file: info["tracks"] for file, info in details_full.items()}
         return details_full, attachments, tracks
 
-    def _prepare_duplicates_set(self, duplicates: dict[str, list[str]]) -> list[dict[str, Any]]:
-        """Prepare groups of duplicate files and output names per title.
-
-        Returns a plan in the form:
-        [
-          {"title": str, "groups": [{"files": [str,...], "output_name": str}, ...]},
-          ...
-        ]
-        """
+    def _prepare_duplicates_set(
+        self,
+        duplicates: dict[str, list[str]],
+        display_roots: tuple[str, ...] = (),
+    ) -> list[MeltTitlePlan]:
+        """Prepare groups of duplicate files and output names per title."""
         def process_entries(entries: list[str]) -> list[tuple[list[str], str]]:
             # Returns list of: (group of duplicates, output base name)
 
@@ -321,14 +312,19 @@ class MeltAnalyzer:
                 first_file_name = Path(first_file_fullname).stem
                 return [(entries, first_file_name)]
 
-        plan: list[dict[str, Any]] = []
+        plan: list[MeltTitlePlan] = []
         for title, entries in duplicates.items():
             files_groups = process_entries(entries)
-            item = {
-                "title": title,
-                "groups": [{"files": files, "output_name": output_name} for files, output_name in files_groups]
-            }
-            plan.append(item)
+            plan.append(MeltTitlePlan(
+                title=title,
+                groups=tuple(
+                    MeltGroupPlan(
+                        input_files=MeltInputFiles(files, display_roots),
+                        output_name=output_name,
+                    )
+                    for files, output_name in files_groups
+                ),
+            ))
 
         return plan
 
@@ -337,11 +333,9 @@ class MeltAnalyzer:
         tracks: dict[str, Any],
         ids: dict[str, int],
     ) -> tuple[list[VideoStreamRef], list[AudioStreamRef], list[SubtitleStreamRef]]:
-        picker_wd = self.workspace.unique_dir("stream_picker")
         streams_picker = StreamsPicker(
             self.logger,
             self.duplicates_source,
-            picker_wd,
         )
         return streams_picker.pick_streams(tracks, ids)
 
@@ -496,10 +490,10 @@ class MeltAnalyzer:
 
     def _analyze_group(
         self,
-        files: list[str],
-        ids: dict[str, int],
-        title: str,
-    ) -> tuple[dict[str, Any] | None, str | None, dict[str, Any]]:
+        group: MeltGroupPlan,
+    ) -> tuple[MeltGroupPlan | None, str | None]:
+        files = group.input_files.paths
+        ids = group.input_files.ids
         # Probe inputs and print details
         details_full, attachments, tracks = self._probe_inputs(files, ids)
         for file, file_details in details_full.items():
@@ -510,11 +504,11 @@ class MeltAnalyzer:
             video_streams, audio_streams, subtitle_streams = self._pick_streams(tracks, ids)
         except RuntimeError as err:
             self.logger.debug(err)
-            return None, str(err), details_full
+            return None, str(err)
 
         if not video_streams:
             self.logger.debug("No video streams found.")
-            return None, "No video streams found.", details_full
+            return None, "No video streams found."
 
         requirements = self._find_alignment_requirements(tracks, ids, video_streams, audio_streams, subtitle_streams)
         alignment_paths = {requirement.path for requirement in requirements}
@@ -532,15 +526,20 @@ class MeltAnalyzer:
                         requirement.issue,
                     )
             else:
-                return None, "\n".join(requirement.issue for requirement in requirements), details_full
+                return None, "\n".join(requirement.issue for requirement in requirements)
         else:
             media_analysis_requests = []
 
         chapter_source = self._pick_chapter_source(details_full, tracks, video_streams, ids)
 
         # Attachments picking
-        picked_attachments = AttachmentsPicker(self.logger).pick_attachments(attachments)
-        audio_prod_lang = self.duplicates_source.get_metadata_for(video_streams[0].path).get("audio_prod_lang")
+        picked_attachments = AttachmentsPicker().pick_attachments(attachments)
+        audio_prod_lang = cast(
+            str | None,
+            self.duplicates_source.get_metadata_for(video_streams[0].path).get(
+                "audio_prod_lang",
+            ),
+        )
 
         # Present proposed output
         self.logger.debug("Streams used to create output video file:")
@@ -556,16 +555,15 @@ class MeltAnalyzer:
         self._print_attachments_details(ids, picked_attachments)
 
         # Prepare plan entity
-        return {
-            "streams": {
-                "video": video_streams,
-                "audio": audio_streams,
-                "subtitle": subtitle_streams,
-            },
-            "attachments": picked_attachments,
-            "chapter_source": chapter_source,
-            "audio_prod_lang": audio_prod_lang,
-            "files_details": details_full,
-            "alignment_paths": sorted(alignment_paths),
-            "media_analysis_requests": media_analysis_requests,
-        }, None, details_full
+        return replace(
+            group,
+            video_streams=tuple(video_streams),
+            audio_streams=tuple(audio_streams),
+            subtitle_streams=tuple(subtitle_streams),
+            attachments=tuple(picked_attachments),
+            chapter_source=chapter_source,
+            audio_prod_lang=audio_prod_lang,
+            files_details=details_full,
+            alignment_paths=tuple(sorted(alignment_paths)),
+            media_analysis_requests=tuple(media_analysis_requests),
+        ), None
