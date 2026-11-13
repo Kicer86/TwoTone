@@ -402,7 +402,7 @@ class PairMatcher:
             for candidate in analysis.scene_candidates:
                 if not start_ms < candidate.timestamp_ms < end_ms:
                     continue
-                timestamp = self._snap_to_nearest_frame(
+                timestamp = matching_analysis.snap_to_nearest_frame(
                     frame_timestamps,
                     candidate.timestamp_ms,
                 )
@@ -1133,23 +1133,7 @@ class PairMatcher:
     def _three_before(self, timestamps: list[int], target: int) -> list[int]:
         timestamps = sorted(timestamps)
         idx = int(np.searchsorted(timestamps, target))
-        return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-3):idx]))
-
-    def _nearest_three(self, timestamps: list[int], target: int) -> list[int]:
-        timestamps = sorted(timestamps)
-        idx = int(np.searchsorted(timestamps, target))
-        return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-1):idx+2]))
-
-    @staticmethod
-    def _snap_to_nearest_frame(keys: list[int], target: int) -> int:
-        """Return the timestamp from *keys* closest to *target*."""
-        idx = int(np.searchsorted(keys, target))
-        candidates = []
-        if idx > 0:
-            candidates.append(keys[idx - 1])
-        if idx < len(keys):
-            candidates.append(keys[idx])
-        return min(candidates, key=lambda k: abs(k - target))
+        return timestamps[max(0, idx-3):idx]
 
     def _best_phash_match(
         self,
@@ -1174,8 +1158,8 @@ class PairMatcher:
         """
         lhs_keys = sorted(lhs_all_set)
         rhs_keys = sorted(rhs_all_set)
-        lhs_near = self._nearest_three(lhs_keys, lhs_ts)
-        rhs_near = self._nearest_three(rhs_keys, rhs_ts_guess)
+        lhs_near = matching_analysis.nearest_three(lhs_keys, lhs_ts)
+        rhs_near = matching_analysis.nearest_three(rhs_keys, rhs_ts_guess)
         if not lhs_near or not rhs_near:
             return None
 
@@ -1213,7 +1197,7 @@ class PairMatcher:
                         rhs_candidate
                         + (lhs_sample - lhs_candidate) / timeline_ratio
                     )
-                    rhs_sample = self._snap_to_nearest_frame(
+                    rhs_sample = matching_analysis.snap_to_nearest_frame(
                         rhs_keys, round(predicted_rhs),
                     )
                     if abs(rhs_sample - predicted_rhs) > max_rhs_snap_error:
@@ -1323,7 +1307,7 @@ class PairMatcher:
         new_pairs = []
         for l in lhs_free:
             expected_rhs = first_known_pair[1] + (l - first_known_pair[0]) / median_ratio
-            nearest_rhs_candidates = self._nearest_three(rhs_keys, int(expected_rhs))
+            nearest_rhs_candidates = matching_analysis.nearest_three(rhs_keys, int(expected_rhs))
 
             for rhs_candidate in nearest_rhs_candidates:
                 ratio = (l - first_known_pair[0]) / (rhs_candidate - first_known_pair[1]) if (rhs_candidate - first_known_pair[1]) != 0 else None

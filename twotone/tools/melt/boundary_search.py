@@ -249,7 +249,7 @@ class BoundarySearch:
         ):
             return boundary
 
-        new_rhs = self._snap_to_nearest_frame(rhs_keys, clamped_rhs)
+        new_rhs = matching_analysis.snap_to_nearest_frame(rhs_keys, clamped_rhs)
         self.logger.debug(
             "Boundary %s: extrapolating through low-entropy zone from "
             "(%d, %d) to (%d, %d).",
@@ -605,7 +605,7 @@ class BoundarySearch:
                 context.rhs_keys[0],
                 min(context.rhs_keys[-1], predicted_rhs),
             )
-        rhs_near = self._nearest_three(context.rhs_keys, predicted_rhs)
+        rhs_near = matching_analysis.nearest_three(context.rhs_keys, predicted_rhs)
 
         best_distance = float("inf")
         best_pair: tuple[int, int] | None = None
@@ -861,19 +861,3 @@ class BoundarySearch:
                 side_label,
             )
         return True
-
-    @staticmethod
-    def _nearest_three(timestamps: list[int], target: int) -> list[int]:
-        timestamps = sorted(timestamps)
-        index = int(np.searchsorted(timestamps, target))
-        return timestamps[max(0, index - 1):index + 2]
-
-    @staticmethod
-    def _snap_to_nearest_frame(keys: list[int], target: int) -> int:
-        index = int(np.searchsorted(keys, target))
-        candidates = []
-        if index > 0:
-            candidates.append(keys[index - 1])
-        if index < len(keys):
-            candidates.append(keys[index])
-        return min(candidates, key=lambda key: abs(key - target))

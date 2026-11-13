@@ -4,6 +4,22 @@ from twotone.tools.melt import matching_analysis
 
 
 class MatchingAnalysisUnitTest(unittest.TestCase):
+    def test_nearest_three_sorts_and_keeps_sparse_edge_windows(self):
+        timestamps = [90, 10, 50]
+
+        self.assertEqual(matching_analysis.nearest_three(timestamps, 5), [10, 50])
+        self.assertEqual(matching_analysis.nearest_three(timestamps, 55), [50, 90])
+        self.assertEqual(matching_analysis.nearest_three(timestamps, 100), [90])
+
+    def test_snap_to_nearest_frame_prefers_lower_timestamp_on_tie(self):
+        self.assertEqual(matching_analysis.snap_to_nearest_frame([10, 90], 50), 10)
+
+    def test_snap_to_nearest_frame_handles_edges_and_empty_input(self):
+        self.assertEqual(matching_analysis.snap_to_nearest_frame([10, 50, 90], 5), 10)
+        self.assertEqual(matching_analysis.snap_to_nearest_frame([10, 50, 90], 100), 90)
+        with self.assertRaises(ValueError):
+            matching_analysis.snap_to_nearest_frame([], 50)
+
     def test_content_discontinuity_flags_commercial_cut(self):
         mapping = [
             (lhs, round(lhs * 0.9864) - (7000 if lhs > 300000 else 0))

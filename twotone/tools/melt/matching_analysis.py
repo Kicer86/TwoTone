@@ -68,6 +68,24 @@ class DiscontinuityRegionDescription(NamedTuple):
     compensating: bool
 
 
+def nearest_three(timestamps: list[int], target: int) -> list[int]:
+    """Return the timestamp immediately around *target*, plus its neighbors."""
+    timestamps = sorted(timestamps)
+    index = int(np.searchsorted(timestamps, target))
+    return timestamps[max(0, index - 1):index + 2]
+
+
+def snap_to_nearest_frame(keys: list[int], target: int) -> int:
+    """Return the sorted timestamp closest to *target*, preferring the lower tie."""
+    index = int(np.searchsorted(keys, target))
+    candidates = []
+    if index > 0:
+        candidates.append(keys[index - 1])
+    if index < len(keys):
+        candidates.append(keys[index])
+    return min(candidates, key=lambda key: abs(key - target))
+
+
 def describe_discontinuity_regions(
     groups: list[list[tuple[int, int, int, int, int]]],
     lhs_all_frames: FramesInfo,
