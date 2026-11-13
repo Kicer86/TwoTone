@@ -128,15 +128,12 @@ class StreamsPicker:
         if start_key not in d:
             raise KeyError(f"{start_key} not found in dictionary")
 
-        yielded = set()
-
         # Yield the starting key first
         yield start_key, d[start_key]
-        yielded.add(start_key)
 
         # Yield the rest in order
         for k, v in d.items():
-            if k not in yielded:
+            if k != start_key:
                 yield k, v
 
     @staticmethod
