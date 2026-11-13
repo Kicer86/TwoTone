@@ -465,9 +465,8 @@ class StreamsPickerTest(MeltTestBase):
     def test_static_source_normalizes_entry_and_metadata_paths(self):
         interruption = generic_utils.InterruptibleProcess()
         duplicates = StaticSource(interruption)
-        directory = os.path.join(self.wd.path, "series")
-        relative_directory = os.path.relpath(directory)
-        input_path = os.path.join(".", relative_directory, "")
+        directory = os.path.join(os.getcwd(), "series")
+        input_path = os.path.join(".", "series", "")
         video_path = os.path.join(directory, "episode.mkv")
 
         duplicates.add_entry("Some title", input_path)
