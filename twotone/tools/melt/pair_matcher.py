@@ -1760,40 +1760,33 @@ class PairMatcher:
             f"{rhs_boundary_count} for {self.rhs.label}"
         )
 
-        video_utils.extract_frames_at_ranges(
-            self.lhs.path, self.lhs.boundary_dir, lhs_boundary_ranges, self.lhs.all_frames,
-            scale=(960, -2), format="png", interruption=self.interruption,
-            desc=f"[6/6] Extracting boundary frames: {self.lhs.label}",
-            logger=self.logger,
+        boundary_data = (
+            (self.lhs, lhs_boundary_ranges, lhs_normalized_frames),
+            (self.rhs, rhs_boundary_ranges, rhs_normalized_frames),
         )
-        video_utils.extract_frames_at_ranges(
-            self.rhs.path, self.rhs.boundary_dir, rhs_boundary_ranges, self.rhs.all_frames,
-            scale=(960, -2), format="png", interruption=self.interruption,
-            desc=f"[6/6] Extracting boundary frames: {self.rhs.label}",
-            logger=self.logger,
-        )
-
-        # Normalize the newly extracted boundary frames and merge
-        lhs_new = {ts: info for ts, info in self.lhs.all_frames.items()
-                   if info.get("path") is not None and ts not in lhs_normalized_frames}
-        rhs_new = {ts: info for ts, info in self.rhs.all_frames.items()
-                   if info.get("path") is not None and ts not in rhs_normalized_frames}
-
-        if lhs_new:
-            lhs_boundary_normalized = self.frame_comparison.normalize_frames(
-                lhs_new, self.lhs.normalized_dir, prefix="b_",
-                desc=f"[6/6] Normalizing boundary: {self.lhs.label}",
+        for side, boundary_ranges, _ in boundary_data:
+            video_utils.extract_frames_at_ranges(
+                side.path, side.boundary_dir, boundary_ranges, side.all_frames,
+                scale=(960, -2), format="png", interruption=self.interruption,
+                desc=f"[6/6] Extracting boundary frames: {side.label}",
+                logger=self.logger,
             )
-            lhs_normalized_frames.update(lhs_boundary_normalized)
 
-        if rhs_new:
-            rhs_boundary_normalized = self.frame_comparison.normalize_frames(
-                rhs_new, self.rhs.normalized_dir, prefix="b_",
-                desc=f"[6/6] Normalizing boundary: {self.rhs.label}",
-            )
-            rhs_normalized_frames.update(rhs_boundary_normalized)
+        # Normalize the newly extracted boundary frames and merge.
+        for side, _, normalized_frames in boundary_data:
+            new_frames = {
+                timestamp: info
+                for timestamp, info in side.all_frames.items()
+                if info.get("path") is not None
+                and timestamp not in normalized_frames
+            }
+            if new_frames:
+                normalized_frames.update(self.frame_comparison.normalize_frames(
+                    new_frames, side.normalized_dir, prefix="b_",
+                    desc=f"[6/6] Normalizing boundary: {side.label}",
+                ))
 
-        matching_pairs, _, _ = self._refine_boundary_pairs(
+        matching_pairs = self._refine_boundary_pairs(
             matching_pairs, lhs_normalized_frames, rhs_normalized_frames, debug,
         )
 
@@ -1811,19 +1804,14 @@ class PairMatcher:
         lhs_normalized_frames: FramesInfo,
         rhs_normalized_frames: FramesInfo,
         debug: DebugRoutines,
-    ) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo]:
+    ) -> list[tuple[int, int]]:
         """Iteratively refine boundary pairs using cropped-frame matching.
 
         Crops both frame sets based on the current matching, searches for
         boundaries on the cropped frames, and repeats until convergence.
-
-        Returns ``(matching_pairs, lhs_cropped, rhs_cropped)``.
         """
         prev_first, prev_last = None, None
         iteration = 0
-        lhs_normalized_cropped_frames: FramesInfo = {}
-        rhs_normalized_cropped_frames: FramesInfo = {}
-        phash4normalized = PhashCache()
 
         while True:
             iteration += 1
@@ -1870,7 +1858,7 @@ class PairMatcher:
         self.logger.debug(debug_routines.summarize_segments(matching_pairs, self.lhs.fps, self.rhs.fps, lhs_label=self.lhs.label, rhs_label=self.rhs.label))
         self.logger.debug(debug_routines.summarize_pairs(phash4normalized, matching_pairs, self.lhs.all_frames, self.rhs.all_frames, verbose=True))
 
-        return matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames
+        return matching_pairs
 
     def _final_uncropped_boundary_search(
         self,
