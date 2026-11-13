@@ -283,12 +283,12 @@ class AudioPatcher:
             )
 
         ordered_parts = (
-            ([head_part.path] if head_part is not None else [])
-            + [part.path for part in source_parts]
-            + ([tail_part.path] if tail_part is not None else [])
+            ([head_part] if head_part is not None else [])
+            + source_parts
+            + ([tail_part] if tail_part is not None else [])
         )
         self._concat_and_encode(
-            ordered_parts,
+            [part.path for part in ordered_parts],
             os.path.join(working_dir, "concat.txt"),
             request.output_path,
             channel_layout=self._get_audio_channel_layout(request.source_audio),
@@ -299,11 +299,7 @@ class AudioPatcher:
             logger=self.logger,
         )
 
-        expected_duration_ms = sum(part.duration_ms for part in source_parts)
-        if head_part is not None:
-            expected_duration_ms += head_part.duration_ms
-        if tail_part is not None:
-            expected_duration_ms += tail_part.duration_ms
+        expected_duration_ms = sum(part.duration_ms for part in ordered_parts)
         actual_duration_ms = video_utils.get_video_duration(request.output_path, logger=self.logger)
         if actual_duration_ms is None:
             raise RuntimeError(f"Could not determine patched audio duration for {request.output_path}.")
