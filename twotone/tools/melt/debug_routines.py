@@ -73,6 +73,25 @@ def summarize_pairs(
     return summary
 
 
+def log_pairs_summary(
+    logger: logging.Logger,
+    phash: PhashCache,
+    lhs: FramesInfo,
+    rhs: FramesInfo,
+    prefix: str,
+    pairs: list[tuple[int, int]],
+    *,
+    verbose: bool = False,
+) -> None:
+    """Log a pair summary without calculating image hashes above DEBUG."""
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "%s%s",
+            prefix,
+            summarize_pairs(phash, pairs, lhs, rhs, verbose=verbose),
+        )
+
+
 def summarize_segments(
     pairs: list[tuple[int, int]],
     lhs_fps: float,

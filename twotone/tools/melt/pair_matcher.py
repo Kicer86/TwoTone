@@ -2,6 +2,7 @@
 import enum
 import logging
 import os
+from functools import partial
 from math import isfinite
 from typing import NamedTuple
 
@@ -1335,17 +1336,24 @@ class PairMatcher:
         if not lhs or not rhs:
             return []
 
+        log_pairs = partial(
+            debug_routines.log_pairs_summary,
+            self.logger,
+            self.phash,
+            lhs_all,
+            rhs_all,
+        )
         initial = self._build_initial_candidates(lhs, rhs)
-        self.logger.debug(f"Initial candidates:        {debug_routines.summarize_pairs(self.phash, initial, lhs_all, rhs_all)}")
+        log_pairs("Initial candidates:        ", initial)
 
         stable = self._reject_outliers(initial)
-        self.logger.debug(f"After linear matching:     {debug_routines.summarize_pairs(self.phash, stable, lhs_all, rhs_all)}")
+        log_pairs("After linear matching:     ", stable)
 
         stable = PairMatcher.filter_phash_outliers(self.phash, stable, lhs_all, rhs_all)
-        self.logger.debug(f"Phash outlier elimination: {debug_routines.summarize_pairs(self.phash, stable, lhs_all, rhs_all)}")
+        log_pairs("Phash outlier elimination: ", stable)
 
         extrapolated = self._extrapolate_matches(stable, lhs, rhs, self.phash)
-        self.logger.debug(f"Extrapolation:             {debug_routines.summarize_pairs(self.phash, extrapolated, lhs_all, rhs_all)}")
+        log_pairs("Extrapolation:             ", extrapolated)
 
         timeline_ratio = (
             matching_analysis.calculate_ratio(extrapolated)
@@ -1359,29 +1367,33 @@ class PairMatcher:
             )
             if best_match is not None:
                 extrapolated_refined.append(best_match)
-        self.logger.debug(f"Frame adjustment:          {debug_routines.summarize_pairs(self.phash, extrapolated_refined, lhs_all, rhs_all)}")
+        log_pairs("Frame adjustment:          ", extrapolated_refined)
 
         outliers_eliminated = PairMatcher.filter_phash_outliers(self.phash, extrapolated_refined, lhs_all, rhs_all)
-        self.logger.debug(f"Phash outlier elimination: {debug_routines.summarize_pairs(self.phash, outliers_eliminated, lhs_all, rhs_all)}")
+        log_pairs("Phash outlier elimination: ", outliers_eliminated)
 
         orb_filtered = [
             (lhs_ts, rhs_ts) for lhs_ts, rhs_ts in outliers_eliminated
             if image_utils.are_images_similar(
                 frame_comparison.extracted_path(lhs_all[lhs_ts]), frame_comparison.extracted_path(rhs_all[rhs_ts]))
         ]
-        self.logger.debug(f"After ORB elimination:     {debug_routines.summarize_pairs(self.phash, orb_filtered, lhs_all, rhs_all)}")
+        log_pairs("After ORB elimination:     ", orb_filtered)
 
         raw_cutoff = frame_comparison.calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
         cutoff = frame_comparison.floored_phash_cutoff(raw_cutoff)
         final = [pair for pair in orb_filtered if self._check_history(pair, lhs_all, rhs_all, cutoff)]
-        self.logger.debug(f"After history analysis:    {debug_routines.summarize_pairs(self.phash, final, lhs_all, rhs_all)}")
+        log_pairs("After history analysis:    ", final)
 
         unique_pairs = sorted(set(final))
 
         consistent = self._drop_pairs_breaking_local_linearity(unique_pairs, lhs_all, rhs_all)
-        self.logger.debug(f"Local linearity filter:    {debug_routines.summarize_pairs(self.phash, consistent, lhs_all, rhs_all)}")
+        log_pairs("Local linearity filter:    ", consistent)
 
-        self.logger.debug(debug_routines.summarize_segments(consistent, self.lhs.fps, self.rhs.fps, lhs_label=self.lhs.label, rhs_label=self.rhs.label))
+        if self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(debug_routines.summarize_segments(
+                consistent, self.lhs.fps, self.rhs.fps,
+                lhs_label=self.lhs.label, rhs_label=self.rhs.label,
+            ))
 
         return consistent
 
@@ -1637,17 +1649,15 @@ class PairMatcher:
             raise RuntimeError("No matching pairs found between the two files")
 
         if debug is not None:
-            lhs_extracted = self._extracted_subset(self.lhs.all_frames)
-            rhs_extracted = self._extracted_subset(self.rhs.all_frames)
             debug.dump_matches(matching_pairs, "initial matching")
-            self.logger.debug("Pairs summary after initial matching:")
-            self.logger.debug(debug_routines.summarize_pairs(
-                self.phash,
-                matching_pairs,
-                lhs_extracted,
-                rhs_extracted,
-                verbose=True,
-            ))
+            if self.logger.isEnabledFor(logging.DEBUG):
+                lhs_extracted = self._extracted_subset(self.lhs.all_frames)
+                rhs_extracted = self._extracted_subset(self.rhs.all_frames)
+                self.logger.debug("Pairs summary after initial matching:")
+                self.logger.debug(debug_routines.summarize_pairs(
+                    self.phash, matching_pairs, lhs_extracted, rhs_extracted,
+                    verbose=True,
+                ))
         return matching_pairs
 
     def _refine_global_linear_discontinuities(
@@ -1832,7 +1842,11 @@ class PairMatcher:
             self.logger.debug(f"Last pair:  {lhs_normalized_cropped_frames[last_lhs]['path']} {rhs_normalized_cropped_frames[last_rhs]['path']}")
 
             phash4normalized = PhashCache()
-            self.logger.debug(f"Cropped and aligned:       {debug_routines.summarize_pairs(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)}")
+            debug_routines.log_pairs_summary(
+                self.logger, phash4normalized, lhs_normalized_cropped_frames,
+                rhs_normalized_cropped_frames, "Cropped and aligned:       ",
+                matching_pairs,
+            )
 
             cutoff = frame_comparison.calculate_cutoff(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
 
@@ -1855,8 +1869,15 @@ class PairMatcher:
 
         self.logger.info(f"Boundary refinement converged after {iteration} iteration(s)")
         self.logger.debug("Status after boundaries lookup:\n")
-        self.logger.debug(debug_routines.summarize_segments(matching_pairs, self.lhs.fps, self.rhs.fps, lhs_label=self.lhs.label, rhs_label=self.rhs.label))
-        self.logger.debug(debug_routines.summarize_pairs(phash4normalized, matching_pairs, self.lhs.all_frames, self.rhs.all_frames, verbose=True))
+        if self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(debug_routines.summarize_segments(
+                matching_pairs, self.lhs.fps, self.rhs.fps,
+                lhs_label=self.lhs.label, rhs_label=self.rhs.label,
+            ))
+            self.logger.debug(debug_routines.summarize_pairs(
+                phash4normalized, matching_pairs,
+                self.lhs.all_frames, self.rhs.all_frames, verbose=True,
+            ))
 
         return matching_pairs
 
@@ -1884,7 +1905,14 @@ class PairMatcher:
 
         debug.dump_matches(matching_pairs, "after uncropped boundary search")
         self.logger.debug("Final status:\n")
-        self.logger.debug(debug_routines.summarize_segments(matching_pairs, self.lhs.fps, self.rhs.fps, lhs_label=self.lhs.label, rhs_label=self.rhs.label))
-        self.logger.debug(debug_routines.summarize_pairs(phash_uncropped, matching_pairs, self.lhs.all_frames, self.rhs.all_frames, verbose=True))
+        if self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(debug_routines.summarize_segments(
+                matching_pairs, self.lhs.fps, self.rhs.fps,
+                lhs_label=self.lhs.label, rhs_label=self.rhs.label,
+            ))
+            self.logger.debug(debug_routines.summarize_pairs(
+                phash_uncropped, matching_pairs,
+                self.lhs.all_frames, self.rhs.all_frames, verbose=True,
+            ))
 
         return matching_pairs

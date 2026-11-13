@@ -1,8 +1,10 @@
+import logging
 import os
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
+from twotone.tools.melt import debug_routines
 from twotone.tools.melt.debug_routines import (
     DebugRoutines,
     unresolved_content_discontinuities_error,
@@ -10,6 +12,41 @@ from twotone.tools.melt.debug_routines import (
 
 
 class DebugRoutinesUnitTest(unittest.TestCase):
+    def test_summary_logging_skips_calculation_above_debug(self):
+        logger = logging.getLogger("test.debug_routines.info_summaries")
+        logger.setLevel(logging.INFO)
+
+        with patch.object(debug_routines, "summarize_pairs") as pairs_summary:
+            debug_routines.log_pairs_summary(
+                logger, MagicMock(), {}, {}, "Pairs: ", [(0, 0)],
+            )
+
+        pairs_summary.assert_not_called()
+
+    def test_summary_logging_preserves_debug_prefix_and_verbose_detail(self):
+        logger = logging.getLogger("test.debug_routines.debug_summaries")
+        logger.setLevel(logging.DEBUG)
+        phash = MagicMock()
+        pairs = [(0, 0)]
+        lhs = {0: {"path": "/lhs.png", "frame_id": 0}}
+        rhs = {0: {"path": "/rhs.png", "frame_id": 0}}
+
+        with patch.object(
+            debug_routines, "summarize_pairs", return_value="rendered pairs",
+        ) as pairs_summary, self.assertLogs(logger, logging.DEBUG) as captured:
+            debug_routines.log_pairs_summary(
+                logger, phash, lhs, rhs, "Initial candidates:        ", pairs,
+                verbose=True,
+            )
+
+        self.assertEqual(
+            [record.getMessage() for record in captured.records],
+            ["Initial candidates:        rendered pairs"],
+        )
+        pairs_summary.assert_called_once_with(
+            phash, pairs, lhs, rhs, verbose=True,
+        )
+
     def test_content_error_uses_same_region_facts_as_debug_details(self):
         lhs_frames = {
             40: {"frame_id": 10},
