@@ -462,6 +462,25 @@ class StreamsPickerTest(MeltTestBase):
             duplicates.get_metadata_for("/not/exists").get("audio_prod_lang")
         )
 
+    def test_static_source_normalizes_entry_and_metadata_paths(self):
+        interruption = generic_utils.InterruptibleProcess()
+        duplicates = StaticSource(interruption)
+        directory = os.path.join(os.getcwd(), "series")
+        input_path = os.path.join(".", "series", "")
+        video_path = os.path.join(directory, "episode.mkv")
+
+        duplicates.add_entry("Some title", input_path)
+        duplicates.add_metadata(input_path, "audio_lang", "pol")
+
+        self.assertEqual(
+            duplicates.collect_duplicates()["Some title"],
+            [os.path.normcase(os.path.abspath(directory))],
+        )
+        self.assertEqual(
+            duplicates.get_metadata_for(video_path)["audio_lang"],
+            "pol",
+        )
+
     sample_streams = [
         # case: merge all audio tracks
         (
