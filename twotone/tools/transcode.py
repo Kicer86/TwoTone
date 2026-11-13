@@ -4,7 +4,6 @@ import logging
 import os
 import re
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from overrides import override
@@ -224,15 +223,10 @@ class Transcoder(generic_utils.InterruptibleProcess):
 
     def _for_segments(self, segments: list[str], op: Callable[[str, str], None], title: str, unit: str) -> None:
         with tqdm(desc=title, unit=unit, total=len(segments), **generic_utils.get_tqdm_defaults()) as pbar, \
-             self.workspace.scoped_dir("segments") as wd_dir, \
-             ThreadPoolExecutor() as executor:
-            def worker(file_path):
-                op(wd_dir, file_path)
-                pbar.update(1)
-
+             self.workspace.scoped_dir("segments") as wd_dir:
             for segment in segments:
-                #executor.submit(worker, segment)
-                worker(segment)
+                op(wd_dir, segment)
+                pbar.update(1)
 
     def _final_transcode(self, input_file: str, crf: int) -> None:
         """Perform the final transcoding with the best CRF using the determined extra_params."""
