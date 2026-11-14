@@ -15,7 +15,7 @@ from .melt_cache import MeltCache
 from .melt_common import _split_path_fix
 from .melt_performer import MeltPerformer
 from .melt_plan import MeltPlan
-from .pair_matcher import PairMatcher
+from .pair_matcher import DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
 from .static_source import StaticSource
 
 
@@ -24,7 +24,7 @@ def _temporary_frame_offset_limit(value: str) -> float:
         parsed = float(value)
     except ValueError as error:
         raise argparse.ArgumentTypeError("must be a number") from error
-    minimum = PairMatcher.DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
+    minimum = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
     if not math.isfinite(parsed) or parsed < minimum:
         raise argparse.ArgumentTypeError(
             f"must be a finite number greater than or equal to {minimum:g}"
@@ -149,7 +149,7 @@ class MeltTool(Tool):
         parser.add_argument(
             '--max-temporary-frame-offset',
             type=_temporary_frame_offset_limit,
-            default=PairMatcher.DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
+            default=DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
             metavar='FRAMES',
             help=(
                 'Maximum temporary video frame-offset excursion accepted when an adjacent opposite step '

@@ -40,6 +40,7 @@ from .melt_common import (
 )
 from .melt_plan import MeltTitlePlan
 from .pair_matcher import (
+    DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
     MappingRelation,
     PairMatcher,
     SegmentsMappingResult,
@@ -105,7 +106,7 @@ class MeltPerformer:
         output_dir: str,
         cache: MeltCache | None = None,
         fill_audio_gaps: bool = False,
-        max_temporary_frame_offset: float = PairMatcher.DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
+        max_temporary_frame_offset: float = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
     ) -> None:
         self.logger = logger
         self.interruption = context.interruption

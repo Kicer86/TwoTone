@@ -73,12 +73,6 @@ class SegmentsMappingResult(NamedTuple):
 
 class PairMatcher:
 
-    # Minimum phash distance treated as "still the same frame".  The adaptive
-    # cutoff (median + 2*std of the matched pairs) collapses to 0 when the
-    # surviving matches are pixel-perfect; without a floor, any check keyed on it
-    # would then demand pixel-perfect frames — impossible across a speed or
-    # resolution difference — so it is floored to this value.
-    _MIN_PHASH_CUTOFF = frame_comparison.MIN_PHASH_CUTOFF
     # Global-linear detection thresholds, shared with the relation-diagnostics
     # log so the quoted limits never drift from the real ones.
     _MAX_CONSTANT_OFFSET_STD = 1.0
@@ -138,7 +132,7 @@ class PairMatcher:
             distance = frame_comparison.phash_distance(
                 self.phash, lhs_frames[lhs_timestamp], rhs_frames[rhs_timestamp],
             )
-            if distance > self._MIN_PHASH_CUTOFF:
+            if distance > frame_comparison.MIN_PHASH_CUTOFF:
                 self.logger.debug(
                     "Equal-length identity check failed at %d ms (pHash distance %d).",
                     timestamp, distance,
@@ -200,7 +194,7 @@ class PairMatcher:
                 lhs_frames[lhs_sample.timestamp_ms],
                 rhs_frames[rhs_sample.timestamp_ms],
             )
-            if distance > self._MIN_PHASH_CUTOFF:
+            if distance > frame_comparison.MIN_PHASH_CUTOFF:
                 self.logger.debug(
                     "Equal-length identity check failed near %d ms (pHash distance %d).",
                     lhs_sample.target_ms,
@@ -363,7 +357,6 @@ class PairMatcher:
         )
         return self.media_analysis.fulfill(request, raise_on_error=True)
 
-    DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
     _SCENE_THRESHOLD = 0.30
 
     def _refine_scenes_in_region(
@@ -549,7 +542,7 @@ class PairMatcher:
             return False
         ctx = self.frame_comparison.build_boundary_verify_context(
             [before, after], lhs_normalized_frames, rhs_normalized_frames,
-            minimum_cutoff=self._MIN_PHASH_CUTOFF,
+            minimum_cutoff=frame_comparison.MIN_PHASH_CUTOFF,
         )
         # These samples interpolate between neighbours. The boundary-gap
         # allowance for extrapolated crops/predictions can accept distinct
@@ -1214,7 +1207,7 @@ class PairMatcher:
 
         if sequence_candidates:
             best = min(sequence_candidates)
-            if best[0] > self._MIN_PHASH_CUTOFF:
+            if best[0] > frame_comparison.MIN_PHASH_CUTOFF:
                 return lhs_ts, rhs_ts_guess
         elif single_frame_candidates:
             best = min(single_frame_candidates)
