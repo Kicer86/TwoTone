@@ -995,49 +995,46 @@ class MeltPerformer:
                         return length
         return video_utils.get_video_duration(path, logger=logger)
 
+    def _max_stream_end_ms(
+        self,
+        path: str,
+        stream_type: StreamType,
+        streams: Sequence[VideoStreamRef | AudioStreamRef],
+    ) -> int | None:
+        ends = [
+            end
+            for stream in streams
+            if stream.path == path
+            and (end := self.timeline._source_stream_end_offset_ms(
+                stream.path,
+                stream_type,
+                stream.ffprobe_stream_index,
+            )) is not None
+        ]
+        return max(ends, default=None)
+
     def _base_output_end_ms(
         self,
         video_path_base: str,
         video_streams: Sequence[VideoStreamRef],
         audio_streams: Sequence[AudioStreamRef],
     ) -> int | None:
-        ends: list[int] = []
-        for video_stream in video_streams:
-            if video_stream.path == video_path_base:
-                end = self.timeline._source_stream_end_offset_ms(
-                    video_stream.path,
-                    "video",
-                    video_stream.ffprobe_stream_index,
-                )
-                if end is not None:
-                    ends.append(end)
-        for audio_stream in audio_streams:
-            if audio_stream.path == video_path_base:
-                end = self.timeline._source_stream_end_offset_ms(
-                    audio_stream.path,
-                    "audio",
-                    audio_stream.ffprobe_stream_index,
-                )
-                if end is not None:
-                    ends.append(end)
-        return max(ends) if ends else None
+        ends = [
+            end
+            for end in (
+                self._max_stream_end_ms(video_path_base, "video", video_streams),
+                self._base_audio_end_ms(video_path_base, audio_streams),
+            )
+            if end is not None
+        ]
+        return max(ends, default=None)
 
     def _base_audio_end_ms(
         self,
         video_path_base: str,
         audio_streams: Sequence[AudioStreamRef],
     ) -> int | None:
-        ends: list[int] = []
-        for stream in audio_streams:
-            if stream.path == video_path_base:
-                end = self.timeline._source_stream_end_offset_ms(
-                    stream.path,
-                    "audio",
-                    stream.ffprobe_stream_index,
-                )
-                if end is not None:
-                    ends.append(end)
-        return max(ends) if ends else None
+        return self._max_stream_end_ms(video_path_base, "audio", audio_streams)
 
     @staticmethod
     def _primary_video_ref(path: str, files_details: dict[str, Any]) -> VideoStreamRef:
