@@ -3700,7 +3700,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             lhs_frames={},
             rhs_frames={},
         )
-        first_segment = patcher._build_audio_subsegments(request.mapping, 1, 30.0)[0]
+        first_segment = patcher._build_audio_subsegments(request.mapping, 1)[0]
         source_start_on_stream = source_start + mapping_to_video
         source_window = AudioSourceWindow(
             TimelineInterval(source_start_on_stream, source_end + mapping_to_video),

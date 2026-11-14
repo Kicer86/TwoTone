@@ -141,6 +141,8 @@ class AudioPatcher:
     """Decode, transform, concatenate, encode, and validate audio requests."""
 
     _SIGNIFICANT_START_CORRECTION_MS = 50
+    # Shorter subsegments are merged into a neighbour before time-scaling.
+    _MIN_SUBSEGMENT_DURATION_MS = 30_000
     _ATEMPO_TAIL_SAMPLES = 1024
     _PREFERRED_RATIONAL_SCALE_RATE = 192000
     _MAX_RATIONAL_SCALE_RATE = 2147483647
@@ -169,7 +171,6 @@ class AudioPatcher:
         strategy: AudioStrategy,
         *,
         segment_count: int = 1,
-        min_subsegment_duration: float = 30.0,
         unscaled_shift_ms: int = 0,
     ) -> AudioPatchResult:
         """Execute one fully specified audio patch request."""
@@ -186,7 +187,6 @@ class AudioPatcher:
             request,
             strategy,
             segment_count=segment_count,
-            min_subsegment_duration=min_subsegment_duration,
             unscaled_shift_ms=unscaled_shift_ms,
         )
         covered_target_interval = TimelineInterval(
@@ -344,7 +344,6 @@ class AudioPatcher:
         strategy: AudioStrategy,
         *,
         segment_count: int,
-        min_subsegment_duration: float,
         unscaled_shift_ms: int,
     ) -> list[_AudioMappingSegment]:
         if strategy == AudioStrategy.UNSCALED:
@@ -364,7 +363,6 @@ class AudioPatcher:
             return self._build_audio_subsegments(
                 request.mapping,
                 segment_count,
-                min_subsegment_duration,
             )
 
         source_range = segment_range(request.mapping)
@@ -377,7 +375,6 @@ class AudioPatcher:
     def _build_audio_subsegments(
         mapping: Sequence[tuple[int, int]],
         segment_count: int,
-        min_subsegment_duration: float,
     ) -> list[_AudioMappingSegment]:
         segment = segment_range(mapping)
         target_duration = segment.lhs_end - segment.lhs_start
@@ -410,7 +407,7 @@ class AudioPatcher:
         if not raw_segments:
             raise RuntimeError("Audio mapping cannot form a positive subsegment.")
 
-        minimum_ms = round(min_subsegment_duration * 1000)
+        minimum_ms = AudioPatcher._MIN_SUBSEGMENT_DURATION_MS
         while len(raw_segments) > 1:
             short_index = next((
                 index for index, part in enumerate(raw_segments)
