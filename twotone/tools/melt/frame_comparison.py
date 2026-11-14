@@ -36,6 +36,9 @@ RICH_FRAME_ENTROPY = 3.5
 # content can straddle the richer threshold across differently framed transfers
 # and therefore falls through to pHash comparison.
 BLACK_FRAME_ENTROPY = 2.0
+# Extracted frames are downscaled to this width (keeping aspect ratio) before
+# normalization; every matching stage shares the same source resolution.
+EXTRACTION_SCALE = (960, -2)
 
 
 @dataclass
@@ -346,6 +349,27 @@ class FrameComparison:
         self.lhs = lhs
         self.rhs = rhs
 
+    def extract_frames(
+        self,
+        video_path: str,
+        output_dir: str,
+        ranges: list[tuple[int, int]],
+        frames: FramesInfo,
+        desc: str,
+    ) -> None:
+        """Extract inclusive frame-id *ranges* and record paths in *frames*."""
+        video_utils.extract_frames_at_ranges(
+            video_path,
+            output_dir,
+            ranges,
+            frames,
+            scale=EXTRACTION_SCALE,
+            format="png",
+            interruption=self.interruption,
+            desc=desc,
+            logger=self.logger,
+        )
+
     def normalize_frames(
         self,
         frames: FramesInfo,
@@ -616,16 +640,12 @@ class FrameComparison:
         })
         if not missing:
             return
-        video_utils.extract_frames_at_ranges(
+        self.extract_frames(
             video_path,
             output_dir,
             [(frame_id, frame_id) for frame_id in missing],
             frames,
-            scale=(960, -2),
-            format="png",
-            interruption=self.interruption,
-            desc="Verifying boundary gap",
-            logger=self.logger,
+            "Verifying boundary gap",
         )
 
     def ensure_boundary_image(
@@ -641,15 +661,11 @@ class FrameComparison:
         if info.get("path"):
             return info["path"]
         frame_id = int(info["frame_id"])
-        video_utils.extract_frames_at_ranges(
+        self.extract_frames(
             video_path,
             output_dir,
             [(frame_id, frame_id)],
             frames,
-            scale=(960, -2),
-            format="png",
-            interruption=self.interruption,
-            desc="Verifying boundary frame",
-            logger=self.logger,
+            "Verifying boundary frame",
         )
         return path_or_none(frames, timestamp)

@@ -9,7 +9,7 @@ from typing import NamedTuple
 import numpy as np
 from sklearn.linear_model import LinearRegression, RANSACRegressor
 
-from ..utils import generic_utils, image_utils, media_analysis, video_utils
+from ..utils import generic_utils, image_utils, media_analysis
 from . import debug_routines, frame_comparison, matching_analysis
 from .boundary_search import BoundarySearch
 from .debug_routines import DebugRoutines
@@ -244,16 +244,12 @@ class PairMatcher:
             for info in sample_frames.values()
         ]
         os.makedirs(identity_wd, exist_ok=True)
-        video_utils.extract_frames_at_ranges(
+        self.frame_comparison.extract_frames(
             video_path,
             identity_wd,
             frame_ranges,
             sample_frames,
-            scale=(960, -2),
-            format="png",
-            interruption=self.interruption,
-            desc=f"Identity samples: {label}",
-            logger=self.logger,
+            f"Identity samples: {label}",
         )
         if any(info.get("path") is None for info in sample_frames.values()):
             self.logger.debug("Could not extract all identity-check frames from %s.", video_path)
@@ -864,16 +860,12 @@ class PairMatcher:
                 len(missing),
                 label,
             )
-            video_utils.extract_frames_at_ranges(
+            self.frame_comparison.extract_frames(
                 video_path,
                 target_dir,
                 ranges,
                 frames,
-                scale=(960, -2),
-                format="png",
-                interruption=self.interruption,
-                desc=f"Extracting discontinuity diagnostics: {label}",
-                logger=self.logger,
+                f"Extracting discontinuity diagnostics: {label}",
             )
 
     def create_segments_mapping(self) -> SegmentsMappingResult:
@@ -1573,12 +1565,11 @@ class PairMatcher:
             if int(info["frame_id"]) in requested and not info.get("path")
         ]
         if missing:
-            video_utils.extract_frames_at_ranges(
+            self.frame_comparison.extract_frames(
                 video_path, target_dir,
                 self._compute_frame_ranges(missing, probed_metadata, margin=0),
                 probed_metadata,
-                scale=(960, -2), format="png", interruption=self.interruption,
-                desc=f"[3/6] Extracting scene frames: {label}", logger=self.logger,
+                f"[3/6] Extracting scene frames: {label}",
             )
 
             # Restored frames may be symlinks into the cache; replacing that
@@ -1767,11 +1758,9 @@ class PairMatcher:
             (self.rhs, rhs_boundary_ranges, rhs_normalized_frames),
         )
         for side, boundary_ranges, _ in boundary_data:
-            video_utils.extract_frames_at_ranges(
+            self.frame_comparison.extract_frames(
                 side.path, side.boundary_dir, boundary_ranges, side.all_frames,
-                scale=(960, -2), format="png", interruption=self.interruption,
-                desc=f"[6/6] Extracting boundary frames: {side.label}",
-                logger=self.logger,
+                f"[6/6] Extracting boundary frames: {side.label}",
             )
 
         # Normalize the newly extracted boundary frames and merge.
