@@ -128,18 +128,27 @@ class PairMatcher:
         if lhs_frames is None or rhs_frames is None:
             return False
 
-        for timestamp, lhs_timestamp, rhs_timestamp in zip(timestamps, lhs_timestamps, rhs_timestamps):
-            distance = frame_comparison.phash_distance(
-                self.phash, lhs_frames[lhs_timestamp], rhs_frames[rhs_timestamp],
-            )
+        return self._identity_samples_match([
+            (timestamp, lhs_frames[lhs_timestamp], rhs_frames[rhs_timestamp])
+            for timestamp, lhs_timestamp, rhs_timestamp in zip(timestamps, lhs_timestamps, rhs_timestamps)
+        ])
+
+    def _identity_samples_match(
+        self,
+        samples: list[tuple[int, FrameInfo, FrameInfo]],
+    ) -> bool:
+        """Compare identity samples given as ``(target_ms, lhs_frame, rhs_frame)``."""
+        for target_ms, lhs_frame, rhs_frame in samples:
+            distance = frame_comparison.phash_distance(self.phash, lhs_frame, rhs_frame)
             if distance > frame_comparison.MIN_PHASH_CUTOFF:
                 self.logger.debug(
-                    "Equal-length identity check failed at %d ms (pHash distance %d).",
-                    timestamp, distance,
+                    "Equal-length identity check failed near %d ms (pHash distance %d).",
+                    target_ms,
+                    distance,
                 )
                 return False
 
-        self.logger.debug("Equal-length identity check passed (%d samples).", len(timestamps))
+        self.logger.debug("Equal-length identity check passed (%d samples).", len(samples))
         return True
 
     def _scans_have_identical_timeline_content(
@@ -188,22 +197,14 @@ class PairMatcher:
             self.rhs.label,
         )
 
-        for lhs_sample, rhs_sample in zip(lhs_samples, rhs_samples):
-            distance = frame_comparison.phash_distance(
-                self.phash,
+        return self._identity_samples_match([
+            (
+                lhs_sample.target_ms,
                 lhs_frames[lhs_sample.timestamp_ms],
                 rhs_frames[rhs_sample.timestamp_ms],
             )
-            if distance > frame_comparison.MIN_PHASH_CUTOFF:
-                self.logger.debug(
-                    "Equal-length identity check failed near %d ms (pHash distance %d).",
-                    lhs_sample.target_ms,
-                    distance,
-                )
-                return False
-
-        self.logger.debug("Equal-length identity check passed (%d samples).", len(lhs_samples))
-        return True
+            for lhs_sample, rhs_sample in zip(lhs_samples, rhs_samples)
+        ])
 
     def _normalize_scan_samples(
         self,
