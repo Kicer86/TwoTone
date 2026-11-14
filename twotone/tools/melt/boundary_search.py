@@ -284,54 +284,36 @@ class BoundarySearch:
 
         lhs_timestamps = sorted(self.lhs.all_frames)
         rhs_timestamps = sorted(self.rhs.all_frames)
-        lhs_min_time, lhs_max_time = lhs_timestamps[0], lhs_timestamps[-1]
-        rhs_min_time, rhs_max_time = rhs_timestamps[0], rhs_timestamps[-1]
         lhs_snap_tolerance_ms = 4 * 1000 / self.lhs.fps
         rhs_snap_tolerance_ms = 4 * 1000 / self.rhs.fps
 
-        first_lhs_time = max(lhs_min_time, (rhs_min_time - intercept) / slope)
-        first_rhs_time = slope * first_lhs_time + intercept
-        if (
-            first_lhs_time - lhs_min_time <= lhs_snap_tolerance_ms
-            and abs(slope * lhs_min_time + intercept - rhs_min_time)
-            <= rhs_snap_tolerance_ms
+        for edge, lhs_edge, rhs_edge, inward in (
+            ("start", lhs_timestamps[0], rhs_timestamps[0], max),
+            ("end", lhs_timestamps[-1], rhs_timestamps[-1], min),
         ):
-            first_lhs_time = lhs_min_time
-            first_rhs_time = rhs_min_time
-        first_rhs_time = max(rhs_min_time, min(rhs_max_time, first_rhs_time))
-        self._maybe_insert_verified_boundary(
-            result,
-            "start",
-            slope,
-            intercept,
-            first_lhs_time,
-            first_rhs_time,
-            lhs_timestamps,
-            rhs_timestamps,
-            verify_context,
-        )
-
-        last_lhs_time = min(lhs_max_time, (rhs_max_time - intercept) / slope)
-        last_rhs_time = slope * last_lhs_time + intercept
-        if (
-            lhs_max_time - last_lhs_time <= lhs_snap_tolerance_ms
-            and abs(slope * lhs_max_time + intercept - rhs_max_time)
-            <= rhs_snap_tolerance_ms
-        ):
-            last_lhs_time = lhs_max_time
-            last_rhs_time = rhs_max_time
-        last_rhs_time = max(rhs_min_time, min(rhs_max_time, last_rhs_time))
-        self._maybe_insert_verified_boundary(
-            result,
-            "end",
-            slope,
-            intercept,
-            last_lhs_time,
-            last_rhs_time,
-            lhs_timestamps,
-            rhs_timestamps,
-            verify_context,
-        )
+            # Project the video-edge overlap through the predictor; a small
+            # residual at both edges maps the boundary edge-to-edge.
+            lhs_time = inward(lhs_edge, (rhs_edge - intercept) / slope)
+            rhs_time = slope * lhs_time + intercept
+            if (
+                abs(lhs_time - lhs_edge) <= lhs_snap_tolerance_ms
+                and abs(slope * lhs_edge + intercept - rhs_edge)
+                <= rhs_snap_tolerance_ms
+            ):
+                lhs_time = lhs_edge
+                rhs_time = rhs_edge
+            rhs_time = max(rhs_timestamps[0], min(rhs_timestamps[-1], rhs_time))
+            self._maybe_insert_verified_boundary(
+                result,
+                edge,
+                slope,
+                intercept,
+                lhs_time,
+                rhs_time,
+                lhs_timestamps,
+                rhs_timestamps,
+                verify_context,
+            )
         return result
 
     def snap_to_edges(
