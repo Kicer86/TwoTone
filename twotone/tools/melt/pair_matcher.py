@@ -83,6 +83,12 @@ class PairMatcher:
     # log so the quoted limits never drift from the real ones.
     _MAX_CONSTANT_OFFSET_STD = 1.0
     _MAX_DRIFT_SLOPE_DELTA = 0.05
+    _MAX_MEDIAN_RESIDUAL_FRAMES = 1.5
+    _MAX_P95_RESIDUAL_FRAMES = 4.0
+    _MAX_OUTLIER_RATIO = 0.25
+    # A larger implied audio time scale is an implausible match.
+    _MAX_AUDIO_TIME_SCALE_DELTA = 0.30
+    _MIN_GLOBAL_LINEAR_SPAN_FRAMES = 250
     def has_identical_timeline_content(self) -> bool:
         """Quickly certify that both videos show the same content in-place.
 
@@ -639,14 +645,6 @@ class PairMatcher:
         matching_pairs: list[tuple[int, int]],
         lhs_all_frames: FramesInfo,
         rhs_all_frames: FramesInfo,
-        *,
-        max_slope_delta: float = _MAX_DRIFT_SLOPE_DELTA,
-        max_median_residual_frames: float = 1.5,
-        max_p95_residual_frames: float = 4.0,
-        max_outlier_ratio: float = 0.25,
-        max_audio_time_scale_delta: float = 0.30,
-        max_constant_offset_std: float = _MAX_CONSTANT_OFFSET_STD,
-        min_span_frames: int = 250,
     ) -> GlobalLinearFit | None:
         """Detect a single global linear frame relationship over the matched pairs.
 
@@ -661,7 +659,7 @@ class PairMatcher:
 
         ``time_scale = slope*lhs_fps/rhs_fps`` may differ from 1 (e.g. a 25 fps
         PAL speedup vs 24 fps); that only means the audio must be stretched.  It
-        is rejected when larger than ``max_audio_time_scale_delta`` (an
+        is rejected when larger than ``_MAX_AUDIO_TIME_SCALE_DELTA`` (an
         implausible match).
 
         This method only *detects* the relation and returns the fit; it does
@@ -694,8 +692,8 @@ class PairMatcher:
             matching_pairs,
             lhs_fps=self.lhs.fps,
             rhs_fps=self.rhs.fps,
-            max_std=max_constant_offset_std,
-            min_two_pair_span=min_span_frames,
+            max_std=self._MAX_CONSTANT_OFFSET_STD,
+            min_two_pair_span=self._MIN_GLOBAL_LINEAR_SPAN_FRAMES,
             logger=self.logger,
         )
         is_constant_offset = fit is not None
@@ -705,11 +703,11 @@ class PairMatcher:
                 rhs_frame_ids,
                 lhs_fps=self.lhs.fps,
                 rhs_fps=self.rhs.fps,
-                max_slope_delta=max_slope_delta,
-                max_median_residual_frames=max_median_residual_frames,
-                max_p95_residual_frames=max_p95_residual_frames,
-                max_outlier_ratio=max_outlier_ratio,
-                min_span_frames=min_span_frames,
+                max_slope_delta=self._MAX_DRIFT_SLOPE_DELTA,
+                max_median_residual_frames=self._MAX_MEDIAN_RESIDUAL_FRAMES,
+                max_p95_residual_frames=self._MAX_P95_RESIDUAL_FRAMES,
+                max_outlier_ratio=self._MAX_OUTLIER_RATIO,
+                min_span_frames=self._MIN_GLOBAL_LINEAR_SPAN_FRAMES,
                 logger=self.logger,
             )
         if fit is None:
@@ -717,10 +715,11 @@ class PairMatcher:
         slope, intercept = fit
 
         time_scale = slope * self.lhs.fps / self.rhs.fps
-        if abs(time_scale - 1.0) > max_audio_time_scale_delta:
+        if abs(time_scale - 1.0) > self._MAX_AUDIO_TIME_SCALE_DELTA:
             self.logger.debug(
-                f"Global-linear check: slope={slope:.6f} implies audio time scale "
-                f"{time_scale:.5f}, beyond the realistic {max_audio_time_scale_delta:.3f} — skipping"
+                "Global-linear check: slope=%.6f implies audio time scale "
+                "%.5f, beyond the realistic %.3f — skipping",
+                slope, time_scale, self._MAX_AUDIO_TIME_SCALE_DELTA,
             )
             return None
 
