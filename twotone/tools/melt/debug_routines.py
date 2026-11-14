@@ -10,13 +10,9 @@ import numpy as np
 
 from ..utils import generic_utils
 from . import matching_analysis
-from .matching_analysis import CoverageSummary
+from .matching_analysis import CoverageSummary, Discontinuity, DiscontinuityGroup
 from .melt_common import FramesInfo, format_timestamp_range
 from .phash_cache import PhashCache
-
-
-Discontinuity = tuple[int, int, int, int, int]
-DiscontinuityGroup = list[Discontinuity]
 
 
 def _frame_path(frames: FramesInfo, timestamp: int) -> str | None:

@@ -14,6 +14,7 @@ from . import debug_routines, frame_comparison, matching_analysis
 from .boundary_search import BoundarySearch
 from .debug_routines import DebugRoutines
 from .frame_comparison import FrameComparison, MatchingSide
+from .matching_analysis import Discontinuity, DiscontinuityGroup
 from .melt_cache import MeltCache
 from .melt_common import FrameInfo, FramesInfo, format_timestamp
 from .phash_cache import PhashCache
@@ -62,11 +63,11 @@ class SegmentsMappingResult(NamedTuple):
     rhs_fps: float
     frame_slope: float | None = None
     # A candidate frame relation is not audio certification when these exist.
-    timing_discontinuities: tuple[tuple[int, int, int, int, int], ...] = ()
+    timing_discontinuities: tuple[Discontinuity, ...] = ()
     # PairMatcher returns only content-continuous mappings, but keeping the
     # verdict explicit lets downstream execution defend that contract without
     # reclassifying the mapping.
-    content_discontinuities: tuple[tuple[int, int, int, int, int], ...] = ()
+    content_discontinuities: tuple[Discontinuity, ...] = ()
     timing_discontinuity_debug_path: str | None = None
 
 
@@ -361,7 +362,7 @@ class PairMatcher:
 
     def _refine_scenes_in_region(
         self,
-        gap: tuple[int, int, int, int, int],
+        gap: Discontinuity,
         lhs_scene_changes: list[int],
         rhs_scene_changes: list[int],
     ) -> tuple[list[int], list[int], bool]:
@@ -737,7 +738,7 @@ class PairMatcher:
 
     def _raise_for_unresolved_content_discontinuities(
         self,
-        discontinuities: list[tuple[int, int, int, int, int]],
+        discontinuities: list[Discontinuity],
         debug_path: str | None = None,
     ) -> None:
         groups = matching_analysis.group_content_discontinuities(discontinuities)
@@ -765,10 +766,10 @@ class PairMatcher:
 
     def _filter_allowed_temporary_frame_offset_excursions(
         self,
-        discontinuities: list[tuple[int, int, int, int, int]],
-    ) -> list[tuple[int, int, int, int, int]]:
+        discontinuities: list[Discontinuity],
+    ) -> list[Discontinuity]:
         """Allow one temporary offset excursion that returns at the next anchor."""
-        remaining: list[tuple[int, int, int, int, int]] = []
+        remaining: list[Discontinuity] = []
         for group in matching_analysis.group_content_discontinuities(discontinuities):
             excursion = self._temporary_frame_offset_excursion(group)
             allowed = (
@@ -802,7 +803,7 @@ class PairMatcher:
 
     def _temporary_frame_offset_excursion(
         self,
-        group: list[tuple[int, int, int, int, int]],
+        group: list[Discontinuity],
     ) -> tuple[int, int] | None:
         """Return the temporary shift and outer offset for one restored jump."""
         if len(group) != 2:
@@ -827,7 +828,7 @@ class PairMatcher:
 
     def _extract_discontinuity_frames(
         self,
-        groups: list[list[tuple[int, int, int, int, int]]],
+        groups: list[DiscontinuityGroup],
     ) -> None:
         """Extract every missing decoded frame in final error regions."""
         for video_path, target_dir, frames, label, side in (
@@ -926,7 +927,7 @@ class PairMatcher:
         global_linear_fit = self.detect_global_linear(
             matching_pairs, self.lhs.all_frames, self.rhs.all_frames,
         )
-        timing_discontinuities: tuple[tuple[int, int, int, int, int], ...] = ()
+        timing_discontinuities: tuple[Discontinuity, ...] = ()
 
         if global_linear_fit is not None:
             initial_frame_slope = global_linear_fit.slope
@@ -1673,7 +1674,7 @@ class PairMatcher:
 
         def find_discontinuities(
             pairs: list[tuple[int, int]],
-        ) -> list[tuple[int, int, int, int, int]]:
+        ) -> list[Discontinuity]:
             return matching_analysis.find_global_linear_content_discontinuities(
                 pairs, self.lhs.all_frames, self.rhs.all_frames,
                 frame_slope=frame_slope,

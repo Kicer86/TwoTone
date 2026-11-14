@@ -16,6 +16,19 @@ MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 2.0
 MAX_LINEAR_RESIDUAL_MS = 1000
 
 
+class Discontinuity(NamedTuple):
+    """One suspicious step between two adjacent matched pairs."""
+
+    lhs_from: int
+    lhs_to: int
+    rhs_from: int
+    rhs_to: int
+    deficit_ms: int
+
+
+DiscontinuityGroup = list[Discontinuity]
+
+
 class GlobalLinearDiscontinuityReport(NamedTuple):
     """Suspected content cuts and timestamp steps with continuous decode order.
 
@@ -25,9 +38,9 @@ class GlobalLinearDiscontinuityReport(NamedTuple):
     frame steps nominate refinement regions but alone prove neither verdict.
     """
 
-    content: list[tuple[int, int, int, int, int]]
-    timing: list[tuple[int, int, int, int, int]]
-    frame_steps: tuple[tuple[int, int, int, int, int], ...] = ()
+    content: list[Discontinuity]
+    timing: list[Discontinuity]
+    frame_steps: tuple[Discontinuity, ...] = ()
 
 
 class CoverageSummary(TypedDict):
@@ -58,7 +71,7 @@ class RelationDiagnostics(NamedTuple):
 class DiscontinuityRegionDescription(NamedTuple):
     """Shared calculated facts for one discontinuity diagnostic region."""
 
-    group: tuple[tuple[int, int, int, int, int], ...]
+    group: tuple[Discontinuity, ...]
     lhs_range: tuple[int, int]
     rhs_range: tuple[int, int]
     lhs_frame_range: tuple[int, int]
@@ -87,7 +100,7 @@ def snap_to_nearest_frame(keys: list[int], target: int) -> int:
 
 
 def describe_discontinuity_regions(
-    groups: list[list[tuple[int, int, int, int, int]]],
+    groups: list[DiscontinuityGroup],
     lhs_all_frames: FramesInfo,
     rhs_all_frames: FramesInfo,
     *,
@@ -203,11 +216,11 @@ def _flagged_gap_deficits(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]
 
 def find_content_discontinuities(
     mapping: list[tuple[int, int]],
-) -> list[tuple[int, int, int, int, int]]:
+) -> list[Discontinuity]:
     """Locate holes in the shared scene sequence of a matched pair."""
     pairs = sorted(mapping)
     return [
-        (pairs[index][0], pairs[index + 1][0], pairs[index][1], pairs[index + 1][1], deficit)
+        Discontinuity(pairs[index][0], pairs[index + 1][0], pairs[index][1], pairs[index + 1][1], deficit)
         for index, deficit in _flagged_gap_deficits(pairs)
     ]
 
@@ -252,9 +265,9 @@ def classify_global_linear_discontinuities(
     ]
     timestamp_slope = float(np.median(timestamp_slopes)) if timestamp_slopes else None
 
-    content_result: list[tuple[int, int, int, int, int]] = []
-    timing_result: list[tuple[int, int, int, int, int]] = []
-    frame_steps: list[tuple[int, int, int, int, int]] = []
+    content_result: list[Discontinuity] = []
+    timing_result: list[Discontinuity] = []
+    frame_steps: list[Discontinuity] = []
     for index, (
         (lhs1, rhs1),
         (lhs2, rhs2),
@@ -274,7 +287,7 @@ def classify_global_linear_discontinuities(
             continue
         deficit_frames = lhs_advance * frame_slope - rhs_advance
         if abs(deficit_frames) > MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:
-            frame_steps.append((
+            frame_steps.append(Discontinuity(
                 pairs[index][0],
                 pairs[index + 1][0],
                 pairs[index][1],
@@ -305,7 +318,7 @@ def classify_global_linear_discontinuities(
             result = content_result
 
         if abs(deficit_frames) > MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:
-            result.append((
+            result.append(Discontinuity(
                 pairs[index][0],
                 pairs[index + 1][0],
                 pairs[index][1],
@@ -325,7 +338,7 @@ def find_global_linear_content_discontinuities(
     lhs_fps: float,
     rhs_fps: float,
     require_decoded_confirmation: bool = True,
-) -> list[tuple[int, int, int, int, int]]:
+) -> list[Discontinuity]:
     report = classify_global_linear_discontinuities(
         mapping,
         lhs_all_frames,
@@ -594,10 +607,10 @@ def relation_diagnostics(
 
 
 def group_content_discontinuities(
-    discontinuities: list[tuple[int, int, int, int, int]],
-) -> list[list[tuple[int, int, int, int, int]]]:
+    discontinuities: list[Discontinuity],
+) -> list[DiscontinuityGroup]:
     """Group adjacent errors that share their middle matched anchor."""
-    groups: list[list[tuple[int, int, int, int, int]]] = []
+    groups: list[DiscontinuityGroup] = []
     for discontinuity in sorted(discontinuities):
         if (
             groups
