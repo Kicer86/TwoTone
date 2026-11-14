@@ -4,6 +4,7 @@ import os
 import statistics
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
 from tqdm import tqdm
@@ -67,6 +68,33 @@ class _StreamEntry(NamedTuple):
 class _PreparedStreams(NamedTuple):
     entries: list[_StreamEntry]
     input_files: set[str]
+
+
+_MKVMERGE_TRACK_SELECTION_FLAGS = {
+    "video":       ("--video-tracks",    "--no-video"),
+    "audio":       ("--audio-tracks",    "--no-audio"),
+    "subtitle":    ("--subtitle-tracks",  "--no-subtitles"),
+    "attachments": ("--attachments",      "--no-attachments"),
+}
+
+
+def _yes_no(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+@dataclass
+class _MkvmergeFileOptions:
+    """Per-input mkvmerge options collected before serialization."""
+
+    track_ids: dict[str, list[int]] = field(
+        default_factory=lambda: {stype: [] for stype in _MKVMERGE_TRACK_SELECTION_FLAGS},
+    )
+    languages: dict[int, str] = field(default_factory=dict)
+    defaults: set[int] = field(default_factory=set)
+    default_overrides: dict[int, bool] = field(default_factory=dict)
+    names: dict[int, str] = field(default_factory=dict)
+    forced: dict[int, bool] = field(default_factory=dict)
+    sync_offsets: dict[int, int] = field(default_factory=dict)
 
 
 class MeltPerformer:
@@ -228,78 +256,57 @@ class MeltPerformer:
         generation_args: list[str] = ["-o", output_path]
         if chapters_file:
             generation_args.extend(["--chapters", chapters_file])
-        files_opts: dict[str, dict[str, Any]] = {
-            path: {
-                "video": [],
-                "audio": [],
-                "subtitle": [],
-                "attachments": [],
-                "languages": {},
-                "defaults": set(),
-                "default_overrides": {},
-                "names": {},
-                "forced": {},
-                "sync_offsets": {},
-            }
-            for path in required_input_files
-        }
+        files_opts = {path: _MkvmergeFileOptions() for path in required_input_files}
+        file_indices = {path: index for index, path in enumerate(files_opts)}
 
         # Collect per-file options and track order
         track_order: list[str] = []
         for stream in streams_list_sorted:
-            fo: dict[str, Any] = files_opts[stream.path]
-            fo[stream.stream_type].append(stream.mkvmerge_track_id)
-            fo["languages"][stream.mkvmerge_track_id] = stream.language or "und"
+            fo = files_opts[stream.path]
+            tid = stream.mkvmerge_track_id
+            fo.track_ids[stream.stream_type].append(tid)
+            fo.languages[tid] = stream.language or "und"
             if stream.stream_type in ("audio", "subtitle") and preferred_audio and stream == preferred_audio:
-                fo["defaults"].add(stream.mkvmerge_track_id)
+                fo.defaults.add(tid)
             if stream.default is not None:
-                fo["default_overrides"][stream.mkvmerge_track_id] = stream.default
+                fo.default_overrides[tid] = stream.default
             if stream.name is not None:
-                fo["names"][stream.mkvmerge_track_id] = stream.name
+                fo.names[tid] = stream.name
             if stream.forced is not None:
-                fo["forced"][stream.mkvmerge_track_id] = stream.forced
+                fo.forced[tid] = stream.forced
             if stream.sync_offset_ms is not None:
-                fo["sync_offsets"][stream.mkvmerge_track_id] = stream.sync_offset_ms
-            file_index = generic_utils.get_key_position(files_opts, stream.path)
-            track_order.append(f"{file_index}:{stream.mkvmerge_track_id}")
+                fo.sync_offsets[tid] = stream.sync_offset_ms
+            track_order.append(f"{file_indices[stream.path]}:{tid}")
 
         for file_path, tid in attachments:
-            fo = files_opts[file_path]
-            fo["attachments"].append(tid)
+            files_opts[file_path].track_ids["attachments"].append(tid)
 
         # Serialize options into mkvmerge args, file by file
-        _STREAM_TYPE_OPTS = {
-            "video":       ("--video-tracks",    "--no-video"),
-            "audio":       ("--audio-tracks",    "--no-audio"),
-            "subtitle":    ("--subtitle-tracks",  "--no-subtitles"),
-            "attachments": ("--attachments",      "--no-attachments"),
-        }
-
         for file_path, fo in files_opts.items():
-            for stype, (include_flag, exclude_flag) in _STREAM_TYPE_OPTS.items():
-                if fo[stype]:
-                    generation_args.extend([include_flag, ",".join(str(i) for i in fo[stype])])
+            for stype, (include_flag, exclude_flag) in _MKVMERGE_TRACK_SELECTION_FLAGS.items():
+                ids = fo.track_ids[stype]
+                if ids:
+                    generation_args.extend([include_flag, ",".join(str(i) for i in ids)])
                 else:
                     generation_args.append(exclude_flag)
 
-            for tid, lang in fo["languages"].items():
+            for tid, lang in fo.languages.items():
                 generation_args.extend(["--language", f"{tid}:{lang}"])
 
-            for tid, name in fo["names"].items():
+            for tid, name in fo.names.items():
                 generation_args.extend(["--track-name", f"{tid}:{name}"])
 
-            for tid, forced in fo["forced"].items():
-                generation_args.extend(["--forced-display-flag", f"{tid}:{'yes' if forced else 'no'}"])
+            for tid, forced in fo.forced.items():
+                generation_args.extend(["--forced-display-flag", f"{tid}:{_yes_no(forced)}"])
 
             if preferred_audio:
-                for tid in fo["audio"] + fo["subtitle"]:
-                    flag = "yes" if tid in fo["defaults"] else "no"
-                    generation_args.extend(["--default-track", f"{tid}:{flag}"])
+                for tid in fo.track_ids["audio"] + fo.track_ids["subtitle"]:
+                    generation_args.extend(["--default-track", f"{tid}:{_yes_no(tid in fo.defaults)}"])
             else:
-                for tid, default in fo["default_overrides"].items():
-                    generation_args.extend(["--default-track", f"{tid}:{'yes' if default else 'no'}"])
+                for tid, default in fo.default_overrides.items():
+                    generation_args.extend(["--default-track", f"{tid}:{_yes_no(default)}"])
 
-            for tid, offset_ms in fo["sync_offsets"].items():
+            for tid, offset_ms in fo.sync_offsets.items():
                 generation_args.extend(["--sync", f"{tid}:{offset_ms}"])
 
             generation_args.append("--no-chapters")

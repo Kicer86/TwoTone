@@ -55,13 +55,6 @@ def fps_str_to_float(fps: str) -> float:
         raise ValueError(f"Invalid fps value: {fps}") from exc
 
 
-def get_key_position(d: dict, key) -> int:
-    for i, k in enumerate(d):
-        if k == key:
-            return i
-    raise KeyError(f"Key {key} not found")
-
-
 def get_twotone_config_dir():
     return platformdirs.user_data_dir("twotone")
 
