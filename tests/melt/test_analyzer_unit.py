@@ -5,9 +5,10 @@ from unittest.mock import Mock, patch
 from common import TwoToneTestCase
 from parameterized import parameterized
 
-from twotone.tools.melt.melt import MeltAnalyzer, StaticSource
+from twotone.tools.melt.static_source import StaticSource
 from twotone.tools.melt.melt_analyzer import (
     AlignmentRequirement,
+    MeltAnalyzer,
     UnsupportedMeltInputError,
 )
 from twotone.tools.melt.melt_common import (

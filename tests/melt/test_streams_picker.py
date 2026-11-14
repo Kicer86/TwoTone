@@ -8,7 +8,9 @@ import platform
 from parameterized import parameterized
 
 from twotone.tools.utils import generic_utils
-from twotone.tools.melt.melt import MeltTool, StaticSource, StreamsPicker
+from twotone.tools.melt.melt_tool import MeltTool
+from twotone.tools.melt.static_source import StaticSource
+from twotone.tools.melt.streams_picker import StreamsPicker
 from common import TwoToneTestCase
 from melt.helpers import (
     MeltTestBase,

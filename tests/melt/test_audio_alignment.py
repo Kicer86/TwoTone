@@ -19,7 +19,9 @@ from common import (
 )
 from parameterized import parameterized
 
-from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
+from twotone.tools.melt.melt_analyzer import MeltAnalyzer
+from twotone.tools.melt.melt_performer import MeltPerformer
+from twotone.tools.melt.static_source import StaticSource
 from twotone.tools.melt.melt_cache import MeltCache
 from twotone.tools.melt.melt_common import AudioStreamRef, VideoStreamRef
 from twotone.tools.melt.pair_matcher import PairMatcher

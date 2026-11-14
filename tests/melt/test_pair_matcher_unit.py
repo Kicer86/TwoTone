@@ -12,9 +12,10 @@ from twotone.tools.melt.frame_comparison import (
     BoundaryVerifyContext,
     VerifySide,
 )
-from twotone.tools.melt.melt import MappingRelation, PairMatcher
 from twotone.tools.melt.pair_matcher import (
     GlobalLinearFit,
+    MappingRelation,
+    PairMatcher,
 )
 from twotone.tools.melt.phash_cache import PhashCache
 from twotone.tools.utils import (

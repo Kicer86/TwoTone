@@ -18,7 +18,8 @@ from twotone.tools.melt.audio_patcher import (
     _AudioPart,
     segment_range,
 )
-from twotone.tools.melt.melt import MeltPerformer, StaticSource, StreamsPicker
+from twotone.tools.melt.static_source import StaticSource
+from twotone.tools.melt.streams_picker import StreamsPicker
 from twotone.tools.melt.melt_common import (
     AttachmentRef,
     AudioStreamRef,
@@ -30,6 +31,7 @@ from twotone.tools.melt.melt_common import (
 from twotone.tools.melt.melt_performer import (
     AudioPatchRequest,
     AudioPatchResult,
+    MeltPerformer,
     TimelineInterval,
     VideoToAudioTimeline,
     _AudioStrategy,

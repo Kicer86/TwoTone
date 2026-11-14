@@ -16,7 +16,9 @@ from common import (
     run_ffmpeg,
 )
 
-from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
+from twotone.tools.melt.melt_analyzer import MeltAnalyzer
+from twotone.tools.melt.melt_performer import MeltPerformer
+from twotone.tools.melt.static_source import StaticSource
 from twotone.tools.tool import ToolRuntimeContext
 from twotone.tools.utils import generic_utils, media_analysis, video_utils
 from twotone.tools.utils.files_utils import Workspace

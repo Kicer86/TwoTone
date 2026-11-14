@@ -5,7 +5,7 @@ import unittest
 import pysubs2
 
 from twotone.tools.utils import generic_utils, video_utils
-from twotone.tools.melt.melt import StaticSource
+from twotone.tools.melt.static_source import StaticSource
 from common import (
     add_test_media,
     add_to_test_dir,

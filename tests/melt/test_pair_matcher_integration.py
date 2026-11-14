@@ -13,7 +13,7 @@ from common import add_to_test_dir
 
 from melt.helpers import MeltTestBase
 from twotone.tools.melt import matching_analysis
-from twotone.tools.melt.melt import MappingRelation, PairMatcher
+from twotone.tools.melt.pair_matcher import MappingRelation, PairMatcher
 from twotone.tools.utils import files_utils, generic_utils, media_analysis, video_utils
 
 
