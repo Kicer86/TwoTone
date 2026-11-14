@@ -2,13 +2,16 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from functools import cmp_to_key
-from typing import Any, Generator
+from collections.abc import Callable
+from typing import Any, Generator, TypeVar
 
 from ..utils import generic_utils, language_utils
 from .duplicates_source import DuplicatesSource
 from .melt_common import AudioStreamRef, SubtitleStreamRef, VideoStreamRef
 
 _UNDEFINED_LANGUAGE = "undefined"
+
+_StreamRefT = TypeVar("_StreamRefT", VideoStreamRef, AudioStreamRef, SubtitleStreamRef)
 
 
 @dataclass(frozen=True)
@@ -47,15 +50,19 @@ class StreamsPicker:
             best_file_candidate,
             ids,
             "video",
+            VideoStreamRef,
             [],
             self._video_cmp,
             get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids)
         )
-        video_streams = [video_stream for video_stream in video_streams if (video_stream[0], video_stream[1]) not in attached_pics]
+        video_streams = [
+            video_stream
+            for video_stream in video_streams
+            if (video_stream.path, video_stream.mkvmerge_track_id) not in attached_pics
+        ]
         if not video_streams:
             raise RuntimeError("Could not find any usable video stream.")
-        video_stream = video_streams[0]
-        video_stream_path = video_stream[0]
+        video_stream_path = video_streams[0].path
 
         # pick audio streams
         forced_audio_language = self._metadata_language_overrides(files_details, "audio_lang", normalize=True)
@@ -64,6 +71,7 @@ class StreamsPicker:
             video_stream_path,
             ids,
             "audio",
+            AudioStreamRef,
             ["language", "channels"],
             self._cmp_by_keys(["sample_rate"]),
             get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids, override_languages = forced_audio_language)
@@ -76,17 +84,13 @@ class StreamsPicker:
             video_stream_path,
             ids,
             "subtitle",
+            SubtitleStreamRef,
             ["language"],
             lambda a, b: 0,
             get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids, override_languages = forced_subtitle_language)
         )
 
-        # results
-        return (
-            [VideoStreamRef(*stream) for stream in video_streams],
-            [AudioStreamRef(*stream) for stream in audio_streams],
-            [SubtitleStreamRef(*stream) for stream in subtitle_streams],
-        )
+        return video_streams, audio_streams, subtitle_streams
 
     @staticmethod
     def _metadata_flag_is_enabled(value: object) -> bool:
@@ -160,10 +164,11 @@ class StreamsPicker:
         best_file: str,
         files_ids: dict[str, int],
         stream_type: str,
+        ref_type: Callable[[str, int, int, str | None], _StreamRefT],
         unique_keys: list[str],
         preference,
         get_language
-    ) -> list[tuple[str, int, int, str | None]]:
+    ) -> list[_StreamRefT]:
         """Pick best streams of ``stream_type`` from ``files_details``.
 
         ``unique_keys`` determines the grouping for uniqueness. ``preference`` is
@@ -263,7 +268,7 @@ class StreamsPicker:
                 picked_streams.append((key, stream))
 
         # Flatten result
-        result: list[tuple[str, int, int, str | None]] = []
+        result: list[_StreamRefT] = []
         for _unique_key, entry in picked_streams:
             language = entry.details.get("language")
             ffprobe_stream_index = entry.details.get("ffprobe_stream_index")
@@ -274,7 +279,7 @@ class StreamsPicker:
                 )
             if language == _UNDEFINED_LANGUAGE:
                 language = None
-            result.append((
+            result.append(ref_type(
                 entry.path,
                 entry.tid,
                 ffprobe_stream_index,
