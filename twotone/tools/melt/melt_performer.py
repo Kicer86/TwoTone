@@ -37,6 +37,9 @@ from .melt_common import (
     StreamType,
     SubtitleStreamRef,
     VideoStreamRef,
+    content_video_tracks,
+    file_tracks,
+    find_track,
 )
 from .melt_plan import MeltTitlePlan
 from .pair_matcher import (
@@ -239,11 +242,11 @@ class MeltPerformer:
         base_video: VideoStreamRef,
         files_details: Mapping[str, Any],
     ) -> int | None:
-        tracks = files_details.get(base_video.path, {}).get("tracks", {}).get("video", [])
-        for track in tracks:
-            if track.get("tid") == base_video.mkvmerge_track_id and not track.get("attached_pic", False):
-                return track.get("length")
-        return None
+        track = find_track(
+            content_video_tracks(file_tracks(files_details, base_video.path, "video")),
+            base_video.mkvmerge_track_id,
+        )
+        return track.get("length") if track is not None else None
 
     def build_mkvmerge_args(
         self,
@@ -986,13 +989,10 @@ class MeltPerformer:
         Falls back to container-level ffprobe duration when plan data is
         unavailable.
         """
-        details = files_details.get(path)
-        if details:
-            for track in details.get("tracks", {}).get("video", []):
-                if not track.get("attached_pic", False):
-                    length = track.get("length")
-                    if length is not None:
-                        return length
+        for track in content_video_tracks(file_tracks(files_details, path, "video")):
+            length = track.get("length")
+            if length is not None:
+                return length
         return video_utils.get_video_duration(path, logger=logger)
 
     def _max_stream_end_ms(
@@ -1038,10 +1038,7 @@ class MeltPerformer:
 
     @staticmethod
     def _primary_video_ref(path: str, files_details: dict[str, Any]) -> VideoStreamRef:
-        tracks = files_details.get(path, {}).get("tracks", {}).get("video", [])
-        for track in tracks:
-            if track.get("attached_pic", False):
-                continue
+        for track in content_video_tracks(file_tracks(files_details, path, "video")):
             mkvmerge_track_id = track.get("tid")
             ffprobe_stream_index = track.get("ffprobe_stream_index")
             if isinstance(mkvmerge_track_id, int) and isinstance(ffprobe_stream_index, int):

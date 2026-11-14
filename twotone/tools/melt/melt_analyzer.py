@@ -25,6 +25,8 @@ from .melt_common import (
     SubtitleStreamRef,
     VideoStreamRef,
     _is_length_mismatch,
+    content_video_tracks,
+    find_track,
     stream_short_details,
 )
 from .melt_plan import MeltGroupPlan, MeltTitlePlan
@@ -110,17 +112,17 @@ class MeltAnalyzer:
 
     @staticmethod
     def _pick_track_by_tid(streams: Sequence[dict[str, Any]], tid: int) -> dict[str, Any]:
-        track = next((item for item in streams if item.get("tid") == tid), None)
+        track = find_track(streams, tid)
         if track is None:
             raise RuntimeError(f"Track #{tid} not found.")
         return track
 
     @staticmethod
     def _pick_primary_video_track(streams: Sequence[dict[str, Any]], file_id: int) -> dict[str, Any]:
-        for track in streams:
-            if not track.get("attached_pic", False):
-                return track
-        raise RuntimeError(f"No video track found in file #{file_id}.")
+        tracks = content_video_tracks(streams)
+        if not tracks:
+            raise RuntimeError(f"No video track found in file #{file_id}.")
+        return tracks[0]
 
     def _print_file_details(self, file: str, details: dict[str, Any], ids: dict[str, int]) -> None:
         def formatter(key: str, value: Any) -> str:

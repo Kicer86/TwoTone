@@ -10,7 +10,7 @@ import pysubs2
 
 from ..utils import files_utils, process_utils, subtitles_utils, video_utils
 from . import matching_analysis
-from .melt_common import SubtitleStreamRef
+from .melt_common import SubtitleStreamRef, file_tracks, find_track
 from .pair_matcher import MappingRelation, SegmentsMappingResult
 from .track_timeline import TrackTimeline
 
@@ -27,11 +27,10 @@ class SubtitleAlignment:
         stream: SubtitleStreamRef,
         files_details: Mapping[str, Any],
     ) -> dict[str, Any]:
-        tracks = files_details.get(stream.path, {}).get("tracks", {}).get("subtitle", [])
-        return next(
-            (track for track in tracks if track.get("tid") == stream.mkvmerge_track_id),
-            {},
-        )
+        return find_track(
+            file_tracks(files_details, stream.path, "subtitle"),
+            stream.mkvmerge_track_id,
+        ) or {}
 
     @staticmethod
     def validate_text_track(
