@@ -92,15 +92,11 @@ class MatchingSide:
 
 @dataclass
 class VerifySide:
-    """One video's frame sources for boundary-gap verification."""
+    """One video's crop geometry and image cache for boundary-gap verification."""
 
-    video_path: str
-    raw_dir: str
-    all_frames: FramesInfo
-    normalized: FramesInfo
+    source: MatchingSide
     crop_fn: Callable[[int], tuple[int, int, int, int]] | None
-    comparison_dir: str
-    comparison_cache: dict[int, str | None]
+    comparison_cache: dict[int, str | None] = field(default_factory=dict)
 
 
 @dataclass
@@ -469,24 +465,8 @@ class FrameComparison:
         else:
             lhs_crop_fn, rhs_crop_fn = crop_fns
 
-        lhs_side = VerifySide(
-            video_path=self.lhs.path,
-            raw_dir=self.lhs.boundary_dir,
-            all_frames=self.lhs.all_frames,
-            normalized=lhs_normalized_frames,
-            crop_fn=lhs_crop_fn,
-            comparison_dir=self.lhs.boundary_comparison_dir,
-            comparison_cache={},
-        )
-        rhs_side = VerifySide(
-            video_path=self.rhs.path,
-            raw_dir=self.rhs.boundary_dir,
-            all_frames=self.rhs.all_frames,
-            normalized=rhs_normalized_frames,
-            crop_fn=rhs_crop_fn,
-            comparison_dir=self.rhs.boundary_comparison_dir,
-            comparison_cache={},
-        )
+        lhs_side = VerifySide(self.lhs, lhs_crop_fn)
+        rhs_side = VerifySide(self.rhs, rhs_crop_fn)
 
         phash = PhashCache()
         lhs_comparison: FramesInfo = {}
@@ -535,15 +515,10 @@ class FrameComparison:
         if timestamp in side.comparison_cache:
             return side.comparison_cache[timestamp]
 
-        normalized_info = side.normalized.get(timestamp)
+        normalized_info = side.source.normalized_frames.get(timestamp)
         raw_path = None
         if normalized_info is None:
-            raw_path = self.ensure_boundary_image(
-                side.video_path,
-                side.raw_dir,
-                side.all_frames,
-                timestamp,
-            )
+            raw_path = self.ensure_boundary_image(side.source, timestamp)
 
         path: str | None = None
         try:
@@ -553,7 +528,7 @@ class FrameComparison:
                 normalized_path = None
             else:
                 normalized_path = os.path.join(
-                    side.comparison_dir,
+                    side.source.boundary_comparison_dir,
                     f"n_{timestamp}.png",
                 )
                 normalize_image(raw_path, normalized_path)
@@ -563,7 +538,7 @@ class FrameComparison:
                     path = normalized_path
                 else:
                     path = os.path.join(
-                        side.comparison_dir,
+                        side.source.boundary_comparison_dir,
                         f"c_{timestamp}.png",
                     )
                     crop_image(normalized_path, path, side.crop_fn(timestamp))
@@ -621,20 +596,8 @@ class FrameComparison:
         return distance <= context.cutoff
 
     def prefetch(self, side: MatchingSide, timestamps: list[int]) -> None:
-        self.prefetch_images(
-            side.path,
-            side.boundary_dir,
-            side.all_frames,
-            timestamps,
-        )
-
-    def prefetch_images(
-        self,
-        video_path: str,
-        output_dir: str,
-        frames: FramesInfo,
-        timestamps: list[int],
-    ) -> None:
+        """Extract the not-yet-extracted frames of *side* at *timestamps*."""
+        frames = side.all_frames
         missing = sorted({
             int(frames[timestamp]["frame_id"])
             for timestamp in timestamps
@@ -643,8 +606,8 @@ class FrameComparison:
         if not missing:
             return
         self.extract_frames(
-            video_path,
-            output_dir,
+            side.path,
+            side.boundary_dir,
             [(frame_id, frame_id) for frame_id in missing],
             frames,
             "Verifying boundary gap",
@@ -652,11 +615,10 @@ class FrameComparison:
 
     def ensure_boundary_image(
         self,
-        video_path: str,
-        output_dir: str,
-        frames: FramesInfo,
+        side: MatchingSide,
         timestamp: int,
     ) -> str | None:
+        frames = side.all_frames
         info = frames.get(timestamp)
         if info is None:
             return None
@@ -664,8 +626,8 @@ class FrameComparison:
             return info["path"]
         frame_id = int(info["frame_id"])
         self.extract_frames(
-            video_path,
-            output_dir,
+            side.path,
+            side.boundary_dir,
             [(frame_id, frame_id)],
             frames,
             "Verifying boundary frame",

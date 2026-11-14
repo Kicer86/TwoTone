@@ -10,6 +10,7 @@ from twotone.tools.melt import debug_routines, frame_comparison, matching_analys
 from twotone.tools.melt.boundary_search import BoundarySearch
 from twotone.tools.melt.frame_comparison import (
     BoundaryVerifyContext,
+    MatchingSide,
     VerifySide,
 )
 from twotone.tools.melt.pair_matcher import (
@@ -1443,8 +1444,8 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         def side(images):
             return VerifySide(
-                video_path="/fake", raw_dir="/fake_raw", all_frames={}, normalized={},
-                crop_fn=None, comparison_dir="/fake_cmp", comparison_cache=dict(images),
+                MatchingSide.create("/fake", "#1", 25.0, None, "/fake_wd"),
+                crop_fn=None, comparison_cache=dict(images),
             )
 
         return BoundaryVerifyContext(
@@ -1782,7 +1783,7 @@ class PairMatcherUnitTest(unittest.TestCase):
     def test_boundary_image_extraction_uses_decoded_frame_id(self):
         """A presentation timestamp must resolve to its decoder ordinal."""
         pm = self._make_pair_matcher()
-        frames = {
+        pm.lhs.all_frames = {
             2000: {"path": None, "frame_id": 7},
         }
 
@@ -1791,30 +1792,23 @@ class PairMatcherUnitTest(unittest.TestCase):
             probed_frames[2000]["path"] = "/decoded/frame_7.png"
 
         with patch.object(video_utils, 'extract_frames_at_ranges', side_effect=extract):
-            path = pm.frame_comparison.ensure_boundary_image(
-                "/fake/video.avi", "/fake/boundary", frames, 2000,
-            )
+            path = pm.frame_comparison.ensure_boundary_image(pm.lhs, 2000)
 
         self.assertEqual(path, "/decoded/frame_7.png")
 
     def test_boundary_prefetch_propagates_extraction_failure(self):
         pm = self._make_pair_matcher()
-        frames = {501: {"path": None, "frame_id": 12}}
+        pm.lhs.all_frames = {501: {"path": None, "frame_id": 12}}
         with patch.object(video_utils, "extract_frames_at_ranges",
                           side_effect=RuntimeError("missing frame at 501ms")) as extract:
             with self.assertRaisesRegex(RuntimeError, "missing frame at 501ms"):
-                pm.frame_comparison.prefetch_images(
-                    "/fake/video.mkv", "/fake/boundary", frames, [501],
-                )
+                pm.frame_comparison.prefetch(pm.lhs, [501])
         extract.assert_called_once()
 
     def test_boundary_comparison_propagates_extraction_failure(self):
         pm = self._make_pair_matcher()
-        side = VerifySide(
-            video_path="/fake/video.mkv", raw_dir="/fake/boundary",
-            all_frames={501: {"path": None, "frame_id": 12}}, normalized={},
-            crop_fn=None, comparison_dir="/fake/comparison", comparison_cache={},
-        )
+        pm.lhs.all_frames = {501: {"path": None, "frame_id": 12}}
+        side = VerifySide(pm.lhs, crop_fn=None)
         with patch.object(video_utils, "extract_frames_at_ranges",
                           side_effect=RuntimeError("missing frame at 501ms")) as extract:
             with self.assertRaisesRegex(RuntimeError, "missing frame at 501ms"):
