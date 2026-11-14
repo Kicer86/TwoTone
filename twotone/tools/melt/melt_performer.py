@@ -14,7 +14,6 @@ from ..utils import (
     generic_utils,
     language_utils,
     process_utils,
-    requirements_utils,
     video_utils,
 )
 from . import debug_routines, matching_analysis
@@ -1336,14 +1335,3 @@ class MeltPerformer:
                 self.logger.warning("Production audio language '%s' not found among audio streams.", language_name)
 
         return preferred_audio
-
-
-setattr(
-    MeltPerformer._prepare_audio_entries,
-    requirements_utils._REQUIRED_DEPS_ATTR,
-    {
-        AudioPatcher.execute,
-        AudioPatcher.prepare_normalized_unscaled_audio,
-        SubtitleAlignment.align,
-    },
-)

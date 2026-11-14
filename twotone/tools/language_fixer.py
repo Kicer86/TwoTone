@@ -139,6 +139,8 @@ class LanguageFixPlan:
 
 
 class LanguageFixerTool(Tool):
+    REQUIRED_TOOLS = ("ffprobe", "mkvextract", "mkvmerge")
+
     def __init__(self) -> None:
         super().__init__()
         self.logger = logging.getLogger("TwoTone.language_fix")

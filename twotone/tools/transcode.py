@@ -410,6 +410,8 @@ class TranscodePlan:
 
 
 class TranscodeTool(Tool):
+    REQUIRED_TOOLS = ("exiftool", "ffmpeg", "ffprobe")
+
     def __init__(self) -> None:
         super().__init__()
 

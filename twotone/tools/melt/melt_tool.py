@@ -66,6 +66,8 @@ class PerInputFlagAction(argparse.Action):
 
 
 class MeltTool(Tool):
+    REQUIRED_TOOLS = ("ffmpeg", "ffprobe", "mkvextract", "mkvmerge")
+
     def __init__(self) -> None:
         super().__init__()
         self.parser: argparse.ArgumentParser | None = None

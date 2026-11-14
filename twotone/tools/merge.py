@@ -381,6 +381,8 @@ class MergePlan:
 
 
 class MergeTool(Tool):
+    REQUIRED_TOOLS = ("ffprobe", "mkvmerge")
+
     def __init__(self) -> None:
         super().__init__()
 

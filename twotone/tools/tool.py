@@ -11,7 +11,6 @@ from twotone.tools.utils import (
     generic_utils,
     input_validation,
     media_analysis,
-    requirements_utils,
 )
 
 
@@ -49,12 +48,14 @@ class ToolRuntimeContext:
 
 
 class Tool(ABC):
+    REQUIRED_TOOLS: tuple[str, ...] = ()
+
     @abstractmethod
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         raise NotImplementedError
 
     def required_tools(self) -> set[str]:
-        return requirements_utils.collect_required_tools(self.analyze, self.perform)
+        return set(self.REQUIRED_TOOLS)
 
     def media_analysis_requests(
         self,

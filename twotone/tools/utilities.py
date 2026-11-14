@@ -110,6 +110,8 @@ class ScenesPlan:
 
 
 class UtilitiesTool(Tool):
+    REQUIRED_TOOLS = ("ffmpeg", "ffprobe")
+
     def __init__(self) -> None:
         super().__init__()
 
