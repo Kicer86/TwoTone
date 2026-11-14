@@ -11,7 +11,7 @@ import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from ..utils import generic_utils, process_utils, video_utils
 from .debug_routines import DebugRoutines
@@ -700,23 +700,21 @@ class AudioPatcher:
             )
         return head_part, tail_part
 
-    def _get_audio_params(self, audio_stream: AudioStreamRef) -> tuple[int, int, str]:
+    def _required_audio_stream_info(self, audio_stream: AudioStreamRef) -> dict[str, Any]:
         stream = self.timeline._audio_stream_info(audio_stream)
         if stream is None:
             raise RuntimeError(
                 f"ffprobe audio stream #{audio_stream.ffprobe_stream_index} "
                 f"not found in {audio_stream.path}."
             )
+        return stream
+
+    def _get_audio_params(self, audio_stream: AudioStreamRef) -> tuple[int, int, str]:
+        stream = self._required_audio_stream_info(audio_stream)
         return int(stream["channels"]), int(stream["sample_rate"]), stream["sample_fmt"]
 
     def _get_audio_channel_layout(self, audio_stream: AudioStreamRef) -> str | None:
-        stream = self.timeline._audio_stream_info(audio_stream)
-        if stream is None:
-            raise RuntimeError(
-                f"ffprobe audio stream #{audio_stream.ffprobe_stream_index} "
-                f"not found in {audio_stream.path}."
-            )
-        return stream.get("channel_layout") or None
+        return self._required_audio_stream_info(audio_stream).get("channel_layout") or None
 
     @staticmethod
     def _audio_duration_tolerance_ms(
