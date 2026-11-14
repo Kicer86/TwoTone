@@ -128,9 +128,8 @@ class PairMatcher:
             return False
 
         for timestamp, lhs_timestamp, rhs_timestamp in zip(timestamps, lhs_timestamps, rhs_timestamps):
-            distance = abs(
-                self.phash.get(frame_comparison.extracted_path(lhs_frames[lhs_timestamp]))
-                - self.phash.get(frame_comparison.extracted_path(rhs_frames[rhs_timestamp]))
+            distance = frame_comparison.phash_distance(
+                self.phash, lhs_frames[lhs_timestamp], rhs_frames[rhs_timestamp],
             )
             if distance > self._MIN_PHASH_CUTOFF:
                 self.logger.debug(
@@ -189,9 +188,10 @@ class PairMatcher:
         )
 
         for lhs_sample, rhs_sample in zip(lhs_samples, rhs_samples):
-            distance = abs(
-                self.phash.get(frame_comparison.extracted_path(lhs_frames[lhs_sample.timestamp_ms]))
-                - self.phash.get(frame_comparison.extracted_path(rhs_frames[rhs_sample.timestamp_ms]))
+            distance = frame_comparison.phash_distance(
+                self.phash,
+                lhs_frames[lhs_sample.timestamp_ms],
+                rhs_frames[rhs_sample.timestamp_ms],
             )
             if distance > self._MIN_PHASH_CUTOFF:
                 self.logger.debug(
@@ -625,7 +625,7 @@ class PairMatcher:
             return pairs
 
         dists_array = np.array([
-            abs(phash.get(frame_comparison.extracted_path(lhs_set[l])) - phash.get(frame_comparison.extracted_path(rhs_set[r])))
+            frame_comparison.phash_distance(phash, lhs_set[l], rhs_set[r])
             for l, r in pairs
         ], dtype=float)
         med = float(np.median(dists_array))
@@ -1183,9 +1183,8 @@ class PairMatcher:
                     abs(lhs_candidate - lhs_ts) * self.lhs.fps
                     + abs(rhs_candidate - rhs_ts_guess) * self.rhs.fps
                 ) / 1000
-                single_distance = abs(
-                    self.phash.get(frame_comparison.extracted_path(lhs_all_set[lhs_candidate]))
-                    - self.phash.get(frame_comparison.extracted_path(rhs_all_set[rhs_candidate]))
+                single_distance = frame_comparison.phash_distance(
+                    self.phash, lhs_all_set[lhs_candidate], rhs_all_set[rhs_candidate],
                 )
                 single_frame_candidates.append((
                     float(single_distance), movement,
@@ -1203,9 +1202,8 @@ class PairMatcher:
                     )
                     if abs(rhs_sample - predicted_rhs) > max_rhs_snap_error:
                         break
-                    distances.append(abs(
-                        self.phash.get(frame_comparison.extracted_path(lhs_all_set[lhs_sample]))
-                        - self.phash.get(frame_comparison.extracted_path(rhs_all_set[rhs_sample]))
+                    distances.append(frame_comparison.phash_distance(
+                        self.phash, lhs_all_set[lhs_sample], rhs_all_set[rhs_sample],
                     ))
 
                 if len(distances) == len(lhs_samples) and len(distances) >= 3:

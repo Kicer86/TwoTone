@@ -115,6 +115,11 @@ def extracted_path(info: FrameInfo) -> str:
     return path
 
 
+def phash_distance(phash: PhashCache, lhs: FrameInfo, rhs: FrameInfo) -> int:
+    """Return the perceptual-hash distance between two extracted frames."""
+    return abs(phash.get(extracted_path(lhs)) - phash.get(extracted_path(rhs)))
+
+
 def path_or_none(frames: FramesInfo, timestamp: int) -> str | None:
     info = frames.get(timestamp)
     return info["path"] if info else None
@@ -315,10 +320,7 @@ def calculate_cutoff(
     if not pairs:
         return MIN_PHASH_CUTOFF
     distances = [
-        abs(
-            phash.get(extracted_path(lhs[lhs_timestamp]))
-            - phash.get(extracted_path(rhs[rhs_timestamp]))
-        )
+        phash_distance(phash, lhs[lhs_timestamp], rhs[rhs_timestamp])
         for lhs_timestamp, rhs_timestamp in pairs
     ]
     values = np.array(distances)

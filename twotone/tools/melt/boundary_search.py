@@ -612,13 +612,10 @@ class BoundarySearch:
         for rhs_timestamp in rhs_near:
             if rhs_timestamp not in context.rhs or lhs_timestamp not in context.lhs:
                 continue
-            distance = abs(
-                context.phash.get(frame_comparison.extracted_path(
-                    context.lhs[lhs_timestamp]
-                ))
-                - context.phash.get(frame_comparison.extracted_path(
-                    context.rhs[rhs_timestamp]
-                ))
+            distance = frame_comparison.phash_distance(
+                context.phash,
+                context.lhs[lhs_timestamp],
+                context.rhs[rhs_timestamp],
             )
             if distance < best_distance:
                 best_distance = distance
@@ -651,13 +648,10 @@ class BoundarySearch:
         )
         if edge_lhs not in context.lhs or edge_rhs not in context.rhs:
             return False
-        distance = abs(
-            context.phash.get(frame_comparison.extracted_path(
-                context.lhs[edge_lhs]
-            ))
-            - context.phash.get(frame_comparison.extracted_path(
-                context.rhs[edge_rhs]
-            ))
+        distance = frame_comparison.phash_distance(
+            context.phash,
+            context.lhs[edge_lhs],
+            context.rhs[edge_rhs],
         )
         if distance > context.cutoff:
             return False
