@@ -119,12 +119,8 @@ class PairMatcher:
         lhs_timestamps = [self._nearest_frame_timestamp(self.lhs.all_frames, timestamp) for timestamp in timestamps]
         rhs_timestamps = [self._nearest_frame_timestamp(self.rhs.all_frames, timestamp) for timestamp in timestamps]
         identity_wd = os.path.join(self.debug_wd, "identity")
-        lhs_frames = self._extract_identity_samples(
-            self.lhs.path, self.lhs.all_frames, lhs_timestamps, os.path.join(identity_wd, "lhs"), self.lhs.label,
-        )
-        rhs_frames = self._extract_identity_samples(
-            self.rhs.path, self.rhs.all_frames, rhs_timestamps, os.path.join(identity_wd, "rhs"), self.rhs.label,
-        )
+        lhs_frames = self._extract_identity_samples(self.lhs, lhs_timestamps, os.path.join(identity_wd, "lhs"))
+        rhs_frames = self._extract_identity_samples(self.rhs, rhs_timestamps, os.path.join(identity_wd, "rhs"))
         if lhs_frames is None or rhs_frames is None:
             return False
 
@@ -232,34 +228,32 @@ class PairMatcher:
 
     def _extract_identity_samples(
         self,
-        video_path: str,
-        all_frames: FramesInfo,
+        side: MatchingSide,
         timestamps: list[int],
         identity_wd: str,
-        label: str,
     ) -> FramesInfo | None:
-        sample_frames = {timestamp: all_frames[timestamp] for timestamp in set(timestamps)}
+        sample_frames = {timestamp: side.all_frames[timestamp] for timestamp in set(timestamps)}
         frame_ranges = [
             (int(info["frame_id"]), int(info["frame_id"]))
             for info in sample_frames.values()
         ]
         os.makedirs(identity_wd, exist_ok=True)
         self.frame_comparison.extract_frames(
-            video_path,
+            side.path,
             identity_wd,
             frame_ranges,
             sample_frames,
-            f"Identity samples: {label}",
+            f"Identity samples: {side.label}",
         )
         if any(info.get("path") is None for info in sample_frames.values()):
-            self.logger.debug("Could not extract all identity-check frames from %s.", video_path)
+            self.logger.debug("Could not extract all identity-check frames from %s.", side.path)
             return None
         normalized_wd = os.path.join(identity_wd, "normalized")
         os.makedirs(normalized_wd, exist_ok=True)
         return self.frame_comparison.normalize_frames(
             sample_frames,
             normalized_wd,
-            desc=f"Normalizing identity samples: {label}",
+            desc=f"Normalizing identity samples: {side.label}",
         )
 
     def __init__(
@@ -367,14 +361,8 @@ class PairMatcher:
         lhs_local = [ts for ts in lhs_scene_changes if lhs_from < ts < lhs_to]
         rhs_local = [ts for ts in rhs_scene_changes if rhs_from < ts < rhs_to]
 
-        lhs_side = (
-            self.lhs.path, self.lhs.label,
-            lhs_from, lhs_to, self.lhs.all_frames, lhs_scene_changes,
-        )
-        rhs_side = (
-            self.rhs.path, self.rhs.label,
-            rhs_from, rhs_to, self.rhs.all_frames, rhs_scene_changes,
-        )
+        lhs_side = (self.lhs, lhs_from, lhs_to, lhs_scene_changes)
+        rhs_side = (self.rhs, rhs_from, rhs_to, rhs_scene_changes)
         if len(lhs_local) <= len(rhs_local):
             sides = (lhs_side, rhs_side)
         else:
@@ -389,13 +377,13 @@ class PairMatcher:
             generic_utils.ms_to_time(rhs_to), len(rhs_local),
         )
         scenes_added = False
-        for side_index, (path, label, start_ms, end_ms, all_frames, scenes) in enumerate(sides):
+        for side_index, (side, start_ms, end_ms, scenes) in enumerate(sides):
             analysis = self._analysis_result_for(
-                path,
-                label,
+                side.path,
+                side.label,
                 media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
             )
-            frame_timestamps = sorted(all_frames)
+            frame_timestamps = sorted(side.all_frames)
             candidates: dict[int, float] = {}
             for candidate in analysis.scene_candidates:
                 if not start_ms < candidate.timestamp_ms < end_ms:
@@ -414,7 +402,7 @@ class PairMatcher:
             if not ranked_scores:
                 self.logger.debug(
                     "Local scene refinement %s found no new candidates",
-                    label,
+                    side.label,
                 )
                 continue
 
@@ -436,7 +424,7 @@ class PairMatcher:
             scenes_added = True
             self.logger.debug(
                 "Local scene refinement %s selected %d scene(s) at score %.6f",
-                label, len(new_scenes), cutoff,
+                side.label, len(new_scenes), cutoff,
             )
             break
 
@@ -816,28 +804,12 @@ class PairMatcher:
         groups: list[DiscontinuityGroup],
     ) -> None:
         """Extract every missing decoded frame in final error regions."""
-        for video_path, target_dir, frames, label, side in (
-            (
-                self.lhs.path,
-                self.lhs.all_dir,
-                self.lhs.all_frames,
-                self.lhs.label,
-                "lhs",
-            ),
-            (
-                self.rhs.path,
-                self.rhs.all_dir,
-                self.rhs.all_frames,
-                self.rhs.label,
-                "rhs",
-            ),
-        ):
+        # Discontinuity fields come as (from, to) pairs: lhs first, then rhs.
+        for side, from_field in ((self.lhs, 0), (self.rhs, 2)):
+            frames = side.all_frames
             requested: set[int] = set()
             for group in groups:
-                if side == "lhs":
-                    start_ms, end_ms = group[0][0], group[-1][1]
-                else:
-                    start_ms, end_ms = group[0][2], group[-1][3]
+                start_ms, end_ms = group[0][from_field], group[-1][from_field + 1]
                 requested.update(
                     timestamp
                     for timestamp in frames
@@ -854,14 +826,14 @@ class PairMatcher:
             self.logger.info(
                 "Extracting %d missing diagnostic frame(s) for %s",
                 len(missing),
-                label,
+                side.label,
             )
             self.frame_comparison.extract_frames(
-                video_path,
-                target_dir,
+                side.path,
+                side.all_dir,
                 ranges,
                 frames,
-                f"Extracting discontinuity diagnostics: {label}",
+                f"Extracting discontinuity diagnostics: {side.label}",
             )
 
     def create_segments_mapping(self) -> SegmentsMappingResult:
@@ -1471,22 +1443,16 @@ class PairMatcher:
         rhs_analysis: media_analysis.VideoScanResult | None = None,
     ) -> None:
         """Phase 2: Probe all frame timestamps (fast — no images written)."""
-        if not self.lhs.all_frames:
-            if lhs_analysis is None:
-                lhs_analysis = self._analysis_result_for(
-                    self.lhs.path,
-                    self.lhs.label,
+        for side, analysis in ((self.lhs, lhs_analysis), (self.rhs, rhs_analysis)):
+            if side.all_frames:
+                continue
+            if analysis is None:
+                analysis = self._analysis_result_for(
+                    side.path,
+                    side.label,
                     media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
                 )
-            self.lhs.all_frames = self._probe_frames_for(lhs_analysis, self.lhs.label)
-        if not self.rhs.all_frames:
-            if rhs_analysis is None:
-                rhs_analysis = self._analysis_result_for(
-                    self.rhs.path,
-                    self.rhs.label,
-                    media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
-                )
-            self.rhs.all_frames = self._probe_frames_for(rhs_analysis, self.rhs.label)
+            side.all_frames = self._probe_frames_for(analysis, side.label)
 
     def _probe_frames_for(
         self,
@@ -1516,61 +1482,61 @@ class PairMatcher:
         lhs_scene_ranges = self._compute_frame_ranges(lhs_scene_changes, self.lhs.all_frames, margin=scene_margin)
         rhs_scene_ranges = self._compute_frame_ranges(rhs_scene_changes, self.rhs.all_frames, margin=scene_margin)
 
-        lhs_scene_frame_count = sum(e - s + 1 for s, e in lhs_scene_ranges)
-        rhs_scene_frame_count = sum(e - s + 1 for s, e in rhs_scene_ranges)
         self.logger.info(
-            f"Selective extraction: {lhs_scene_frame_count}/{len(self.lhs.all_frames)} frames for {self.lhs.label}, "
-            f"{rhs_scene_frame_count}/{len(self.rhs.all_frames)} frames for {self.rhs.label}"
+            "Selective extraction: %d/%d frames for %s, %d/%d frames for %s",
+            sum(e - s + 1 for s, e in lhs_scene_ranges), len(self.lhs.all_frames), self.lhs.label,
+            sum(e - s + 1 for s, e in rhs_scene_ranges), len(self.rhs.all_frames), self.rhs.label,
         )
 
-        self._extract_scene_frames_for(
-            self.lhs.path, self.lhs.all_dir, lhs_scene_ranges, self.lhs.all_frames, self.lhs.label,
+        sides = (
+            (self.lhs, lhs_scene_changes, lhs_scene_ranges),
+            (self.rhs, rhs_scene_changes, rhs_scene_ranges),
         )
-        self._extract_scene_frames_for(
-            self.rhs.path, self.rhs.all_dir, rhs_scene_ranges, self.rhs.all_frames, self.rhs.label,
-        )
-
-        lhs_key_frames_str = [str(self.lhs.all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes if lhs in self.lhs.all_frames]
-        rhs_key_frames_str = [str(self.rhs.all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes if rhs in self.rhs.all_frames]
-
-        self.logger.debug(f"{self.lhs.label} key frames: {' '.join(lhs_key_frames_str)}")
-        self.logger.debug(f"{self.rhs.label} key frames: {' '.join(rhs_key_frames_str)}")
+        for side, _, scene_ranges in sides:
+            self._extract_scene_frames_for(side, scene_ranges)
+        for side, scene_changes, _ in sides:
+            self.logger.debug(
+                "%s key frames: %s",
+                side.label,
+                " ".join(
+                    str(side.all_frames[timestamp]["frame_id"])
+                    for timestamp in scene_changes
+                    if timestamp in side.all_frames
+                ),
+            )
 
         return lhs_scene_ranges, rhs_scene_ranges
 
     def _extract_scene_frames_for(
         self,
-        video_path: str,
-        target_dir: str,
+        side: MatchingSide,
         scene_ranges: list[tuple[int, int]],
-        probed_metadata: FramesInfo,
-        label: str,
     ) -> None:
         """Restore initial cached frames, then extract only missing requested frames."""
-        initial = not any(info.get("path") for info in probed_metadata.values())
+        initial = not any(info.get("path") for info in side.all_frames.values())
         restored = False
         if initial and self.cache:
-            restored = self.cache.load_scene_frames(video_path, target_dir, probed_metadata)
+            restored = self.cache.load_scene_frames(side.path, side.all_dir, side.all_frames)
             if restored:
-                self.logger.info("[3/6] Scene frames for %s restored from cache", label)
+                self.logger.info("[3/6] Scene frames for %s restored from cache", side.label)
 
         requested = {frame for start, end in scene_ranges for frame in range(start, end + 1)}
         missing = [
-            ts for ts, info in probed_metadata.items()
+            ts for ts, info in side.all_frames.items()
             if int(info["frame_id"]) in requested and not info.get("path")
         ]
         if missing:
             self.frame_comparison.extract_frames(
-                video_path, target_dir,
-                self._compute_frame_ranges(missing, probed_metadata, margin=0),
-                probed_metadata,
-                f"[3/6] Extracting scene frames: {label}",
+                side.path, side.all_dir,
+                self._compute_frame_ranges(missing, side.all_frames, margin=0),
+                side.all_frames,
+                f"[3/6] Extracting scene frames: {side.label}",
             )
 
             # Restored frames may be symlinks into the cache; replacing that
             # cache would invalidate the files currently used by this run.
             if initial and not restored and self.cache:
-                self.cache.save_scene_frames(video_path, target_dir, probed_metadata)
+                self.cache.save_scene_frames(side.path, side.all_dir, side.all_frames)
 
     def _normalize_extracted(
         self,
@@ -1712,30 +1678,28 @@ class PairMatcher:
         """Phase 6: Extract remaining frames and refine boundary pairs."""
         self.logger.info("[6/6] Refining boundaries")
 
-        lhs_max_frame = max(int(info["frame_id"]) for info in self.lhs.all_frames.values())
-        rhs_max_frame = max(int(info["frame_id"]) for info in self.rhs.all_frames.values())
-
-        lhs_boundary_ranges = self._complement_ranges(lhs_scene_ranges, lhs_max_frame)
-        rhs_boundary_ranges = self._complement_ranges(rhs_scene_ranges, rhs_max_frame)
-
-        lhs_boundary_count = sum(e - s + 1 for s, e in lhs_boundary_ranges)
-        rhs_boundary_count = sum(e - s + 1 for s, e in rhs_boundary_ranges)
+        sides = (self.lhs, self.rhs)
+        lhs_boundary_ranges, rhs_boundary_ranges = (
+            self._complement_ranges(
+                scene_ranges,
+                max(int(info["frame_id"]) for info in side.all_frames.values()),
+            )
+            for side, scene_ranges in zip(sides, (lhs_scene_ranges, rhs_scene_ranges))
+        )
         self.logger.info(
-            f"Extracting boundary frames: {lhs_boundary_count} for {self.lhs.label}, "
-            f"{rhs_boundary_count} for {self.rhs.label}"
+            "Extracting boundary frames: %d for %s, %d for %s",
+            sum(e - s + 1 for s, e in lhs_boundary_ranges), self.lhs.label,
+            sum(e - s + 1 for s, e in rhs_boundary_ranges), self.rhs.label,
         )
 
-        for side, boundary_ranges in (
-            (self.lhs, lhs_boundary_ranges),
-            (self.rhs, rhs_boundary_ranges),
-        ):
+        for side, boundary_ranges in zip(sides, (lhs_boundary_ranges, rhs_boundary_ranges)):
             self.frame_comparison.extract_frames(
                 side.path, side.boundary_dir, boundary_ranges, side.all_frames,
                 f"[6/6] Extracting boundary frames: {side.label}",
             )
 
         # Normalize the newly extracted boundary frames and merge.
-        for side in (self.lhs, self.rhs):
+        for side in sides:
             new_frames = {
                 timestamp: info
                 for timestamp, info in side.all_frames.items()

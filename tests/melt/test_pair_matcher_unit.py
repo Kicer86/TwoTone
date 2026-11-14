@@ -2338,9 +2338,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         pm.cache.load_scene_frames.side_effect = restore
         with patch.object(video_utils, "extract_frames_at_ranges", side_effect=extract) as extraction:
             for ranges in ([(0, 2)], [(0, 3)], [(0, 3)]):
-                pm._extract_scene_frames_for(
-                    pm.lhs.path, pm.lhs.all_dir, ranges, pm.lhs.all_frames, pm.lhs.label,
-                )
+                pm._extract_scene_frames_for(pm.lhs, ranges)
 
         self.assertEqual([call.args[2] for call in extraction.call_args_list], [
             [(1, 2)], [(3, 3)],
