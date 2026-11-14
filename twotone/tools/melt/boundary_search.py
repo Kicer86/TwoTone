@@ -4,7 +4,7 @@ import logging
 from bisect import bisect_right
 from collections.abc import Callable
 from math import ceil, floor
-from typing import NamedTuple, Protocol
+from typing import NamedTuple
 
 import numpy as np
 
@@ -20,11 +20,6 @@ from .phash_cache import PhashCache
 MAX_BOUNDARY_GAP_MISSES = 1
 # Fitted predictions can land a frame or two away across ffmpeg builds.
 BOUNDARY_PREDICTION_JITTER_FRAMES = 2
-
-
-class GlobalLinearFitLike(Protocol):
-    @property
-    def slope(self) -> float: ...
 
 
 class BoundarySearchContext(NamedTuple):
@@ -263,14 +258,17 @@ class BoundarySearch:
 
     def extrapolate_and_verify_global_linear(
         self,
-        fit: GlobalLinearFitLike,
         matching_pairs: list[tuple[int, int]],
         lhs_normalized_frames: FramesInfo,
         rhs_normalized_frames: FramesInfo,
     ) -> list[tuple[int, int]]:
-        """Extend a certified linear relation only through verified content."""
+        """Extend certified global-linear pairs only through verified content.
+
+        Callers pass pairs that already passed global-linear certification.
+        The boundary predictor is fitted to these pairs' observed timestamps.
+        """
         result = sorted(matching_pairs)
-        if fit.slope <= 0 or len(result) < 2:
+        if len(result) < 2:
             return result
 
         verify_context = self.comparison.build_boundary_verify_context(

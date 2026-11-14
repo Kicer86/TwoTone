@@ -1134,8 +1134,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
         self.assertEqual(result.frame_slope, refined_fit.slope)
         self.assertEqual(detect.call_args_list[1].args[0], refined_pairs)
-        self.assertEqual(extrap.call_args.args[0], refined_fit)
-        self.assertEqual(extrap.call_args.args[1], refined_pairs)
+        self.assertEqual(extrap.call_args.args[0], refined_pairs)
 
     def test_create_segments_mapping_removes_false_pair_before_scene_refinement(self):
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
@@ -1459,12 +1458,11 @@ class PairMatcherUnitTest(unittest.TestCase):
         pm = self._make_pm_with_frames(list(range(0, 10040, 40)), list(range(0, 10040, 40)))
         # Zero offset, matches only in the middle of the video.
         matching_pairs = [(4000, 4000), (6000, 6000)]
-        fit = GlobalLinearFit(slope=1.0, intercept=0.0, is_constant_offset=True, time_scale=1.0)
 
         with self._patch_verify_ctx(), \
              patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True):
             result = pm.boundary_search.extrapolate_and_verify_global_linear(
-                fit, matching_pairs, pm.lhs.all_frames, pm.rhs.all_frames)
+                matching_pairs, pm.lhs.all_frames, pm.rhs.all_frames)
 
         self.assertEqual(result[0], (0, 0))
         self.assertEqual(result[-1], (10000, 10000))
@@ -1493,7 +1491,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             BoundarySearch, '_maybe_insert_verified_boundary',
         ) as insert_boundary:
             pm.boundary_search.extrapolate_and_verify_global_linear(
-                GlobalLinearFit(1.0, -12.0, True, 1.0),
                 matching_pairs,
                 pm.lhs.all_frames,
                 pm.rhs.all_frames,
@@ -1521,7 +1518,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             BoundarySearch, '_maybe_insert_verified_boundary',
         ) as insert_boundary:
             pm.boundary_search.extrapolate_and_verify_global_linear(
-                GlobalLinearFit(1.0, 25.0, True, 0.8),
                 matching_pairs,
                 pm.lhs.all_frames,
                 pm.rhs.all_frames,
@@ -1554,7 +1550,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True,
         ):
             result = pm.boundary_search.extrapolate_and_verify_global_linear(
-                GlobalLinearFit(1.0, -12.0, True, 1.0),
                 matching_pairs,
                 pm.lhs.all_frames,
                 pm.rhs.all_frames,
@@ -1571,14 +1566,11 @@ class PairMatcherUnitTest(unittest.TestCase):
             [*range(0, 9640, 40), 10000], prefix="rhs",
         )
         matching_pairs = [(4000, 4000), (6000, 6000), (9000, 9000)]
-        fit = GlobalLinearFit(
-            slope=1.0, intercept=0.0, is_constant_offset=True, time_scale=1.0,
-        )
 
         with self._patch_verify_ctx(), \
              patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True):
             result = pm.boundary_search.extrapolate_and_verify_global_linear(
-                fit, matching_pairs, pm.lhs.all_frames, pm.rhs.all_frames,
+                matching_pairs, pm.lhs.all_frames, pm.rhs.all_frames,
             )
 
         self.assertEqual(result[-1], (10000, 10000))
@@ -1592,11 +1584,10 @@ class PairMatcherUnitTest(unittest.TestCase):
                         sparse if side == "lhs" else dense,
                         sparse if side == "rhs" else dense,
                     )
-                    fit = GlobalLinearFit(1.0, 0.0, True, 1.0)
                     with self._patch_verify_ctx(), \
                          patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True) as verify:
                         result = pm.boundary_search.extrapolate_and_verify_global_linear(
-                            fit, [(4000, 4000), (6000, 6000)], pm.lhs.all_frames, pm.rhs.all_frames,
+                            [(4000, 4000), (6000, 6000)], pm.lhs.all_frames, pm.rhs.all_frames,
                         )
                     self.assertEqual(result[0], (0, 0))
                     self.assertEqual(result[-1], (10000, 10000))
@@ -1616,7 +1607,6 @@ class PairMatcherUnitTest(unittest.TestCase):
         with self._patch_verify_ctx(), \
              patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True) as verify:
             result = pm.boundary_search.extrapolate_and_verify_global_linear(
-                GlobalLinearFit(1.0, 0.0, True, 1.0),
                 [(4000, 4000), (6000, 6000)],
                 pm.lhs.all_frames,
                 pm.rhs.all_frames,
@@ -1639,12 +1629,11 @@ class PairMatcherUnitTest(unittest.TestCase):
                 )
                 # Projected overlap starts at slot 10 (400ms) on the
                 # sparse side, while its displayed image still has PTS 0.
-                fit = GlobalLinearFit(1.0, -10.0 if side == "lhs" else 10.0, True, 1.0)
                 pairs = [(4000, 3600), (6000, 5600)] if side == "lhs" else [(3600, 4000), (5600, 6000)]
                 with self._patch_verify_ctx(), \
                      patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True):
                     result = pm.boundary_search.extrapolate_and_verify_global_linear(
-                        fit, pairs, pm.lhs.all_frames, pm.rhs.all_frames,
+                        pairs, pm.lhs.all_frames, pm.rhs.all_frames,
                     )
                 self.assertEqual(result[0], (400, 0) if side == "lhs" else (0, 400))
 
@@ -1666,7 +1655,7 @@ class PairMatcherUnitTest(unittest.TestCase):
                 with self._patch_verify_ctx(), \
                      patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', side_effect=matches) as verify:
                     result = pm.boundary_search.extrapolate_and_verify_global_linear(
-                        GlobalLinearFit(1.0, 0.0, True, 1.0), [(2000, 2000), (6000, 6000)],
+                        [(2000, 2000), (6000, 6000)],
                         pm.lhs.all_frames, pm.rhs.all_frames,
                     )
                 self.assertEqual(result[-1], (6000, 6000))
@@ -1683,9 +1672,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             list(range(0, 10040, 40)), prefix="rhs",
         )
         matching_pairs = [(1000, 1000), (4000, 4000), (8000, 8000)]
-        fit = GlobalLinearFit(
-            slope=1.0, intercept=0.0, is_constant_offset=True, time_scale=1.0,
-        )
 
         def content_matches(_ctx, lhs_ts, rhs_ts):
             # The shared body and the isolated black edge match, but the intro
@@ -1695,7 +1681,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         with self._patch_verify_ctx(), \
              patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', side_effect=content_matches):
             result = pm.boundary_search.extrapolate_and_verify_global_linear(
-                fit, matching_pairs, pm.lhs.all_frames, pm.rhs.all_frames,
+                matching_pairs, pm.lhs.all_frames, pm.rhs.all_frames,
             )
 
         self.assertEqual(result[0], (1000, 1000))
@@ -1704,12 +1690,11 @@ class PairMatcherUnitTest(unittest.TestCase):
         """When the extrapolated boundary frames do NOT verify, the boundary stays put."""
         pm = self._make_pm_with_frames(list(range(0, 10040, 40)), list(range(0, 10040, 40)))
         matching_pairs = [(3000, 3000), (6000, 6000)]
-        fit = GlobalLinearFit(slope=1.0, intercept=0.0, is_constant_offset=True, time_scale=1.0)
 
         with self._patch_verify_ctx(), \
              patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=False):
             result = pm.boundary_search.extrapolate_and_verify_global_linear(
-                fit, matching_pairs, pm.lhs.all_frames, pm.rhs.all_frames)
+                matching_pairs, pm.lhs.all_frames, pm.rhs.all_frames)
 
         # No extension — divergent intro/outro is not crossed.
         self.assertEqual(result[0], (3000, 3000))
@@ -1721,12 +1706,11 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(4000, 4120), (6000, 6120)]
         # rhs_frame = lhs_frame + 3 → at lhs edge (0) the line predicts rhs frame 3;
         # within snap tolerance of the rhs edge, so it maps edge-to-edge.
-        fit = GlobalLinearFit(slope=1.0, intercept=3.0, is_constant_offset=True, time_scale=1.0)
 
         with self._patch_verify_ctx(), \
              patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True):
             result = pm.boundary_search.extrapolate_and_verify_global_linear(
-                fit, matching_pairs, pm.lhs.all_frames, pm.rhs.all_frames)
+                matching_pairs, pm.lhs.all_frames, pm.rhs.all_frames)
 
         self.assertEqual(result[0], (0, 0))
 
@@ -1736,12 +1720,11 @@ class PairMatcherUnitTest(unittest.TestCase):
         matching_pairs = [(4000, 6000), (6000, 8000)]
         # rhs_frame = lhs_frame + 50 (a 2s offset) → at lhs edge (0) the line
         # predicts rhs frame 50 (2000ms), well past the snap tolerance.
-        fit = GlobalLinearFit(slope=1.0, intercept=50.0, is_constant_offset=True, time_scale=1.0)
 
         with self._patch_verify_ctx(), \
              patch.object(frame_comparison.FrameComparison, 'boundary_content_matches', return_value=True):
             result = pm.boundary_search.extrapolate_and_verify_global_linear(
-                fit, matching_pairs, pm.lhs.all_frames, pm.rhs.all_frames)
+                matching_pairs, pm.lhs.all_frames, pm.rhs.all_frames)
 
         self.assertEqual(result[0], (0, 2000))
 

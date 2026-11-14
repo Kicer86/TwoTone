@@ -1051,7 +1051,7 @@ class PairMatcher:
             # content. No later timestamp edge-snap may bypass verification.
             if not timing_discontinuities:
                 matching_pairs = self.boundary_search.extrapolate_and_verify_global_linear(
-                    global_linear_fit, matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
+                    matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
                 )
                 debug.dump_matches(matching_pairs, "after verified global-linear extrapolation")
         else:
@@ -1078,7 +1078,7 @@ class PairMatcher:
                 )
                 if generic_fit is not None:
                     matching_pairs = self.boundary_search.extrapolate_and_verify_global_linear(
-                        generic_fit, matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
+                        matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
                     )
                     debug.dump_matches(matching_pairs, "after verified linear extrapolation")
                 matching_pairs = self.boundary_search.snap_to_edges(matching_pairs, self.lhs.all_frames, self.rhs.all_frames)
