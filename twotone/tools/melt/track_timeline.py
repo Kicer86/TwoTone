@@ -18,7 +18,7 @@ original timestamps and CodecDelay and does not enter this flow:
 - ``_aac_priming_exposed`` detects the running build's convention once per run.
 - ``_audio_content_start_ms`` returns a stream's true content start,
   independent of that convention.
-- ``_decode_source_audio_to_flac`` decodes audio with the priming removed
+- ``_decode_audio_stream_to_flac`` decodes audio with the priming removed
   deterministically (via an ADTS remux that strips the CodecDelay signalling),
   so every downstream step works in a priming-free FLAC domain and AAC is
   encoded exactly once.
@@ -156,39 +156,6 @@ class TrackTimeline:
 
     # --- AAC encoder-delay (priming) handling ----------------------------
 
-    def _source_audio_priming(
-        self,
-        video_path: str,
-        logger: logging.Logger | None = None,
-        *,
-        audio_ffprobe_stream_index: int | None = None,
-    ) -> tuple[str | None, int, int, dict[str, Any]]:
-        """Return (codec_name, initial_padding_samples, sample_rate, stream).
-
-        ``initial_padding`` is the lossy-codec encoder-delay (priming) sample count the
-        container signals via Matroska *CodecDelay*; it is 0 for MP4/MOV (where the same
-        delay is carried by an edit list that every ffmpeg build honours on decode).
-        ``audio_ffprobe_stream_index`` selects a specific stream by its absolute container
-        index; when omitted the first audio stream is used.
-        """
-        stream: dict[str, Any]
-        if audio_ffprobe_stream_index is not None:
-            stream = self._stream_info(video_path, "audio", audio_ffprobe_stream_index) or {}
-        else:
-            info = video_utils.get_video_full_info(video_path, logger=logger)
-            streams = info.get("streams", [])
-            stream = next((s for s in streams if s.get("codec_type") == "audio"), {})
-        codec = stream.get("codec_name")
-        try:
-            init_pad = int(stream.get("initial_padding") or 0)
-        except (TypeError, ValueError):
-            init_pad = 0
-        try:
-            sample_rate = int(stream.get("sample_rate") or 0)
-        except (TypeError, ValueError):
-            sample_rate = 0
-        return codec, init_pad, sample_rate, stream
-
     def _aac_priming_exposed(self) -> bool:
         """Whether this ffmpeg build exposes AAC encoder-delay priming as a negative
         container start time instead of absorbing it.
@@ -247,21 +214,18 @@ class TrackTimeline:
             return base
         return max(0, round((raw_start + pad / sample_rate) * 1000))
 
-    def _decode_source_audio_to_flac(
+    def _decode_audio_stream_to_flac(
         self,
-        source_video: str,
+        stream_ref: AudioStreamRef,
         output_path: str,
         *,
         sample_fmt: str = "s32",
         trim_start_ms: int | None = None,
         trim_end_ms: int | None = None,
-        audio_ffprobe_stream_index: int | None = None,
-        output_channels: int | None = None,
-        output_sample_rate: int | None = None,
+        normalize_to: tuple[int, int, str] | None = None,
         logger: logging.Logger | None = None,
-        progress_source: str | None = None,
     ) -> None:
-        """Decode the first audio stream of *source_video* to FLAC with the lossy-codec
+        """Decode one selected audio stream to FLAC with the lossy-codec
         encoder-delay priming removed deterministically across all ffmpeg builds.
 
         When the source carries CodecDelay priming we strip that signalling by
@@ -275,39 +239,36 @@ class TrackTimeline:
         timestamps, the window is re-anchored to the priming-independent content start
         so exposing and absorbing ffmpeg builds select identical samples.  The emitted
         FLAC is always rebased to its first selected sample.
+
+        ``normalize_to`` optionally forces ``(channels, sample_rate, sample_fmt)``.
         """
-        codec, init_pad, sample_rate, stream = self._source_audio_priming(
-            source_video,
-            logger=logger,
-            audio_ffprobe_stream_index=audio_ffprobe_stream_index,
-        )
-        if progress_source is None:
-            stream_description = (
-                f"audio stream #{audio_ffprobe_stream_index}"
-                if audio_ffprobe_stream_index is not None
-                else "audio"
-            )
-            progress_source = f"{self._input_file_description(source_video)}, {stream_description}"
+        stream = self._audio_stream_info(stream_ref) or {}
+        codec = stream.get("codec_name")
+        try:
+            init_pad = int(stream.get("initial_padding") or 0)
+        except (TypeError, ValueError):
+            init_pad = 0
+        try:
+            sample_rate = int(stream.get("sample_rate") or 0)
+        except (TypeError, ValueError):
+            sample_rate = 0
+        progress_source = self._audio_source_description(stream_ref)
         source_codec = codec.upper() if codec else "audio"
-        source_map = (
-            f"0:{audio_ffprobe_stream_index}"
-            if audio_ffprobe_stream_index is not None
-            else "0:a:0"
-        )
+        source_map = f"0:{stream_ref.ffprobe_stream_index}"
 
         prime_offset_s = 0.0
         # Keep the public trim arguments on the source-stream timeline, then
         # move them into the decoded-content timeline here.  This must apply
         # to every codec, not only the AAC-to-ADTS priming path below.
         window_anchor_ms = self._audio_content_start_ms(stream)
-        input_path = source_video
+        input_path = stream_ref.path
         input_map = source_map
         adts_path: str | None = None
         if codec == "aac" and init_pad > 0 and sample_rate > 0:
             adts_path = f"{output_path}.priming.aac"
             process_utils.raise_on_error(
                 process_utils.start_process("ffmpeg", [
-                    "-y", "-i", source_video, "-map", source_map,
+                    "-y", "-i", stream_ref.path, "-map", source_map,
                     "-c:a", "copy", "-f", "adts", adts_path,
                 ], show_progress=True,
                     progress_description=f"Extracting AAC bitstream from {progress_source}",
@@ -338,10 +299,9 @@ class TrackTimeline:
 
         args = ["-y", "-i", input_path, "-map", input_map]
         args += ["-filter:a", ",".join(filters)]
-        if output_channels is not None:
-            args += ["-ac", str(output_channels)]
-        if output_sample_rate is not None:
-            args += ["-ar", str(output_sample_rate)]
+        if normalize_to is not None:
+            output_channels, output_sample_rate, sample_fmt = normalize_to
+            args += ["-ac", str(output_channels), "-ar", str(output_sample_rate)]
         args += ["-sample_fmt", sample_fmt, "-c:a", "flac", output_path]
         try:
             process_utils.raise_on_error(process_utils.start_process(
@@ -352,35 +312,6 @@ class TrackTimeline:
         finally:
             if adts_path and not self.workspace.keep and os.path.exists(adts_path):
                 os.remove(adts_path)
-
-    def _decode_audio_stream_to_flac(
-        self,
-        stream: AudioStreamRef,
-        output_path: str,
-        *,
-        sample_fmt: str = "s32",
-        trim_start_ms: int | None = None,
-        trim_end_ms: int | None = None,
-        normalize_to: tuple[int, int, str] | None = None,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        """Decode one explicitly selected audio stream to priming-free FLAC."""
-        output_channels: int | None = None
-        output_sample_rate: int | None = None
-        if normalize_to is not None:
-            output_channels, output_sample_rate, sample_fmt = normalize_to
-        self._decode_source_audio_to_flac(
-            stream.path,
-            output_path,
-            sample_fmt=sample_fmt,
-            trim_start_ms=trim_start_ms,
-            trim_end_ms=trim_end_ms,
-            audio_ffprobe_stream_index=stream.ffprobe_stream_index,
-            output_channels=output_channels,
-            output_sample_rate=output_sample_rate,
-            logger=logger,
-            progress_source=self._audio_source_description(stream),
-        )
 
     def _audio_mkvmerge_normalization_reason(self, stream_ref: AudioStreamRef) -> str | None:
         """Describe why direct mkvmerge passthrough would change AAC timing.

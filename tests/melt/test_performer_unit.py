@@ -1429,12 +1429,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
              patch.object(process_utils, "start_process", side_effect=fake_start_process), \
              patch.object(process_utils, "raise_on_error", lambda result: None), \
              patch.object(os.path, "exists", return_value=False):
-            timeline._decode_source_audio_to_flac(
-                "/tmp/source.mkv",
+            timeline._decode_audio_stream_to_flac(
+                AudioStreamRef("/tmp/source.mkv", 1, 1, None),
                 "/tmp/output.flac",
                 trim_start_ms=500,
                 trim_end_ms=63250,
-                audio_ffprobe_stream_index=1,
             )
 
         decode_args = calls[1][1]
@@ -1446,8 +1445,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(
             [call[2].get("progress_description") for call in calls],
             [
-                "Extracting AAC bitstream from file #1, audio stream #1",
-                "Decoding file #1, audio stream #1: AAC -> FLAC",
+                "Extracting AAC bitstream from file #1, audio track #1",
+                "Decoding file #1, audio track #1: AAC -> FLAC",
             ],
         )
 
@@ -1473,12 +1472,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
              patch.object(timeline, "_aac_priming_exposed", return_value=False), \
              patch.object(process_utils, "start_process", side_effect=fake_start_process), \
              patch.object(process_utils, "raise_on_error", lambda result: None):
-            timeline._decode_source_audio_to_flac(
-                "/tmp/source.mp4",
+            timeline._decode_audio_stream_to_flac(
+                AudioStreamRef("/tmp/source.mp4", 1, 1, None),
                 "/tmp/output.flac",
                 trim_start_ms=541,
                 trim_end_ms=62791,
-                audio_ffprobe_stream_index=1,
             )
 
         decode_args = calls[0][1]
