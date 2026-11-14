@@ -255,8 +255,6 @@ class BoundarySearch:
     def extrapolate_and_verify_global_linear(
         self,
         matching_pairs: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
     ) -> list[tuple[int, int]]:
         """Extend certified global-linear pairs only through verified content.
 
@@ -269,8 +267,6 @@ class BoundarySearch:
 
         verify_context = self.comparison.build_boundary_verify_context(
             matching_pairs,
-            lhs_normalized_frames,
-            rhs_normalized_frames,
         )
         observed_pairs = np.asarray(result, dtype=float)
         pair_slopes = [

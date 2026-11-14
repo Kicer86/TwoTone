@@ -55,6 +55,9 @@ class MatchingSide:
     normalized_cropped_dir: str
     boundary_comparison_dir: str
     all_frames: FramesInfo = field(default_factory=dict)
+    # Comparison-space images keyed like ``all_frames``; filled as frames are
+    # extracted and shared by every matching stage of the run.
+    normalized_frames: FramesInfo = field(default_factory=dict)
 
     @classmethod
     def create(
@@ -425,11 +428,10 @@ class FrameComparison:
     def crop_both(
         self,
         pairs: list[tuple[int, int]],
-        lhs_frames: FramesInfo,
-        rhs_frames: FramesInfo,
-        lhs_output_dir: str,
-        rhs_output_dir: str,
     ) -> tuple[FramesInfo, FramesInfo]:
+        """Crop both sides' normalized frames to the region shared by *pairs*."""
+        lhs_frames = self.lhs.normalized_frames
+        rhs_frames = self.rhs.normalized_frames
         assert_frames_extracted(lhs_frames, "crop_both(lhs)")
         assert_frames_extracted(rhs_frames, "crop_both(rhs)")
         crop_fns = find_interpolated_crop(pairs, lhs_frames, rhs_frames)
@@ -441,18 +443,18 @@ class FrameComparison:
             return lhs_frames, rhs_frames
         lhs_crop_fn, rhs_crop_fn = crop_fns
         return (
-            self.apply_crop(lhs_frames, lhs_output_dir, lhs_crop_fn),
-            self.apply_crop(rhs_frames, rhs_output_dir, rhs_crop_fn),
+            self.apply_crop(lhs_frames, self.lhs.normalized_cropped_dir, lhs_crop_fn),
+            self.apply_crop(rhs_frames, self.rhs.normalized_cropped_dir, rhs_crop_fn),
         )
 
     def build_boundary_verify_context(
         self,
         matching_pairs: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
         *,
         minimum_cutoff: int = MIN_BOUNDARY_GAP_PHASH_CUTOFF,
     ) -> BoundaryVerifyContext:
+        lhs_normalized_frames = self.lhs.normalized_frames
+        rhs_normalized_frames = self.rhs.normalized_frames
         crop_fns = find_interpolated_crop(
             matching_pairs,
             lhs_normalized_frames,

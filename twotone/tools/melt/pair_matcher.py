@@ -454,8 +454,6 @@ class PairMatcher:
 
     def _drop_pairs_breaking_local_linearity(
         self, pairs: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
         *, frame_slope: float | None = None,
     ) -> list[tuple[int, int]]:
         """Remove a cancelling excursion only after content disproves the pair.
@@ -490,7 +488,6 @@ class PairMatcher:
                 )
                 if abs(deficit_a + deficit_b) <= threshold and self._verify_false_pair(
                     result[gap_a], result[gap_b], result[gap_b + 1],
-                    lhs_normalized_frames, rhs_normalized_frames,
                 ):
                     rogue = (gap_a + 1, deficit_a, deficit_b)
                     break
@@ -508,7 +505,6 @@ class PairMatcher:
 
     def _verify_false_pair(
         self, before: tuple[int, int], pair: tuple[int, int], after: tuple[int, int],
-        lhs_normalized_frames: FramesInfo, rhs_normalized_frames: FramesInfo,
     ) -> bool:
         """Verify a replacement sequence before discarding an isolated anchor.
 
@@ -523,7 +519,7 @@ class PairMatcher:
         """
         if not self.lhs.all_frames or not self.rhs.all_frames:
             return False
-        if any(l not in lhs_normalized_frames or r not in rhs_normalized_frames
+        if any(l not in self.lhs.normalized_frames or r not in self.rhs.normalized_frames
                for l, r in (before, after)):
             return False
         lhs_ts, rhs_ts = pair
@@ -538,7 +534,7 @@ class PairMatcher:
         if radius <= 0:
             return False
         ctx = self.frame_comparison.build_boundary_verify_context(
-            [before, after], lhs_normalized_frames, rhs_normalized_frames,
+            [before, after],
             minimum_cutoff=frame_comparison.MIN_PHASH_CUTOFF,
         )
         # These samples interpolate between neighbours. The boundary-gap
@@ -886,7 +882,7 @@ class PairMatcher:
         )
         self._probe_frames(lhs_analysis, rhs_analysis)
         lhs_scene_ranges, rhs_scene_ranges = self._extract_scene_frames(lhs_scene_changes, rhs_scene_changes)
-        lhs_normalized_frames, rhs_normalized_frames, lhs_key_frames, rhs_key_frames = self._normalize_extracted(
+        lhs_key_frames, rhs_key_frames = self._normalize_extracted(
             lhs_scene_changes, rhs_scene_changes,
         )
 
@@ -896,7 +892,6 @@ class PairMatcher:
 
         matching_pairs = self._match_key_frames(
             lhs_key_frames, rhs_key_frames,
-            lhs_normalized_frames, rhs_normalized_frames,
             debug=debug,
         )
 
@@ -926,7 +921,7 @@ class PairMatcher:
             )
             if discontinuity_report.content:
                 cleaned_pairs = self._drop_pairs_breaking_local_linearity(
-                    matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
+                    matching_pairs,
                     frame_slope=initial_frame_slope,
                 )
                 if cleaned_pairs != matching_pairs:
@@ -955,12 +950,11 @@ class PairMatcher:
                 )
                 refined_pairs = self._refine_global_linear_discontinuities(
                     matching_pairs,
-                    lhs_normalized_frames, rhs_normalized_frames,
                     list(lhs_scene_changes), list(rhs_scene_changes),
                     frame_slope=refinement_slope,
                 )
                 refined_pairs = self._drop_pairs_breaking_local_linearity(
-                    refined_pairs, lhs_normalized_frames, rhs_normalized_frames,
+                    refined_pairs,
                     frame_slope=refinement_slope,
                 )
                 refined_fit = self.detect_global_linear(
@@ -1036,7 +1030,7 @@ class PairMatcher:
             # content. No later timestamp edge-snap may bypass verification.
             if not timing_discontinuities:
                 matching_pairs = self.boundary_search.extrapolate_and_verify_global_linear(
-                    matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
+                    matching_pairs,
                 )
                 debug.dump_matches(matching_pairs, "after verified global-linear extrapolation")
         else:
@@ -1046,8 +1040,7 @@ class PairMatcher:
                 # No global relation — fall back to the content/entropy-aware
                 # iterative boundary search.
                 matching_pairs = self._extract_and_refine_boundaries(
-                    matching_pairs, lhs_scene_ranges, rhs_scene_ranges,
-                    lhs_normalized_frames, rhs_normalized_frames, debug,
+                    matching_pairs, lhs_scene_ranges, rhs_scene_ranges, debug,
                 )
                 # The refined pairs can reveal a linear relation the sparse
                 # initial matching could not certify.  A mapping that now passes
@@ -1063,7 +1056,7 @@ class PairMatcher:
                 )
                 if generic_fit is not None:
                     matching_pairs = self.boundary_search.extrapolate_and_verify_global_linear(
-                        matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
+                        matching_pairs,
                     )
                     debug.dump_matches(matching_pairs, "after verified linear extrapolation")
                 matching_pairs = self.boundary_search.snap_to_edges(matching_pairs, self.lhs.all_frames, self.rhs.all_frames)
@@ -1312,8 +1305,10 @@ class PairMatcher:
 
         return sorted(set(known_pairs + new_pairs))
 
-    def _make_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> list[tuple[int, int]]:
+    def _make_pairs(self, lhs: FramesInfo, rhs: FramesInfo) -> list[tuple[int, int]]:
         # Pipeline
+        lhs_all = self.lhs.normalized_frames
+        rhs_all = self.rhs.normalized_frames
         lhs = frame_comparison.filter_low_detail(lhs)
         rhs = frame_comparison.filter_low_detail(rhs)
 
@@ -1370,7 +1365,7 @@ class PairMatcher:
 
         unique_pairs = sorted(set(final))
 
-        consistent = self._drop_pairs_breaking_local_linearity(unique_pairs, lhs_all, rhs_all)
+        consistent = self._drop_pairs_breaking_local_linearity(unique_pairs)
         log_pairs("Local linearity filter:    ", consistent)
 
         if self.logger.isEnabledFor(logging.DEBUG):
@@ -1581,52 +1576,36 @@ class PairMatcher:
         self,
         lhs_scene_changes: list[int],
         rhs_scene_changes: list[int],
-        lhs_normalized_frames: FramesInfo | None = None,
-        rhs_normalized_frames: FramesInfo | None = None,
-    ) -> tuple[FramesInfo, FramesInfo, FramesInfo, FramesInfo]:
-        """Phase 4: Normalize missing frames in-place and identify key frames.
+    ) -> tuple[FramesInfo, FramesInfo]:
+        """Phase 4: Normalize newly extracted frames and identify key frames.
 
-        Returns (lhs_normalized, rhs_normalized, lhs_key_frames, rhs_key_frames).
+        Returns (lhs_key_frames, rhs_key_frames).
         """
-        if lhs_normalized_frames is None:
-            lhs_normalized_frames = {}
-        if rhs_normalized_frames is None:
-            rhs_normalized_frames = {}
-        for all_frames, normalized, directory, label in (
-            (self.lhs.all_frames, lhs_normalized_frames, self.lhs.normalized_dir, self.lhs.label),
-            (self.rhs.all_frames, rhs_normalized_frames, self.rhs.normalized_dir, self.rhs.label),
-        ):
+        for side in (self.lhs, self.rhs):
             missing = {
-                ts: info for ts, info in self._extracted_subset(all_frames).items()
-                if ts not in normalized
+                ts: info for ts, info in self._extracted_subset(side.all_frames).items()
+                if ts not in side.normalized_frames
             }
             if missing:
-                normalized.update(self.frame_comparison.normalize_frames(
-                    missing, directory, desc=f"[4/6] Normalizing: {label}",
+                side.normalized_frames.update(self.frame_comparison.normalize_frames(
+                    missing, side.normalized_dir, desc=f"[4/6] Normalizing: {side.label}",
                 ))
 
-        lhs_key_frames = frame_comparison.frames_for_timestamps(lhs_scene_changes, lhs_normalized_frames)
-        rhs_key_frames = frame_comparison.frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
-
-        return lhs_normalized_frames, rhs_normalized_frames, lhs_key_frames, rhs_key_frames
+        return (
+            frame_comparison.frames_for_timestamps(lhs_scene_changes, self.lhs.normalized_frames),
+            frame_comparison.frames_for_timestamps(rhs_scene_changes, self.rhs.normalized_frames),
+        )
 
     def _match_key_frames(
         self,
         lhs_key_frames: FramesInfo,
         rhs_key_frames: FramesInfo,
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
         *,
         debug: DebugRoutines | None = None,
     ) -> list[tuple[int, int]]:
         """Match the initially selected scene frames."""
         self.logger.info("[5/6] Matching key frames")
-        matching_pairs = self._make_pairs(
-            lhs_key_frames,
-            rhs_key_frames,
-            lhs_normalized_frames,
-            rhs_normalized_frames,
-        )
+        matching_pairs = self._make_pairs(lhs_key_frames, rhs_key_frames)
         matching_pairs = sorted(set(matching_pairs))
         if not matching_pairs:
             raise RuntimeError("No matching pairs found between the two files")
@@ -1646,8 +1625,6 @@ class PairMatcher:
     def _refine_global_linear_discontinuities(
         self,
         matching_pairs: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
         lhs_scene_changes: list[int],
         rhs_scene_changes: list[int],
         *,
@@ -1696,13 +1673,10 @@ class PairMatcher:
             )
             if scenes_added:
                 self._extract_scene_frames(lhs_scenes, rhs_scenes)
-                _, _, lhs_candidates, rhs_candidates = self._normalize_extracted(
-                    lhs_scenes, rhs_scenes, lhs_normalized_frames, rhs_normalized_frames,
+                lhs_candidates, rhs_candidates = self._normalize_extracted(
+                    lhs_scenes, rhs_scenes,
                 )
-                local_pairs = self._make_pairs(
-                    lhs_candidates, rhs_candidates,
-                    lhs_normalized_frames, rhs_normalized_frames,
-                )
+                local_pairs = self._make_pairs(lhs_candidates, rhs_candidates)
                 local_pairs = sorted({
                     (lhs_from, rhs_from), (lhs_to, rhs_to),
                     *(pair for pair in local_pairs
@@ -1733,8 +1707,6 @@ class PairMatcher:
         matching_pairs: list[tuple[int, int]],
         lhs_scene_ranges: list[tuple[int, int]],
         rhs_scene_ranges: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
         debug: DebugRoutines,
     ) -> list[tuple[int, int]]:
         """Phase 6: Extract remaining frames and refine boundary pairs."""
@@ -1753,47 +1725,40 @@ class PairMatcher:
             f"{rhs_boundary_count} for {self.rhs.label}"
         )
 
-        boundary_data = (
-            (self.lhs, lhs_boundary_ranges, lhs_normalized_frames),
-            (self.rhs, rhs_boundary_ranges, rhs_normalized_frames),
-        )
-        for side, boundary_ranges, _ in boundary_data:
+        for side, boundary_ranges in (
+            (self.lhs, lhs_boundary_ranges),
+            (self.rhs, rhs_boundary_ranges),
+        ):
             self.frame_comparison.extract_frames(
                 side.path, side.boundary_dir, boundary_ranges, side.all_frames,
                 f"[6/6] Extracting boundary frames: {side.label}",
             )
 
         # Normalize the newly extracted boundary frames and merge.
-        for side, _, normalized_frames in boundary_data:
+        for side in (self.lhs, self.rhs):
             new_frames = {
                 timestamp: info
                 for timestamp, info in side.all_frames.items()
                 if info.get("path") is not None
-                and timestamp not in normalized_frames
+                and timestamp not in side.normalized_frames
             }
             if new_frames:
-                normalized_frames.update(self.frame_comparison.normalize_frames(
+                side.normalized_frames.update(self.frame_comparison.normalize_frames(
                     new_frames, side.normalized_dir, prefix="b_",
                     desc=f"[6/6] Normalizing boundary: {side.label}",
                 ))
 
-        matching_pairs = self._refine_boundary_pairs(
-            matching_pairs, lhs_normalized_frames, rhs_normalized_frames, debug,
-        )
+        matching_pairs = self._refine_boundary_pairs(matching_pairs, debug)
 
         # Final boundary search on uncropped normalized frames.
         self.logger.debug("Final boundary search (uncropped frames, with extrapolation)")
-        matching_pairs = self._final_uncropped_boundary_search(
-            matching_pairs, lhs_normalized_frames, rhs_normalized_frames, debug,
-        )
+        matching_pairs = self._final_uncropped_boundary_search(matching_pairs, debug)
 
         return matching_pairs
 
     def _refine_boundary_pairs(
         self,
         matching_pairs: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
         debug: DebugRoutines,
     ) -> list[tuple[int, int]]:
         """Iteratively refine boundary pairs using cropped-frame matching.
@@ -1810,11 +1775,7 @@ class PairMatcher:
             self.interruption.check_for_stop()
 
             lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self.frame_comparison.crop_both(
-                pairs=matching_pairs,
-                lhs_frames=lhs_normalized_frames,
-                rhs_frames=rhs_normalized_frames,
-                lhs_output_dir=self.lhs.normalized_cropped_dir,
-                rhs_output_dir=self.rhs.normalized_cropped_dir,
+                matching_pairs,
             )
 
             first_lhs, first_rhs = matching_pairs[0]
@@ -1865,11 +1826,11 @@ class PairMatcher:
     def _final_uncropped_boundary_search(
         self,
         matching_pairs: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
         debug: DebugRoutines,
     ) -> list[tuple[int, int]]:
         """Run a final boundary search on uncropped normalized frames."""
+        lhs_normalized_frames = self.lhs.normalized_frames
+        rhs_normalized_frames = self.rhs.normalized_frames
         phash_uncropped = PhashCache()
         uncropped_cutoff = frame_comparison.calculate_cutoff(phash_uncropped, matching_pairs, lhs_normalized_frames, rhs_normalized_frames)
         final_first, final_last = self.boundary_search.look_for_boundaries(
