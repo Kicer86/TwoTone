@@ -166,7 +166,6 @@ class BoundarySearch:
                 lhs_frames,
                 rhs_frames,
                 refined_first,
-                refined_last,
                 ratio,
                 direction=-1,
                 entered_low_entropy=first_low_entropy,
@@ -175,7 +174,6 @@ class BoundarySearch:
                 lhs_frames,
                 rhs_frames,
                 refined_last,
-                refined_first,
                 ratio,
                 direction=1,
                 entered_low_entropy=last_low_entropy,
@@ -187,12 +185,10 @@ class BoundarySearch:
         lhs_frames: FramesInfo,
         rhs_frames: FramesInfo,
         boundary: tuple[int, int],
-        reference: tuple[int, int],
         ratio: float,
         direction: int,
         entered_low_entropy: bool,
     ) -> tuple[int, int]:
-        del reference
         if not entered_low_entropy:
             return boundary
 

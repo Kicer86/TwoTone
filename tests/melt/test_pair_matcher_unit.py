@@ -470,11 +470,10 @@ class PairMatcherUnitTest(unittest.TestCase):
         rhs = self._make_frames(rhs_keys)
 
         boundary = (2000, 2000)
-        reference = (3000, 3000)
 
         with patch.object(frame_comparison, 'is_rich', return_value=False):
             result = search.extrapolate_through_low_entropy(
-                lhs, rhs, boundary, reference, ratio=1.0,
+                lhs, rhs, boundary, ratio=1.0,
                 direction=-1, entered_low_entropy=True,
             )
 
@@ -490,7 +489,7 @@ class PairMatcherUnitTest(unittest.TestCase):
         boundary = (1000, 1000)
 
         result = search.extrapolate_through_low_entropy(
-            lhs, rhs, boundary, (2000, 2000), ratio=1.0,
+            lhs, rhs, boundary, ratio=1.0,
             direction=-1, entered_low_entropy=False,
         )
 
@@ -505,7 +504,7 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         with patch.object(frame_comparison, 'is_rich', return_value=True):
             result = search.extrapolate_through_low_entropy(
-                lhs, rhs, boundary, (3000, 3000), ratio=1.0,
+                lhs, rhs, boundary, ratio=1.0,
                 direction=-1, entered_low_entropy=True,
             )
 
@@ -531,7 +530,7 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         with patch.object(frame_comparison, 'is_rich', side_effect=mock_is_rich):
             result = search.extrapolate_through_low_entropy(
-                lhs, rhs, boundary, (6000, 6000), ratio=1.0,
+                lhs, rhs, boundary, ratio=1.0,
                 direction=-1, entered_low_entropy=True,
             )
 
@@ -557,7 +556,7 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         with patch.object(frame_comparison, 'is_rich', side_effect=mock_is_rich):
             result = search.extrapolate_through_low_entropy(
-                lhs, rhs, boundary, (6000, 6000), ratio=1.0,
+                lhs, rhs, boundary, ratio=1.0,
                 direction=-1, entered_low_entropy=True,
             )
 
@@ -574,11 +573,10 @@ class PairMatcherUnitTest(unittest.TestCase):
         rhs = self._make_frames(rhs_keys)
 
         boundary = (4000, 4000)
-        reference = (2000, 2000)
 
         with patch.object(frame_comparison, 'is_rich', return_value=False):
             result = search.extrapolate_through_low_entropy(
-                lhs, rhs, boundary, reference, ratio=1.0,
+                lhs, rhs, boundary, ratio=1.0,
                 direction=1, entered_low_entropy=True,
             )
 
@@ -605,7 +603,7 @@ class PairMatcherUnitTest(unittest.TestCase):
 
         with patch.object(frame_comparison, 'is_rich', side_effect=smart_mock):
             result = search.extrapolate_through_low_entropy(
-                lhs, rhs, boundary, (6000, 6000), ratio=1.0,
+                lhs, rhs, boundary, ratio=1.0,
                 direction=-1, entered_low_entropy=True,
             )
 
