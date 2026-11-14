@@ -17,6 +17,7 @@ from twotone.tools.melt.melt_common import (
     VideoStreamRef,
 )
 from twotone.tools.melt.melt_plan import MeltGroupPlan, MeltTitlePlan
+from twotone.tools.melt.streams_picker import StreamsPicker
 from twotone.tools.tool import ToolRuntimeContext
 from twotone.tools.utils import generic_utils, media_analysis, video_utils
 
@@ -493,8 +494,8 @@ class MeltAnalyzerTest(TwoToneTestCase):
 
         with patch.object(self.analyzer, "_probe_inputs", return_value=(details, {base_path: [], subtitle_path: []}, tracks)), \
              patch.object(
-                 self.analyzer,
-                 "_pick_streams",
+                 StreamsPicker,
+                 "pick_streams",
                  return_value=(
                      [VideoStreamRef(base_path, 0, 0, None)],
                      [AudioStreamRef(base_path, 1, 1, "eng")],
@@ -543,8 +544,8 @@ class MeltAnalyzerTest(TwoToneTestCase):
             "_probe_inputs",
             return_value=(details, {base_path: [], source_path: []}, tracks),
         ), patch.object(
-            self.analyzer,
-            "_pick_streams",
+            StreamsPicker,
+            "pick_streams",
             return_value=(
                 [VideoStreamRef(base_path, 0, 0, None)],
                 [AudioStreamRef(source_path, 1, 1, "eng")],

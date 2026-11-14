@@ -328,17 +328,6 @@ class MeltAnalyzer:
 
         return plan
 
-    def _pick_streams(
-        self,
-        tracks: dict[str, Any],
-        ids: dict[str, int],
-    ) -> tuple[list[VideoStreamRef], list[AudioStreamRef], list[SubtitleStreamRef]]:
-        streams_picker = StreamsPicker(
-            self.logger,
-            self.duplicates_source,
-        )
-        return streams_picker.pick_streams(tracks, ids)
-
     @staticmethod
     def _has_chapters(details: dict[str, Any]) -> bool:
         return bool(details.get("chapters", []))
@@ -501,7 +490,10 @@ class MeltAnalyzer:
 
         # Pick streams
         try:
-            video_streams, audio_streams, subtitle_streams = self._pick_streams(tracks, ids)
+            video_streams, audio_streams, subtitle_streams = StreamsPicker(
+                self.logger,
+                self.duplicates_source,
+            ).pick_streams(tracks, ids)
         except RuntimeError as err:
             self.logger.debug(err)
             return None, str(err)
