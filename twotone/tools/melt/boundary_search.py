@@ -319,64 +319,39 @@ class BoundarySearch:
     def snap_to_edges(
         self,
         matching_pairs: list[tuple[int, int]],
-        lhs_all_frames: FramesInfo,
-        rhs_all_frames: FramesInfo,
         snap_frames: int = 16,
     ) -> list[tuple[int, int]]:
-        lhs_threshold_ms = snap_frames * 1000 / self.lhs.fps
-        rhs_threshold_ms = snap_frames * 1000 / self.rhs.fps
-        lhs_duration = video_utils.get_video_duration(
-            self.lhs.path,
-            logger=self.logger,
-        )
-        rhs_duration = video_utils.get_video_duration(
-            self.rhs.path,
-            logger=self.logger,
-        )
-        lhs_keys = sorted(lhs_all_frames)
-        rhs_keys = sorted(rhs_all_frames)
+        """Move boundary pairs within *snap_frames* of a video edge onto it."""
+        sides = (self.lhs, self.rhs)
+        thresholds_ms = [snap_frames * 1000 / side.fps for side in sides]
+        durations = [
+            video_utils.get_video_duration(side.path, logger=self.logger)
+            for side in sides
+        ]
+        sorted_keys = [sorted(side.all_frames) for side in sides]
 
-        first_lhs, first_rhs = matching_pairs[0]
-        last_lhs, last_rhs = matching_pairs[-1]
-        new_first_lhs = 0 if first_lhs <= lhs_threshold_ms else first_lhs
-        new_first_rhs = 0 if first_rhs <= rhs_threshold_ms else first_rhs
-        if (new_first_lhs, new_first_rhs) != (first_lhs, first_rhs):
-            self.logger.debug(
-                "Edge snap: first pair (%d, %d) → (%d, %d)",
-                first_lhs,
-                first_rhs,
-                new_first_lhs,
-                new_first_rhs,
+        # ``sign`` orients the distance so it is measured inward from the edge.
+        for label, position, edges, sign in (
+            ("first", 0, (0, 0), 1),
+            ("last", -1, tuple(durations), -1),
+        ):
+            pair = matching_pairs[position]
+            snapped = tuple(
+                edge if sign * (timestamp - edge) <= threshold_ms else timestamp
+                for timestamp, edge, threshold_ms in zip(pair, edges, thresholds_ms)
             )
-            matching_pairs[0] = new_first_lhs, new_first_rhs
-            if new_first_lhs not in lhs_all_frames:
-                lhs_all_frames[new_first_lhs] = lhs_all_frames[lhs_keys[0]].copy()
-            if new_first_rhs not in rhs_all_frames:
-                rhs_all_frames[new_first_rhs] = rhs_all_frames[rhs_keys[0]].copy()
-
-        new_last_lhs = (
-            lhs_duration
-            if lhs_duration - last_lhs <= lhs_threshold_ms
-            else last_lhs
-        )
-        new_last_rhs = (
-            rhs_duration
-            if rhs_duration - last_rhs <= rhs_threshold_ms
-            else last_rhs
-        )
-        if (new_last_lhs, new_last_rhs) != (last_lhs, last_rhs):
+            if snapped == pair:
+                continue
             self.logger.debug(
-                "Edge snap: last pair (%d, %d) → (%d, %d)",
-                last_lhs,
-                last_rhs,
-                new_last_lhs,
-                new_last_rhs,
+                "Edge snap: %s pair (%d, %d) → (%d, %d)",
+                label,
+                *pair,
+                *snapped,
             )
-            matching_pairs[-1] = new_last_lhs, new_last_rhs
-            if new_last_lhs not in lhs_all_frames:
-                lhs_all_frames[new_last_lhs] = lhs_all_frames[lhs_keys[-1]].copy()
-            if new_last_rhs not in rhs_all_frames:
-                rhs_all_frames[new_last_rhs] = rhs_all_frames[rhs_keys[-1]].copy()
+            matching_pairs[position] = (snapped[0], snapped[1])
+            for side, keys, timestamp in zip(sides, sorted_keys, snapped):
+                if timestamp not in side.all_frames:
+                    side.all_frames[timestamp] = side.all_frames[keys[position]].copy()
         return matching_pairs
 
     @staticmethod

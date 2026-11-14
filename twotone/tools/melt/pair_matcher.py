@@ -1031,7 +1031,7 @@ class PairMatcher:
                         matching_pairs,
                     )
                     debug.dump_matches(matching_pairs, "after verified linear extrapolation")
-                matching_pairs = self.boundary_search.snap_to_edges(matching_pairs, self.lhs.all_frames, self.rhs.all_frames)
+                matching_pairs = self.boundary_search.snap_to_edges(matching_pairs)
 
         if timing_discontinuities:
             debug.dump_matches(matching_pairs, "timing discontinuities")

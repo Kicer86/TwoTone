@@ -619,13 +619,13 @@ class PairMatcherUnitTest(unittest.TestCase):
         search = self._make_boundary_search(lhs_fps=25.0, rhs_fps=25.0)
         # threshold = 4 * 1000 / 25 = 160ms
 
-        lhs_frames = self._make_frames([0, 40, 80, 100, 5000, 9900, 9960, 10000])
-        rhs_frames = self._make_frames([0, 40, 80, 100, 5000, 9900, 9960, 10000])
+        search.lhs.all_frames = self._make_frames([0, 40, 80, 100, 5000, 9900, 9960, 10000])
+        search.rhs.all_frames = self._make_frames([0, 40, 80, 100, 5000, 9900, 9960, 10000])
 
         matching_pairs = [(100, 100), (5000, 5000), (9900, 9900)]
 
         with patch.object(video_utils, 'get_video_duration', return_value=10000):
-            result = search.snap_to_edges(matching_pairs, lhs_frames, rhs_frames, snap_frames=4)
+            result = search.snap_to_edges(matching_pairs, snap_frames=4)
 
         # 100ms is within 160ms threshold → snap to 0
         self.assertEqual(result[0], (0, 0))
@@ -637,13 +637,13 @@ class PairMatcherUnitTest(unittest.TestCase):
         search = self._make_boundary_search(lhs_fps=25.0, rhs_fps=25.0)
         # threshold = 160ms
 
-        lhs_frames = self._make_frames([0, 200, 5000, 9700, 10000])
-        rhs_frames = self._make_frames([0, 200, 5000, 9700, 10000])
+        search.lhs.all_frames = self._make_frames([0, 200, 5000, 9700, 10000])
+        search.rhs.all_frames = self._make_frames([0, 200, 5000, 9700, 10000])
 
         matching_pairs = [(200, 200), (5000, 5000), (9700, 9700)]
 
         with patch.object(video_utils, 'get_video_duration', return_value=10000):
-            result = search.snap_to_edges(matching_pairs, lhs_frames, rhs_frames, snap_frames=4)
+            result = search.snap_to_edges(matching_pairs, snap_frames=4)
 
         # 200ms > 160ms → no snap
         self.assertEqual(result[0], (200, 200))
@@ -656,13 +656,13 @@ class PairMatcherUnitTest(unittest.TestCase):
         # LHS threshold = 4 * 1000 / 25 = 160ms
         # RHS threshold = 4 * 1000 / 50 = 80ms
 
-        lhs_frames = self._make_frames([0, 100, 5000, 10000])
-        rhs_frames = self._make_frames([0, 90, 5000, 10000])
+        search.lhs.all_frames = self._make_frames([0, 100, 5000, 10000])
+        search.rhs.all_frames = self._make_frames([0, 90, 5000, 10000])
 
         matching_pairs = [(100, 90), (5000, 5000)]
 
         with patch.object(video_utils, 'get_video_duration', return_value=10000):
-            result = search.snap_to_edges(matching_pairs, lhs_frames, rhs_frames, snap_frames=4)
+            result = search.snap_to_edges(matching_pairs, snap_frames=4)
 
         # LHS: 100ms <= 160ms → snaps
         self.assertEqual(result[0][0], 0)
