@@ -216,7 +216,7 @@ class AudioPatcher:
 
         self.logger.info(
             "Audio patch for %s (%s): base=[%d…%d] ms, source=[%d…%d] ms, segments=%d",
-            self.timeline._audio_source_description(request.source_audio),
+            self.timeline.audio_source_description(request.source_audio),
             strategy.value,
             request.target_interval.start_ms,
             request.target_interval.end_ms,
@@ -247,7 +247,7 @@ class AudioPatcher:
                 source_params[1],
                 strategy,
                 label=f"{scaled_label} audio",
-                progress_source=self.timeline._audio_source_description(request.source_audio),
+                progress_source=self.timeline.audio_source_description(request.source_audio),
             ))
 
         physical_source_interval = self._source_patch_target_interval(
@@ -291,7 +291,7 @@ class AudioPatcher:
             channel_layout=self._get_audio_channel_layout(request.source_audio),
             progress_description=(
                 "Encoding aligned audio from "
-                f"{self.timeline._audio_source_description(request.source_audio)}: FLAC -> AAC"
+                f"{self.timeline.audio_source_description(request.source_audio)}: FLAC -> AAC"
             ),
             logger=self.logger,
         )
@@ -448,7 +448,7 @@ class AudioPatcher:
         if planned_source_window.available.duration_ms <= 0:
             raise RuntimeError(f"{label} lies outside the selected audio stream.")
 
-        self.timeline._decode_audio_stream_to_flac(
+        self.timeline.decode_audio_stream_to_flac(
             stream,
             output_path,
             trim_start_ms=max(0, planned_source_window.available.start_ms),
@@ -692,7 +692,7 @@ class AudioPatcher:
         return head_part, tail_part
 
     def _required_audio_stream_info(self, audio_stream: AudioStreamRef) -> dict[str, Any]:
-        stream = self.timeline._audio_stream_info(audio_stream)
+        stream = self.timeline.audio_stream_info(audio_stream)
         if stream is None:
             raise RuntimeError(
                 f"ffprobe audio stream #{audio_stream.ffprobe_stream_index} "
@@ -829,7 +829,7 @@ class AudioPatcher:
             return AudioStreamRef(cached_path, 0, 0, source_stream.language)
 
         flac_path = self.temporary_audio_path("normalized_unscaled_flac", ffprobe_stream_index)
-        self.timeline._decode_audio_stream_to_flac(
+        self.timeline.decode_audio_stream_to_flac(
             source_stream,
             flac_path,
             sample_fmt="s32",
@@ -839,7 +839,7 @@ class AudioPatcher:
         prepared_flac = flac_path
         if desired_end_ms is not None:
             if desired_start_ms is None:
-                desired_start_ms = self.timeline._source_stream_start_offset_ms(
+                desired_start_ms = self.timeline.source_stream_start_offset_ms(
                     flac_path,
                     "audio",
                     0,
@@ -858,7 +858,7 @@ class AudioPatcher:
                     "-sample_fmt", "s32", "-c:a", "flac", prepared_flac,
                 ], show_progress=True,
                     progress_description=(
-                        f"Trimming FLAC from {self.timeline._audio_source_description(source_stream)} "
+                        f"Trimming FLAC from {self.timeline.audio_source_description(source_stream)} "
                         f"to {generic_utils.ms_to_time(window_start_ms)}-"
                         f"{generic_utils.ms_to_time(window_end_ms)}"
                     ),
@@ -877,7 +877,7 @@ class AudioPatcher:
             channel_layout=channel_layout,
             progress_description=(
                 "Encoding normalized audio from "
-                f"{self.timeline._audio_source_description(source_stream)}: FLAC -> AAC"
+                f"{self.timeline.audio_source_description(source_stream)}: FLAC -> AAC"
             ),
             logger=self.logger,
         )

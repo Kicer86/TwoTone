@@ -397,12 +397,12 @@ class MeltPerformer:
         frames: FramesInfo,
     ) -> int:
         """Return the base-stream PTS corresponding to PairMatcher timestamp zero."""
-        video_info = self.timeline._stream_info(
+        video_info = self.timeline.stream_info(
             video_stream.path,
             "video",
             video_stream.ffprobe_stream_index,
         )
-        video_start_ms = self.timeline._stream_start_offset_ms(video_info)
+        video_start_ms = self.timeline.stream_start_offset_ms(video_info)
         mapping_start_ms = min(frames) if frames else video_start_ms
         return video_start_ms - mapping_start_ms
 
@@ -413,11 +413,11 @@ class MeltPerformer:
         frames: FramesInfo,
     ) -> VideoToAudioTimeline:
         """Build the explicit mapping-video-to-selected-audio transform."""
-        audio_info = self.timeline._audio_stream_info(audio_stream)
+        audio_info = self.timeline.audio_stream_info(audio_stream)
         return VideoToAudioTimeline(
             mapping_to_video_ms=self._mapping_to_video_ms(video_stream, frames),
-            audio_content_start_ms=self.timeline._audio_content_start_ms(audio_info),
-            audio_content_end_ms=self.timeline._stream_end_offset_ms(audio_info),
+            audio_content_start_ms=self.timeline.audio_content_start_ms(audio_info),
+            audio_content_end_ms=self.timeline.stream_end_offset_ms(audio_info),
         )
 
     @staticmethod
@@ -665,29 +665,29 @@ class MeltPerformer:
         """
         if not frames:
             return 0
-        info = self.timeline._media_info(path)
+        info = self.timeline.media_info(path)
         stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
         if stream is None:
             return 0
-        return TrackTimeline._stream_start_offset_ms(stream) - min(frames)
+        return TrackTimeline.stream_start_offset_ms(stream) - min(frames)
 
     def _effective_video_fps(self, path: str, frames: FramesInfo) -> float | None:
         if len(frames) < 2:
             return None
 
-        info = self.timeline._media_info(path)
+        info = self.timeline.media_info(path)
         stream = next(
             (item for item in info.get("streams", []) if item.get("codec_type") == "video"),
             None,
         )
         if stream is None:
             return None
-        end_ms = TrackTimeline._stream_end_offset_ms(stream)
+        end_ms = TrackTimeline.stream_end_offset_ms(stream)
         if end_ms is None:
             return None
         duration_ms = max(
             0,
-            end_ms - TrackTimeline._stream_start_offset_ms(stream),
+            end_ms - TrackTimeline.stream_start_offset_ms(stream),
         )
         if duration_ms <= 0:
             return None
@@ -741,7 +741,7 @@ class MeltPerformer:
             end
             for stream in streams
             if stream.path == path
-            and (end := self.timeline._source_stream_end_offset_ms(
+            and (end := self.timeline.source_stream_end_offset_ms(
                 stream.path,
                 stream_type,
                 stream.ffprobe_stream_index,
@@ -835,7 +835,7 @@ class MeltPerformer:
             stream.mkvmerge_track_id,
             stream.path,
             stream.language,
-            self.timeline._track_sync_offset_ms(
+            self.timeline.track_sync_offset_ms(
                 stream.path,
                 stream_type,
                 stream.ffprobe_stream_index,
@@ -852,7 +852,7 @@ class MeltPerformer:
     ) -> list[_StreamEntry]:
         entries: list[_StreamEntry] = []
         for stream in video_streams:
-            desired_start_ms = self.timeline._source_stream_start_offset_ms(
+            desired_start_ms = self.timeline.source_stream_start_offset_ms(
                 stream.path,
                 "video",
                 stream.ffprobe_stream_index,
@@ -877,14 +877,14 @@ class MeltPerformer:
                 and extension in TrackTimeline._MKVMERGE_PRESERVES_START_EXTENSIONS
             )
             if preserves_base_container_timing:
-                desired_start_ms = self.timeline._source_stream_start_offset_ms(
+                desired_start_ms = self.timeline.source_stream_start_offset_ms(
                     path,
                     "audio",
                     audio_stream.ffprobe_stream_index,
                 )
             else:
-                desired_start_ms = self.timeline._audio_content_start_ms(
-                    self.timeline._audio_stream_info(audio_stream)
+                desired_start_ms = self.timeline.audio_content_start_ms(
+                    self.timeline.audio_stream_info(audio_stream)
                 )
 
             if path in group.alignment_paths:
@@ -894,13 +894,13 @@ class MeltPerformer:
                 desired_start_ms = patched.timeline_start_ms
             else:
                 normalization_reason = (
-                    self.timeline._audio_mkvmerge_normalization_reason(audio_stream)
+                    self.timeline.audio_mkvmerge_normalization_reason(audio_stream)
                     if not preserves_base_container_timing
                     else None
                 )
                 trim_end_ms: int | None = None
                 if path != base_video.path and base_output_end_ms is not None:
-                    audio_end_ms = self.timeline._source_stream_end_offset_ms(
+                    audio_end_ms = self.timeline.source_stream_end_offset_ms(
                         path,
                         "audio",
                         audio_stream.ffprobe_stream_index,
@@ -948,7 +948,7 @@ class MeltPerformer:
                 )
                 desired_start_ms = None
             else:
-                desired_start_ms = self.timeline._source_stream_start_offset_ms(
+                desired_start_ms = self.timeline.source_stream_start_offset_ms(
                     subtitle_stream.path,
                     "subtitle",
                     subtitle_stream.ffprobe_stream_index,

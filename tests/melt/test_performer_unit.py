@@ -1426,11 +1426,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
             return _FAKE_PROCESS_OK
 
         with patch.object(video_utils, "get_video_full_info", return_value=source_info), \
-             patch.object(timeline, "_aac_priming_exposed", return_value=priming_exposed), \
+             patch.object(timeline, "aac_priming_exposed", return_value=priming_exposed), \
              patch.object(process_utils, "start_process", side_effect=fake_start_process), \
              patch.object(process_utils, "raise_on_error", lambda result: None), \
              patch.object(os.path, "exists", return_value=False):
-            timeline._decode_audio_stream_to_flac(
+            timeline.decode_audio_stream_to_flac(
                 AudioStreamRef("/tmp/source.mkv", 1, 1, None),
                 "/tmp/output.flac",
                 trim_start_ms=500,
@@ -1470,10 +1470,10 @@ class MeltPerformerUnitTest(unittest.TestCase):
             return _FAKE_PROCESS_OK
 
         with patch.object(video_utils, "get_video_full_info", return_value=source_info), \
-             patch.object(timeline, "_aac_priming_exposed", return_value=False), \
+             patch.object(timeline, "aac_priming_exposed", return_value=False), \
              patch.object(process_utils, "start_process", side_effect=fake_start_process), \
              patch.object(process_utils, "raise_on_error", lambda result: None):
-            timeline._decode_audio_stream_to_flac(
+            timeline.decode_audio_stream_to_flac(
                 AudioStreamRef("/tmp/source.mp4", 1, 1, None),
                 "/tmp/output.flac",
                 trim_start_ms=541,
@@ -1504,7 +1504,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         with patch.object(video_utils, "get_video_full_info", return_value=source_info), \
              patch.object(process_utils, "start_process", side_effect=fake_start_process), \
              patch.object(process_utils, "raise_on_error", lambda result: None):
-            timeline._decode_audio_stream_to_flac(
+            timeline.decode_audio_stream_to_flac(
                 AudioStreamRef("/tmp/source.mkv", 2, 2, "pol"),
                 "/tmp/output.flac",
                 normalize_to=(1, 48000, "s32"),
@@ -1664,7 +1664,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         }
 
         with patch.object(video_utils, "get_video_full_info", return_value=source_info), \
-             patch.object(performer.timeline, "_aac_priming_exposed", return_value=True):
+             patch.object(performer.timeline, "aac_priming_exposed", return_value=True):
             timeline = performer._video_to_audio_timeline(
                 VideoStreamRef("/tmp/source.mkv", 0, 0, None),
                 AudioStreamRef("/tmp/source.mkv", 1, 1, "pol"),
@@ -1813,14 +1813,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
             "get_video_full_info",
             return_value={"streams": [{"codec_type": "video", "index": 0, "start_time": "0.510000"}]},
         ):
-            offset = timeline._mkvmerge_input_start_offset_ms("/tmp/base.mkv", "video", 0)
+            offset = timeline.mkvmerge_input_start_offset_ms("/tmp/base.mkv", "video", 0)
 
         self.assertEqual(offset, 510)
 
     def test_mkvmerge_input_start_offset_resets_non_matroska_stream_start(self):
         timeline = self._make_track_timeline()
         with patch.object(video_utils, "get_video_full_info") as probe:
-            offset = timeline._mkvmerge_input_start_offset_ms("/tmp/base.mov", "video", 0)
+            offset = timeline.mkvmerge_input_start_offset_ms("/tmp/base.mov", "video", 0)
 
         self.assertEqual(offset, 0)
         probe.assert_not_called()
@@ -1852,8 +1852,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
             }
 
         with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info):
-            self.assertEqual(timeline._source_stream_end_offset_ms("/tmp/source.mp4", "video", 0), 62832)
-            self.assertEqual(timeline._source_stream_end_offset_ms("/tmp/source.mkv", "video", 0), 62832)
+            self.assertEqual(timeline.source_stream_end_offset_ms("/tmp/source.mp4", "video", 0), 62832)
+            self.assertEqual(timeline.source_stream_end_offset_ms("/tmp/source.mkv", "video", 0), 62832)
 
     def test_track_sync_offset_compensates_for_mkvmerge_input_start(self):
         timeline = self._make_track_timeline()
@@ -1864,8 +1864,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
             return {"streams": [{"codec_type": "audio", "index": 1, "start_time": "0.471000"}]}
 
         with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info):
-            mov_offset = timeline._track_sync_offset_ms("/tmp/source.mov", "audio", 1, 471)
-            mka_offset = timeline._track_sync_offset_ms("/tmp/normalized.mka", "audio", 0, 471)
+            mov_offset = timeline.track_sync_offset_ms("/tmp/source.mov", "audio", 1, 471)
+            mka_offset = timeline.track_sync_offset_ms("/tmp/normalized.mka", "audio", 0, 471)
 
         self.assertEqual(mov_offset, 471)
         self.assertIsNone(mka_offset)
@@ -1880,12 +1880,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
         }
 
         with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info):
-            self.assertIsNotNone(timeline._audio_mkvmerge_normalization_reason(
+            self.assertIsNotNone(timeline.audio_mkvmerge_normalization_reason(
                 AudioStreamRef("/tmp/source.mov", 1, 1, "eng")
             ))
             timeline._media_info_cache.clear()
             timeline._stream_info_cache.clear()
-            self.assertIsNone(timeline._audio_mkvmerge_normalization_reason(
+            self.assertIsNone(timeline.audio_mkvmerge_normalization_reason(
                 AudioStreamRef("/tmp/source.mkv", 1, 1, "eng")
             ))
 
@@ -1909,16 +1909,16 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info(True)):
             padded_stream = AudioStreamRef("/tmp/source.mkv", 1, 1, "eng")
-            self.assertIsNotNone(timeline._audio_mkvmerge_normalization_reason(padded_stream))
+            self.assertIsNotNone(timeline.audio_mkvmerge_normalization_reason(padded_stream))
             self.assertEqual(
-                timeline._audio_mkvmerge_normalization_reason(padded_stream),
+                timeline.audio_mkvmerge_normalization_reason(padded_stream),
                 "removing AAC encoder delay (1024 priming samples)",
             )
         timeline._media_info_cache.clear()
         timeline._stream_info_cache.clear()
         with patch.object(video_utils, "get_video_full_info", return_value=fake_full_info(False)):
             unpadded_stream = AudioStreamRef("/tmp/source.mkv", 1, 1, "eng")
-            self.assertIsNone(timeline._audio_mkvmerge_normalization_reason(unpadded_stream))
+            self.assertIsNone(timeline.audio_mkvmerge_normalization_reason(unpadded_stream))
 
     def test_prepare_normalized_unscaled_audio_decodes_via_flac_then_encodes_aac_once(self):
         patcher = self._make_audio_patcher()
@@ -2043,7 +2043,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 required_input_files=prepared.input_files,
             )
             self.assertEqual(mux_args[mux_args.index("--audio-tracks") + 1], "1")
-            performer.timeline._decode_audio_stream_to_flac(
+            performer.timeline.decode_audio_stream_to_flac(
                 selected_audio[0],
                 decoded_path,
             )
@@ -2070,15 +2070,15 @@ class MeltPerformerUnitTest(unittest.TestCase):
         with patch.object(performer, "_video_track_duration", return_value=6000), \
              patch.object(performer, "_base_output_end_ms", return_value=6000), \
              patch.object(performer, "_base_audio_end_ms", return_value=6000), \
-             patch.object(performer.timeline, "_source_stream_start_offset_ms", return_value=0), \
-             patch.object(performer.timeline, "_source_stream_end_offset_ms", return_value=5900), \
-             patch.object(performer.timeline, "_audio_content_start_ms", return_value=0), \
+             patch.object(performer.timeline, "source_stream_start_offset_ms", return_value=0), \
+             patch.object(performer.timeline, "source_stream_end_offset_ms", return_value=5900), \
+             patch.object(performer.timeline, "audio_content_start_ms", return_value=0), \
              patch.object(
                  performer.timeline,
-                 "_stream_info",
+                 "stream_info",
                  return_value={"codec_name": "aac", "initial_padding": 0},
              ), \
-             patch.object(performer.timeline, "_track_sync_offset_ms", return_value=None), \
+             patch.object(performer.timeline, "track_sync_offset_ms", return_value=None), \
              patch.object(performer.audio_patcher, "prepare_normalized_unscaled_audio", side_effect=AssertionError):
             prepared = performer._prepare_stream_entries(
                 video_streams=[VideoStreamRef(base_video, 0, 0, None)],
@@ -2099,14 +2099,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
         with patch.object(performer, "_video_track_duration", return_value=6000), \
              patch.object(performer, "_base_output_end_ms", return_value=6000), \
              patch.object(performer, "_base_audio_end_ms", return_value=5900), \
-             patch.object(performer.timeline, "_audio_content_start_ms", return_value=0), \
-             patch.object(performer.timeline, "_source_stream_start_offset_ms", return_value=0), \
+             patch.object(performer.timeline, "audio_content_start_ms", return_value=0), \
+             patch.object(performer.timeline, "source_stream_start_offset_ms", return_value=0), \
              patch.object(
                  performer.timeline,
-                 "_stream_info",
+                 "stream_info",
                  return_value={"codec_name": "aac", "initial_padding": 1024},
              ), \
-             patch.object(performer.timeline, "_track_sync_offset_ms", return_value=None), \
+             patch.object(performer.timeline, "track_sync_offset_ms", return_value=None), \
              patch.object(performer.audio_patcher, "prepare_normalized_unscaled_audio", side_effect=AssertionError):
             prepared = performer._prepare_stream_entries(
                 video_streams=[VideoStreamRef(base_video, 0, 0, None)],
@@ -2128,8 +2128,8 @@ class MeltPerformerUnitTest(unittest.TestCase):
         with patch.object(performer, "_video_track_duration", return_value=6000), \
              patch.object(performer, "_base_output_end_ms", return_value=6000), \
              patch.object(performer, "_base_audio_end_ms", return_value=None), \
-             patch.object(performer.timeline, "_source_stream_start_offset_ms", return_value=0), \
-             patch.object(performer.timeline, "_track_sync_offset_ms", return_value=None):
+             patch.object(performer.timeline, "source_stream_start_offset_ms", return_value=0), \
+             patch.object(performer.timeline, "track_sync_offset_ms", return_value=None):
             prepared = performer._prepare_stream_entries(
                 video_streams=[VideoStreamRef(base_video, 0, 0, None)],
                 audio_streams=[],
@@ -2176,11 +2176,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
              patch.object(performer, "_video_track_duration", return_value=6000), \
              patch.object(performer, "_base_output_end_ms", return_value=6000), \
              patch.object(performer, "_base_audio_end_ms", return_value=None), \
-             patch.object(performer.timeline, "_source_stream_end_offset_ms", return_value=5900), \
-             patch.object(performer.timeline, "_audio_content_start_ms", return_value=0), \
-             patch.object(performer.timeline, "_stream_info", return_value={}), \
-             patch.object(performer.timeline, "_track_sync_offset_ms", return_value=None), \
-             patch.object(performer.timeline, "_audio_mkvmerge_normalization_reason", side_effect=normalization_reason), \
+             patch.object(performer.timeline, "source_stream_end_offset_ms", return_value=5900), \
+             patch.object(performer.timeline, "audio_content_start_ms", return_value=0), \
+             patch.object(performer.timeline, "stream_info", return_value={}), \
+             patch.object(performer.timeline, "track_sync_offset_ms", return_value=None), \
+             patch.object(performer.timeline, "audio_mkvmerge_normalization_reason", side_effect=normalization_reason), \
              patch.object(performer.audio_patcher, "prepare_normalized_unscaled_audio", side_effect=normalize):
             prepared = performer._prepare_stream_entries(
                 video_streams=[VideoStreamRef(base_video, 0, 0, None)],
@@ -2219,7 +2219,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         }
 
         with patch.object(video_utils, "get_video_full_info", return_value=normalized_full_info):
-            offset = timeline._track_sync_offset_ms("/tmp/normalized.mka", "audio", 0, 471)
+            offset = timeline.track_sync_offset_ms("/tmp/normalized.mka", "audio", 0, 471)
 
         self.assertEqual(offset, 471)
 
@@ -2680,7 +2680,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 return 62314
             raise AssertionError(f"Unexpected duration probe for {path}")
 
-        with patch.object(performer.timeline, "_decode_audio_stream_to_flac", side_effect=fake_decode), \
+        with patch.object(performer.timeline, "decode_audio_stream_to_flac", side_effect=fake_decode), \
              patch.object(performer.audio_patcher, "_get_audio_params", return_value=(2, 48000, "s16")), \
              patch.object(performer.audio_patcher, "_get_audio_channel_layout", return_value="stereo"), \
              patch.object(performer.audio_patcher, "_concat_and_encode"), \
@@ -2722,7 +2722,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         def fake_decode(_stream, _output_path, **kwargs):
             decoded.append(kwargs)
 
-        with patch.object(performer.timeline, "_decode_audio_stream_to_flac", side_effect=fake_decode), \
+        with patch.object(performer.timeline, "decode_audio_stream_to_flac", side_effect=fake_decode), \
              patch.object(performer.audio_patcher, "_get_audio_params", return_value=(2, 48000, "s16")), \
              patch.object(performer.audio_patcher, "_get_audio_channel_layout", return_value="stereo"), \
              patch.object(performer.audio_patcher, "_concat_and_encode"), \
@@ -2762,7 +2762,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         def fake_decode(_stream, _output_path, **kwargs):
             decoded.append(kwargs)
 
-        with patch.object(patcher.timeline, "_decode_audio_stream_to_flac", side_effect=fake_decode), \
+        with patch.object(patcher.timeline, "decode_audio_stream_to_flac", side_effect=fake_decode), \
              patch.object(patcher, "_get_audio_params", return_value=(2, 48000, "s16")), \
              patch.object(patcher, "_get_audio_channel_layout", return_value="stereo"), \
              patch.object(patcher, "_concat_and_encode"), \
@@ -2792,7 +2792,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             strategy=_AudioStrategy.GLOBAL_TIME_SCALE,
         )
 
-        with patch.object(patcher.timeline, "_decode_audio_stream_to_flac"), \
+        with patch.object(patcher.timeline, "decode_audio_stream_to_flac"), \
              patch.object(patcher, "_get_audio_params", return_value=(2, 48000, "s16")), \
              patch.object(patcher, "_get_audio_channel_layout", return_value="stereo"), \
              patch.object(patcher, "_concat_and_encode"), \
@@ -3084,7 +3084,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 return target_duration_ms
             raise AssertionError(f"Unexpected duration probe for {path}")
 
-        with patch.object(patcher.timeline, "_decode_audio_stream_to_flac"), \
+        with patch.object(patcher.timeline, "decode_audio_stream_to_flac"), \
              patch.object(patcher, "_get_audio_params", return_value=(2, 48000, "s16")), \
              patch.object(patcher, "_get_audio_channel_layout", return_value="stereo"), \
              patch.object(patcher, "_concat_and_encode"), \
@@ -3139,7 +3139,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 return 60000
             raise AssertionError(f"Unexpected duration probe for {path}")
 
-        with patch.object(patcher.timeline, "_decode_audio_stream_to_flac"), \
+        with patch.object(patcher.timeline, "decode_audio_stream_to_flac"), \
              patch.object(patcher, "_get_audio_params", return_value=(2, 48000, "s16")), \
              patch.object(patcher, "_get_audio_channel_layout", return_value="stereo"), \
              patch.object(patcher, "_concat_and_encode"), \
@@ -3188,7 +3188,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 return 60001
             raise AssertionError(f"Unexpected duration probe for {path}")
 
-        with patch.object(patcher.timeline, "_decode_audio_stream_to_flac"), \
+        with patch.object(patcher.timeline, "decode_audio_stream_to_flac"), \
              patch.object(patcher, "_get_audio_params", return_value=(2, 48000, "s16")), \
              patch.object(patcher, "_get_audio_channel_layout", return_value="stereo"), \
              patch.object(patcher, "_concat_and_encode"), \
@@ -3252,7 +3252,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 return 2 * target_segment_duration_ms
             raise AssertionError(f"Unexpected duration probe for {path}")
 
-        with patch.object(patcher.timeline, "_decode_audio_stream_to_flac"), \
+        with patch.object(patcher.timeline, "decode_audio_stream_to_flac"), \
              patch.object(patcher, "_get_audio_params", return_value=(2, 48000, "s16")), \
              patch.object(patcher, "_get_audio_channel_layout", return_value="stereo"), \
              patch.object(patcher, "_concat_and_encode"), \
@@ -3304,7 +3304,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 return 59000
             raise AssertionError(f"Unexpected duration probe for {path}")
 
-        with patch.object(performer.timeline, "_decode_audio_stream_to_flac", side_effect=fake_decode), \
+        with patch.object(performer.timeline, "decode_audio_stream_to_flac", side_effect=fake_decode), \
              patch.object(performer.audio_patcher, "_get_audio_params", return_value=(2, 48000, "s16")), \
              patch.object(performer.audio_patcher, "_get_audio_channel_layout", return_value="stereo"), \
              patch.object(performer.audio_patcher, "_concat_and_encode"), \
@@ -3325,7 +3325,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         performer = self._make_performer()
         stream = AudioStreamRef("/tmp/source.mkv", 2, 2, "pol")
 
-        with patch.object(performer.timeline, "_decode_audio_stream_to_flac") as decode, \
+        with patch.object(performer.timeline, "decode_audio_stream_to_flac") as decode, \
              patch.object(video_utils, "get_video_duration", return_value=59991):
             part = performer.audio_patcher._decode_audio_window(
                 stream,
@@ -3447,7 +3447,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         def fake_duration(path, **_kwargs):
             return 60000 if "out.mka" in path or "source_segment" in path else 60000
 
-        with patch.object(patcher.timeline, "_decode_audio_stream_to_flac", side_effect=fake_decode), \
+        with patch.object(patcher.timeline, "decode_audio_stream_to_flac", side_effect=fake_decode), \
              patch.object(patcher, "_get_audio_params", return_value=(2, 48000, "s16")) as get_params, \
              patch.object(patcher, "_get_audio_channel_layout", return_value="stereo") as get_layout, \
              patch.object(patcher, "_concat_and_encode"), \
@@ -3488,7 +3488,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 return 59552
             raise AssertionError(f"Unexpected duration probe for {path}")
 
-        with patch.object(performer.timeline, "_decode_audio_stream_to_flac", side_effect=fake_decode), \
+        with patch.object(performer.timeline, "decode_audio_stream_to_flac", side_effect=fake_decode), \
              patch.object(performer.audio_patcher, "_get_audio_params", return_value=(2, 48000, "s16")), \
              patch.object(performer.audio_patcher, "_get_audio_channel_layout", return_value="stereo"), \
              patch.object(performer.audio_patcher, "_concat_and_encode"), \
@@ -3547,7 +3547,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 return target_end
             raise AssertionError(f"Unexpected duration probe for {path}")
 
-        with patch.object(patcher.timeline, "_decode_audio_stream_to_flac"), \
+        with patch.object(patcher.timeline, "decode_audio_stream_to_flac"), \
              patch.object(patcher, "_get_audio_params", return_value=(2, 48000, "s16")), \
              patch.object(patcher, "_get_audio_channel_layout", return_value="stereo"), \
              patch.object(patcher, "_concat_and_encode"), \
