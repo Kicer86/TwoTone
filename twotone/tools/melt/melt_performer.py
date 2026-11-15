@@ -353,7 +353,7 @@ class MeltPerformer:
         source_audio: AudioStreamRef,
         base_audio: AudioStreamRef | None,
         output_path: str,
-        mapping: Sequence[tuple[int, int]],
+        plan: audio_strategy.AudioPlan,
         base_duration_ms: int,
         *,
         lhs_frames: FramesInfo | None = None,
@@ -361,10 +361,10 @@ class MeltPerformer:
         fill_gaps_from_base: bool,
         output_end_ms: int | None = None,
     ) -> AudioPatchRequest:
-        if not mapping:
+        if not plan.mapping:
             raise RuntimeError("Cannot patch audio without matched frame pairs.")
 
-        mapping_tuple = tuple(mapping)
+        mapping_tuple = tuple(plan.mapping)
         segment = segment_range(mapping_tuple)
         source_timeline = self._video_to_audio_timeline(source_video, source_audio, rhs_frames or {})
         base_timeline = (
@@ -385,7 +385,10 @@ class MeltPerformer:
             fill_gaps_from_base=fill_gaps_from_base,
             lhs_frames=lhs_frames or {},
             rhs_frames=rhs_frames or {},
+            strategy=plan.strategy,
             output_mapping_to_video_ms=self._mapping_to_video_ms(base_video, lhs_frames or {}),
+            segment_count=plan.segment_count,
+            unscaled_shift_ms=plan.unscaled_shift_ms,
         )
 
     def _mapping_to_video_ms(
@@ -598,7 +601,7 @@ class MeltPerformer:
                 audio_stream,
                 group.base_audio,
                 patched_audio,
-                mapping,
+                plan,
                 base_duration,
                 lhs_frames=lhs_all_frames,
                 rhs_frames=rhs_all_frames,
@@ -609,12 +612,7 @@ class MeltPerformer:
                     else base_duration
                 ),
             )
-            result = self.audio_patcher.execute(
-                request,
-                strategy,
-                segment_count=plan.segment_count,
-                unscaled_shift_ms=plan.unscaled_shift_ms,
-            )
+            result = self.audio_patcher.execute(request)
             self.logger.info("  Desired audio start: %d ms", result.timeline_start_ms)
             return result
 

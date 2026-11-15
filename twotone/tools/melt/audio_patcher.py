@@ -90,7 +90,12 @@ class AudioPatchRequest:
     fill_gaps_from_base: bool
     lhs_frames: FramesInfo
     rhs_frames: FramesInfo
+    strategy: AudioStrategy
     output_mapping_to_video_ms: int = 0
+    # Number of mapping subsegments for SUBSEGMENT; other strategies use one.
+    segment_count: int = 1
+    # Base-minus-source placement shift for UNSCALED.
+    unscaled_shift_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -165,15 +170,9 @@ class AudioPatcher:
     def reset_cache(self) -> None:
         self._normalized_audio_cache.clear()
 
-    def execute(
-        self,
-        request: AudioPatchRequest,
-        strategy: AudioStrategy,
-        *,
-        segment_count: int = 1,
-        unscaled_shift_ms: int = 0,
-    ) -> AudioPatchResult:
+    def execute(self, request: AudioPatchRequest) -> AudioPatchResult:
         """Execute one fully specified audio patch request."""
+        strategy = request.strategy
         working_dir = os.path.join(request.working_dir, "audio_extraction")
         os.makedirs(working_dir, exist_ok=True)
 
@@ -183,12 +182,7 @@ class AudioPatcher:
             source_params[1],
             self._flac_safe_fmt(source_params[2]),
         )
-        segments = self._build_strategy_audio_segments(
-            request,
-            strategy,
-            segment_count=segment_count,
-            unscaled_shift_ms=unscaled_shift_ms,
-        )
+        segments = self._build_strategy_audio_segments(request)
         covered_target_interval = TimelineInterval(
             segments[0].target.start_ms,
             segments[-1].target.end_ms,
@@ -341,14 +335,11 @@ class AudioPatcher:
     def _build_strategy_audio_segments(
         self,
         request: AudioPatchRequest,
-        strategy: AudioStrategy,
-        *,
-        segment_count: int,
-        unscaled_shift_ms: int,
     ) -> list[_AudioMappingSegment]:
+        strategy = request.strategy
         if strategy == AudioStrategy.UNSCALED:
             source_start_ms = (
-                -unscaled_shift_ms
+                -request.unscaled_shift_ms
                 + request.output_mapping_to_video_ms
                 - request.source_timeline.mapping_to_video_ms
             )
@@ -362,7 +353,7 @@ class AudioPatcher:
         if strategy == AudioStrategy.SUBSEGMENT:
             return self._build_audio_subsegments(
                 request.mapping,
-                segment_count,
+                request.segment_count,
             )
 
         source_range = segment_range(request.mapping)
