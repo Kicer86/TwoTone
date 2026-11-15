@@ -20,7 +20,7 @@ from common import (
 from parameterized import parameterized
 
 from twotone.tools.melt.melt_analyzer import MeltAnalyzer
-from twotone.tools.melt.melt_performer import MeltPerformer
+from twotone.tools.melt.melt_performer import MeltPerformer, _GroupContext
 from twotone.tools.melt.static_source import StaticSource
 from twotone.tools.melt.melt_cache import MeltCache
 from twotone.tools.melt.melt_common import AudioStreamRef, VideoStreamRef
@@ -204,9 +204,13 @@ class AudioTimelineDiscontinuityTest(TwoToneTestCase):
              patch.object(performer.audio_patcher, "execute") as execute, \
              self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity.*PTS step"):
             performer._patch_mismatched_audio(
-                VideoStreamRef(base, 0, 0, None), VideoStreamRef(source, 0, 0, None),
-                AudioStreamRef(source, 1, 1, "pol"), None, 20000, None,
-                {base: 1, source: 2},
+                _GroupContext(
+                    file_ids={base: 1, source: 2},
+                    base_video=VideoStreamRef(base, 0, 0, None),
+                    base_duration_ms=20000,
+                ),
+                VideoStreamRef(source, 0, 0, None),
+                AudioStreamRef(source, 1, 1, "pol"),
             )
         request.assert_not_called()
         execute.assert_not_called()

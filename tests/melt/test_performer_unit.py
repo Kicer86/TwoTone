@@ -35,6 +35,7 @@ from twotone.tools.melt.melt_performer import (
     TimelineInterval,
     VideoToAudioTimeline,
     _AudioStrategy,
+    _GroupContext,
     _PairMatchResult,
     _StreamEntry,
 )
@@ -155,10 +156,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
         ):
             matcher_type.return_value.create_segments_mapping.return_value = Mock()
             performer._pair_match(
+                _GroupContext(
+                    file_ids={base_path: 1, source_path: 2},
+                    base_video=VideoStreamRef(base_path, 0, 0, None),
+                ),
                 "/tmp/matching",
-                base_path,
                 source_path,
-                {base_path: 1, source_path: 2},
             )
 
         self.assertIs(
@@ -551,12 +554,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "image-based subtitle format"):
             performer._patch_mismatched_subtitle(
-                VideoStreamRef(base_path, 0, 0, None),
+                _GroupContext(
+                    file_ids={base_path: 1, source_path: 2},
+                    base_video=VideoStreamRef(base_path, 0, 0, None),
+                    base_duration_ms=10000,
+                    files_details=details,
+                ),
                 VideoStreamRef(source_path, 0, 0, None),
                 subtitle,
-                10000,
-                {base_path: 1, source_path: 2},
-                details,
             )
 
     def test_patch_mismatched_subtitle_extracts_text_track_from_mp4(self):
@@ -602,12 +607,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 return_value=match_result,
             ), patch.object(performer, "_mapping_to_video_ms", return_value=0):
                 output_stream, _metadata = performer._patch_mismatched_subtitle(
-                    VideoStreamRef(base_path, 0, 0, None),
+                    _GroupContext(
+                        file_ids={base_path: 1, source_path: 2},
+                        base_video=VideoStreamRef(base_path, 0, 0, None),
+                        base_duration_ms=5000,
+                        files_details=details,
+                    ),
                     VideoStreamRef(source_path, 0, 0, None),
                     SubtitleStreamRef(source_path, 1, 1, "pol"),
-                    5000,
-                    {base_path: 1, source_path: 2},
-                    details,
                 )
 
             content = pysubs2.load(output_stream.path)
@@ -2247,8 +2254,13 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 source_duration=source_duration,
             )
 
-        performer._pair_match_cache[(base_video, audio_a)] = make_match_result(base_duration)
-        performer._pair_match_cache[(base_video, audio_b)] = make_match_result(base_duration)
+        group = _GroupContext(
+            file_ids={base_video: 1, audio_a: 2, audio_b: 3},
+            base_video=VideoStreamRef(base_video, 0, 0, None),
+            base_duration_ms=base_duration,
+        )
+        group.pair_matches[audio_a] = make_match_result(base_duration)
+        group.pair_matches[audio_b] = make_match_result(base_duration)
 
         patch_outputs = []
 
@@ -2275,21 +2287,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 "global-time-scale",
             )
 
-        file_ids = {base_video: 1, audio_a: 2, audio_b: 3}
         with patch.object(debug_routines, "log_coverage", lambda *args, **kwargs: None), \
              patch.object(performer, "_create_audio_patch_request", side_effect=fake_request), \
             patch.object(performer.audio_patcher, "execute", side_effect=fake_execute):
             first = performer._patch_mismatched_audio(
-                VideoStreamRef(base_video, 0, 0, None),
-                VideoStreamRef(audio_a, 0, 0, None),
-                AudioStreamRef(audio_a, 1, 1, "pol"),
-                None, base_duration, None, file_ids,
+                group, VideoStreamRef(audio_a, 0, 0, None), AudioStreamRef(audio_a, 1, 1, "pol"),
             )
             second = performer._patch_mismatched_audio(
-                VideoStreamRef(base_video, 0, 0, None),
-                VideoStreamRef(audio_b, 0, 0, None),
-                AudioStreamRef(audio_b, 1, 1, "pol"),
-                None, base_duration, None, file_ids,
+                group, VideoStreamRef(audio_b, 0, 0, None), AudioStreamRef(audio_b, 1, 1, "pol"),
             )
 
         self.assertEqual(first.stream.mkvmerge_track_id, 0)
@@ -2338,7 +2343,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 (499400, 12485),
             ]
         }
-        performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
+        group = _GroupContext(
+            file_ids={base_video.path: 1, source_video.path: 2},
+            base_video=base_video,
+            base_duration_ms=500000,
+        )
+        group.pair_matches[source_video.path] = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=mapping,
                 lhs_all_frames=lhs_frames,
@@ -2360,13 +2370,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         with patch.object(debug_routines, "log_coverage"), \
              self.assertRaisesRegex(RuntimeError, "holes in the scene sequence"):
             performer._patch_mismatched_audio(
-                base_video,
-                source_video,
-                source_audio,
-                None,
-                500000,
-                None,
-                {base_video.path: 1, source_video.path: 2},
+                group, source_video, source_audio,
             )
 
     def test_patch_mismatched_audio_rejects_sparse_global_linear_frame_step(self):
@@ -2374,7 +2378,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
         base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
         source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
         mapping = [(0, 0), (200000, 200000), (400000, 399400), (600000, 599400)]
-        performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
+        group = _GroupContext(
+            file_ids={base_video.path: 1, source_video.path: 2},
+            base_video=base_video,
+            base_duration_ms=600000,
+        )
+        group.pair_matches[source_video.path] = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=mapping,
                 lhs_all_frames={lhs: {"frame_id": lhs // 40, "path": None} for lhs, _ in mapping},
@@ -2397,8 +2406,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
              patch.object(performer.audio_patcher, "execute") as execute, \
              self.assertRaisesRegex(RuntimeError, "discontinuit.*not supported yet"):
             performer._patch_mismatched_audio(
-                base_video, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
-                None, 600000, None, {base_video.path: 1, source_video.path: 2},
+                group, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
             )
         choose.assert_not_called()
         execute.assert_not_called()
@@ -2412,7 +2420,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
         base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
         source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
         timing_step = (1600000, 1700000, 1600000, 1703000, -3000)
-        performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
+        group = _GroupContext(
+            file_ids={base_video.path: 1, source_video.path: 2},
+            base_video=base_video,
+            base_duration_ms=2000000,
+        )
+        group.pair_matches[source_video.path] = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=[(0, 0), (1600000, 1600000), (1700000, 1703000)],
                 lhs_all_frames={},
@@ -2429,8 +2442,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
              self.assertLogs(performer.logger, level="ERROR") as captured, \
              self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity"):
             performer._patch_mismatched_audio(
-                base_video, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
-                None, 2000000, None, {base_video.path: 1, source_video.path: 2},
+                group, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
             )
         choose.assert_not_called()
         self.assertTrue(any(
@@ -2479,7 +2491,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
         self.assertEqual(len(timing_discontinuities), 1)
         # The performer enforces PairMatcher's final timing verdict without
         # rerunning detection or reaching an audio strategy.
-        performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
+        group = _GroupContext(
+            file_ids={base_video.path: 1, source_video.path: 2},
+            base_video=base_video,
+            base_duration_ms=1920000,
+        )
+        group.pair_matches[source_video.path] = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=pairs,
                 lhs_all_frames=lhs_frames,
@@ -2497,8 +2514,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
              patch.object(performer.audio_patcher, "execute") as execute, \
              self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity"):
             performer._patch_mismatched_audio(
-                base_video, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
-                None, 1920000, None, {base_video.path: 1, source_video.path: 2},
+                group, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
             )
         request.assert_not_called()
         execute.assert_not_called()
@@ -2509,7 +2525,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
         source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
         source_audio = AudioStreamRef("/tmp/source.mkv", 2, 2, "pol")
         mapping = [(0, 0), (60000, 60000)]
-        performer._pair_match_cache[(base_video.path, source_video.path)] = _PairMatchResult(
+        group = _GroupContext(
+            file_ids={base_video.path: 1, source_video.path: 2},
+            base_video=base_video,
+            base_duration_ms=60000,
+        )
+        group.pair_matches[source_video.path] = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=mapping,
                 lhs_all_frames={
@@ -2547,13 +2568,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
              patch.object(performer, "_create_audio_patch_request", return_value=request), \
              patch.object(performer.audio_patcher, "execute", return_value=result):
             actual = performer._patch_mismatched_audio(
-                base_video,
-                source_video,
-                source_audio,
-                None,
-                60000,
-                None,
-                {base_video.path: 1, source_video.path: 2},
+                group, source_video, source_audio,
             )
 
         self.assertEqual(actual, result)
@@ -2564,7 +2579,12 @@ class MeltPerformerUnitTest(unittest.TestCase):
         source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
         source_audio = AudioStreamRef("/tmp/source.mkv", 2, 2, "pol")
         mapping = [(0, 0), (60000, 60000)]
-        performer._pair_match_cache[(base_video.path, source_audio.path)] = _PairMatchResult(
+        group = _GroupContext(
+            file_ids={base_video.path: 1, source_audio.path: 2},
+            base_video=base_video,
+            base_duration_ms=60000,
+        )
+        group.pair_matches[source_audio.path] = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=mapping,
                 lhs_all_frames={},
@@ -2590,13 +2610,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
              patch.object(performer, "_create_audio_patch_request", return_value=request) as create, \
              patch.object(performer.audio_patcher, "execute", return_value=result) as execute:
             actual = performer._patch_mismatched_audio(
-                base_video,
-                source_video,
-                source_audio,
-                None,
-                60000,
-                None,
-                {base_video.path: 1, source_audio.path: 2},
+                group, source_video, source_audio,
             )
 
         self.assertEqual(actual, result)
@@ -3315,7 +3329,14 @@ class MeltPerformerUnitTest(unittest.TestCase):
         source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
         source_audio = AudioStreamRef("/tmp/source.mkv", 2, 2, "pol")
         mapping = [(0, 0), (60000, 60000)]
-        performer._pair_match_cache[(base_video.path, source_audio.path)] = _PairMatchResult(
+        group = _GroupContext(
+            file_ids={base_video.path: 1, source_audio.path: 2},
+            base_video=base_video,
+            base_audio=base_audio,
+            base_duration_ms=60000,
+            base_audio_end_ms=60000,
+        )
+        group.pair_matches[source_audio.path] = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=mapping,
                 lhs_all_frames={},
@@ -3358,13 +3379,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
              patch.object(performer, "_create_audio_patch_request", side_effect=fake_request), \
              patch.object(performer.audio_patcher, "execute", side_effect=fake_execute):
             patched = performer._patch_mismatched_audio(
-                base_video,
-                source_video,
-                source_audio,
-                base_audio,
-                60000,
-                60000,
-                {base_video.path: 1, source_audio.path: 2},
+                group, source_video, source_audio,
             )
 
         self.assertEqual(patched.stream.mkvmerge_track_id, 0)

@@ -86,6 +86,8 @@ class _GroupContext:
     base_audio_end_ms: int | None = None
     files_details: Mapping[str, Any] = field(default_factory=dict)
     alignment_paths: frozenset[str] = frozenset()
+    # PairMatcher results by source path; the base video is fixed per group.
+    pair_matches: dict[str, _PairMatchResult] = field(default_factory=dict)
 
 
 _MKVMERGE_TRACK_SELECTION_FLAGS = {
@@ -131,7 +133,6 @@ class MeltPerformer:
         self.cache = cache
         self.fill_audio_gaps = fill_audio_gaps
         self.max_temporary_frame_offset = max_temporary_frame_offset
-        self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
         self.media_analysis = context.media_analysis
         self.workspace = context.workspace
         self.timeline = TrackTimeline(self.workspace, self.logger)
@@ -174,7 +175,6 @@ class MeltPerformer:
                 os.makedirs(output_parent, exist_ok=True)
 
                 self.audio_patcher.reset_cache()
-                self._pair_match_cache.clear()
                 files_details = group.files_details
 
                 with self.workspace.staging_for(output) as staged_output:
@@ -475,16 +475,15 @@ class MeltPerformer:
 
     def _pair_match(
         self,
+        group: _GroupContext,
         mwd: str,
-        video_path_base: str,
         source_path: str,
-        file_ids: dict[str, int],
     ) -> _PairMatchResult:
-        """Return the (cached) PairMatcher result for a (base, source) pair."""
-        lhs_id = file_ids[video_path_base]
-        rhs_id = file_ids[source_path]
-        cache_key = (video_path_base, source_path)
-        match_result = self._pair_match_cache.get(cache_key)
+        """Return the (cached) PairMatcher result for the group's base and a source."""
+        video_path_base = group.base_video.path
+        lhs_id = group.file_ids[video_path_base]
+        rhs_id = group.file_ids[source_path]
+        match_result = group.pair_matches.get(source_path)
 
         if match_result is None:
             self.logger.info("Matching video content: #%d - #%d", lhs_id, rhs_id)
@@ -501,7 +500,7 @@ class MeltPerformer:
                 matching=matcher.create_segments_mapping(),
                 source_duration=duration,
             )
-            self._pair_match_cache[cache_key] = match_result
+            group.pair_matches[source_path] = match_result
         else:
             self.logger.info(
                 "Reusing PairMatcher results for #%d ↔ #%d (same video pair).",
@@ -511,29 +510,25 @@ class MeltPerformer:
 
     def _validated_pair_match(
         self,
+        group: _GroupContext,
         working_dir: str,
-        base_path: str,
         source_path: str,
-        base_duration_ms: int,
-        file_ids: dict[str, int],
         *,
         consumer: str,
     ) -> _PairMatchResult:
         """Return one safe, cached mapping for an aligned source track."""
-        first_match = (base_path, source_path) not in self._pair_match_cache
-        match_result = self._pair_match(
-            working_dir,
-            base_path,
-            source_path,
-            file_ids,
-        )
+        assert group.base_duration_ms is not None
+        base_path = group.base_video.path
+        file_ids = group.file_ids
+        first_match = source_path not in group.pair_matches
+        match_result = self._pair_match(group, working_dir, source_path)
         matching = match_result.matching
 
         if first_match and matching.mapping:
             debug_routines.log_coverage(
                 self.logger,
                 matching.mapping,
-                base_duration_ms,
+                group.base_duration_ms,
                 match_result.source_duration,
                 matching.lhs_fps,
                 matching.rhs_fps,
@@ -586,27 +581,24 @@ class MeltPerformer:
 
     def _patch_mismatched_audio(
         self,
-        base_video: VideoStreamRef,
+        group: _GroupContext,
         source_video: VideoStreamRef,
         audio_stream: AudioStreamRef,
-        base_audio: AudioStreamRef | None,
-        base_duration: int,
-        base_audio_end: int | None,
-        file_ids: dict[str, int],
     ) -> AudioPatchResult:
         """Run PairMatcher and apply the appropriate audio patching strategy."""
-        self.timeline.set_input_file_ids(file_ids)
+        base_video = group.base_video
+        base_duration = group.base_duration_ms
+        assert base_duration is not None
+        base_audio_end = group.base_audio_end_ms
         video_path_base = base_video.path
         audio_path = audio_stream.path
         ffprobe_stream_index = audio_stream.ffprobe_stream_index
         with self.workspace.scoped_dir("matching") as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
             match_result = self._validated_pair_match(
+                group,
                 mwd,
-                video_path_base,
                 audio_path,
-                base_duration,
-                file_ids,
                 consumer="audio",
             )
 
@@ -662,7 +654,7 @@ class MeltPerformer:
                 base_video,
                 source_video,
                 audio_stream,
-                base_audio,
+                group.base_audio,
                 patched_audio,
                 mapping,
                 base_duration,
@@ -1066,25 +1058,20 @@ class MeltPerformer:
 
     def _patch_mismatched_subtitle(
         self,
-        base_video: VideoStreamRef,
+        group: _GroupContext,
         source_video: VideoStreamRef,
         subtitle_stream: SubtitleStreamRef,
-        base_duration_ms: int,
-        file_ids: dict[str, int],
-        files_details: Mapping[str, Any],
     ) -> tuple[SubtitleStreamRef, dict[str, Any]]:
         details, subtitle_format, description = self.subtitle_alignment.validate_text_track(
             subtitle_stream,
-            file_ids,
-            files_details,
+            group.file_ids,
+            group.files_details,
         )
         with self.workspace.scoped_dir("matching") as matching_dir:
             match_result = self._validated_pair_match(
+                group,
                 matching_dir,
-                base_video.path,
                 source_video.path,
-                base_duration_ms,
-                file_ids,
                 consumer="subtitle",
             )
 
@@ -1100,7 +1087,7 @@ class MeltPerformer:
                 matching.rhs_all_frames,
             ),
             output_mapping_to_video_ms=self._mapping_to_video_ms(
-                base_video,
+                group.base_video,
                 matching.lhs_all_frames,
             ),
         )
@@ -1171,17 +1158,8 @@ class MeltPerformer:
                 )
 
             if path in group.alignment_paths:
-                assert group.base_duration_ms is not None
                 source_video = self._primary_video_ref(path, group.files_details)
-                patched = self._patch_mismatched_audio(
-                    base_video,
-                    source_video,
-                    audio_stream,
-                    group.base_audio,
-                    group.base_duration_ms,
-                    group.base_audio_end_ms,
-                    group.file_ids,
-                )
+                patched = self._patch_mismatched_audio(group, source_video, audio_stream)
                 output_stream = patched.stream
                 desired_start_ms = patched.timeline_start_ms
             else:
@@ -1234,15 +1212,9 @@ class MeltPerformer:
             output_stream = subtitle_stream
             output_metadata: dict[str, Any] = {}
             if subtitle_stream.path in group.alignment_paths:
-                assert group.base_duration_ms is not None
                 source_video = self._primary_video_ref(subtitle_stream.path, group.files_details)
                 output_stream, output_metadata = self._patch_mismatched_subtitle(
-                    group.base_video,
-                    source_video,
-                    subtitle_stream,
-                    group.base_duration_ms,
-                    group.file_ids,
-                    group.files_details,
+                    group, source_video, subtitle_stream,
                 )
                 desired_start_ms = None
             else:
