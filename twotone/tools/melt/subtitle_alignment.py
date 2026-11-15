@@ -12,7 +12,7 @@ from ..utils import files_utils, process_utils, subtitles_utils, video_utils
 from . import matching_analysis
 from .melt_common import SubtitleStreamRef, file_tracks, find_track
 from .pair_matcher import MappingRelation, SegmentsMappingResult
-from .track_timeline import TrackTimeline
+from .track_timeline import mkvmerge_preserves_start
 
 
 class SubtitleAlignment:
@@ -146,8 +146,7 @@ class SubtitleAlignment:
         source_mapping_to_video_ms: int,
         output_mapping_to_video_ms: int,
     ) -> tuple[SubtitleStreamRef, dict[str, Any]]:
-        extension = os.path.splitext(subtitle_stream.path)[1].lower()
-        if extension in TrackTimeline._MKVMERGE_PRESERVES_START_EXTENSIONS:
+        if mkvmerge_preserves_start(subtitle_stream.path):
             extracted_base = self.workspace.unique_file("subtitle_source")
             extracted = video_utils.extract_subtitle_to_temp(
                 subtitle_stream.path,

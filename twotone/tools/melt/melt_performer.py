@@ -47,7 +47,7 @@ from .pair_matcher import (
     SegmentsMappingResult,
 )
 from .subtitle_alignment import SubtitleAlignment
-from .track_timeline import TrackTimeline
+from .track_timeline import TrackTimeline, mkvmerge_preserves_start
 
 
 class _PairMatchResult(NamedTuple):
@@ -871,10 +871,9 @@ class MeltPerformer:
         for audio_stream in audio_streams:
             path = audio_stream.path
             output_stream = audio_stream
-            extension = os.path.splitext(path)[1].lower()
             preserves_base_container_timing = (
                 path == base_video.path
-                and extension in TrackTimeline._MKVMERGE_PRESERVES_START_EXTENSIONS
+                and mkvmerge_preserves_start(path)
             )
             if preserves_base_container_timing:
                 desired_start_ms = self.timeline.source_stream_start_offset_ms(

@@ -37,6 +37,14 @@ from typing import Any
 from ..utils import files_utils, generic_utils, process_utils, video_utils
 from .melt_common import AudioStreamRef
 
+# Containers whose stream start offsets mkvmerge preserves on remux.
+_MKVMERGE_PRESERVES_START_EXTENSIONS = frozenset({".mkv", ".mk3d", ".mka", ".webm"})
+
+
+def mkvmerge_preserves_start(path: str) -> bool:
+    """Whether mkvmerge keeps the stream start offsets of *path* on remux."""
+    return os.path.splitext(path)[1].lower() in _MKVMERGE_PRESERVES_START_EXTENSIONS
+
 
 class TrackTimeline:
     """Run-scoped stream-timeline and AAC-priming service."""
@@ -51,9 +59,6 @@ class TrackTimeline:
 
     def set_input_file_ids(self, file_ids: dict[str, int]) -> None:
         self._input_file_ids = dict(file_ids)
-
-    # Containers whose stream start offsets mkvmerge preserves on remux.
-    _MKVMERGE_PRESERVES_START_EXTENSIONS = frozenset({".mkv", ".mk3d", ".mka", ".webm"})
 
     def _input_file_description(self, path: str) -> str:
         file_id = self._input_file_ids.get(path)
@@ -136,8 +141,7 @@ class TrackTimeline:
         stream_type: str,
         ffprobe_stream_index: int,
     ) -> int:
-        extension = os.path.splitext(path)[1].lower()
-        if extension in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
+        if mkvmerge_preserves_start(path):
             return self.source_stream_start_offset_ms(path, stream_type, ffprobe_stream_index)
         return 0
 
@@ -330,7 +334,6 @@ class TrackTimeline:
             init_pad = 0
         if init_pad > 0:
             return f"removing AAC encoder delay ({init_pad} priming samples)"
-        extension = os.path.splitext(stream_ref.path)[1].lower()
-        if extension not in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
+        if not mkvmerge_preserves_start(stream_ref.path):
             return "preserving the AAC start time across container conversion"
         return None
