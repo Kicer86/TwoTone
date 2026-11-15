@@ -1,7 +1,7 @@
 """Audio execution for melt timeline mappings.
 
-Strategy selection and mapping recovery intentionally remain in
-``MeltPerformer``.  This module only executes an already selected request.
+Strategy selection and mapping recovery live in ``audio_strategy``.  This
+module only executes an already selected request.
 """
 
 import enum

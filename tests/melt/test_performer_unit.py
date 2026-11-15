@@ -11,7 +11,7 @@ from common import run_ffmpeg, write_srt_subtitle
 from parameterized import parameterized
 
 from melt.helpers import _FAKE_PROCESS_OK
-from twotone.tools.melt import debug_routines, matching_analysis
+from twotone.tools.melt import audio_strategy, debug_routines, matching_analysis
 from twotone.tools.melt.audio_patcher import (
     AudioPatcher,
     AudioSourceWindow,
@@ -626,7 +626,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         # 5 dropped leading frames at 24 fps: deltas sit on the whole-frame grid.
         mapping = [(lhs, lhs - 208) for lhs in (500, 10000, 30000, 60000)]
 
-        shift = MeltPerformer._unscaled_timeline_shift_ms(mapping, 24.0)
+        shift = audio_strategy.unscaled_timeline_shift_ms(mapping, 24.0)
 
         self.assertEqual(shift, 208)
 
@@ -635,7 +635,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         # +21 ms median is phase noise, not a genuine 1-frame (42 ms) shift.
         mapping = [(lhs, lhs - 21) for lhs in (500, 10000, 30000, 60000)]
 
-        shift = MeltPerformer._unscaled_timeline_shift_ms(mapping, 24.0)
+        shift = audio_strategy.unscaled_timeline_shift_ms(mapping, 24.0)
 
         self.assertEqual(shift, 0)
 
@@ -653,7 +653,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             (5_408_208, 5_407_068),
         ]
 
-        shift = MeltPerformer._unscaled_timeline_shift_ms(
+        shift = audio_strategy.unscaled_timeline_shift_ms(
             mapping,
             29.97,
             rhs_fps=24000 / 1001,
@@ -667,7 +667,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         # of being read as a genuine 12-frame shift.
         mapping = [(lhs, lhs + 495) for lhs in (0, 10000, 30000, 60000)]
 
-        shift = MeltPerformer._unscaled_timeline_shift_ms(mapping, 24.0, stream_bias_ms=500)
+        shift = audio_strategy.unscaled_timeline_shift_ms(mapping, 24.0, stream_bias_ms=500)
 
         self.assertEqual(shift, 0)
 
@@ -734,7 +734,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             )
         self.assertEqual(probe.call_count, 2)
 
-        result = MeltPerformer._try_collapse_linear_mapping(
+        result = audio_strategy.try_collapse_linear_mapping(
             mapping,
             lhs_frames,
             tempo_ratio,
@@ -799,7 +799,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             for index in range(1498)
         }
 
-        result = MeltPerformer._try_collapse_linear_mapping(
+        result = audio_strategy.try_collapse_linear_mapping(
             mapping,
             lhs_frames,
             tempo_ratio=0.9715,
@@ -812,7 +812,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         # A 23<->24 fps resample preserving playback time: the effective fps
         # differ (tempo far from 1) and match the nominal ratio, while the
         # matched spans agree in wall-clock duration.  Such pairs must go the
-        # UNSCALED route — _choose_audio_strategy excludes them before any
+        # UNSCALED route — audio_strategy.choose_strategy excludes them before any
         # linear-mapping recovery runs.
         mapping = [
             (739, 0),
@@ -855,20 +855,22 @@ class MeltPerformerUnitTest(unittest.TestCase):
             }
 
         with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info):
-            result = performer._is_frame_rate_only_drift_mapping(
+            tempo_ratio = performer._effective_tempo_ratio(
                 "/tmp/base.mkv",
                 "/tmp/source.mp4",
-                mapping,
                 lhs_frames,
                 rhs_frames,
-                lhs_nominal_fps=23.0,
-                rhs_nominal_fps=24.0,
             )
+        result = audio_strategy.is_frame_rate_only_drift(
+            mapping,
+            tempo_ratio,
+            lhs_nominal_fps=23.0,
+            rhs_nominal_fps=24.0,
+        )
 
         self.assertTrue(result)
 
     def test_generic_smooth_timing_variation_uses_subsegment_audio(self):
-        performer = self._make_performer()
         initial_pairs = [
             (i * 100000, i * 100000 - (600 if i == 9 else 0))
             for i in range(20)
@@ -894,14 +896,9 @@ class MeltPerformerUnitTest(unittest.TestCase):
             rhs_fps=25.0,
         )
 
-        with patch.object(
-            performer,
-            "_is_frame_rate_only_drift_mapping",
-            return_value=False,
-        ):
-            strategy = performer._choose_audio_strategy(
-                "/tmp/base.mkv", "/tmp/source.mkv", matching,
-            )
+        # No effective-fps tempo is known, so the mapping cannot count as a
+        # pure frame-rate drift.
+        strategy = audio_strategy.choose_strategy(matching, tempo_ratio=None)
 
         self.assertEqual(strategy, _AudioStrategy.SUBSEGMENT)
 
@@ -928,7 +925,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             1369994: {"path": "lhs_1369994.jpg"},
         }
 
-        result = MeltPerformer._try_collapse_linear_mapping(
+        result = audio_strategy.try_collapse_linear_mapping(
             mapping,
             lhs_frames,
             tempo_ratio=0.7992,
@@ -950,7 +947,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             1369994: {"path": "lhs_1369994.jpg"},
         }
 
-        result = MeltPerformer._try_collapse_linear_mapping(
+        result = audio_strategy.try_collapse_linear_mapping(
             pairs,
             lhs_frames,
             tempo_ratio=0.7992,
@@ -1133,7 +1130,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
         expected: bool,
     ):
         """The strategy-classification threshold must not depend on float artifacts."""
-        self.assertEqual(MeltPerformer._needs_fps_scaling(source_per_base), expected)
+        self.assertEqual(audio_strategy.needs_fps_scaling(source_per_base), expected)
 
     def test_patch_audio_constant_offset_head_and_tail_extraction(self):
         """Head and tail segments should be extracted from base audio."""
@@ -2402,7 +2399,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             source_duration=600000,
         )
         with patch.object(debug_routines, "log_coverage"), \
-             patch.object(performer, "_choose_audio_strategy", side_effect=AssertionError("unsafe mapping reached audio strategy")) as choose, \
+             patch.object(performer, "_plan_audio", side_effect=AssertionError("unsafe mapping reached audio strategy")) as choose, \
              patch.object(performer.audio_patcher, "execute") as execute, \
              self.assertRaisesRegex(RuntimeError, "discontinuit.*not supported yet"):
             performer._patch_mismatched_audio(
@@ -2438,7 +2435,7 @@ class MeltPerformerUnitTest(unittest.TestCase):
             source_duration=2000000,
         )
 
-        with patch.object(performer, "_choose_audio_strategy", side_effect=AssertionError("unsafe mapping reached audio strategy")) as choose, \
+        with patch.object(performer, "_plan_audio", side_effect=AssertionError("unsafe mapping reached audio strategy")) as choose, \
              self.assertLogs(performer.logger, level="ERROR") as captured, \
              self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity"):
             performer._patch_mismatched_audio(
@@ -2561,10 +2558,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
                  "classify_global_linear_discontinuities",
                  side_effect=AssertionError("performer must use PairMatcher's final verdict"),
              ), \
-             patch.object(performer, "_choose_audio_strategy", return_value=_AudioStrategy.UNSCALED), \
-             patch.object(performer, "_prepare_audio_mapping", return_value=mapping), \
-             patch.object(performer, "_mapping_stream_bias_ms", return_value=0), \
-             patch.object(performer, "_unscaled_timeline_shift_ms", return_value=0), \
+             patch.object(
+                 performer,
+                 "_plan_audio",
+                 return_value=audio_strategy.AudioPlan(_AudioStrategy.UNSCALED, mapping),
+             ), \
              patch.object(performer, "_create_audio_patch_request", return_value=request), \
              patch.object(performer.audio_patcher, "execute", return_value=result):
             actual = performer._patch_mismatched_audio(
@@ -2603,10 +2601,13 @@ class MeltPerformerUnitTest(unittest.TestCase):
             "unscaled-normalization",
         )
 
-        with patch.object(performer, "_choose_audio_strategy", return_value=_AudioStrategy.UNSCALED), \
-             patch.object(performer, "_prepare_audio_mapping", return_value=mapping), \
-             patch.object(performer, "_mapping_stream_bias_ms", return_value=0), \
-             patch.object(performer, "_unscaled_timeline_shift_ms", return_value=500), \
+        with patch.object(
+                 performer,
+                 "_plan_audio",
+                 return_value=audio_strategy.AudioPlan(
+                     _AudioStrategy.UNSCALED, mapping, unscaled_shift_ms=500,
+                 ),
+             ), \
              patch.object(performer, "_create_audio_patch_request", return_value=request) as create, \
              patch.object(performer.audio_patcher, "execute", return_value=result) as execute:
             actual = performer._patch_mismatched_audio(
@@ -3374,8 +3375,11 @@ class MeltPerformerUnitTest(unittest.TestCase):
                 "subsegment-atempo (1 segments)",
             )
 
-        with patch.object(performer, "_choose_audio_strategy", return_value=_AudioStrategy.SUBSEGMENT), \
-             patch.object(performer, "_prepare_audio_mapping", return_value=mapping), \
+        with patch.object(
+                 performer,
+                 "_plan_audio",
+                 return_value=audio_strategy.AudioPlan(_AudioStrategy.SUBSEGMENT, mapping),
+             ), \
              patch.object(performer, "_create_audio_patch_request", side_effect=fake_request), \
              patch.object(performer.audio_patcher, "execute", side_effect=fake_execute):
             patched = performer._patch_mismatched_audio(
