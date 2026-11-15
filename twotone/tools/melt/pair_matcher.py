@@ -978,8 +978,81 @@ class PairMatcher:
         )
         self._raise_for_unresolved_content_discontinuities(discontinuities, debug_path)
 
-    def create_segments_mapping(self) -> SegmentsMappingResult:
+    def _extend_boundaries(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        global_linear_fit: GlobalLinearFit | None,
+        lhs_scene_ranges: list[tuple[int, int]],
+        rhs_scene_ranges: list[tuple[int, int]],
+        debug: DebugRoutines,
+    ) -> list[tuple[int, int]]:
+        """Move the mapping's first and last pairs toward the video edges."""
+        if global_linear_fit is not None:
+            # Use the certified pairs' observed span to predict shared content,
+            # extend each boundary toward the video edge, and keep the
+            # extension only where the predicted pair is content-verified (same
+            # frame, or both low-entropy black).  A genuinely different intro/outro
+            # fails verification and the boundary stays at the outermost real
+            # match — the line is never blindly projected across divergent
+            # content. No later timestamp edge-snap may bypass verification.
+            matching_pairs = self.boundary_search.extrapolate_and_verify_global_linear(
+                matching_pairs,
+            )
+            debug.dump_matches(matching_pairs, "after verified global-linear extrapolation")
+            return matching_pairs
 
+        # No global relation — fall back to the content/entropy-aware
+        # iterative boundary search.
+        matching_pairs = self._extract_and_refine_boundaries(
+            matching_pairs, lhs_scene_ranges, rhs_scene_ranges, debug,
+        )
+        # The refined pairs can reveal a linear relation the sparse
+        # initial matching could not certify.  A mapping that now passes
+        # the full global-linear detection earns the same verified
+        # boundary extension as a detected global-linear one: the fitted
+        # line predicts the edge pairs, and every extension is
+        # content-verified before being kept.  This must run before the
+        # edge snap: snapped pairs are artificial timestamps with no
+        # normalized frames behind them, while the fit and the
+        # verification may only ever see real matched pairs.
+        generic_fit = self.detect_global_linear(
+            matching_pairs, self.lhs.all_frames, self.rhs.all_frames,
+        )
+        if generic_fit is not None:
+            matching_pairs = self.boundary_search.extrapolate_and_verify_global_linear(
+                matching_pairs,
+            )
+            debug.dump_matches(matching_pairs, "after verified linear extrapolation")
+        return self.boundary_search.snap_to_edges(matching_pairs)
+
+    def _report_timing_discontinuities(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        timing_discontinuities: tuple[Discontinuity, ...],
+        relation: MappingRelation,
+        debug: DebugRoutines,
+    ) -> str | None:
+        """Dump diagnostics for unsafe timestamp steps and return their path."""
+        debug.dump_matches(matching_pairs, "timing discontinuities")
+        groups = matching_analysis.group_content_discontinuities(
+            list(timing_discontinuities)
+        )
+        debug_path = debug.dump_timing_discontinuities(
+            groups,
+            lhs_label=self.lhs.label,
+            rhs_label=self.rhs.label,
+            lhs_fps=self.lhs.fps,
+            rhs_fps=self.rhs.fps,
+            prepare_frames=lambda: self._extract_discontinuity_frames(groups),
+        )
+        self.logger.warning(
+            "Matched content has continuous decoded advances but discontinuous presentation timestamps; "
+            "the candidate %s frame relation is unsafe for audio execution.", relation.value,
+        )
+        return debug_path
+
+    def create_segments_mapping(self) -> SegmentsMappingResult:
+        """Match both videos and map their shared content frame to frame."""
         lhs_analysis = self._analysis_result_for(
             self.lhs.path,
             self.lhs.label,
@@ -1020,70 +1093,24 @@ class PairMatcher:
             )
         )
 
-        if global_linear_fit is not None:
-            relation = MappingRelation.GLOBAL_LINEAR
-            frame_slope = global_linear_fit.slope
-            # Use the certified pairs' observed span to predict shared content,
-            # extend each boundary toward the video edge, and keep the
-            # extension only where the predicted pair is content-verified (same
-            # frame, or both low-entropy black).  A genuinely different intro/outro
-            # fails verification and the boundary stays at the outermost real
-            # match — the line is never blindly projected across divergent
-            # content. No later timestamp edge-snap may bypass verification.
-            if not timing_discontinuities:
-                matching_pairs = self.boundary_search.extrapolate_and_verify_global_linear(
-                    matching_pairs,
-                )
-                debug.dump_matches(matching_pairs, "after verified global-linear extrapolation")
-        else:
-            relation = MappingRelation.GENERIC
-            frame_slope = None
-            if not timing_discontinuities:
-                # No global relation — fall back to the content/entropy-aware
-                # iterative boundary search.
-                matching_pairs = self._extract_and_refine_boundaries(
-                    matching_pairs, lhs_scene_ranges, rhs_scene_ranges, debug,
-                )
-                # The refined pairs can reveal a linear relation the sparse
-                # initial matching could not certify.  A mapping that now passes
-                # the full global-linear detection earns the same verified
-                # boundary extension as a detected global-linear one: the fitted
-                # line predicts the edge pairs, and every extension is
-                # content-verified before being kept.  This must run before the
-                # edge snap: snapped pairs are artificial timestamps with no
-                # normalized frames behind them, while the fit and the
-                # verification may only ever see real matched pairs.
-                generic_fit = self.detect_global_linear(
-                    matching_pairs, self.lhs.all_frames, self.rhs.all_frames,
-                )
-                if generic_fit is not None:
-                    matching_pairs = self.boundary_search.extrapolate_and_verify_global_linear(
-                        matching_pairs,
-                    )
-                    debug.dump_matches(matching_pairs, "after verified linear extrapolation")
-                matching_pairs = self.boundary_search.snap_to_edges(matching_pairs)
-
+        relation = (
+            MappingRelation.GLOBAL_LINEAR
+            if global_linear_fit is not None
+            else MappingRelation.GENERIC
+        )
+        timing_discontinuity_debug_path: str | None = None
         if timing_discontinuities:
-            debug.dump_matches(matching_pairs, "timing discontinuities")
-            timing_discontinuity_groups = matching_analysis.group_content_discontinuities(
-                list(timing_discontinuities)
-            )
-            timing_discontinuity_debug_path = debug.dump_timing_discontinuities(
-                timing_discontinuity_groups,
-                lhs_label=self.lhs.label,
-                rhs_label=self.rhs.label,
-                lhs_fps=self.lhs.fps,
-                rhs_fps=self.rhs.fps,
-                prepare_frames=lambda: self._extract_discontinuity_frames(
-                    timing_discontinuity_groups
-                ),
-            )
-            self.logger.warning(
-                "Matched content has continuous decoded advances but discontinuous presentation timestamps; "
-                "the candidate %s frame relation is unsafe for audio execution.", relation.value,
+            timing_discontinuity_debug_path = self._report_timing_discontinuities(
+                matching_pairs, timing_discontinuities, relation, debug,
             )
         else:
-            timing_discontinuity_debug_path = None
+            matching_pairs = self._extend_boundaries(
+                matching_pairs,
+                global_linear_fit,
+                lhs_scene_ranges,
+                rhs_scene_ranges,
+                debug,
+            )
             self.logger.info("Mapping relation chosen: %s", relation.value)
 
         return SegmentsMappingResult(
@@ -1093,7 +1120,7 @@ class PairMatcher:
             relation=relation,
             lhs_fps=self.lhs.fps,
             rhs_fps=self.rhs.fps,
-            frame_slope=frame_slope,
+            frame_slope=global_linear_fit.slope if global_linear_fit is not None else None,
             timing_discontinuities=timing_discontinuities,
             timing_discontinuity_debug_path=timing_discontinuity_debug_path,
         )
