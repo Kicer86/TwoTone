@@ -74,6 +74,20 @@ class _PreparedStreams(NamedTuple):
     input_files: set[str]
 
 
+@dataclass
+class _GroupContext:
+    """Inputs and run state shared by every stream of one output group."""
+
+    file_ids: dict[str, int]
+    base_video: VideoStreamRef
+    base_audio: AudioStreamRef | None = None
+    base_duration_ms: int | None = None
+    base_output_end_ms: int | None = None
+    base_audio_end_ms: int | None = None
+    files_details: Mapping[str, Any] = field(default_factory=dict)
+    alignment_paths: frozenset[str] = frozenset()
+
+
 _MKVMERGE_TRACK_SELECTION_FLAGS = {
     "video":       ("--video-tracks",    "--no-video"),
     "audio":       ("--audio-tracks",    "--no-audio"),
@@ -172,7 +186,7 @@ class MeltPerformer:
                         attachment_refs,
                         file_ids,
                         files_details,
-                        alignment_paths=set(group.alignment_paths),
+                        alignment_paths=group.alignment_paths,
                     )
 
                     # Sort streams by language alphabetically, unknown languages last
@@ -981,7 +995,7 @@ class MeltPerformer:
     @staticmethod
     def _video_track_duration(
         path: str,
-        files_details: dict[str, Any],
+        files_details: Mapping[str, Any],
         logger: logging.Logger | None = None,
     ) -> int | None:
         """Return video track duration in ms from pre-probed plan data.
@@ -1037,7 +1051,7 @@ class MeltPerformer:
         return self._max_stream_end_ms(video_path_base, "audio", audio_streams)
 
     @staticmethod
-    def _primary_video_ref(path: str, files_details: dict[str, Any]) -> VideoStreamRef:
+    def _primary_video_ref(path: str, files_details: Mapping[str, Any]) -> VideoStreamRef:
         for track in content_video_tracks(file_tracks(files_details, path, "video")):
             mkvmerge_track_id = track.get("tid")
             ffprobe_stream_index = track.get("ffprobe_stream_index")
@@ -1132,16 +1146,10 @@ class MeltPerformer:
     def _prepare_audio_entries(
         self,
         audio_streams: Sequence[AudioStreamRef],
-        *,
-        base_video: VideoStreamRef,
-        base_audio: AudioStreamRef | None,
-        base_duration_ms: int | None,
-        base_output_end_ms: int | None,
-        base_audio_end_ms: int | None,
-        file_ids: dict[str, int],
-        files_details: dict[str, Any],
-        alignment_paths: set[str],
+        group: _GroupContext,
     ) -> list[_StreamEntry]:
+        base_video = group.base_video
+        base_output_end_ms = group.base_output_end_ms
         entries: list[_StreamEntry] = []
         for audio_stream in audio_streams:
             path = audio_stream.path
@@ -1162,17 +1170,17 @@ class MeltPerformer:
                     self.timeline._audio_stream_info(audio_stream)
                 )
 
-            if path in alignment_paths:
-                assert base_duration_ms is not None
-                source_video = self._primary_video_ref(path, files_details)
+            if path in group.alignment_paths:
+                assert group.base_duration_ms is not None
+                source_video = self._primary_video_ref(path, group.files_details)
                 patched = self._patch_mismatched_audio(
                     base_video,
                     source_video,
                     audio_stream,
-                    base_audio,
-                    base_duration_ms,
-                    base_audio_end_ms,
-                    file_ids,
+                    group.base_audio,
+                    group.base_duration_ms,
+                    group.base_audio_end_ms,
+                    group.file_ids,
                 )
                 output_stream = patched.stream
                 desired_start_ms = patched.timeline_start_ms
@@ -1204,7 +1212,7 @@ class MeltPerformer:
                     self.logger.info(
                         "Preparing audio track #%d from file #%d for muxing: %s.",
                         audio_stream.mkvmerge_track_id,
-                        file_ids[path],
+                        group.file_ids[path],
                         " and ".join(reasons),
                     )
                     output_stream = self.audio_patcher.prepare_normalized_unscaled_audio(
@@ -1219,27 +1227,22 @@ class MeltPerformer:
     def _prepare_subtitle_entries(
         self,
         subtitle_streams: Sequence[SubtitleStreamRef],
-        *,
-        base_video: VideoStreamRef,
-        base_duration_ms: int | None,
-        file_ids: dict[str, int],
-        files_details: dict[str, Any],
-        alignment_paths: set[str],
+        group: _GroupContext,
     ) -> list[_StreamEntry]:
         entries: list[_StreamEntry] = []
         for subtitle_stream in subtitle_streams:
             output_stream = subtitle_stream
             output_metadata: dict[str, Any] = {}
-            if subtitle_stream.path in alignment_paths:
-                assert base_duration_ms is not None
-                source_video = self._primary_video_ref(subtitle_stream.path, files_details)
+            if subtitle_stream.path in group.alignment_paths:
+                assert group.base_duration_ms is not None
+                source_video = self._primary_video_ref(subtitle_stream.path, group.files_details)
                 output_stream, output_metadata = self._patch_mismatched_subtitle(
-                    base_video,
+                    group.base_video,
                     source_video,
                     subtitle_stream,
-                    base_duration_ms,
-                    file_ids,
-                    files_details,
+                    group.base_duration_ms,
+                    group.file_ids,
+                    group.files_details,
                 )
                 desired_start_ms = None
             else:
@@ -1256,6 +1259,41 @@ class MeltPerformer:
             ))
         return entries
 
+    def _group_context(
+        self,
+        video_streams: Sequence[VideoStreamRef],
+        audio_streams: Sequence[AudioStreamRef],
+        file_ids: dict[str, int],
+        files_details: Mapping[str, Any],
+        alignment_paths: Iterable[str],
+    ) -> _GroupContext:
+        self.timeline.set_input_file_ids(file_ids)
+        base_video = video_streams[0]
+        return _GroupContext(
+            file_ids=file_ids,
+            base_video=base_video,
+            base_audio=next(
+                (stream for stream in audio_streams if stream.path == base_video.path),
+                None,
+            ),
+            base_duration_ms=self._video_track_duration(
+                base_video.path,
+                files_details,
+                logger=self.logger,
+            ),
+            base_output_end_ms=self._base_output_end_ms(
+                base_video.path,
+                video_streams,
+                audio_streams,
+            ),
+            base_audio_end_ms=self._base_audio_end_ms(
+                base_video.path,
+                audio_streams,
+            ),
+            files_details=files_details,
+            alignment_paths=frozenset(alignment_paths),
+        )
+
     def _prepare_stream_entries(
         self,
         video_streams: Sequence[VideoStreamRef],
@@ -1263,53 +1301,19 @@ class MeltPerformer:
         subtitle_streams: Sequence[SubtitleStreamRef],
         attachments: Sequence[AttachmentRef],
         file_ids: dict[str, int],
-        files_details: dict[str, Any] | None = None,
-        alignment_paths: set[str] | None = None,
+        files_details: Mapping[str, Any] | None = None,
+        alignment_paths: Iterable[str] = (),
     ) -> _PreparedStreams:
-        self.timeline.set_input_file_ids(file_ids)
-
-        base_video = video_streams[0]
-        base_audio = next(
-            (stream for stream in audio_streams if stream.path == base_video.path),
-            None,
-        )
-        details = files_details or {}
-        paths_to_align = alignment_paths or set()
-        base_duration_ms = self._video_track_duration(
-            base_video.path,
-            details,
-            logger=self.logger,
-        )
-        base_output_end_ms = self._base_output_end_ms(
-            base_video.path,
+        group = self._group_context(
             video_streams,
             audio_streams,
+            file_ids,
+            files_details or {},
+            alignment_paths,
         )
-        base_audio_end_ms = self._base_audio_end_ms(
-            base_video.path,
-            audio_streams,
-        )
-
         entries = self._prepare_video_entries(video_streams)
-        entries.extend(self._prepare_audio_entries(
-            audio_streams,
-            base_video=base_video,
-            base_audio=base_audio,
-            base_duration_ms=base_duration_ms,
-            base_output_end_ms=base_output_end_ms,
-            base_audio_end_ms=base_audio_end_ms,
-            file_ids=file_ids,
-            files_details=details,
-            alignment_paths=paths_to_align,
-        ))
-        entries.extend(self._prepare_subtitle_entries(
-            subtitle_streams,
-            base_video=base_video,
-            base_duration_ms=base_duration_ms,
-            file_ids=file_ids,
-            files_details=details,
-            alignment_paths=paths_to_align,
-        ))
+        entries.extend(self._prepare_audio_entries(audio_streams, group))
+        entries.extend(self._prepare_subtitle_entries(subtitle_streams, group))
 
         input_files = (
             {entry.path for entry in entries}
