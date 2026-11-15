@@ -9,7 +9,8 @@ from typing import NamedTuple
 import numpy as np
 
 from ..utils import image_utils, video_utils
-from . import frame_comparison, matching_analysis
+from . import debug_routines, frame_comparison, matching_analysis
+from .debug_routines import DebugRoutines
 from .frame_comparison import BoundaryVerifyContext, FrameComparison, MatchingSide
 from .melt_common import FramesInfo
 from .phash_cache import PhashCache
@@ -352,6 +353,132 @@ class BoundarySearch:
             for side, keys, timestamp in zip(sides, sorted_keys, snapped):
                 if timestamp not in side.all_frames:
                     side.all_frames[timestamp] = side.all_frames[keys[position]].copy()
+        return matching_pairs
+
+    def refine_generic_boundaries(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        debug: DebugRoutines,
+    ) -> list[tuple[int, int]]:
+        """Walk a GENERIC mapping's boundaries outward with content search.
+
+        First iterates on frames cropped to the shared region until the
+        boundaries converge, then runs one extrapolating search on the
+        uncropped normalized frames.
+        """
+        matching_pairs = self._refine_cropped_boundaries(matching_pairs, debug)
+        self.logger.debug("Final boundary search (uncropped frames, with extrapolation)")
+        return self._refine_uncropped_boundaries(matching_pairs, debug)
+
+    def _refine_cropped_boundaries(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        debug: DebugRoutines,
+    ) -> list[tuple[int, int]]:
+        """Iteratively refine boundary pairs using cropped-frame matching.
+
+        Crops both frame sets based on the current matching, searches for
+        boundaries on the cropped frames, and repeats until convergence.
+        """
+        prev_first, prev_last = None, None
+        iteration = 0
+
+        while True:
+            iteration += 1
+            self.logger.debug("Boundary refinement iteration %d (cropped frames)", iteration)
+            self.comparison.interruption.check_for_stop()
+
+            lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self.comparison.crop_both(
+                matching_pairs,
+            )
+
+            first_lhs, first_rhs = matching_pairs[0]
+            last_lhs, last_rhs = matching_pairs[-1]
+            self.logger.debug(
+                "First pair: %s %s",
+                lhs_normalized_cropped_frames[first_lhs]["path"],
+                rhs_normalized_cropped_frames[first_rhs]["path"],
+            )
+            self.logger.debug(
+                "Last pair:  %s %s",
+                lhs_normalized_cropped_frames[last_lhs]["path"],
+                rhs_normalized_cropped_frames[last_rhs]["path"],
+            )
+
+            phash4normalized = PhashCache()
+            debug_routines.log_pairs_summary(
+                self.logger, phash4normalized, lhs_normalized_cropped_frames,
+                rhs_normalized_cropped_frames, "Cropped and aligned:       ",
+                matching_pairs,
+            )
+
+            cutoff = frame_comparison.calculate_cutoff(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
+
+            first, last = self.look_for_boundaries(
+                lhs_normalized_cropped_frames, rhs_normalized_cropped_frames,
+                matching_pairs[0], matching_pairs[-1], cutoff, extrapolate=False,
+            )
+
+            if first == prev_first and last == prev_last:
+                break
+
+            if first != prev_first:
+                matching_pairs = [first, *matching_pairs]
+                prev_first = first
+            if last != prev_last:
+                matching_pairs = [*matching_pairs, last]
+                prev_last = last
+
+            debug.dump_matches(matching_pairs, "improving boundaries")
+
+        self.logger.info("Boundary refinement converged after %d iteration(s)", iteration)
+        self.logger.debug("Status after boundaries lookup:\n")
+        if self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(debug_routines.summarize_segments(
+                matching_pairs, self.lhs.fps, self.rhs.fps,
+                lhs_label=self.lhs.label, rhs_label=self.rhs.label,
+            ))
+            self.logger.debug(debug_routines.summarize_pairs(
+                phash4normalized, matching_pairs,
+                self.lhs.all_frames, self.rhs.all_frames, verbose=True,
+            ))
+
+        return matching_pairs
+
+    def _refine_uncropped_boundaries(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        debug: DebugRoutines,
+    ) -> list[tuple[int, int]]:
+        """Run a final boundary search on uncropped normalized frames."""
+        lhs_normalized_frames = self.lhs.normalized_frames
+        rhs_normalized_frames = self.rhs.normalized_frames
+        phash_uncropped = PhashCache()
+        uncropped_cutoff = frame_comparison.calculate_cutoff(phash_uncropped, matching_pairs, lhs_normalized_frames, rhs_normalized_frames)
+        final_first, final_last = self.look_for_boundaries(
+            lhs_normalized_frames, rhs_normalized_frames,
+            matching_pairs[0], matching_pairs[-1],
+            uncropped_cutoff,
+        )
+        if final_first != matching_pairs[0]:
+            matching_pairs = [final_first, *matching_pairs]
+            self.logger.debug("Uncropped search extended first boundary to %s", final_first)
+        if final_last != matching_pairs[-1]:
+            matching_pairs = [*matching_pairs, final_last]
+            self.logger.debug("Uncropped search extended last boundary to %s", final_last)
+
+        debug.dump_matches(matching_pairs, "after uncropped boundary search")
+        self.logger.debug("Final status:\n")
+        if self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(debug_routines.summarize_segments(
+                matching_pairs, self.lhs.fps, self.rhs.fps,
+                lhs_label=self.lhs.label, rhs_label=self.rhs.label,
+            ))
+            self.logger.debug(debug_routines.summarize_pairs(
+                phash_uncropped, matching_pairs,
+                self.lhs.all_frames, self.rhs.all_frames, verbose=True,
+            ))
+
         return matching_pairs
 
     @staticmethod
