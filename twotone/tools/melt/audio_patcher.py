@@ -36,7 +36,7 @@ class AudioStrategy(enum.Enum):
     """How a mismatched source audio track is fitted to the base video."""
 
     UNSCALED = "unscaled_normalized"
-    GLOBAL_TIME_SCALE = "constant_offset"
+    GLOBAL_TIME_SCALE = "global_time_scale"
     SUBSEGMENT = "subsegment"
 
 
