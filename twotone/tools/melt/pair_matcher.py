@@ -850,6 +850,134 @@ class PairMatcher:
                 f"Extracting discontinuity diagnostics: {side.label}",
             )
 
+    def _certify_global_linear(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        lhs_scene_changes: list[int],
+        rhs_scene_changes: list[int],
+        debug: DebugRoutines,
+    ) -> tuple[list[tuple[int, int]], GlobalLinearFit | None, tuple[Discontinuity, ...]]:
+        """Certify one global linear frame relation for the matched pairs.
+
+        A candidate relation is a constant offset (slope 1) or a fitted
+        near-identity drift.  Suspected content discontinuities first drop
+        pairs that break local linearity, then gather scene evidence inside the
+        suspicious regions.  Whenever that changes the pairs, the final pairs
+        must certify the relation again before it can determine boundary
+        prediction or the audio strategy.
+
+        Returns the final pairs, the certified fit (``None`` for the generic
+        path) and the timing discontinuities that make the relation unsafe for
+        audio execution.  Unresolved content discontinuities raise.
+        """
+        fit = self.detect_global_linear(
+            matching_pairs, self.lhs.all_frames, self.rhs.all_frames,
+        )
+        if fit is None:
+            return matching_pairs, None, ()
+
+        initial_frame_slope = fit.slope
+        report = self._classify_discontinuities(matching_pairs, initial_frame_slope)
+        if report.content:
+            cleaned_pairs = self._drop_pairs_breaking_local_linearity(
+                matching_pairs,
+                frame_slope=initial_frame_slope,
+            )
+            if cleaned_pairs != matching_pairs:
+                matching_pairs = cleaned_pairs
+                fit = self.detect_global_linear(
+                    matching_pairs, self.lhs.all_frames, self.rhs.all_frames,
+                )
+                report = self._classify_discontinuities(
+                    matching_pairs,
+                    fit.slope if fit is not None else initial_frame_slope,
+                )
+
+        if report.content:
+            matching_pairs, fit, report = self._refine_content_discontinuities(
+                matching_pairs,
+                lhs_scene_changes,
+                rhs_scene_changes,
+                frame_slope=fit.slope if fit is not None else initial_frame_slope,
+                debug=debug,
+            )
+        return matching_pairs, fit, tuple(report.timing)
+
+    def _refine_content_discontinuities(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        lhs_scene_changes: list[int],
+        rhs_scene_changes: list[int],
+        *,
+        frame_slope: float,
+        debug: DebugRoutines,
+    ) -> tuple[
+        list[tuple[int, int]],
+        GlobalLinearFit | None,
+        matching_analysis.GlobalLinearDiscontinuityReport,
+    ]:
+        """Resolve suspected content discontinuities with local scene evidence."""
+        refined_pairs = self._refine_global_linear_discontinuities(
+            matching_pairs,
+            list(lhs_scene_changes), list(rhs_scene_changes),
+            frame_slope=frame_slope,
+        )
+        refined_pairs = self._drop_pairs_breaking_local_linearity(
+            refined_pairs,
+            frame_slope=frame_slope,
+        )
+        refined_fit = self.detect_global_linear(
+            refined_pairs, self.lhs.all_frames, self.rhs.all_frames,
+        )
+        report = self._classify_discontinuities(
+            refined_pairs,
+            refined_fit.slope if refined_fit is not None else frame_slope,
+        )
+
+        if report.content:
+            report = report._replace(
+                content=self._filter_allowed_temporary_frame_offset_excursions(
+                    report.content
+                )
+            )
+        if report.content:
+            self._reject_content_discontinuities(refined_pairs, report.content, debug)
+
+        if not report.timing:
+            if refined_fit is not None:
+                self.logger.info(
+                    "Local scene refinement resolved all suspected content discontinuities."
+                )
+            else:
+                self.logger.info(
+                    "Local scene refinement found no confirmed content discontinuity, "
+                    "but the final observations do not support one global linear relation; "
+                    "using the generic mapping path."
+                )
+        return refined_pairs, refined_fit, report
+
+    def _reject_content_discontinuities(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        discontinuities: list[Discontinuity],
+        debug: DebugRoutines,
+    ) -> None:
+        """Dump diagnostics for unresolved content discontinuities and raise."""
+        debug.dump_matches(matching_pairs, "localized discontinuities")
+        groups = matching_analysis.group_content_discontinuities(discontinuities)
+        debug_path = debug.dump_content_discontinuities(
+            groups,
+            lhs_label=self.lhs.label,
+            rhs_label=self.rhs.label,
+            lhs_fps=self.lhs.fps,
+            rhs_fps=self.rhs.fps,
+            compensation_tolerance_frames=(
+                matching_analysis.MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
+            ),
+            prepare_frames=lambda: self._extract_discontinuity_frames(groups),
+        )
+        self._raise_for_unresolved_content_discontinuities(discontinuities, debug_path)
+
     def create_segments_mapping(self) -> SegmentsMappingResult:
 
         lhs_analysis = self._analysis_result_for(
@@ -886,104 +1014,11 @@ class PairMatcher:
         # understood without enabling --verbose.
         self._log_relation_diagnostics(matching_pairs)
 
-        # Detect a candidate global linear frame relation (constant offset =
-        # slope 1, or a fitted near-identity drift). If suspicious regions add
-        # observations, those final pairs must certify the relation again
-        # before it can determine boundary prediction or the audio strategy.
-        global_linear_fit = self.detect_global_linear(
-            matching_pairs, self.lhs.all_frames, self.rhs.all_frames,
-        )
-        timing_discontinuities: tuple[Discontinuity, ...] = ()
-
-        if global_linear_fit is not None:
-            initial_frame_slope = global_linear_fit.slope
-            discontinuity_report = self._classify_discontinuities(
-                matching_pairs, initial_frame_slope,
+        matching_pairs, global_linear_fit, timing_discontinuities = (
+            self._certify_global_linear(
+                matching_pairs, lhs_scene_changes, rhs_scene_changes, debug,
             )
-            if discontinuity_report.content:
-                cleaned_pairs = self._drop_pairs_breaking_local_linearity(
-                    matching_pairs,
-                    frame_slope=initial_frame_slope,
-                )
-                if cleaned_pairs != matching_pairs:
-                    matching_pairs = cleaned_pairs
-                    global_linear_fit = self.detect_global_linear(
-                        matching_pairs, self.lhs.all_frames, self.rhs.all_frames,
-                    )
-                    discontinuity_report = self._classify_discontinuities(
-                        matching_pairs,
-                        global_linear_fit.slope
-                        if global_linear_fit is not None
-                        else initial_frame_slope,
-                    )
-
-            if discontinuity_report.content:
-                refinement_slope = (
-                    global_linear_fit.slope
-                    if global_linear_fit is not None
-                    else initial_frame_slope
-                )
-                refined_pairs = self._refine_global_linear_discontinuities(
-                    matching_pairs,
-                    list(lhs_scene_changes), list(rhs_scene_changes),
-                    frame_slope=refinement_slope,
-                )
-                refined_pairs = self._drop_pairs_breaking_local_linearity(
-                    refined_pairs,
-                    frame_slope=refinement_slope,
-                )
-                refined_fit = self.detect_global_linear(
-                    refined_pairs, self.lhs.all_frames, self.rhs.all_frames,
-                )
-                discontinuity_report = self._classify_discontinuities(
-                    refined_pairs,
-                    refined_fit.slope if refined_fit is not None else refinement_slope,
-                )
-
-                if discontinuity_report.content:
-                    discontinuity_report = discontinuity_report._replace(
-                        content=self._filter_allowed_temporary_frame_offset_excursions(
-                            discontinuity_report.content
-                        )
-                    )
-
-                if discontinuity_report.content:
-                    debug.dump_matches(refined_pairs, "localized discontinuities")
-                    discontinuity_groups = matching_analysis.group_content_discontinuities(
-                        discontinuity_report.content
-                    )
-                    debug_path = debug.dump_content_discontinuities(
-                        discontinuity_groups,
-                        lhs_label=self.lhs.label,
-                        rhs_label=self.rhs.label,
-                        lhs_fps=self.lhs.fps,
-                        rhs_fps=self.rhs.fps,
-                        compensation_tolerance_frames=(
-                            matching_analysis.MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-                        ),
-                        prepare_frames=lambda: (
-                            self._extract_discontinuity_frames(
-                                discontinuity_groups
-                            )
-                        ),
-                    )
-                    self._raise_for_unresolved_content_discontinuities(
-                        discontinuity_report.content,
-                        debug_path,
-                    )
-                matching_pairs = refined_pairs
-                global_linear_fit = refined_fit
-                if global_linear_fit is not None and not discontinuity_report.timing:
-                    self.logger.info(
-                        "Local scene refinement resolved all suspected content discontinuities."
-                    )
-                elif global_linear_fit is None and not discontinuity_report.timing:
-                    self.logger.info(
-                        "Local scene refinement found no confirmed content discontinuity, "
-                        "but the final observations do not support one global linear relation; "
-                        "using the generic mapping path."
-                    )
-            timing_discontinuities = tuple(discontinuity_report.timing)
+        )
 
         if global_linear_fit is not None:
             relation = MappingRelation.GLOBAL_LINEAR
