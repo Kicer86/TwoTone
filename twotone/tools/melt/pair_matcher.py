@@ -709,6 +709,20 @@ class PairMatcher:
         return GlobalLinearFit(slope=slope, intercept=intercept,
                                is_constant_offset=is_constant_offset, time_scale=time_scale)
 
+    def _classify_discontinuities(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        frame_slope: float,
+    ) -> matching_analysis.GlobalLinearDiscontinuityReport:
+        return matching_analysis.classify_global_linear_discontinuities(
+            matching_pairs,
+            self.lhs.all_frames,
+            self.rhs.all_frames,
+            frame_slope=frame_slope,
+            lhs_fps=self.lhs.fps,
+            rhs_fps=self.rhs.fps,
+        )
+
     def _raise_for_unresolved_content_discontinuities(
         self,
         discontinuities: list[Discontinuity],
@@ -883,13 +897,8 @@ class PairMatcher:
 
         if global_linear_fit is not None:
             initial_frame_slope = global_linear_fit.slope
-            discontinuity_report = matching_analysis.classify_global_linear_discontinuities(
-                matching_pairs,
-                self.lhs.all_frames,
-                self.rhs.all_frames,
-                frame_slope=initial_frame_slope,
-                lhs_fps=self.lhs.fps,
-                rhs_fps=self.rhs.fps,
+            discontinuity_report = self._classify_discontinuities(
+                matching_pairs, initial_frame_slope,
             )
             if discontinuity_report.content:
                 cleaned_pairs = self._drop_pairs_breaking_local_linearity(
@@ -901,17 +910,11 @@ class PairMatcher:
                     global_linear_fit = self.detect_global_linear(
                         matching_pairs, self.lhs.all_frames, self.rhs.all_frames,
                     )
-                    discontinuity_report = matching_analysis.classify_global_linear_discontinuities(
+                    discontinuity_report = self._classify_discontinuities(
                         matching_pairs,
-                        self.lhs.all_frames,
-                        self.rhs.all_frames,
-                        frame_slope=(
-                            global_linear_fit.slope
-                            if global_linear_fit is not None
-                            else initial_frame_slope
-                        ),
-                        lhs_fps=self.lhs.fps,
-                        rhs_fps=self.rhs.fps,
+                        global_linear_fit.slope
+                        if global_linear_fit is not None
+                        else initial_frame_slope,
                     )
 
             if discontinuity_report.content:
@@ -932,17 +935,9 @@ class PairMatcher:
                 refined_fit = self.detect_global_linear(
                     refined_pairs, self.lhs.all_frames, self.rhs.all_frames,
                 )
-                discontinuity_report = matching_analysis.classify_global_linear_discontinuities(
+                discontinuity_report = self._classify_discontinuities(
                     refined_pairs,
-                    self.lhs.all_frames,
-                    self.rhs.all_frames,
-                    frame_slope=(
-                        refined_fit.slope
-                        if refined_fit is not None
-                        else refinement_slope
-                    ),
-                    lhs_fps=self.lhs.fps,
-                    rhs_fps=self.rhs.fps,
+                    refined_fit.slope if refined_fit is not None else refinement_slope,
                 )
 
                 if discontinuity_report.content:
