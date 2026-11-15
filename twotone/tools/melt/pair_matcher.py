@@ -971,9 +971,6 @@ class PairMatcher:
             rhs_label=self.rhs.label,
             lhs_fps=self.lhs.fps,
             rhs_fps=self.rhs.fps,
-            compensation_tolerance_frames=(
-                matching_analysis.MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-            ),
             prepare_frames=lambda: self._extract_discontinuity_frames(groups),
         )
         self._raise_for_unresolved_content_discontinuities(discontinuities, debug_path)

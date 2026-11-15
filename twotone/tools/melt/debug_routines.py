@@ -702,7 +702,6 @@ class DebugRoutines:
         lhs_fps: float,
         rhs_fps: float,
         prepare_frames: Callable[[], None],
-        compensation_tolerance_frames: float = 4.0,
     ) -> str | None:
         """Write final error details and complete frame spans for every region."""
         return self._dump_discontinuities(
@@ -713,7 +712,6 @@ class DebugRoutines:
             rhs_fps=rhs_fps,
             prepare_frames=prepare_frames,
             diagnostic_type="content",
-            compensation_tolerance_frames=compensation_tolerance_frames,
         )
 
     def dump_timing_discontinuities(
@@ -747,7 +745,6 @@ class DebugRoutines:
         rhs_fps: float,
         prepare_frames: Callable[[], None],
         diagnostic_type: Literal["content", "timing"],
-        compensation_tolerance_frames: float = 4.0,
     ) -> str | None:
         prepare_frames()
         target_dir = os.path.join(
@@ -783,7 +780,7 @@ class DebugRoutines:
             self.lhs_all_frames,
             self.rhs_all_frames,
             rhs_fps=rhs_fps,
-            compensation_tolerance_frames=compensation_tolerance_frames,
+            compensation_tolerance_frames=matching_analysis.MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES,
         )
         for region_index, description in enumerate(descriptions):
             lhs_from, lhs_to = description.lhs_range

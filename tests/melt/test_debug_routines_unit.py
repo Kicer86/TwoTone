@@ -170,6 +170,48 @@ class DebugRoutinesUnitTest(unittest.TestCase):
                 4,
             )
 
+    def test_dump_content_discontinuities_uses_error_compensation_tolerance(self):
+        # Steps of -1 and +4 frames leave a 3-frame residue: beyond the
+        # 2-frame tolerance the user-facing error applies, so the dump must
+        # not describe the region as compensating either.
+        with tempfile.TemporaryDirectory() as root:
+            source_dir = os.path.join(root, "source")
+            debug_dir = os.path.join(root, "debug")
+            os.makedirs(source_dir)
+            os.makedirs(debug_dir)
+
+            def frames(side: str, timestamps: list[int]) -> dict[int, dict]:
+                result = {}
+                for frame_id, timestamp in enumerate(timestamps):
+                    path = os.path.join(source_dir, f"{side}_{frame_id}.png")
+                    with open(path, "wb"):
+                        pass
+                    result[timestamp] = {"frame_id": frame_id, "path": path}
+                return result
+
+            lhs_frames = frames("lhs", [0, 40, 80, 120])
+            rhs_frames = frames("rhs", [0, 40, 80, 120, 160, 200, 240])
+            debug = DebugRoutines(debug_dir, lhs_frames, rhs_frames)
+            groups = [[
+                (40, 80, 40, 80, -40),
+                (80, 120, 80, 240, 160),
+            ]]
+
+            target_dir = debug.dump_content_discontinuities(
+                groups,
+                lhs_label="#2",
+                rhs_label="#1",
+                lhs_fps=25.0,
+                rhs_fps=25.0,
+                prepare_frames=lambda: None,
+            )
+
+            assert target_dir is not None
+            with open(os.path.join(target_dir, "details.txt"), encoding="utf-8") as details_file:
+                details = details_file.read()
+            self.assertIn("Region 0: unresolved frame-step error", details)
+            self.assertNotIn("Region 0: compensating", details)
+
     def test_debug_frame_uses_hardlink_when_symlinks_are_unavailable(self):
         with tempfile.TemporaryDirectory() as root:
             source = os.path.join(root, "source.png")
