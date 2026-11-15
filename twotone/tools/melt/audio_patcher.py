@@ -40,6 +40,19 @@ class AudioStrategy(enum.Enum):
     SUBSEGMENT = "subsegment"
 
 
+# Raw and scaled FLAC part labels for single-part strategies; SUBSEGMENT
+# labels each part by its index.
+_STRATEGY_PART_LABELS = {
+    AudioStrategy.GLOBAL_TIME_SCALE: ("source_trimmed", "source_scaled"),
+    AudioStrategy.UNSCALED: ("source_unscaled", "source_unscaled_normalized"),
+}
+# Result transformation names for single-part strategies.
+_STRATEGY_TRANSFORMATIONS = {
+    AudioStrategy.UNSCALED: "unscaled-normalization",
+    AudioStrategy.GLOBAL_TIME_SCALE: "global-time-scale",
+}
+
+
 @dataclass(frozen=True)
 class TimelineInterval:
     """A closed-open interval on a named millisecond timeline."""
@@ -214,12 +227,9 @@ class AudioPatcher:
 
         source_parts: list[_AudioPart] = []
         for index, segment in enumerate(segments):
-            raw_label = (
-                "source_trimmed"
-                if strategy == AudioStrategy.GLOBAL_TIME_SCALE
-                else "source_unscaled"
-                if strategy == AudioStrategy.UNSCALED
-                else f"source_segment_{index}"
+            raw_label, scaled_label = _STRATEGY_PART_LABELS.get(
+                strategy,
+                (f"source_segment_{index}", f"source_segment_{index}_scaled"),
             )
             raw_part = self._decode_audio_window(
                 request.source_audio,
@@ -230,13 +240,6 @@ class AudioPatcher:
                 label=f"{raw_label} audio",
             )
             source_per_base = segment.source.duration_ms / segment.target.duration_ms
-            scaled_label = (
-                "source_scaled"
-                if strategy == AudioStrategy.GLOBAL_TIME_SCALE
-                else "source_unscaled_normalized"
-                if strategy == AudioStrategy.UNSCALED
-                else f"source_segment_{index}_scaled"
-            )
             source_parts.append(self._scale_audio_part(
                 raw_part,
                 source_per_base,
@@ -318,12 +321,9 @@ class AudioPatcher:
             len(source_parts),
         )
 
-        transformation = (
-            "unscaled-normalization"
-            if strategy == AudioStrategy.UNSCALED
-            else "global-time-scale"
-            if strategy == AudioStrategy.GLOBAL_TIME_SCALE
-            else f"subsegment-atempo ({len(source_parts)} segments)"
+        transformation = _STRATEGY_TRANSFORMATIONS.get(
+            strategy,
+            f"subsegment-atempo ({len(source_parts)} segments)",
         )
         return AudioPatchResult(
             stream=AudioStreamRef(request.output_path, 0, 0, request.source_audio.language),
