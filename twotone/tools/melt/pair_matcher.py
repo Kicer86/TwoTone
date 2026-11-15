@@ -1789,7 +1789,7 @@ class PairMatcher:
 
         while True:
             iteration += 1
-            self.logger.debug(f"Boundary refinement iteration {iteration} (cropped frames)")
+            self.logger.debug("Boundary refinement iteration %d (cropped frames)", iteration)
             self.interruption.check_for_stop()
 
             lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self.frame_comparison.crop_both(
@@ -1798,8 +1798,16 @@ class PairMatcher:
 
             first_lhs, first_rhs = matching_pairs[0]
             last_lhs, last_rhs = matching_pairs[-1]
-            self.logger.debug(f"First pair: {lhs_normalized_cropped_frames[first_lhs]['path']} {rhs_normalized_cropped_frames[first_rhs]['path']}")
-            self.logger.debug(f"Last pair:  {lhs_normalized_cropped_frames[last_lhs]['path']} {rhs_normalized_cropped_frames[last_rhs]['path']}")
+            self.logger.debug(
+                "First pair: %s %s",
+                lhs_normalized_cropped_frames[first_lhs]["path"],
+                rhs_normalized_cropped_frames[first_rhs]["path"],
+            )
+            self.logger.debug(
+                "Last pair:  %s %s",
+                lhs_normalized_cropped_frames[last_lhs]["path"],
+                rhs_normalized_cropped_frames[last_rhs]["path"],
+            )
 
             phash4normalized = PhashCache()
             debug_routines.log_pairs_summary(
@@ -1827,7 +1835,7 @@ class PairMatcher:
 
             debug.dump_matches(matching_pairs, "improving boundaries")
 
-        self.logger.info(f"Boundary refinement converged after {iteration} iteration(s)")
+        self.logger.info("Boundary refinement converged after %d iteration(s)", iteration)
         self.logger.debug("Status after boundaries lookup:\n")
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(debug_routines.summarize_segments(
@@ -1858,10 +1866,10 @@ class PairMatcher:
         )
         if final_first != matching_pairs[0]:
             matching_pairs = [final_first, *matching_pairs]
-            self.logger.debug(f"Uncropped search extended first boundary to {final_first}")
+            self.logger.debug("Uncropped search extended first boundary to %s", final_first)
         if final_last != matching_pairs[-1]:
             matching_pairs = [*matching_pairs, final_last]
-            self.logger.debug(f"Uncropped search extended last boundary to {final_last}")
+            self.logger.debug("Uncropped search extended last boundary to %s", final_last)
 
         debug.dump_matches(matching_pairs, "after uncropped boundary search")
         self.logger.debug("Final status:\n")

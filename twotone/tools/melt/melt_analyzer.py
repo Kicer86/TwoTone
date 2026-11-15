@@ -140,12 +140,12 @@ class MeltAnalyzer:
             return key != "tid"
 
         file_id = ids[file]
-        self.logger.debug(f"File #{file_id} details:")
+        self.logger.debug("File #%s details:", file_id)
         tracks = details["tracks"]
         attachments = details["attachments"]
 
         for stream_type, streams in tracks.items():
-            self.logger.debug(f"  {stream_type}: {len(streams)} track(s)")
+            self.logger.debug("  %s: %d track(s)", stream_type, len(streams))
             for stream in streams:
                 lang_name = language_utils.language_name(stream.get("language"))
                 short = stream_short_details(stream_type, stream)
@@ -155,24 +155,23 @@ class MeltAnalyzer:
                     info += f" ({short})"
 
                 sid = stream.get("tid")
-                self.logger.debug(f"    #{sid}: {info}")
+                self.logger.debug("    #%s: %s", sid, info)
 
         for attachment in attachments:
             file_name = attachment["file_name"]
-            self.logger.debug(f"  attachment: {file_name}")
+            self.logger.debug("  attachment: %s", file_name)
 
         # more details for debug
         for stream_type, streams in tracks.items():
-            self.logger.debug(f"\t{stream_type}:")
+            self.logger.debug("\t%s:", stream_type)
 
             for stream in streams:
                 sid = stream.get("tid")
-                self.logger.debug(f"\t#{sid}:")
+                self.logger.debug("\t#%s:", sid)
                 for key, value in stream.items():
                     if show(key):
                         key_title = key + ":"
-                        self.logger.debug(
-                            f"\t\t{key_title:<16}{formatter(key, value)}")
+                        self.logger.debug("\t\t%-16s%s", key_title, formatter(key, value))
 
     def _print_streams_details(
         self,
@@ -198,7 +197,7 @@ class MeltAnalyzer:
                 extra = f" ({stream_details})" if stream_details else ""
 
                 file_id = ids[path]
-                self.logger.debug(f"{stype} track #{tid}: {language} from file #{file_id}{extra}")
+                self.logger.debug("%s track #%s: %s from file #%s%s", stype, tid, language, file_id, extra)
 
     def _print_attachments_details(self, ids: dict[str, int], all_attachments: Iterable[AttachmentRef]) -> None:
         for stream in all_attachments:
@@ -206,7 +205,7 @@ class MeltAnalyzer:
             tid = stream.mkvmerge_attachment_id
 
             file_id = ids[path]
-            self.logger.debug(f"Attachment ID #{tid} from file #{file_id}")
+            self.logger.debug("Attachment ID #%s from file #%s", tid, file_id)
 
     @staticmethod
     def _validate_supported_elements(raw_details: dict[str, dict[str, Any]], ids: dict[str, int]) -> None:

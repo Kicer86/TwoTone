@@ -358,7 +358,13 @@ class StreamsPicker:
             lang = override_languages[path]
             tid = stream.get("tid")
             if original_lang:
-                self.logger.info(f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file #{file_id}")
+                self.logger.info(
+                    "Overriding %s stream #%s language %s with %s for file #%s",
+                    stream_type, tid, original_lang, lang, file_id,
+                )
             else:
-                self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file #{file_id}")
+                self.logger.info(
+                    "Setting %s stream #%s language to %s for file #%s",
+                    stream_type, tid, lang, file_id,
+                )
         return lang
