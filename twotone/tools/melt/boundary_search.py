@@ -325,8 +325,12 @@ class BoundarySearch:
         """Move boundary pairs within *snap_frames* of a video edge onto it."""
         sides = (self.lhs, self.rhs)
         thresholds_ms = [snap_frames * 1000 / side.fps for side in sides]
+        # A video's last edge is its track length; the container duration
+        # can also span a longer audio track and is only a fallback.
         durations = [
-            video_utils.get_video_duration(side.path, logger=self.logger)
+            side.duration_ms
+            if side.duration_ms is not None
+            else video_utils.get_video_duration(side.path, logger=self.logger)
             for side in sides
         ]
         sorted_keys = [sorted(side.all_frames) for side in sides]

@@ -669,6 +669,24 @@ class PairMatcherUnitTest(unittest.TestCase):
         # RHS: 90ms > 80ms → does NOT snap
         self.assertEqual(result[0][1], 90)
 
+    def test_snap_uses_video_track_length_not_container_duration(self):
+        """The last pair snaps to the video's end, not a longer container end."""
+        search = self._make_boundary_search(lhs_fps=25.0, rhs_fps=25.0)
+        # The container also spans an audio track that outlasts the video.
+        search.lhs.duration_ms = 9960
+        search.rhs.duration_ms = 9960
+
+        search.lhs.all_frames = self._make_frames([0, 40, 80, 100, 5000, 9900, 9960])
+        search.rhs.all_frames = self._make_frames([0, 40, 80, 100, 5000, 9900, 9960])
+
+        matching_pairs = [(100, 100), (5000, 5000), (9900, 9900)]
+
+        with patch.object(video_utils, 'get_video_duration', return_value=10000):
+            result = search.snap_to_edges(matching_pairs, snap_frames=4)
+
+        self.assertEqual(result[0], (0, 0))
+        self.assertEqual(result[-1], (9960, 9960))
+
     # ---- detect_global_linear ----
     #
     # detect_global_linear only *detects* the frame relation (slope / intercept /
