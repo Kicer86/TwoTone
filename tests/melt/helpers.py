@@ -16,9 +16,11 @@ from common import (
     run_ffmpeg,
 )
 
+from twotone.tools.melt.audio_patcher import AudioPatcher
 from twotone.tools.melt.melt_analyzer import MeltAnalyzer
 from twotone.tools.melt.melt_performer import MeltPerformer
 from twotone.tools.melt.static_source import StaticSource
+from twotone.tools.melt.track_timeline import TrackTimeline
 from twotone.tools.tool import ToolRuntimeContext
 from twotone.tools.utils import generic_utils, media_analysis, video_utils
 from twotone.tools.utils.files_utils import Workspace
@@ -98,6 +100,39 @@ def _build_path_to_id_map(input: dict) -> dict[str, int]:
 
 
 _FAKE_PROCESS_OK = types.SimpleNamespace(returncode=0, stdout='', stderr='')
+
+
+class MeltComponentFactories:
+    """Build isolated melt components for unit tests on a ``TestCase``."""
+
+    def _make_performer(self) -> MeltPerformer:
+        output = Workspace.temporary()
+        workspace = Workspace.temporary()
+        self.addCleanup(output.close)
+        self.addCleanup(workspace.close)
+        interruption = generic_utils.InterruptibleProcess()
+        media_analysis_session = media_analysis.MediaAnalysisSession(
+            workspace,
+            interruption,
+            logging.getLogger("test.MeltPerformer.MediaAnalysis"),
+        )
+        context = ToolRuntimeContext(workspace, interruption, media_analysis_session)
+        return MeltPerformer(
+            logger=logging.getLogger("test.MeltPerformer"),
+            context=context,
+            output_dir=output.root,
+        )
+
+    def _make_audio_patcher(self) -> AudioPatcher:
+        workspace = Workspace.temporary()
+        self.addCleanup(workspace.close)
+        logger = logging.getLogger("test.AudioPatcher")
+        return AudioPatcher(logger, TrackTimeline(workspace, logger))
+
+    def _make_track_timeline(self) -> TrackTimeline:
+        workspace = Workspace.temporary()
+        self.addCleanup(workspace.close)
+        return TrackTimeline(workspace, logging.getLogger("test.TrackTimeline"))
 
 
 class MeltTestBase(TwoToneTestCase):

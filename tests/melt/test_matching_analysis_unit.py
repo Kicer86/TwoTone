@@ -80,3 +80,23 @@ class MatchingAnalysisUnitTest(unittest.TestCase):
         )
 
         self.assertFalse(result["full_coverage"])
+
+    def test_strict_mapping_collapses_ambiguous_boundary_matches(self):
+        mapping = [
+            (0, 510),
+            (500, 510),
+            (24041, 24532),
+            (63250, 64540),
+            (63250, 65050),
+        ]
+
+        result = matching_analysis.strict_mapping(mapping)
+
+        self.assertEqual(
+            result,
+            [
+                (500, 510),
+                (24041, 24532),
+                (63250, 64540),
+            ],
+        )
