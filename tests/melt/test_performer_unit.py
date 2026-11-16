@@ -339,34 +339,49 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
         with open(output_path, "rb") as output_file:
             self.assertEqual(output_file.read(), b"previous output")
 
-    def test_stream_sorting_puts_unknown_languages_last(self):
-        streams = [
-            _StreamEntry("audio", 1, "/a.mkv", None),
-            _StreamEntry("audio", 2, "/a.mkv", "eng"),
-            _StreamEntry("subtitle", 3, "/a.mkv", None),
-            _StreamEntry("subtitle", 4, "/a.mkv", "pol"),
-            _StreamEntry("subtitle", 5, "/a.mkv", "deu"),
-        ]
+    def test_process_duplicates_orders_tracks_by_type_then_language(self):
+        # Video, then audio, then subtitles; each type alphabetical by
+        # language with unknown languages last.
+        source_path = "/library/Movie.mkv"
 
-        sort_key = lambda stream: (stream.language is None, stream.language or "")
-        result = sorted(streams, key=sort_key)
+        args = self._process_single_source_plan(
+            source_path,
+            {"video": [(source_path, 0, 0, None)]},
+            [
+                _StreamEntry("subtitle", 5, source_path, "deu"),
+                _StreamEntry("audio", 3, source_path, "pol"),
+                _StreamEntry("subtitle", 4, source_path, None),
+                _StreamEntry("video", 0, source_path, None),
+                _StreamEntry("subtitle", 6, source_path, "eng"),
+                _StreamEntry("audio", 2, source_path, "eng"),
+                _StreamEntry("audio", 1, source_path, None),
+            ],
+        )
 
-        languages = [s.language for s in result]
-        self.assertEqual(languages, ["deu", "eng", "pol", None, None])
+        self.assertEqual(
+            args[args.index("--track-order") + 1],
+            "0:0,0:2,0:3,0:1,0:5,0:6,0:4",
+        )
 
-    def test_stream_sorting_alphabetical_when_all_known(self):
-        streams = [
-            _StreamEntry("subtitle", 1, "/a.mkv", "pol"),
-            _StreamEntry("subtitle", 2, "/a.mkv", "eng"),
-            _StreamEntry("subtitle", 3, "/a.mkv", "deu"),
-            _StreamEntry("audio", 4, "/a.mkv", "jpn"),
-        ]
+    def test_process_duplicates_keeps_unknown_language_tracks_in_input_order(self):
+        source_path = "/library/Movie.mkv"
 
-        sort_key = lambda stream: (stream.language is None, stream.language or "")
-        result = sorted(streams, key=sort_key)
+        args = self._process_single_source_plan(
+            source_path,
+            {"video": [(source_path, 0, 0, None)]},
+            [
+                _StreamEntry("video", 0, source_path, None),
+                _StreamEntry("subtitle", 9, source_path, None),
+                _StreamEntry("audio", 2, source_path, None),
+                _StreamEntry("subtitle", 7, source_path, None),
+                _StreamEntry("audio", 1, source_path, "jpn"),
+            ],
+        )
 
-        languages = [s.language for s in result]
-        self.assertEqual(languages, ["deu", "eng", "jpn", "pol"])
+        self.assertEqual(
+            args[args.index("--track-order") + 1],
+            "0:0,0:1,0:2,0:9,0:7",
+        )
 
     def test_build_mkvmerge_args_track_order_respects_unknown_last(self):
         performer = self._make_performer()

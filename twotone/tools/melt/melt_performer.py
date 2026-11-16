@@ -50,6 +50,10 @@ from .subtitle_alignment import SubtitleAlignment
 from .track_timeline import TrackTimeline, mkvmerge_preserves_start
 
 
+# Position of each track type in the output file's track order.
+_OUTPUT_TRACK_TYPE_ORDER: dict[StreamType, int] = {"video": 0, "audio": 1, "subtitle": 2}
+
+
 class _PairMatchResult(NamedTuple):
     """A cached PairMatcher outcome for one (base, source) video pair."""
     matching: SegmentsMappingResult
@@ -187,10 +191,15 @@ class MeltPerformer:
                         alignment_paths=group.alignment_paths,
                     )
 
-                    # Sort streams by language alphabetically, unknown languages last
+                    # Video, audio, then subtitles; within each type
+                    # alphabetically by language, unknown languages last.
                     streams_list_sorted = sorted(
                         prepared_streams.entries,
-                        key=lambda stream: (stream.language is None, stream.language or ""),
+                        key=lambda stream: (
+                            _OUTPUT_TRACK_TYPE_ORDER[stream.stream_type],
+                            stream.language is None,
+                            stream.language or "",
+                        ),
                     )
 
                     # Decide which track should be default
