@@ -128,6 +128,28 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             5.0,
         )
 
+    def test_pair_match_takes_source_duration_from_plan_track_length(self):
+        # The coverage report compares the two video tracks, so the source
+        # length comes from the same plan data as the base length, not from
+        # a container that also spans a longer audio track.
+        performer = self._make_performer()
+        base_path = "/media/base.mkv"
+        source_path = "/media/source.mkv"
+        group = _GroupContext(
+            file_ids={base_path: 1, source_path: 2},
+            base_video=VideoStreamRef(base_path, 0, 0, None),
+            files_details={
+                source_path: {"tracks": {"video": [{"tid": 0, "length": 5960}]}},
+            },
+        )
+
+        with patch("twotone.tools.melt.melt_performer.PairMatcher") as matcher_type, \
+             patch.object(video_utils, "get_video_duration", return_value=6000):
+            matcher_type.return_value.create_segments_mapping.return_value = Mock()
+            result = performer._pair_match(group, "/tmp/matching", source_path)
+
+        self.assertEqual(result.source_duration, 5960)
+
     def test_process_duplicates_rejects_output_aliasing_input(self):
         performer = self._make_performer()
         title_dir = os.path.join(performer.output_dir, "Title")

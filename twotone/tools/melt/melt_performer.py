@@ -53,7 +53,7 @@ from .track_timeline import TrackTimeline, mkvmerge_preserves_start
 class _PairMatchResult(NamedTuple):
     """A cached PairMatcher outcome for one (base, source) video pair."""
     matching: SegmentsMappingResult
-    source_duration: int
+    source_duration: int | None
 
 
 class _StreamEntry(NamedTuple):
@@ -454,7 +454,11 @@ class MeltPerformer:
 
         if match_result is None:
             self.logger.info("Matching video content: #%d - #%d", lhs_id, rhs_id)
-            duration = video_utils.get_video_duration(source_path)
+            duration = self._video_track_duration(
+                source_path,
+                group.files_details,
+                logger=self.logger,
+            )
             matcher = PairMatcher(
                 self.interruption, mwd, video_path_base, source_path,
                 self.logger.getChild("PairMatcher"),
@@ -492,6 +496,7 @@ class MeltPerformer:
         matching = match_result.matching
 
         if first_match and matching.mapping:
+            assert match_result.source_duration is not None
             debug_routines.log_coverage(
                 self.logger,
                 matching.mapping,
