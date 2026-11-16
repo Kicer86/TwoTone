@@ -100,3 +100,20 @@ class MatchingAnalysisUnitTest(unittest.TestCase):
                 (63250, 64540),
             ],
         )
+
+    def test_temporary_frame_offset_excursion_requires_restored_outer_offset(self):
+        lhs_frames = {0: {"frame_id": 0}, 1000: {"frame_id": 25}, 2000: {"frame_id": 50}}
+        rhs_frames = {0: {"frame_id": 1}, 800: {"frame_id": 21}, 2000: {"frame_id": 51}}
+        group = [(0, 1000, 0, 800, 200), (1000, 2000, 800, 2000, -200)]
+
+        self.assertEqual(
+            matching_analysis.temporary_frame_offset_excursion(group, lhs_frames, rhs_frames),
+            (5, -1),
+        )
+        self.assertIsNone(
+            matching_analysis.temporary_frame_offset_excursion(group[:1], lhs_frames, rhs_frames),
+        )
+        rhs_frames[2000] = {"frame_id": 53}
+        self.assertIsNone(
+            matching_analysis.temporary_frame_offset_excursion(group, lhs_frames, rhs_frames),
+        )

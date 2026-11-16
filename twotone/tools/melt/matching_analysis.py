@@ -623,6 +623,38 @@ def group_content_discontinuities(
     return groups
 
 
+def temporary_frame_offset_excursion(
+    group: DiscontinuityGroup,
+    lhs_all_frames: FramesInfo,
+    rhs_all_frames: FramesInfo,
+) -> tuple[int, int] | None:
+    """Return the temporary shift and outer offset for one restored jump.
+
+    A two-step group whose outer anchors share one frame offset describes a
+    local shift that returns at the next anchor.  Any other group is not a
+    temporary excursion.
+    """
+    if len(group) != 2:
+        return None
+
+    lhs_from, lhs_middle, rhs_from, rhs_middle, _ = group[0]
+    _, lhs_to, _, rhs_to, _ = group[1]
+    lhs_frame_from = int(lhs_all_frames[lhs_from]["frame_id"])
+    lhs_frame_middle = int(lhs_all_frames[lhs_middle]["frame_id"])
+    lhs_frame_to = int(lhs_all_frames[lhs_to]["frame_id"])
+    rhs_frame_from = int(rhs_all_frames[rhs_from]["frame_id"])
+    rhs_frame_middle = int(rhs_all_frames[rhs_middle]["frame_id"])
+    rhs_frame_to = int(rhs_all_frames[rhs_to]["frame_id"])
+    outer_offset = lhs_frame_from - rhs_frame_from
+    if lhs_frame_to - rhs_frame_to != outer_offset:
+        return None
+
+    temporary_offset = abs(
+        (lhs_frame_middle - rhs_frame_middle) - outer_offset
+    )
+    return temporary_offset, outer_offset
+
+
 def strict_mapping(mapping: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """Collapse duplicate or non-monotonic matches before retiming tracks."""
     if len(mapping) < 2:

@@ -1494,7 +1494,9 @@ class PairMatcher:
         """Allow one temporary offset excursion that returns at the next anchor."""
         remaining: list[Discontinuity] = []
         for group in matching_analysis.group_content_discontinuities(discontinuities):
-            excursion = self._temporary_frame_offset_excursion(group)
+            excursion = matching_analysis.temporary_frame_offset_excursion(
+                group, self.lhs.all_frames, self.rhs.all_frames,
+            )
             allowed = (
                 excursion is not None
                 and matching_analysis.MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
@@ -1524,31 +1526,6 @@ class PairMatcher:
                 remaining.extend(group)
         return remaining
 
-    def _temporary_frame_offset_excursion(
-        self,
-        group: list[Discontinuity],
-    ) -> tuple[int, int] | None:
-        """Return the temporary shift and outer offset for one restored jump."""
-        if len(group) != 2:
-            return None
-
-        lhs_from, lhs_middle, rhs_from, rhs_middle, _ = group[0]
-        _, lhs_to, _, rhs_to, _ = group[1]
-        lhs_frame_from = int(self.lhs.all_frames[lhs_from]["frame_id"])
-        lhs_frame_middle = int(self.lhs.all_frames[lhs_middle]["frame_id"])
-        lhs_frame_to = int(self.lhs.all_frames[lhs_to]["frame_id"])
-        rhs_frame_from = int(self.rhs.all_frames[rhs_from]["frame_id"])
-        rhs_frame_middle = int(self.rhs.all_frames[rhs_middle]["frame_id"])
-        rhs_frame_to = int(self.rhs.all_frames[rhs_to]["frame_id"])
-        outer_offset = lhs_frame_from - rhs_frame_from
-        if lhs_frame_to - rhs_frame_to != outer_offset:
-            return None
-
-        temporary_offset = abs(
-            (lhs_frame_middle - rhs_frame_middle) - outer_offset
-        )
-        return temporary_offset, outer_offset
-
     def _reject_content_discontinuities(
         self,
         matching_pairs: list[tuple[int, int]],
@@ -1576,7 +1553,9 @@ class PairMatcher:
         groups = matching_analysis.group_content_discontinuities(discontinuities)
         suggested_temporary_offsets: list[int] = []
         for group in groups:
-            excursion = self._temporary_frame_offset_excursion(group)
+            excursion = matching_analysis.temporary_frame_offset_excursion(
+                group, self.lhs.all_frames, self.rhs.all_frames,
+            )
             if (
                 excursion is not None
                 and excursion[0] > self.max_temporary_frame_offset
