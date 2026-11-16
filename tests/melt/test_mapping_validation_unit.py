@@ -225,6 +225,34 @@ class MappingValidationTest(unittest.TestCase):
                 timing_discontinuities=(TIMING_STEP,),
             ))
 
+    def test_accepts_a_plausible_speed_change(self):
+        # 20 fps frames shown at 25 fps: a real 0.8x speed change.
+        self._validate(_matching(
+            mapping=[(0, 0), (60000, 48000)],
+            relation=MappingRelation.GLOBAL_LINEAR,
+        ))
+
+    def test_refuses_an_implausible_speed_change_for_any_relation(self):
+        for relation, mapping in (
+            (MappingRelation.GLOBAL_LINEAR, [(0, 0), (30000, 12000), (60000, 24000)]),
+            (MappingRelation.GENERIC, [(0, 0), (30000, 45000), (60000, 90000)]),
+        ):
+            with self.subTest(relation=relation), \
+                 self.assertRaisesRegex(
+                     RuntimeError,
+                     "Cannot align audio: .* #2 plays at (0.400|1.500)x the speed of #1",
+                 ):
+                self._validate(_matching(mapping=mapping, relation=relation))
+
+    def test_implausible_speed_is_reported_before_content_gaps(self):
+        with self.assertRaisesRegex(RuntimeError, "most likely matched incorrectly"):
+            self._validate(_matching(
+                mapping=[(0, 0), (60000, 24000)],
+                relation=MappingRelation.GLOBAL_LINEAR,
+                content_discontinuities=(GAP,),
+                timing_discontinuities=(TIMING_STEP,),
+            ))
+
     def test_refuses_empty_mapping(self):
         with self.assertRaisesRegex(RuntimeError, "no shared video timeline mapping"):
             self._validate(_matching(mapping=[]))

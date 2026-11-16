@@ -17,6 +17,9 @@ from .pair_matcher import MappingRelation, SegmentsMappingResult
 # Smallest accepted ``--max-temporary-frame-offset``: a temporary shift of at
 # most this many frames is already within the global-linear step tolerance.
 DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = 2.0
+# Two transfers of one film never differ in playback speed by more than this
+# fraction; a mapping implying more is an implausible match.
+MAX_PLAYBACK_SPEED_DELTA = 0.30
 
 
 def validate_mapping(
@@ -36,6 +39,14 @@ def validate_mapping(
     frames; every other content discontinuity is refused.
     """
     lhs_label, rhs_label = f"#{lhs_id}", f"#{rhs_id}"
+    speed_ratio = playback_speed_ratio(matching.mapping)
+    if speed_ratio is not None and abs(speed_ratio - 1.0) > MAX_PLAYBACK_SPEED_DELTA:
+        raise RuntimeError(
+            f"Cannot align {consumer}: the matched video content of {rhs_label} plays "
+            f"at {speed_ratio:.3f}x the speed of {lhs_label}, beyond the plausible "
+            f"±{MAX_PLAYBACK_SPEED_DELTA:.0%}; the videos were most likely matched incorrectly."
+        )
+
     unresolved = _without_accepted_temporary_offsets(
         matching,
         max_temporary_frame_offset,
@@ -88,6 +99,21 @@ def validate_mapping(
         raise RuntimeError(
             f"Cannot align {consumer}: no shared video timeline mapping was found."
         )
+
+
+def playback_speed_ratio(mapping: list[tuple[int, int]]) -> float | None:
+    """Source-over-base duration of the matched span, or ``None`` if undefined.
+
+    This is the speed change the audio would have to be scaled by, measured
+    from matched timestamps rather than declared frame rates.
+    """
+    if len(mapping) < 2:
+        return None
+    lhs_timestamps, rhs_timestamps = zip(*mapping)
+    lhs_span = max(lhs_timestamps) - min(lhs_timestamps)
+    if lhs_span <= 0:
+        return None
+    return (max(rhs_timestamps) - min(rhs_timestamps)) / lhs_span
 
 
 def _without_accepted_temporary_offsets(

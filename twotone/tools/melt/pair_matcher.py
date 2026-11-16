@@ -42,7 +42,7 @@ class GlobalLinearFit(NamedTuple):
 
     ``is_constant_offset`` is True for the ``slope == 1`` special case.
     ``time_scale = slope*lhs_fps/rhs_fps`` is the *nominal-fps* stretch factor,
-    used only for plausibility checks and logging.  It must NOT be used to
+    used only for logging.  It must NOT be used to
     scale audio: when the declared fps differs from the real timestamp ratio it
     drifts audibly (~1.2 s across a film).  Audio scaling uses the matched-span
     timestamp ratio instead; ``AudioPatcher`` applies that global time scale.
@@ -85,8 +85,6 @@ class PairMatcher:
     _MAX_MEDIAN_RESIDUAL_FRAMES = 1.5
     _MAX_P95_RESIDUAL_FRAMES = 4.0
     _MAX_OUTLIER_RATIO = 0.25
-    # A larger implied audio time scale is an implausible match.
-    _MAX_AUDIO_TIME_SCALE_DELTA = 0.30
     _MIN_GLOBAL_LINEAR_SPAN_FRAMES = 250
     _SCENE_THRESHOLD = 0.30
 
@@ -1184,9 +1182,9 @@ class PairMatcher:
         and a time-scaled drift share the same handling.
 
         ``time_scale = slope*lhs_fps/rhs_fps`` may differ from 1 (e.g. a 25 fps
-        PAL speedup vs 24 fps); that only means the audio must be stretched.  It
-        is rejected when larger than ``_MAX_AUDIO_TIME_SCALE_DELTA`` (an
-        implausible match).
+        PAL speedup vs 24 fps); that only means the audio must be stretched.
+        Whether the implied speed change is plausible is decided by
+        ``mapping_validation``, not here.
 
         This method only *detects* the relation and returns the fit; it does
         **not** decide the first/last common pair.  The boundaries are found by
@@ -1241,14 +1239,6 @@ class PairMatcher:
         slope, intercept = fit
 
         time_scale = slope * self.lhs.fps / self.rhs.fps
-        if abs(time_scale - 1.0) > self._MAX_AUDIO_TIME_SCALE_DELTA:
-            self.logger.debug(
-                "Global-linear check: slope=%.6f implies audio time scale "
-                "%.5f, beyond the realistic %.3f — skipping",
-                slope, time_scale, self._MAX_AUDIO_TIME_SCALE_DELTA,
-            )
-            return None
-
         debug_routines.log_global_linear_relation(
             self.logger,
             lhs_label=self.lhs.label,

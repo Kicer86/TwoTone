@@ -1036,6 +1036,25 @@ class PairMatcherUnitTest(unittest.TestCase):
         # Same frames played at 20 vs 25 fps → a real 0.8x speed change.
         self.assertAlmostEqual(fit.time_scale, 20.0 / 25.0, places=6)
 
+    def test_constant_offset_reports_implausible_speed_change(self):
+        """The matcher reports what the frames show; plausibility is judged later."""
+        pm = self._make_pair_matcher(lhs_fps=10.0, rhs_fps=25.0)
+        matching_pairs = [
+            (5000, 1880),    # LHS frame 50, RHS frame 47
+            (10000, 3880),   # LHS frame 100, RHS frame 97
+            (15000, 5880),   # LHS frame 150, RHS frame 147
+        ]
+
+        lhs_frames = self._make_frames(list(range(0, 20100, 100)), prefix="lhs")
+        rhs_frames = self._make_frames(list(range(0, 8040, 40)), prefix="rhs")
+
+        fit = pm.detect_global_linear(matching_pairs, lhs_frames, rhs_frames)
+
+        self.assertIsNotNone(fit)
+        self.assertTrue(fit.is_constant_offset)
+        self.assertEqual(fit.slope, 1.0)
+        self.assertAlmostEqual(fit.time_scale, 10.0 / 25.0, places=6)
+
     def test_create_segments_mapping_verified_extrapolation_for_global_linear(self):
         """Global-linear uses the fit's verified extrapolation, not the refine walk."""
         pm = self._make_pair_matcher(lhs_fps=25.0, rhs_fps=25.0)
