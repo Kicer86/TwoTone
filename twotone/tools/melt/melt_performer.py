@@ -15,7 +15,7 @@ from ..utils import (
     process_utils,
     video_utils,
 )
-from . import audio_strategy, debug_routines, matching_analysis
+from . import audio_strategy, debug_routines, mapping_validation
 from .audio_patcher import (
     AudioPatcher,
     AudioPatchRequest,
@@ -42,7 +42,6 @@ from .melt_common import (
 from .melt_plan import MeltTitlePlan
 from .pair_matcher import (
     DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
-    MappingRelation,
     PairMatcher,
     SegmentsMappingResult,
 )
@@ -517,47 +516,13 @@ class MeltPerformer:
                 file_ids[source_path],
             )
 
-        discontinuities = matching.content_discontinuities
-        if matching.relation is MappingRelation.GENERIC:
-            discontinuities = discontinuities or tuple(
-                matching_analysis.find_content_discontinuities(matching.mapping)
-            )
-
-        if matching.timing_discontinuities:
-            debug_routines.log_timing_discontinuities(
-                self.logger,
-                matching.timing_discontinuities,
-                consumer=consumer,
-                lhs_id=file_ids[base_path],
-                rhs_id=file_ids[source_path],
-                debug_path=matching.timing_discontinuity_debug_path,
-            )
-            raise RuntimeError(
-                f"Unsupported {consumer} timeline discontinuity: the matched PTS mapping "
-                "has a PTS step despite continuous decoded video"
-            )
-
-        if discontinuities:
-            debug_routines.log_content_discontinuities(
-                self.logger,
-                discontinuities,
-                lhs_id=file_ids[base_path],
-                rhs_id=file_ids[source_path],
-                rhs_fps=matching.rhs_fps,
-                include_frame_deficit=(
-                    matching.relation is MappingRelation.GLOBAL_LINEAR
-                ),
-            )
-            raise RuntimeError(
-                "Unresolved suspected content discontinuities: insufficient evidence to rule out "
-                "holes in the scene sequence (e.g. commercial-break cuts) — patching "
-                f"{consumer} across such discontinuities is not supported yet"
-            )
-
-        if not matching.mapping:
-            raise RuntimeError(
-                f"Cannot align {consumer}: no shared video timeline mapping was found."
-            )
+        mapping_validation.validate_mapping(
+            matching,
+            consumer=consumer,
+            lhs_id=file_ids[base_path],
+            rhs_id=file_ids[source_path],
+            logger=self.logger,
+        )
         return match_result
 
     def _patch_mismatched_audio(

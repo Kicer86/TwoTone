@@ -69,6 +69,10 @@ class SegmentsMappingResult(NamedTuple):
     # reclassifying the mapping.
     content_discontinuities: tuple[Discontinuity, ...] = ()
     timing_discontinuity_debug_path: str | None = None
+    # Gaps the time-domain detector finds in a GENERIC mapping; its
+    # ``max(2000 ms, 2%)`` tolerance is far coarser than the frame-based
+    # global-linear classification.
+    generic_content_discontinuities: tuple[Discontinuity, ...] = ()
 
 
 class PairMatcher:
@@ -398,6 +402,7 @@ class PairMatcher:
             else MappingRelation.GENERIC
         )
         timing_discontinuity_debug_path: str | None = None
+        generic_content_discontinuities: tuple[Discontinuity, ...] = ()
         if timing_discontinuities:
             timing_discontinuity_debug_path = self._report_timing_discontinuities(
                 matching_pairs, timing_discontinuities, relation, debug,
@@ -411,6 +416,10 @@ class PairMatcher:
                 debug,
             )
             self.logger.info("Mapping relation chosen: %s", relation.value)
+            if relation is MappingRelation.GENERIC:
+                generic_content_discontinuities = tuple(
+                    matching_analysis.find_content_discontinuities(matching_pairs)
+                )
 
         return SegmentsMappingResult(
             mapping=matching_pairs,
@@ -422,6 +431,7 @@ class PairMatcher:
             frame_slope=global_linear_fit.slope if global_linear_fit is not None else None,
             timing_discontinuities=timing_discontinuities,
             timing_discontinuity_debug_path=timing_discontinuity_debug_path,
+            generic_content_discontinuities=generic_content_discontinuities,
         )
 
     def _log_relation_diagnostics(self, matching_pairs: list[tuple[int, int]]) -> None:

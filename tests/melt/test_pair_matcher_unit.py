@@ -1270,6 +1270,31 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertIsNone(result.frame_slope)
         refine_boundaries.assert_called_once()
 
+    def test_create_segments_mapping_reports_generic_content_gaps(self):
+        # 20 s of the source are missing between the second and third pair.
+        pairs = [(0, 0), (100000, 100000), (200000, 180000), (300000, 280000)]
+        pm = self._make_pair_matcher()
+
+        with patch.object(pm, '_analysis_result_for'), \
+             patch.object(pm, '_detect_scenes', return_value=([], [])), \
+             patch.object(pm, '_probe_frames'), \
+             patch.object(pm, '_extract_scene_frames', return_value=([], [])), \
+             patch.object(pm, '_normalize_extracted', return_value=({}, {})), \
+             patch.object(pm, '_match_key_frames', return_value=pairs), \
+             patch.object(pm, '_log_relation_diagnostics'), \
+             patch.object(pm, 'detect_global_linear', return_value=None), \
+             patch.object(pm, '_extract_and_refine_boundaries', return_value=pairs), \
+             patch.object(pm.boundary_search, 'snap_to_edges', return_value=pairs), \
+             patch('twotone.tools.melt.pair_matcher.DebugRoutines'):
+            result = pm.create_segments_mapping()
+
+        self.assertEqual(result.relation, MappingRelation.GENERIC)
+        self.assertEqual(
+            [gap[:4] for gap in result.generic_content_discontinuities],
+            [(100000, 200000, 100000, 180000)],
+        )
+        self.assertEqual(result.content_discontinuities, ())
+
     def test_create_segments_mapping_keeps_unresolved_sparse_steps(self):
         seeds = {
             "sparse_cut": [(i * 100000, i * 100000 - (600 if i >= 2 else 0))
