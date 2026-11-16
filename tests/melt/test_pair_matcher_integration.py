@@ -12,9 +12,21 @@ from parameterized import parameterized
 from common import add_to_test_dir
 
 from melt.helpers import MeltTestBase
-from twotone.tools.melt import matching_analysis
+from twotone.tools.melt import mapping_validation, matching_analysis
 from twotone.tools.melt.pair_matcher import MappingRelation, PairMatcher
 from twotone.tools.utils import files_utils, generic_utils, media_analysis, video_utils
+
+
+def _validate(result) -> None:
+    """Apply the default melt acceptance check to a matcher result."""
+    mapping_validation.validate_mapping(
+        result,
+        consumer="audio",
+        lhs_id=1,
+        rhs_id=2,
+        max_temporary_frame_offset=mapping_validation.DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
+        logger=logging.getLogger("test.mapping_validation"),
+    )
 
 
 class DiscontinuityContentTest(unittest.TestCase):
@@ -81,8 +93,10 @@ class DiscontinuityContentTest(unittest.TestCase):
                 self.assertEqual(result.mapping[0], (0, 0))
                 self.assertEqual(result.mapping[-1], (12000, 12000))
             else:
+                result = pm.create_segments_mapping()
+                self.assertTrue(result.content_discontinuities)
                 with self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
-                    pm.create_segments_mapping()
+                    _validate(result)
 
     @parameterized.expand(["false_match", "opposite_edits", "sparse_cut", "ambiguous_black"])
     def test_sparse_step_requires_content_evidence(self, case):
@@ -128,8 +142,10 @@ class DiscontinuityContentTest(unittest.TestCase):
                 self.assertEqual(result.mapping[0], (0, 0))
                 self.assertEqual(result.mapping[-1], (12000, 12000))
             else:
+                result = pm.create_segments_mapping()
+                self.assertTrue(result.content_discontinuities)
                 with self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
-                    pm.create_segments_mapping()
+                    _validate(result)
 
     @parameterized.expand([
         (edge, reverse, content)
@@ -172,9 +188,11 @@ class DiscontinuityContentTest(unittest.TestCase):
 
         with patch.object(pm, '_detect_scenes', return_value=([l for l, _ in pairs], [r for _, r in pairs])), \
              patch.object(pm, '_make_pairs', side_effect=seed_initial_pairs) as matching, \
-             patch('twotone.tools.melt.pair_matcher.DebugRoutines'), \
-             self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
-            pm.create_segments_mapping()
+             patch('twotone.tools.melt.pair_matcher.DebugRoutines'):
+            result = pm.create_segments_mapping()
+        self.assertTrue(result.content_discontinuities)
+        with self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
+            _validate(result)
 
     def _make_content_matcher(self, frames, rhs_frames):
         workspace = files_utils.Workspace.temporary()

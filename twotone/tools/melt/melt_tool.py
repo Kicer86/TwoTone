@@ -15,7 +15,7 @@ from .melt_cache import MeltCache
 from .melt_common import _split_path_fix
 from .melt_performer import MeltPerformer
 from .melt_plan import MeltPlan
-from .pair_matcher import DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
+from .mapping_validation import DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
 from .static_source import StaticSource
 
 

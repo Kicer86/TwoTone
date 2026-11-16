@@ -8,7 +8,7 @@ from common import run_ffmpeg
 from parameterized import parameterized
 
 from melt.helpers import MeltComponentFactories, _FAKE_PROCESS_OK
-from twotone.tools.melt import audio_strategy, debug_routines, matching_analysis
+from twotone.tools.melt import audio_strategy, debug_routines, mapping_validation, matching_analysis
 from twotone.tools.melt.static_source import StaticSource
 from twotone.tools.melt.streams_picker import StreamsPicker
 from twotone.tools.melt.melt_common import (
@@ -123,10 +123,51 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             matcher_type.call_args.kwargs["media_analysis_session"],
             media_analysis_session,
         )
-        self.assertEqual(
-            matcher_type.call_args.kwargs["max_temporary_frame_offset"],
-            5.0,
+        # The tolerance is a validation policy; matching never sees it.
+        self.assertNotIn("max_temporary_frame_offset", matcher_type.call_args.kwargs)
+
+    def test_validated_pair_match_applies_the_temporary_offset_tolerance(self):
+        performer = self._make_performer()
+        performer.max_temporary_frame_offset = 5.0
+        base_path = "/media/base.mkv"
+        source_path = "/media/source.mkv"
+        group = _GroupContext(
+            file_ids={base_path: 1, source_path: 2},
+            base_video=VideoStreamRef(base_path, 0, 0, None),
+            base_duration_ms=6000,
         )
+        matching = SegmentsMappingResult(
+            mapping=[(0, 0), (6000, 6000)],
+            lhs_all_frames={},
+            rhs_all_frames={},
+            relation=MappingRelation.GLOBAL_LINEAR,
+            lhs_fps=25.0,
+            rhs_fps=25.0,
+        )
+        group.pair_matches[source_path] = _PairMatchResult(matching, 6000)
+
+        with patch.object(mapping_validation, "validate_mapping") as validate:
+            performer._validated_pair_match(
+                group, "/tmp/matching", source_path, consumer="subtitle",
+            )
+
+        validate.assert_called_once_with(
+            matching,
+            consumer="subtitle",
+            lhs_id=1,
+            rhs_id=2,
+            max_temporary_frame_offset=5.0,
+            logger=performer.logger,
+        )
+
+    def test_rejects_temporary_offset_tolerance_below_default(self):
+        with self.assertRaisesRegex(ValueError, "at least 2"):
+            MeltPerformer(
+                logger=logging.getLogger("test.MeltPerformer"),
+                context=Mock(),
+                output_dir="/tmp/out",
+                max_temporary_frame_offset=1.0,
+            )
 
     def test_pair_match_takes_source_duration_from_plan_track_length(self):
         # The coverage report compares the two video tracks, so the source
@@ -1065,7 +1106,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
         )
 
         with patch.object(debug_routines, "log_coverage"), \
-             self.assertRaisesRegex(RuntimeError, "holes in the scene sequence"):
+             self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
             performer._patch_mismatched_audio(
                 group, source_video, source_audio,
             )
@@ -1101,7 +1142,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
         with patch.object(debug_routines, "log_coverage"), \
              patch.object(performer, "_plan_audio", side_effect=AssertionError("unsafe mapping reached audio strategy")) as choose, \
              patch.object(performer.audio_patcher, "execute") as execute, \
-             self.assertRaisesRegex(RuntimeError, "discontinuit.*not supported yet"):
+             self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
             performer._patch_mismatched_audio(
                 group, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
             )

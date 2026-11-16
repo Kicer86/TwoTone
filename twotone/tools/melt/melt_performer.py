@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -40,8 +41,8 @@ from .melt_common import (
     find_track,
 )
 from .melt_plan import MeltTitlePlan
+from .mapping_validation import DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
 from .pair_matcher import (
-    DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
     PairMatcher,
     SegmentsMappingResult,
 )
@@ -128,6 +129,14 @@ class MeltPerformer:
         fill_audio_gaps: bool = False,
         max_temporary_frame_offset: float = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
     ) -> None:
+        if (
+            not math.isfinite(max_temporary_frame_offset)
+            or max_temporary_frame_offset < DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
+        ):
+            raise ValueError(
+                "Maximum temporary frame offset must be finite and at least "
+                f"{DEFAULT_MAX_TEMPORARY_FRAME_OFFSET:g}."
+            )
         self.logger = logger
         self.interruption = context.interruption
         self.output_dir = output_dir
@@ -473,7 +482,6 @@ class MeltPerformer:
                 lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
                 cache=self.cache,
                 media_analysis_session=self.media_analysis,
-                max_temporary_frame_offset=self.max_temporary_frame_offset,
             )
             match_result = _PairMatchResult(
                 matching=matcher.create_segments_mapping(),
@@ -521,6 +529,7 @@ class MeltPerformer:
             consumer=consumer,
             lhs_id=file_ids[base_path],
             rhs_id=file_ids[source_path],
+            max_temporary_frame_offset=self.max_temporary_frame_offset,
             logger=self.logger,
         )
         return match_result

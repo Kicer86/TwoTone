@@ -16,12 +16,11 @@ from .debug_routines import DebugRoutines
 from .frame_comparison import FrameComparison, MatchingSide
 from .matching_analysis import Discontinuity, DiscontinuityGroup
 from .melt_cache import MeltCache
-from .melt_common import FrameInfo, FramesInfo, format_timestamp
+from .melt_common import FrameInfo, FramesInfo
 from .phash_cache import PhashCache
 
 GlobalLinearDiscontinuityReport = matching_analysis.GlobalLinearDiscontinuityReport
 
-DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = 2.0
 
 
 class MappingRelation(enum.Enum):
@@ -64,10 +63,12 @@ class SegmentsMappingResult(NamedTuple):
     frame_slope: float | None = None
     # A candidate frame relation is not audio certification when these exist.
     timing_discontinuities: tuple[Discontinuity, ...] = ()
-    # PairMatcher returns only content-continuous mappings, but keeping the
-    # verdict explicit lets downstream execution defend that contract without
-    # reclassifying the mapping.
+    # Frame-based content gaps the global-linear classification could not
+    # resolve with local scene evidence, including temporary offsets that
+    # return at the next matched anchor.  Whether any is acceptable is decided
+    # by ``mapping_validation``.
     content_discontinuities: tuple[Discontinuity, ...] = ()
+    content_discontinuity_debug_path: str | None = None
     timing_discontinuity_debug_path: str | None = None
     # Gaps the time-domain detector finds in a GENERIC mapping; its
     # ``max(2000 ms, 2%)`` tolerance is far coarser than the frame-based
@@ -101,22 +102,12 @@ class PairMatcher:
         cache: MeltCache | None = None,
         *,
         media_analysis_session: media_analysis.MediaAnalysisSession,
-        max_temporary_frame_offset: float = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
     ) -> None:
-        if (
-            not isfinite(max_temporary_frame_offset)
-            or max_temporary_frame_offset < DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
-        ):
-            raise ValueError(
-                "Maximum temporary frame offset must be finite and at least "
-                f"{DEFAULT_MAX_TEMPORARY_FRAME_OFFSET:g}."
-            )
         self.interruption = interruption
         self.wd = os.path.join(wd, "pair_matcher")
         self.logger = logger
         self.cache = cache
         self.media_analysis = media_analysis_session
-        self.max_temporary_frame_offset = max_temporary_frame_offset
         self.phash = PhashCache()
         lhs_video_data, rhs_video_data = (
             self._primary_video_data(path)
@@ -390,9 +381,9 @@ class PairMatcher:
         # understood without enabling --verbose.
         self._log_relation_diagnostics(matching_pairs)
 
-        matching_pairs, global_linear_fit, timing_discontinuities = (
+        matching_pairs, global_linear_fit, timing_discontinuities, content_discontinuities = (
             self._certify_global_linear(
-                matching_pairs, lhs_scene_changes, rhs_scene_changes, debug,
+                matching_pairs, lhs_scene_changes, rhs_scene_changes,
             )
         )
 
@@ -402,12 +393,17 @@ class PairMatcher:
             else MappingRelation.GENERIC
         )
         timing_discontinuity_debug_path: str | None = None
+        content_discontinuity_debug_path: str | None = None
         generic_content_discontinuities: tuple[Discontinuity, ...] = ()
+        if content_discontinuities:
+            content_discontinuity_debug_path = self._report_content_discontinuities(
+                matching_pairs, content_discontinuities, debug,
+            )
         if timing_discontinuities:
             timing_discontinuity_debug_path = self._report_timing_discontinuities(
                 matching_pairs, timing_discontinuities, relation, debug,
             )
-        else:
+        elif not self._has_content_gap(content_discontinuities):
             matching_pairs = self._extend_boundaries(
                 matching_pairs,
                 global_linear_fit,
@@ -430,6 +426,8 @@ class PairMatcher:
             rhs_fps=self.rhs.fps,
             frame_slope=global_linear_fit.slope if global_linear_fit is not None else None,
             timing_discontinuities=timing_discontinuities,
+            content_discontinuities=content_discontinuities,
+            content_discontinuity_debug_path=content_discontinuity_debug_path,
             timing_discontinuity_debug_path=timing_discontinuity_debug_path,
             generic_content_discontinuities=generic_content_discontinuities,
         )
@@ -1117,8 +1115,12 @@ class PairMatcher:
         matching_pairs: list[tuple[int, int]],
         lhs_scene_changes: list[int],
         rhs_scene_changes: list[int],
-        debug: DebugRoutines,
-    ) -> tuple[list[tuple[int, int]], GlobalLinearFit | None, tuple[Discontinuity, ...]]:
+    ) -> tuple[
+        list[tuple[int, int]],
+        GlobalLinearFit | None,
+        tuple[Discontinuity, ...],
+        tuple[Discontinuity, ...],
+    ]:
         """Certify one global linear frame relation for the matched pairs.
 
         A candidate relation is a constant offset (slope 1) or a fitted
@@ -1129,14 +1131,14 @@ class PairMatcher:
         prediction or the audio strategy.
 
         Returns the final pairs, the certified fit (``None`` for the generic
-        path) and the timing discontinuities that make the relation unsafe for
-        audio execution.  Unresolved content discontinuities raise.
+        path), the timing discontinuities and the content discontinuities
+        local scene evidence could not resolve.
         """
         fit = self.detect_global_linear(
             matching_pairs, self.lhs.all_frames, self.rhs.all_frames,
         )
         if fit is None:
-            return matching_pairs, None, ()
+            return matching_pairs, None, (), ()
 
         initial_frame_slope = fit.slope
         report = self._classify_discontinuities(matching_pairs, initial_frame_slope)
@@ -1161,9 +1163,8 @@ class PairMatcher:
                 lhs_scene_changes,
                 rhs_scene_changes,
                 frame_slope=fit.slope if fit is not None else initial_frame_slope,
-                debug=debug,
             )
-        return matching_pairs, fit, tuple(report.timing)
+        return matching_pairs, fit, tuple(report.timing), tuple(report.content)
 
     def detect_global_linear(
         self,
@@ -1281,7 +1282,6 @@ class PairMatcher:
         rhs_scene_changes: list[int],
         *,
         frame_slope: float,
-        debug: DebugRoutines,
     ) -> tuple[
         list[tuple[int, int]],
         GlobalLinearFit | None,
@@ -1305,16 +1305,7 @@ class PairMatcher:
             refined_fit.slope if refined_fit is not None else frame_slope,
         )
 
-        if report.content:
-            report = report._replace(
-                content=self._filter_allowed_temporary_frame_offset_excursions(
-                    report.content
-                )
-            )
-        if report.content:
-            self._reject_content_discontinuities(refined_pairs, report.content, debug)
-
-        if not report.timing:
+        if not report.content and not report.timing:
             if refined_fit is not None:
                 self.logger.info(
                     "Local scene refinement resolved all suspected content discontinuities."
@@ -1497,55 +1488,34 @@ class PairMatcher:
             scenes_added,
         )
 
-    def _filter_allowed_temporary_frame_offset_excursions(
-        self,
-        discontinuities: list[Discontinuity],
-    ) -> list[Discontinuity]:
-        """Allow one temporary offset excursion that returns at the next anchor."""
-        remaining: list[Discontinuity] = []
-        for group in matching_analysis.group_content_discontinuities(discontinuities):
-            excursion = matching_analysis.temporary_frame_offset_excursion(
-                group, self.lhs.all_frames, self.rhs.all_frames,
-            )
-            allowed = (
-                excursion is not None
-                and matching_analysis.MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-                < excursion[0]
-                <= self.max_temporary_frame_offset
-            )
-            if allowed:
-                assert excursion is not None
-                temporary_offset, outer_offset = excursion
-                _, lhs_middle, _, rhs_middle, _ = group[0]
-                lhs_frame_middle = int(self.lhs.all_frames[lhs_middle]["frame_id"])
-                rhs_frame_middle = int(self.rhs.all_frames[rhs_middle]["frame_id"])
-                self.logger.warning(
-                    "Accepting temporary %d-frame alignment offset between "
-                    "%s frame %d at %s and %s frame %d at %s; the next "
-                    "matched frames return to the same outer offset of %+d frame(s).",
-                    temporary_offset,
-                    self.lhs.label,
-                    lhs_frame_middle,
-                    format_timestamp(lhs_middle),
-                    self.rhs.label,
-                    rhs_frame_middle,
-                    format_timestamp(rhs_middle),
-                    outer_offset,
-                )
-            else:
-                remaining.extend(group)
-        return remaining
+    def _has_content_gap(self, content_discontinuities: tuple[Discontinuity, ...]) -> bool:
+        """Whether a discontinuity interrupts the shared content.
 
-    def _reject_content_discontinuities(
+        A temporary offset that returns at the next matched anchor keeps the
+        shared content continuous; any other discontinuity leaves no single
+        mapping whose boundaries can be extended.
+        """
+        return any(
+            matching_analysis.temporary_frame_offset_excursion(
+                group, self.lhs.all_frames, self.rhs.all_frames,
+            ) is None
+            for group in matching_analysis.group_content_discontinuities(
+                list(content_discontinuities)
+            )
+        )
+
+    def _report_content_discontinuities(
         self,
         matching_pairs: list[tuple[int, int]],
-        discontinuities: list[Discontinuity],
+        content_discontinuities: tuple[Discontinuity, ...],
         debug: DebugRoutines,
-    ) -> None:
-        """Dump diagnostics for unresolved content discontinuities and raise."""
+    ) -> str | None:
+        """Dump diagnostics for unresolved content steps and return their path."""
         debug.dump_matches(matching_pairs, "localized discontinuities")
-        groups = matching_analysis.group_content_discontinuities(discontinuities)
-        debug_path = debug.dump_content_discontinuities(
+        groups = matching_analysis.group_content_discontinuities(
+            list(content_discontinuities)
+        )
+        return debug.dump_content_discontinuities(
             groups,
             lhs_label=self.lhs.label,
             rhs_label=self.rhs.label,
@@ -1553,37 +1523,6 @@ class PairMatcher:
             rhs_fps=self.rhs.fps,
             prepare_frames=lambda: self._extract_discontinuity_frames(groups),
         )
-        self._raise_for_unresolved_content_discontinuities(discontinuities, debug_path)
-
-    def _raise_for_unresolved_content_discontinuities(
-        self,
-        discontinuities: list[Discontinuity],
-        debug_path: str | None = None,
-    ) -> None:
-        groups = matching_analysis.group_content_discontinuities(discontinuities)
-        suggested_temporary_offsets: list[int] = []
-        for group in groups:
-            excursion = matching_analysis.temporary_frame_offset_excursion(
-                group, self.lhs.all_frames, self.rhs.all_frames,
-            )
-            if (
-                excursion is not None
-                and excursion[0] > self.max_temporary_frame_offset
-            ):
-                suggested_temporary_offsets.append(excursion[0])
-        error = debug_routines.unresolved_content_discontinuities_error(
-            self.logger,
-            groups,
-            self.lhs.all_frames,
-            self.rhs.all_frames,
-            lhs_label=self.lhs.label,
-            rhs_label=self.rhs.label,
-            rhs_fps=self.rhs.fps,
-            compensation_tolerance_frames=matching_analysis.MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES,
-            suggested_temporary_offsets=suggested_temporary_offsets,
-            debug_path=debug_path,
-        )
-        raise RuntimeError(error)
 
     def _extract_discontinuity_frames(
         self,

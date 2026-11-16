@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import cast
 from unittest.mock import Mock, patch
 
-from twotone.tools.melt import debug_routines, frame_comparison, matching_analysis
+from twotone.tools.melt import debug_routines, frame_comparison, mapping_validation, matching_analysis
 from twotone.tools.melt.boundary_search import BoundarySearch
 from twotone.tools.melt.frame_comparison import (
     BoundaryVerifyContext,
@@ -17,6 +17,7 @@ from twotone.tools.melt.pair_matcher import (
     GlobalLinearFit,
     MappingRelation,
     PairMatcher,
+    SegmentsMappingResult,
 )
 from twotone.tools.melt.phash_cache import PhashCache
 from twotone.tools.utils import (
@@ -69,6 +70,18 @@ class PairMatcherUnitTest(unittest.TestCase):
             media_analysis_session=media_analysis_session,
         )
         return pm
+
+    @staticmethod
+    def _validate(result: SegmentsMappingResult) -> None:
+        """Apply the default melt acceptance check to a matcher result."""
+        mapping_validation.validate_mapping(
+            result,
+            consumer="audio",
+            lhs_id=1,
+            rhs_id=2,
+            max_temporary_frame_offset=mapping_validation.DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
+            logger=logging.getLogger("test.mapping_validation"),
+        )
 
     def _make_boundary_search(
         self, lhs_fps: float = 25.0, rhs_fps: float = 25.0,
@@ -1326,10 +1339,23 @@ class PairMatcherUnitTest(unittest.TestCase):
                      patch.object(pm, '_log_relation_diagnostics'), \
                      patch.object(debug_routines, 'summarize_pairs'), \
                      patch.object(pm.boundary_search, 'extrapolate_and_verify_global_linear', return_value=pairs) as extrapolate, \
-                     patch('twotone.tools.melt.pair_matcher.DebugRoutines'), \
-                     self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
-                    pm.create_segments_mapping()
-                extrapolate.assert_not_called()
+                     patch('twotone.tools.melt.pair_matcher.DebugRoutines'):
+                    result = pm.create_segments_mapping()
+                self.assertTrue(result.content_discontinuities)
+                if name == "sparse_cut":
+                    # A gap in the shared content leaves nothing to extend.
+                    extrapolate.assert_not_called()
+                else:
+                    # A shift that returns keeps the shared content continuous;
+                    # whether it is tolerated is the validation's decision.
+                    extrapolate.assert_called_once()
+                with self.assertRaises(RuntimeError) as raised:
+                    self._validate(result)
+                self.assertIn("local frame-sequence difference", str(raised.exception))
+                if name == "opposite_edits":
+                    self.assertIn("--max-temporary-frame-offset 15", str(raised.exception))
+                else:
+                    self.assertNotIn("--max-temporary-frame-offset", str(raised.exception))
 
     def test_create_segments_mapping_keeps_unresolved_outer_steps(self):
         for edge in ("first", "last"):
@@ -1362,10 +1388,12 @@ class PairMatcherUnitTest(unittest.TestCase):
                          patch.object(pm, '_log_relation_diagnostics'), \
                          patch.object(debug_routines, 'summarize_pairs'), \
                          patch.object(pm.boundary_search, 'extrapolate_and_verify_global_linear', return_value=pairs) as extrapolate, \
-                         patch('twotone.tools.melt.pair_matcher.DebugRoutines'), \
-                         self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
-                        pm.create_segments_mapping()
+                         patch('twotone.tools.melt.pair_matcher.DebugRoutines'):
+                        result = pm.create_segments_mapping()
                     extrapolate.assert_not_called()
+                    self.assertTrue(result.content_discontinuities)
+                    with self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
+                        self._validate(result)
 
     def test_create_segments_mapping_preserves_pts_step_before_boundary_prediction(self):
         for reverse, refine in ((False, False), (True, False), (False, True)):
@@ -2250,83 +2278,6 @@ class PairMatcherUnitTest(unittest.TestCase):
             (3000, 4000, 2600, 4000, -400),
         ])
 
-    def test_temporary_frame_offset_limit_allows_only_compensated_excursion(self):
-        lhs_timestamps = [0, 1000, 2000, 3000]
-        rhs_timestamps = [0, 1000, 1800, 3000]
-        mapping = list(zip(lhs_timestamps, rhs_timestamps))
-        lhs_frames = {
-            timestamp: {"frame_id": frame_id, "path": None}
-            for timestamp, frame_id in zip(lhs_timestamps, [0, 25, 50, 75])
-        }
-        rhs_frames = {
-            timestamp: {"frame_id": frame_id, "path": None}
-            for timestamp, frame_id in zip(rhs_timestamps, [0, 25, 45, 75])
-        }
-
-        default_result = matching_analysis.find_global_linear_content_discontinuities(
-            mapping,
-            lhs_frames,
-            rhs_frames,
-            frame_slope=1.0,
-            lhs_fps=25.0,
-            rhs_fps=25.0,
-        )
-        self.assertEqual([gap[4] for gap in default_result], [200, -200])
-
-        pm = self._make_pair_matcher()
-        pm.max_temporary_frame_offset = 5.0
-        pm.lhs.all_frames = lhs_frames
-        pm.rhs.all_frames = rhs_frames
-
-        with self.assertLogs(pm.logger, level="WARNING") as captured:
-            remaining = pm._filter_allowed_temporary_frame_offset_excursions(
-                default_result
-            )
-
-        self.assertEqual(remaining, [])
-        self.assertTrue(any(
-            "Accepting temporary 5-frame alignment offset" in message
-            and "00:00:02,000 (2000 ms)" in message
-            and "00:00:01,800 (1800 ms)" in message
-            for message in captured.output
-        ))
-        self.assertEqual(
-            pm._filter_allowed_temporary_frame_offset_excursions(
-                default_result[:1]
-            ),
-            default_result[:1],
-        )
-
-    def test_default_temporary_frame_offset_limit_rejects_three_frames(self):
-        lhs_timestamps = [0, 1000, 2000, 3000]
-        rhs_timestamps = [0, 1000, 1880, 3000]
-        mapping = list(zip(lhs_timestamps, rhs_timestamps))
-        lhs_frames = {
-            timestamp: {"frame_id": frame_id, "path": None}
-            for timestamp, frame_id in zip(lhs_timestamps, [0, 25, 50, 75])
-        }
-        rhs_frames = {
-            timestamp: {"frame_id": frame_id, "path": None}
-            for timestamp, frame_id in zip(rhs_timestamps, [0, 25, 47, 75])
-        }
-        discontinuities = matching_analysis.find_global_linear_content_discontinuities(
-            mapping,
-            lhs_frames,
-            rhs_frames,
-            frame_slope=1.0,
-            lhs_fps=25.0,
-            rhs_fps=25.0,
-        )
-        pm = self._make_pair_matcher()
-        pm.lhs.all_frames = lhs_frames
-        pm.rhs.all_frames = rhs_frames
-
-        self.assertEqual([gap[4] for gap in discontinuities], [120, -120])
-        self.assertEqual(
-            pm._filter_allowed_temporary_frame_offset_excursions(discontinuities),
-            discontinuities,
-        )
-
     def test_global_linear_discontinuity_preserves_step_near_first_matched_pair(self):
         mapping = [(0, 0), (400, 400), (10000, 9600), (20000, 19600)]
         lhs_frames = {
@@ -2768,12 +2719,20 @@ class PairMatcherUnitTest(unittest.TestCase):
                 )
                 self.assertEqual([gap[4] for gap in gaps], [600, -600])
                 self.assertEqual(matching_analysis.group_content_discontinuities(gaps), [gaps])
-                with self.assertLogs(pm.logger, level="DEBUG") as captured, \
+                with self.assertLogs("test.mapping_validation", level="DEBUG") as captured, \
                      self.assertRaisesRegex(
                          RuntimeError,
                          "local frame-sequence difference",
                      ):
-                    pm._raise_for_unresolved_content_discontinuities(gaps)
+                    self._validate(SegmentsMappingResult(
+                        mapping=result,
+                        lhs_all_frames=pm.lhs.all_frames,
+                        rhs_all_frames=pm.rhs.all_frames,
+                        relation=MappingRelation.GLOBAL_LINEAR,
+                        lhs_fps=25.0,
+                        rhs_fps=25.0,
+                        content_discontinuities=tuple(gaps),
+                    ))
                 self.assertTrue(any(
                     "first and last matched frames use the same 0-frame offset" in message
                     and "inside this range the match shifts by 15 frames" in message
@@ -2784,90 +2743,6 @@ class PairMatcherUnitTest(unittest.TestCase):
                     and "DEBUG" in message
                     for message in captured.output
                 ))
-
-    def test_compensating_discontinuity_reports_outer_offset_and_inner_shift(self):
-        pm = self._make_pair_matcher()
-        pm.lhs.label = "#2"
-        pm.rhs.label = "#1"
-        pm.rhs.fps = 25.0
-        pm.lhs.all_frames = {
-            2473639: {"frame_id": 59307},
-            2476726: {"frame_id": 59381},
-            2485901: {"frame_id": 59601},
-        }
-        pm.rhs.all_frames = {
-            2473558: {"frame_id": 59306},
-            2476853: {"frame_id": 59385},
-            2485821: {"frame_id": 59600},
-        }
-        gaps = [
-            (2473639, 2476726, 2473558, 2476853, -209),
-            (2476726, 2485901, 2476853, 2485821, 209),
-        ]
-
-        with self.assertLogs(pm.logger, level="DEBUG") as captured, \
-             self.assertRaises(RuntimeError) as raised:
-            pm._raise_for_unresolved_content_discontinuities(
-                gaps,
-                "/tmp/debug",
-            )
-
-        summary = next(
-            message for message in captured.output
-            if "Local frame-sequence difference" in message
-        )
-        self.assertIn(
-            "first and last matched frames use the same 1-frame offset "
-            "(#2 = #1 + 1)",
-            summary,
-        )
-        self.assertIn("inside this range the match shifts by 5 frames", summary)
-        self.assertIn(
-            "#2: frames 59307-59601; "
-            "00:41:13,639-00:41:25,901 (2473639-2485901 ms)",
-            summary,
-        )
-        self.assertIn(
-            "#1: frames 59306-59600; "
-            "00:41:13,558-00:41:25,821 (2473558-2485821 ms)",
-            summary,
-        )
-        details_path = os.path.join("/tmp/debug", "details.txt")
-        self.assertTrue(any(
-            f"Full frame diagnostics: {details_path}" in message
-            for message in captured.output
-        ))
-        self.assertIn("Inspect the reported region", str(raised.exception))
-        self.assertIn(details_path, str(raised.exception))
-        self.assertIn(
-            "--max-temporary-frame-offset 5",
-            str(raised.exception),
-        )
-        self.assertIn("report a PairMatcher bug", str(raised.exception))
-        self.assertIn("include /tmp/debug", str(raised.exception))
-
-    def test_permanent_discontinuity_does_not_suggest_temporary_offset_option(self):
-        pm = self._make_pair_matcher()
-        pm.lhs.all_frames = {
-            0: {"frame_id": 0},
-            1000: {"frame_id": 25},
-        }
-        pm.rhs.all_frames = {
-            0: {"frame_id": 0},
-            1200: {"frame_id": 30},
-        }
-
-        with self.assertLogs(pm.logger, level="DEBUG"), \
-             self.assertRaises(RuntimeError) as raised:
-            pm._raise_for_unresolved_content_discontinuities(
-                [(0, 1000, 0, 1200, -200)],
-                "/tmp/debug",
-            )
-
-        message = str(raised.exception)
-        self.assertIn("Inspect the reported region", message)
-        self.assertIn("report a PairMatcher bug", message)
-        self.assertNotIn("--max-temporary-frame-offset", message)
 
     def test_extract_discontinuity_frames_requests_complete_spans(self):
         pm = self._make_pair_matcher()
