@@ -218,7 +218,7 @@ class AudioStrategyDecisionTest(MeltComponentFactories, unittest.TestCase):
 
         result = audio_strategy.try_collapse_linear_mapping(
             mapping,
-            lhs_frames,
+            FrameSpan.of(lhs_frames),
             tempo_ratio,
         )
 
@@ -239,7 +239,7 @@ class AudioStrategyDecisionTest(MeltComponentFactories, unittest.TestCase):
 
         result = audio_strategy.try_collapse_linear_mapping(
             mapping,
-            lhs_frames,
+            FrameSpan.of(lhs_frames),
             tempo_ratio=0.9715,
         )
 
@@ -365,7 +365,7 @@ class AudioStrategyDecisionTest(MeltComponentFactories, unittest.TestCase):
 
         result = audio_strategy.try_collapse_linear_mapping(
             mapping,
-            lhs_frames,
+            FrameSpan.of(lhs_frames),
             tempo_ratio=0.7992,
         )
 
@@ -387,7 +387,7 @@ class AudioStrategyDecisionTest(MeltComponentFactories, unittest.TestCase):
 
         result = audio_strategy.try_collapse_linear_mapping(
             pairs,
-            lhs_frames,
+            FrameSpan.of(lhs_frames),
             tempo_ratio=0.7992,
         )
 

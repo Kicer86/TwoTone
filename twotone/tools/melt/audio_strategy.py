@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from . import matching_analysis
 from .audio_patcher import AudioStrategy, segment_range
-from .melt_common import FramesInfo
+from .melt_common import FrameSpan
 from .pair_matcher import MappingRelation, SegmentsMappingResult
 
 FPS_RATIO_TOLERANCE = 0.001
@@ -80,7 +80,7 @@ def plan_audio(
     if strategy == AudioStrategy.GLOBAL_TIME_SCALE:
         return AudioPlan(strategy, mapping)
 
-    collapsed = try_collapse_linear_mapping(mapping, matching.lhs_all_frames, tempo_ratio)
+    collapsed = try_collapse_linear_mapping(mapping, matching.lhs_frame_span, tempo_ratio)
     if collapsed is not None:
         return AudioPlan(strategy, collapsed, collapsed_linear_mapping=True)
     return AudioPlan(strategy, mapping)
@@ -192,7 +192,7 @@ def is_frame_rate_only_drift(
 
 def try_collapse_linear_mapping(
     mapping: list[tuple[int, int]],
-    lhs_all_frames: FramesInfo,
+    lhs_frame_span: FrameSpan | None,
     tempo_ratio: float | None,
 ) -> list[tuple[int, int]] | None:
     """Collapse a linear mapping to the two endpoints of a tempo-built line.
@@ -205,7 +205,7 @@ def try_collapse_linear_mapping(
     ≥ ``MIN_LINEAR_REBUILD_COVERAGE`` of the base, the mapping is
     replaced with a two-point line at that tempo — one global time-scale.
     """
-    if not lhs_all_frames or tempo_ratio is None or tempo_ratio <= 0:
+    if lhs_frame_span is None or tempo_ratio is None or tempo_ratio <= 0:
         return None
 
     pairs = sorted(mapping)
@@ -220,8 +220,8 @@ def try_collapse_linear_mapping(
     first_lhs, first_rhs = pairs[0]
     last_lhs, _ = pairs[-1]
     lhs_span = last_lhs - first_lhs
-    lhs_frame_span = max(lhs_all_frames) - min(lhs_all_frames)
-    if lhs_frame_span <= 0 or lhs_span < lhs_frame_span * MIN_LINEAR_REBUILD_COVERAGE:
+    base_span = lhs_frame_span.duration_ms
+    if base_span <= 0 or lhs_span < base_span * MIN_LINEAR_REBUILD_COVERAGE:
         return None
 
     return [

@@ -97,14 +97,14 @@ class SubtitleAlignment:
         last_rhs = mapping[-1][1]
         frame_ms = 1000 / matching.rhs_fps
         edge_tolerance_ms = round(matching_analysis.MAX_BOUNDARY_ERROR_FRAMES * frame_ms)
-        rhs_frame_times = sorted(matching.rhs_all_frames)
+        rhs_span = matching.rhs_frame_span
         accepted_start = first_rhs
         accepted_end = last_rhs
-        if rhs_frame_times:
-            if first_rhs - rhs_frame_times[0] <= edge_tolerance_ms:
-                accepted_start = rhs_frame_times[0]
-            if rhs_frame_times[-1] - last_rhs <= edge_tolerance_ms:
-                accepted_end = round(rhs_frame_times[-1] + frame_ms)
+        if rhs_span is not None:
+            if first_rhs - rhs_span.first_ms <= edge_tolerance_ms:
+                accepted_start = rhs_span.first_ms
+            if rhs_span.last_ms - last_rhs <= edge_tolerance_ms:
+                accepted_end = round(rhs_span.last_ms + frame_ms)
 
         for index, event in enumerate(content, start=1):
             source_start = event.start - source_mapping_to_video_ms
