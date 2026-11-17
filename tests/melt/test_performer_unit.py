@@ -473,13 +473,17 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
         for file_path in (first_file, second_file):
             self.assertEqual(args[args.index(file_path) - 1], "--no-chapters")
 
-    def test_mapping_stream_bias_measures_rebased_frame_times(self):
+    def test_mapping_to_video_measures_rebased_frame_times(self):
         performer = self._make_performer()
-        fake_info = {"streams": [{"codec_type": "video", "start_time": "0.500"}]}
+        fake_info = {"streams": [{"codec_type": "video", "index": 0, "start_time": "0.500"}]}
 
         with patch.object(video_utils, "get_video_full_info", return_value=fake_info):
-            rebased = performer._mapping_stream_bias_ms("/tmp/a.mkv", FrameSpan(0, 41, 2))
-            preserved = performer._mapping_stream_bias_ms("/tmp/a.mp4", FrameSpan(500, 541, 2))
+            rebased = performer._mapping_to_video_ms(
+                VideoStreamRef("/tmp/a.mkv", 0, 0, None), FrameSpan(0, 41, 2),
+            )
+            preserved = performer._mapping_to_video_ms(
+                VideoStreamRef("/tmp/a.mp4", 0, 0, None), FrameSpan(500, 541, 2),
+            )
 
         self.assertEqual(rebased, 500)
         self.assertEqual(preserved, 0)

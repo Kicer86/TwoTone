@@ -414,15 +414,23 @@ class MeltPerformer:
         video_stream: VideoStreamRef,
         frame_span: FrameSpan | None,
     ) -> int:
-        """Return the base-stream PTS corresponding to PairMatcher timestamp zero."""
+        """Offset from *video_stream*'s mapping space to its stream space.
+
+        The frame timestamps feeding the pair mapping are container-dependent:
+        some demuxers keep the video stream's start offset in frame PTS (mp4),
+        others hand out frames rebased to zero (mkv).  The gap between the
+        probed stream start and the first decoded frame measures which
+        convention this side uses, so mapping deltas from two files can be
+        compared in one (stream) space.
+        """
+        if frame_span is None:
+            return 0
         video_info = self.timeline.stream_info(
             video_stream.path,
             "video",
             video_stream.ffprobe_stream_index,
         )
-        video_start_ms = self.timeline.stream_start_offset_ms(video_info)
-        mapping_start_ms = frame_span.first_ms if frame_span is not None else video_start_ms
-        return video_start_ms - mapping_start_ms
+        return self.timeline.stream_start_offset_ms(video_info) - frame_span.first_ms
 
     def _video_to_audio_timeline(
         self,
@@ -546,7 +554,6 @@ class MeltPerformer:
         base_duration = group.base_duration_ms
         assert base_duration is not None
         base_audio_end = group.base_audio_end_ms
-        video_path_base = base_video.path
         audio_path = audio_stream.path
         ffprobe_stream_index = audio_stream.ffprobe_stream_index
         with self.workspace.scoped_dir("matching") as mwd, \
@@ -561,7 +568,7 @@ class MeltPerformer:
             matching = match_result.matching
             duration = match_result.source_duration
 
-            plan = self._plan_audio(video_path_base, audio_path, matching)
+            plan = self._plan_audio(base_video, source_video, matching)
             strategy = plan.strategy
             mapping = plan.mapping
 
@@ -604,8 +611,8 @@ class MeltPerformer:
 
     def _plan_audio(
         self,
-        video_path_base: str,
-        audio_path: str,
+        base_video: VideoStreamRef,
+        source_video: VideoStreamRef,
         matching: SegmentsMappingResult,
     ) -> audio_strategy.AudioPlan:
         """Probe the facts the audio strategy needs and plan the patch."""
@@ -613,14 +620,14 @@ class MeltPerformer:
         plan = audio_strategy.plan_audio(
             matching,
             tempo_ratio=self._effective_tempo_ratio(
-                video_path_base,
-                audio_path,
+                base_video.path,
+                source_video.path,
                 lhs_span,
                 rhs_span,
             ),
             stream_bias_ms=(
-                self._mapping_stream_bias_ms(video_path_base, lhs_span)
-                - self._mapping_stream_bias_ms(audio_path, rhs_span)
+                self._mapping_to_video_ms(base_video, lhs_span)
+                - self._mapping_to_video_ms(source_video, rhs_span)
             ),
         )
         self.logger.info("  Audio strategy: %s", plan.strategy.value)
@@ -639,24 +646,6 @@ class MeltPerformer:
                 plan.unscaled_shift_ms,
             )
         return plan
-
-    def _mapping_stream_bias_ms(self, path: str, frame_span: FrameSpan | None) -> int:
-        """Offset from *path*'s mapping space to its stream space.
-
-        The frame timestamps feeding the pair mapping are container-dependent:
-        some demuxers keep the video stream's start offset in frame PTS (mp4),
-        others hand out frames rebased to zero (mkv).  The gap between the
-        probed stream start and the first probed frame measures which
-        convention this side uses, so mapping deltas from two files can be
-        compared in one (stream) space.
-        """
-        if frame_span is None:
-            return 0
-        info = self.timeline.media_info(path)
-        stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
-        if stream is None:
-            return 0
-        return TrackTimeline.stream_start_offset_ms(stream) - frame_span.first_ms
 
     def _effective_video_fps(self, path: str, frame_span: FrameSpan | None) -> float | None:
         if frame_span is None or frame_span.frame_count < 2:

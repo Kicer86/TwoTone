@@ -242,7 +242,7 @@ def unscaled_timeline_shift_ms(
     freedom left is where the track starts on the base timeline.  The
     matched pairs yield that shift as the median of ``lhs - rhs``,
     corrected by ``stream_bias_ms`` — the difference of the two sides'
-    mapping-to-stream biases (see ``MeltPerformer._mapping_stream_bias_ms``)
+    mapping-to-stream biases (see ``MeltPerformer._mapping_to_video_ms``)
     — so the shift lands in stream space, the space tracks are placed in.
     There a container start offset cancels out: content restored to its
     canonical position by such an offset yields a zero shift and keeps being
