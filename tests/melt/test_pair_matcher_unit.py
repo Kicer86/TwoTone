@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 from twotone.tools.melt import debug_routines, frame_comparison, mapping_validation, matching_analysis
 from twotone.tools.melt.boundary_search import BoundarySearch
+from twotone.tools.melt.melt_common import FrameSpan
 from twotone.tools.melt.frame_comparison import (
     BoundaryVerifyContext,
     MatchingSide,
@@ -2948,6 +2949,23 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertIsNone(
             pm.detect_global_linear(pairs, pm.lhs.all_frames, pm.rhs.all_frames)
         )
+
+
+class SegmentsMappingResultTest(unittest.TestCase):
+    def test_frame_spans_summarize_the_decoded_timelines(self):
+        result = SegmentsMappingResult(
+            mapping=[(0, 500)],
+            lhs_all_frames={40: {"frame_id": 1, "path": None}, 0: {"frame_id": 0, "path": None},
+                            80: {"frame_id": 2, "path": None}},
+            rhs_all_frames={},
+            relation=MappingRelation.GENERIC,
+            lhs_fps=25.0,
+            rhs_fps=25.0,
+        )
+
+        self.assertEqual(result.lhs_frame_span, FrameSpan(0, 80, 3))
+        self.assertEqual(result.lhs_frame_span.duration_ms, 80)
+        self.assertIsNone(result.rhs_frame_span)
 
 
 if __name__ == '__main__':

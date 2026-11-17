@@ -16,7 +16,7 @@ from .debug_routines import DebugRoutines
 from .frame_comparison import FrameComparison, MatchingSide
 from .matching_analysis import Discontinuity, DiscontinuityGroup
 from .melt_cache import MeltCache
-from .melt_common import FrameInfo, FramesInfo
+from .melt_common import FrameInfo, FrameSpan, FramesInfo
 from .phash_cache import PhashCache
 
 GlobalLinearDiscontinuityReport = matching_analysis.GlobalLinearDiscontinuityReport
@@ -74,6 +74,16 @@ class SegmentsMappingResult(NamedTuple):
     # ``max(2000 ms, 2%)`` tolerance is far coarser than the frame-based
     # global-linear classification.
     generic_content_discontinuities: tuple[Discontinuity, ...] = ()
+
+    # Track alignment needs only the extent of each decoded timeline; the
+    # per-frame caches above serve diagnostics.
+    @property
+    def lhs_frame_span(self) -> FrameSpan | None:
+        return FrameSpan.of(self.lhs_all_frames)
+
+    @property
+    def rhs_frame_span(self) -> FrameSpan | None:
+        return FrameSpan.of(self.rhs_all_frames)
 
 
 class PairMatcher:

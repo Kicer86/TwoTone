@@ -20,6 +20,27 @@ class FrameInfo(TypedDict):
 
 
 FramesInfo = dict[int, FrameInfo]
+
+
+class FrameSpan(NamedTuple):
+    """First and last decoded frame timestamps of a video, and its frame count."""
+    first_ms: int
+    last_ms: int
+    frame_count: int
+
+    @classmethod
+    def of(cls, frames: FramesInfo) -> "FrameSpan | None":
+        """Summarize *frames*, or return ``None`` when nothing was decoded."""
+        if not frames:
+            return None
+        return cls(min(frames), max(frames), len(frames))
+
+    @property
+    def duration_ms(self) -> int:
+        """Time from the first to the last decoded frame."""
+        return self.last_ms - self.first_ms
+
+
 StreamType = Literal["video", "audio", "subtitle"]
 
 
