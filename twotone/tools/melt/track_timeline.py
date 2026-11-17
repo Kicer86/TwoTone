@@ -27,7 +27,8 @@ original timestamps and CodecDelay and does not enter this flow:
 
 The service also owns the plain stream-timeline helpers (ffprobe start/end
 offsets and the mkvmerge ``--sync`` computation) that the priming logic builds
-on.
+on.  Input files are read from the run's shared media probe, the same data
+analysis planned with; files generated during the run are probed directly.
 """
 
 import logging
@@ -35,6 +36,7 @@ import os
 from typing import Any
 
 from ..utils import files_utils, generic_utils, process_utils, video_utils
+from ..utils.media_analysis import MediaAnalysisSession
 from .melt_common import AudioStreamRef
 
 # Containers whose stream start offsets mkvmerge preserves on remux.
@@ -49,9 +51,15 @@ def mkvmerge_preserves_start(path: str) -> bool:
 class TrackTimeline:
     """Run-scoped stream-timeline and AAC-priming service."""
 
-    def __init__(self, workspace: files_utils.Workspace, logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        workspace: files_utils.Workspace,
+        logger: logging.Logger,
+        media_analysis: MediaAnalysisSession | None = None,
+    ) -> None:
         self.workspace = workspace
         self.logger = logger
+        self.media_analysis = media_analysis
         self._media_info_cache: dict[str, dict[str, Any]] = {}
         self._stream_info_cache: dict[tuple[str, str, int], dict[str, Any] | None] = {}
         self._input_file_ids: dict[str, int] = {}
@@ -73,9 +81,16 @@ class TrackTimeline:
     # --- plain stream-timeline probing -----------------------------------
 
     def media_info(self, path: str) -> dict[str, Any]:
+        """ffprobe data of *path*: shared for input files, probed for generated ones."""
         info = self._media_info_cache.get(path)
         if info is None:
-            info = video_utils.get_video_full_info(path, logger=self.logger)
+            if self.media_analysis is not None and path in self._input_file_ids:
+                probe = self.media_analysis.probe(path)
+                if probe.error is not None:
+                    raise RuntimeError(probe.error)
+                info = probe.data
+            else:
+                info = video_utils.get_video_full_info(path, logger=self.logger)
             self._media_info_cache[path] = info
         return info
 

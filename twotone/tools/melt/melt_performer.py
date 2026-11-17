@@ -93,7 +93,7 @@ class MeltPerformer:
         self.interruption = context.interruption
         self.output_dir = output_dir
         self.workspace = context.workspace
-        self.timeline = TrackTimeline(self.workspace, self.logger)
+        self.timeline = TrackTimeline(self.workspace, self.logger, context.media_analysis)
         self.audio_patcher = AudioPatcher(self.logger, self.timeline)
         self.aligner = SourceAligner(
             self.logger,

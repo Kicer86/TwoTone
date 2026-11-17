@@ -1,16 +1,58 @@
+import logging
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from parameterized import parameterized
 
 from melt.helpers import MeltComponentFactories, _FAKE_PROCESS_OK
 from twotone.tools.melt.melt_common import AudioStreamRef
-from twotone.tools.utils import process_utils, video_utils
+from twotone.tools.melt.track_timeline import TrackTimeline
+from twotone.tools.utils import media_analysis, process_utils, video_utils
+from twotone.tools.utils.files_utils import Workspace
 
 
 class TrackTimelineUnitTest(MeltComponentFactories, unittest.TestCase):
     """Unit tests for TrackTimeline stream offsets and AAC-priming handling."""
+
+    def _timeline_with_shared_probe(self, probe: media_analysis.MediaProbeResult) -> tuple[TrackTimeline, Mock]:
+        workspace = Workspace.temporary()
+        self.addCleanup(workspace.close)
+        session = Mock(spec=media_analysis.MediaAnalysisSession)
+        session.probe.return_value = probe
+        timeline = TrackTimeline(workspace, logging.getLogger("test.TrackTimeline"), session)
+        timeline.set_input_file_ids({probe.path: 1})
+        return timeline, session
+
+    def test_input_files_are_read_from_the_shared_probe(self):
+        # Analysis already probed every input; execution reuses that data
+        # instead of running ffprobe on the same file again.
+        input_path = "/media/input.mkv"
+        timeline, session = self._timeline_with_shared_probe(media_analysis.MediaProbeResult(
+            input_path,
+            {"streams": [{"codec_type": "video", "index": 0, "start_time": "0.500000"}]},
+            None,
+        ))
+        generated_info = {"streams": [{"codec_type": "audio", "index": 0, "start_time": "0.250000"}]}
+
+        with patch.object(video_utils, "get_video_full_info", return_value=generated_info) as ffprobe:
+            input_start = timeline.source_stream_start_offset_ms(input_path, "video", 0)
+            generated_start = timeline.source_stream_start_offset_ms("/work/patched.mka", "audio", 0)
+            timeline.source_stream_end_offset_ms(input_path, "video", 0)
+
+        self.assertEqual((input_start, generated_start), (500, 250))
+        session.probe.assert_called_once_with(input_path)
+        ffprobe.assert_called_once_with("/work/patched.mka", logger=timeline.logger)
+
+    def test_shared_probe_failure_stops_the_run(self):
+        timeline, _session = self._timeline_with_shared_probe(media_analysis.MediaProbeResult(
+            "/media/input.mkv",
+            {},
+            "ffprobe failed",
+        ))
+
+        with self.assertRaisesRegex(RuntimeError, "ffprobe failed"):
+            timeline.media_info("/media/input.mkv")
 
     @parameterized.expand([
         ("absorbed", "0.500000", False),

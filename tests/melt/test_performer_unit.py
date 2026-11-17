@@ -184,6 +184,12 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
 
         patch_audio.assert_not_called()
 
+    def test_timeline_shares_the_run_probe(self):
+        performer = self._make_performer()
+
+        self.assertIs(performer.timeline.media_analysis, performer.aligner.media_analysis)
+        self.assertIsNotNone(performer.timeline.media_analysis)
+
     def test_group_base_duration_reads_the_selected_video_track(self):
         # The base duration pads and validates the output against the
         # selected base video, so it must not come from another video track
