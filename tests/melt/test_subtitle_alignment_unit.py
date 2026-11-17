@@ -157,18 +157,16 @@ class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
                 },
             }
 
-            with patch.object(
-                performer,
-                "_validated_pair_match",
-                return_value=match_result,
-            ), patch.object(performer, "_mapping_to_video_ms", return_value=0):
+            group = _GroupContext(
+                file_ids={base_path: 1, source_path: 2},
+                base_video=VideoStreamRef(base_path, 0, 0, None),
+                base_duration_ms=5000,
+                files_details=details,
+            )
+            group.aligned_sources[source_path] = match_result
+            with patch.object(performer, "_mapping_to_video_ms", return_value=0):
                 output_stream, _metadata = performer._patch_mismatched_subtitle(
-                    _GroupContext(
-                        file_ids={base_path: 1, source_path: 2},
-                        base_video=VideoStreamRef(base_path, 0, 0, None),
-                        base_duration_ms=5000,
-                        files_details=details,
-                    ),
+                    group,
                     VideoStreamRef(source_path, 0, 0, None),
                     SubtitleStreamRef(source_path, 1, 1, "pol"),
                 )

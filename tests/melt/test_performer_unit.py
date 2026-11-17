@@ -2,6 +2,7 @@ import logging
 import os
 import tempfile
 import unittest
+from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
 from common import run_ffmpeg
@@ -127,7 +128,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
         # The tolerance is a validation policy; matching never sees it.
         self.assertNotIn("max_temporary_frame_offset", matcher_type.call_args.kwargs)
 
-    def test_validated_pair_match_applies_the_temporary_offset_tolerance(self):
+    def test_align_source_applies_the_temporary_offset_tolerance(self):
         performer = self._make_performer()
         performer.max_temporary_frame_offset = 5.0
         base_path = "/media/base.mkv"
@@ -145,12 +146,11 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             lhs_fps=25.0,
             rhs_fps=25.0,
         )
-        group.pair_matches[source_path] = _PairMatchResult(matching, 6000)
+        match_result = _PairMatchResult(matching, 6000)
 
-        with patch.object(mapping_validation, "validate_mapping") as validate:
-            performer._validated_pair_match(
-                group, "/tmp/matching", source_path, consumer="subtitle",
-            )
+        with patch.object(performer, "_pair_match", return_value=match_result), \
+             patch.object(mapping_validation, "validate_mapping") as validate:
+            performer._align_source(group, source_path, consumer="subtitle")
 
         validate.assert_called_once_with(
             matching,
@@ -160,6 +160,123 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             max_temporary_frame_offset=5.0,
             logger=performer.logger,
         )
+        self.assertIs(group.aligned_sources[source_path], match_result)
+
+    @staticmethod
+    def _aligned_files_details(*paths: str, subtitle_format: str | None = None) -> dict:
+        details = {}
+        for path in paths:
+            tracks: dict = {"video": [{"tid": 0, "ffprobe_stream_index": 0, "length": 6000}]}
+            if subtitle_format is not None:
+                tracks["subtitle"] = [{"tid": 3, "format": subtitle_format}]
+            details[path] = {"tracks": tracks}
+        return details
+
+    @staticmethod
+    def _aligned_match(mapping: list[tuple[int, int]]) -> _PairMatchResult:
+        return _PairMatchResult(
+            SegmentsMappingResult(
+                mapping=mapping,
+                lhs_all_frames={},
+                rhs_all_frames={},
+                relation=MappingRelation.GLOBAL_LINEAR,
+                lhs_fps=25.0,
+                rhs_fps=25.0,
+            ),
+            6000,
+        )
+
+    @contextmanager
+    def _stream_preparation_probes(self, performer):
+        with patch.object(performer, "_base_output_end_ms", return_value=None), \
+             patch.object(performer, "_base_audio_end_ms", return_value=None), \
+             patch.object(performer.timeline, "source_stream_start_offset_ms", return_value=0), \
+             patch.object(performer.timeline, "audio_stream_info", return_value={}), \
+             patch.object(performer.timeline, "audio_content_start_ms", return_value=0), \
+             patch.object(performer.timeline, "track_sync_offset_ms", return_value=None), \
+             patch.object(debug_routines, "log_coverage"):
+            yield
+
+    def test_prepare_stream_entries_refuses_a_source_before_aligning_any_track(self):
+        # A refused source fails the group before another source's audio is
+        # patched, so no minutes of audio work precede the refusal.
+        performer = self._make_performer()
+        base, first, second = "/tmp/base.mkv", "/tmp/first.mkv", "/tmp/second.mkv"
+        matches = {
+            first: self._aligned_match([(0, 0), (6000, 6000)]),
+            second: self._aligned_match([]),
+        }
+
+        with self._stream_preparation_probes(performer), \
+             patch.object(performer, "_pair_match", side_effect=lambda _g, _wd, path: matches[path]), \
+             patch.object(performer, "_patch_mismatched_audio") as patch_audio, \
+             self.assertRaisesRegex(RuntimeError, "Cannot align audio: no shared video timeline mapping"):
+            performer._prepare_stream_entries(
+                [VideoStreamRef(base, 0, 0, None)],
+                [AudioStreamRef(first, 1, 1, "pol"), AudioStreamRef(second, 1, 1, "eng")],
+                [],
+                [],
+                {base: 1, first: 2, second: 3},
+                self._aligned_files_details(base, first, second),
+                alignment_paths=(first, second),
+            )
+
+        patch_audio.assert_not_called()
+
+    def test_prepare_stream_entries_matches_and_validates_each_source_once(self):
+        performer = self._make_performer()
+        base, source = "/tmp/base.mkv", "/tmp/source.mkv"
+        match_result = self._aligned_match([(0, 0), (6000, 6000)])
+        audio_streams = [AudioStreamRef(source, 1, 1, "pol"), AudioStreamRef(source, 2, 2, "eng")]
+        subtitle = SubtitleStreamRef(source, 3, 3, "pol")
+
+        def patch_audio(_group, _source_video, audio_stream):
+            return AudioPatchResult(audio_stream, 0, 6000, "unscaled-normalization")
+
+        with self._stream_preparation_probes(performer), \
+             patch.object(performer, "_pair_match", return_value=match_result) as pair_match, \
+             patch.object(
+                 mapping_validation,
+                 "validate_mapping",
+                 wraps=mapping_validation.validate_mapping,
+             ) as validate, \
+             patch.object(performer, "_patch_mismatched_audio", side_effect=patch_audio) as aligned_audio, \
+             patch.object(performer, "_patch_mismatched_subtitle", return_value=(subtitle, {})) as aligned_subtitle:
+            performer._prepare_stream_entries(
+                [VideoStreamRef(base, 0, 0, None)],
+                audio_streams,
+                [subtitle],
+                [],
+                {base: 1, source: 2},
+                self._aligned_files_details(base, source, subtitle_format="SubRip/SRT"),
+                alignment_paths=(source,),
+            )
+
+        pair_match.assert_called_once()
+        validate.assert_called_once()
+        self.assertEqual(validate.call_args.kwargs["consumer"], "audio")
+        self.assertEqual(aligned_audio.call_count, 2)
+        aligned_subtitle.assert_called_once()
+
+    def test_prepare_stream_entries_refuses_image_subtitle_before_matching(self):
+        performer = self._make_performer()
+        base, source = "/tmp/base.mkv", "/tmp/source.mkv"
+
+        with self._stream_preparation_probes(performer), \
+             patch.object(performer, "_pair_match", side_effect=AssertionError("matched an unusable source")), \
+             patch.object(performer, "_patch_mismatched_audio") as patch_audio, \
+             self.assertRaisesRegex(RuntimeError, "image-based subtitle format"):
+            performer._prepare_stream_entries(
+                [VideoStreamRef(base, 0, 0, None)],
+                [AudioStreamRef(source, 1, 1, "pol")],
+                [SubtitleStreamRef(source, 3, 3, "pol")],
+                [],
+                {base: 1, source: 2},
+                self._aligned_files_details(base, source, subtitle_format="HDMV PGS"),
+                alignment_paths=(source,),
+            )
+
+        patch_audio.assert_not_called()
 
     def test_rejects_temporary_offset_tolerance_below_default(self):
         with self.assertRaisesRegex(ValueError, "at least 2"):
@@ -1028,8 +1145,8 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             base_video=VideoStreamRef(base_video, 0, 0, None),
             base_duration_ms=base_duration,
         )
-        group.pair_matches[audio_a] = make_match_result(base_duration)
-        group.pair_matches[audio_b] = make_match_result(base_duration)
+        group.aligned_sources[audio_a] = make_match_result(base_duration)
+        group.aligned_sources[audio_b] = make_match_result(base_duration)
 
         patch_outputs = []
 
@@ -1077,11 +1194,10 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
         self.assertEqual(patch_outputs, [first.stream.path, second.stream.path])
         self.assertNotEqual(first.stream.path, second.stream.path)
 
-    def test_patch_mismatched_audio_rejects_absolute_global_linear_frame_step(self):
+    def test_align_source_rejects_absolute_global_linear_frame_step(self):
         performer = self._make_performer()
         base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
         source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
-        source_audio = AudioStreamRef(source_video.path, 1, 1, "pol")
         mapping = [
             (0, 0),
             (100000, 100000),
@@ -1117,7 +1233,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             base_video=base_video,
             base_duration_ms=500000,
         )
-        group.pair_matches[source_video.path] = _PairMatchResult(
+        match_result = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=mapping,
                 lhs_all_frames=lhs_frames,
@@ -1136,13 +1252,13 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             source_duration=500000,
         )
 
-        with patch.object(debug_routines, "log_coverage"), \
+        with patch.object(performer, "_pair_match", return_value=match_result), \
+             patch.object(debug_routines, "log_coverage"), \
              self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
-            performer._patch_mismatched_audio(
-                group, source_video, source_audio,
-            )
+            performer._align_source(group, source_video.path, consumer="audio")
+        self.assertNotIn(source_video.path, group.aligned_sources)
 
-    def test_patch_mismatched_audio_rejects_sparse_global_linear_frame_step(self):
+    def test_align_source_rejects_sparse_global_linear_frame_step(self):
         performer = self._make_performer()
         base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
         source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
@@ -1152,7 +1268,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             base_video=base_video,
             base_duration_ms=600000,
         )
-        group.pair_matches[source_video.path] = _PairMatchResult(
+        match_result = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=mapping,
                 lhs_all_frames={lhs: {"frame_id": lhs // 40, "path": None} for lhs, _ in mapping},
@@ -1170,21 +1286,17 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             ),
             source_duration=600000,
         )
-        with patch.object(debug_routines, "log_coverage"), \
-             patch.object(performer, "_plan_audio", side_effect=AssertionError("unsafe mapping reached audio strategy")) as choose, \
-             patch.object(performer.audio_patcher, "execute") as execute, \
+        with patch.object(performer, "_pair_match", return_value=match_result), \
+             patch.object(debug_routines, "log_coverage"), \
              self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
-            performer._patch_mismatched_audio(
-                group, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
-            )
-        choose.assert_not_called()
-        execute.assert_not_called()
+            performer._align_source(group, source_video.path, consumer="audio")
+        self.assertNotIn(source_video.path, group.aligned_sources)
 
     @parameterized.expand([
         ("global", MappingRelation.GLOBAL_LINEAR),
         ("generic", MappingRelation.GENERIC),
     ])
-    def test_patch_mismatched_audio_rejects_unsupported_pts_step_before_strategy(self, _case, relation):
+    def test_align_source_rejects_unsupported_pts_step(self, _case, relation):
         performer = self._make_performer()
         base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
         source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
@@ -1194,7 +1306,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             base_video=base_video,
             base_duration_ms=2000000,
         )
-        group.pair_matches[source_video.path] = _PairMatchResult(
+        match_result = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=[(0, 0), (1600000, 1600000), (1700000, 1703000)],
                 lhs_all_frames={},
@@ -1207,13 +1319,11 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             source_duration=2000000,
         )
 
-        with patch.object(performer, "_plan_audio", side_effect=AssertionError("unsafe mapping reached audio strategy")) as choose, \
+        with patch.object(performer, "_pair_match", return_value=match_result), \
              self.assertLogs(performer.logger, level="ERROR") as captured, \
              self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity"):
-            performer._patch_mismatched_audio(
-                group, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
-            )
-        choose.assert_not_called()
+            performer._align_source(group, source_video.path, consumer="audio")
+        self.assertNotIn(source_video.path, group.aligned_sources)
         self.assertTrue(any(
             "00:26:40,000-00:28:20,000 (1600000-1700000 ms)" in message
             and "00:26:40,000-00:28:23,000 (1600000-1703000 ms)" in message
@@ -1225,7 +1335,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             for message in captured.output
         ))
 
-    def test_patch_mismatched_audio_rejects_pts_step_with_real_global_fit(self):
+    def test_align_source_rejects_pts_step_with_real_global_fit(self):
         performer = self._make_performer()
         base_video = VideoStreamRef("/tmp/base.mkv", 0, 0, None)
         source_video = VideoStreamRef("/tmp/source.mkv", 0, 0, None)
@@ -1265,7 +1375,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             base_video=base_video,
             base_duration_ms=1920000,
         )
-        group.pair_matches[source_video.path] = _PairMatchResult(
+        match_result = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=pairs,
                 lhs_all_frames=lhs_frames,
@@ -1278,15 +1388,11 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             ),
             source_duration=1923000,
         )
-        with patch.object(video_utils, "get_video_full_info", return_value={}), \
-             patch.object(performer, "_create_audio_patch_request") as request, \
-             patch.object(performer.audio_patcher, "execute") as execute, \
+        with patch.object(performer, "_pair_match", return_value=match_result), \
+             patch.object(video_utils, "get_video_full_info", return_value={}), \
              self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity"):
-            performer._patch_mismatched_audio(
-                group, source_video, AudioStreamRef(source_video.path, 1, 1, "pol"),
-            )
-        request.assert_not_called()
-        execute.assert_not_called()
+            performer._align_source(group, source_video.path, consumer="audio")
+        self.assertNotIn(source_video.path, group.aligned_sources)
 
     def test_patch_mismatched_audio_uses_pair_matcher_timing_verdict_without_reclassification(self):
         performer = self._make_performer()
@@ -1299,7 +1405,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             base_video=base_video,
             base_duration_ms=60000,
         )
-        group.pair_matches[source_video.path] = _PairMatchResult(
+        group.aligned_sources[source_video.path] = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=mapping,
                 lhs_all_frames={
@@ -1354,7 +1460,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             base_video=base_video,
             base_duration_ms=60000,
         )
-        group.pair_matches[source_audio.path] = _PairMatchResult(
+        group.aligned_sources[source_audio.path] = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=mapping,
                 lhs_all_frames={},
@@ -1442,7 +1548,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             base_duration_ms=60000,
             base_audio_end_ms=60000,
         )
-        group.pair_matches[source_audio.path] = _PairMatchResult(
+        group.aligned_sources[source_audio.path] = _PairMatchResult(
             matching=SegmentsMappingResult(
                 mapping=mapping,
                 lhs_all_frames={},

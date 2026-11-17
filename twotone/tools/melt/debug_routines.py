@@ -687,7 +687,8 @@ class DebugRoutines:
             ]:
                 info = side.get(ts)
                 path = info.get("path") if info else None
-                if path:
+                # Frames extracted into a removed working directory are gone.
+                if path and os.path.exists(path):
                     self._link_file(
                         path,
                         os.path.join(target_dir, f"{i:06d}_{tag}"),

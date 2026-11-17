@@ -55,7 +55,7 @@ _OUTPUT_TRACK_TYPE_ORDER: dict[StreamType, int] = {"video": 0, "audio": 1, "subt
 
 
 class _PairMatchResult(NamedTuple):
-    """A cached PairMatcher outcome for one (base, source) video pair."""
+    """A PairMatcher outcome for one (base, source) video pair."""
     matching: SegmentsMappingResult
     source_duration: int | None
 
@@ -88,8 +88,9 @@ class _GroupContext:
     base_audio_end_ms: int | None = None
     files_details: Mapping[str, Any] = field(default_factory=dict)
     alignment_paths: frozenset[str] = frozenset()
-    # PairMatcher results by source path; the base video is fixed per group.
-    pair_matches: dict[str, _PairMatchResult] = field(default_factory=dict)
+    # Validated PairMatcher results by source path, filled before any track
+    # is aligned; the base video is fixed per group.
+    aligned_sources: dict[str, _PairMatchResult] = field(default_factory=dict)
 
 
 _MKVMERGE_TRACK_SELECTION_FLAGS = {
@@ -485,76 +486,99 @@ class MeltPerformer:
         mwd: str,
         source_path: str,
     ) -> _PairMatchResult:
-        """Return the (cached) PairMatcher result for the group's base and a source."""
+        """Run PairMatcher for the group's base video and *source_path*."""
         video_path_base = group.base_video.path
         lhs_id = group.file_ids[video_path_base]
         rhs_id = group.file_ids[source_path]
-        match_result = group.pair_matches.get(source_path)
+        self.logger.info("Matching video content: #%d - #%d", lhs_id, rhs_id)
+        duration = self._video_track_duration(
+            source_path,
+            group.files_details,
+            logger=self.logger,
+        )
+        matcher = PairMatcher(
+            self.interruption, mwd, video_path_base, source_path,
+            self.logger.getChild("PairMatcher"),
+            lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
+            cache=self.cache,
+            media_analysis_session=self.media_analysis,
+        )
+        return _PairMatchResult(
+            matching=matcher.create_segments_mapping(),
+            source_duration=duration,
+        )
 
-        if match_result is None:
-            self.logger.info("Matching video content: #%d - #%d", lhs_id, rhs_id)
-            duration = self._video_track_duration(
-                source_path,
-                group.files_details,
-                logger=self.logger,
-            )
-            matcher = PairMatcher(
-                self.interruption, mwd, video_path_base, source_path,
-                self.logger.getChild("PairMatcher"),
-                lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
-                cache=self.cache,
-                media_analysis_session=self.media_analysis,
-            )
-            match_result = _PairMatchResult(
-                matching=matcher.create_segments_mapping(),
-                source_duration=duration,
-            )
-            group.pair_matches[source_path] = match_result
-        else:
-            self.logger.info(
-                "Reusing PairMatcher results for #%d ↔ #%d (same video pair).",
-                lhs_id, rhs_id,
-            )
-        return match_result
-
-    def _validated_pair_match(
+    def _align_sources(
         self,
         group: _GroupContext,
-        working_dir: str,
+        audio_streams: Sequence[AudioStreamRef],
+        subtitle_streams: Sequence[SubtitleStreamRef],
+    ) -> None:
+        """Match and validate every aligned source once, before any track work.
+
+        A refused source fails the group before any of its tracks, or another
+        source's tracks, is processed.  The refusal names the first track type
+        that would have used the mapping.
+        """
+        aligned_subtitles = [
+            stream for stream in subtitle_streams if stream.path in group.alignment_paths
+        ]
+        for subtitle_stream in aligned_subtitles:
+            self.subtitle_alignment.validate_text_track(
+                subtitle_stream,
+                group.file_ids,
+                group.files_details,
+            )
+
+        consumers: dict[str, str] = {}
+        for stream in audio_streams:
+            if stream.path in group.alignment_paths:
+                consumers.setdefault(stream.path, "audio")
+        for subtitle_stream in aligned_subtitles:
+            consumers.setdefault(subtitle_stream.path, "subtitle")
+        for source_path in sorted(consumers, key=group.file_ids.__getitem__):
+            self._align_source(group, source_path, consumer=consumers[source_path])
+
+    def _align_source(
+        self,
+        group: _GroupContext,
         source_path: str,
         *,
         consumer: str,
-    ) -> _PairMatchResult:
-        """Return one safe, cached mapping for an aligned source track."""
+    ) -> None:
+        """Match *source_path*, report its coverage and keep it if it is safe."""
         assert group.base_duration_ms is not None
         base_path = group.base_video.path
         file_ids = group.file_ids
-        first_match = source_path not in group.pair_matches
-        match_result = self._pair_match(group, working_dir, source_path)
-        matching = match_result.matching
+        # The matcher's diagnostics live in its working directory, so the
+        # verdict is reached while that directory exists.
+        with self.workspace.scoped_dir("matching") as mwd:
+            with generic_utils.TqdmBouncingBar(desc="Matching", **generic_utils.get_tqdm_defaults()):
+                match_result = self._pair_match(group, mwd, source_path)
+            matching = match_result.matching
 
-        if first_match and matching.mapping:
-            assert match_result.source_duration is not None
-            debug_routines.log_coverage(
-                self.logger,
-                matching.mapping,
-                group.base_duration_ms,
-                match_result.source_duration,
-                matching.lhs_fps,
-                matching.rhs_fps,
-                file_ids[base_path],
-                file_ids[source_path],
+            if matching.mapping:
+                assert match_result.source_duration is not None
+                debug_routines.log_coverage(
+                    self.logger,
+                    matching.mapping,
+                    group.base_duration_ms,
+                    match_result.source_duration,
+                    matching.lhs_fps,
+                    matching.rhs_fps,
+                    file_ids[base_path],
+                    file_ids[source_path],
+                )
+
+            mapping_validation.validate_mapping(
+                matching,
+                consumer=consumer,
+                lhs_id=file_ids[base_path],
+                rhs_id=file_ids[source_path],
+                max_temporary_frame_offset=self.max_temporary_frame_offset,
+                logger=self.logger,
             )
-
-        mapping_validation.validate_mapping(
-            matching,
-            consumer=consumer,
-            lhs_id=file_ids[base_path],
-            rhs_id=file_ids[source_path],
-            max_temporary_frame_offset=self.max_temporary_frame_offset,
-            logger=self.logger,
-        )
-        return match_result
+        group.aligned_sources[source_path] = match_result
 
     def _patch_mismatched_audio(
         self,
@@ -562,22 +586,15 @@ class MeltPerformer:
         source_video: VideoStreamRef,
         audio_stream: AudioStreamRef,
     ) -> AudioPatchResult:
-        """Run PairMatcher and apply the appropriate audio patching strategy."""
+        """Patch *audio_stream* onto the base timeline with its source's mapping."""
         base_video = group.base_video
         base_duration = group.base_duration_ms
         assert base_duration is not None
         base_audio_end = group.base_audio_end_ms
-        audio_path = audio_stream.path
         ffprobe_stream_index = audio_stream.ffprobe_stream_index
-        with self.workspace.scoped_dir("matching") as mwd, \
+        match_result = group.aligned_sources[audio_stream.path]
+        with self.workspace.scoped_dir("audio_patch") as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
-            match_result = self._validated_pair_match(
-                group,
-                mwd,
-                audio_path,
-                consumer="audio",
-            )
-
             matching = match_result.matching
             duration = match_result.source_duration
 
@@ -787,15 +804,7 @@ class MeltPerformer:
             group.file_ids,
             group.files_details,
         )
-        with self.workspace.scoped_dir("matching") as matching_dir:
-            match_result = self._validated_pair_match(
-                group,
-                matching_dir,
-                source_video.path,
-                consumer="subtitle",
-            )
-
-        matching = match_result.matching
+        matching = group.aligned_sources[source_video.path].matching
         return self.subtitle_alignment.align(
             subtitle_stream,
             matching,
@@ -1003,6 +1012,7 @@ class MeltPerformer:
             files_details or {},
             alignment_paths,
         )
+        self._align_sources(group, audio_streams, subtitle_streams)
         entries = self._prepare_video_entries(video_streams)
         entries.extend(self._prepare_audio_entries(audio_streams, group))
         entries.extend(self._prepare_subtitle_entries(subtitle_streams, group))

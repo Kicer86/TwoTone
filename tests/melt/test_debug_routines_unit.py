@@ -227,6 +227,25 @@ class DebugRoutinesUnitTest(unittest.TestCase):
             self.assertTrue(os.path.isfile(target))
             self.assertTrue(os.path.samefile(source, target))
 
+    def test_dump_pairs_skips_frames_whose_image_is_gone(self):
+        # Matched frames may point into a matcher working directory that was
+        # already removed; without symlinks the copy fallback would fail.
+        with tempfile.TemporaryDirectory() as root:
+            kept = os.path.join(root, "kept.png")
+            with open(kept, "wb") as kept_file:
+                kept_file.write(b"frame")
+            routines = DebugRoutines(
+                root,
+                {0: {"frame_id": 0, "path": kept}, 40: {"frame_id": 1, "path": os.path.join(root, "gone.png")}},
+                {},
+            )
+
+            with patch.object(os, "symlink", side_effect=OSError("not permitted")):
+                routines.dump_pairs([(0, 40, 0, 40)])
+
+            dumped = os.listdir(os.path.join(root, "#0 subsegments"))
+            self.assertEqual(dumped, ["000000_lhs_b_00000000"])
+
     def test_dump_timing_discontinuities_keeps_every_frame_and_writes_details(self):
         with tempfile.TemporaryDirectory() as root:
             source_dir = os.path.join(root, "source")
