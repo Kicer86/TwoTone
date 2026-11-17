@@ -8,7 +8,7 @@ from common import run_ffmpeg, write_srt_subtitle
 
 from melt.helpers import MeltComponentFactories
 from twotone.tools.melt.melt_common import FramesInfo, SubtitleStreamRef, VideoStreamRef
-from twotone.tools.melt.melt_performer import _GroupContext, _PairMatchResult
+from twotone.tools.melt.melt_performer import _GroupContext
 from twotone.tools.melt.pair_matcher import MappingRelation, SegmentsMappingResult
 
 
@@ -145,7 +145,6 @@ class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
                 [(0, 0), (5000, 5000)],
                 MappingRelation.GLOBAL_LINEAR,
             )
-            match_result = _PairMatchResult(matching, 5000)
             base_path = "/tmp/base.mkv"
             details = {
                 source_path: {
@@ -163,7 +162,7 @@ class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
                 base_duration_ms=5000,
                 files_details=details,
             )
-            group.aligned_sources[source_path] = match_result
+            group.aligned_sources[source_path] = matching
             with patch.object(performer, "_mapping_to_video_ms", return_value=0):
                 output_stream, _metadata = performer._patch_mismatched_subtitle(
                     group,

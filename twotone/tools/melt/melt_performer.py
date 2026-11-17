@@ -54,12 +54,6 @@ from .track_timeline import TrackTimeline, mkvmerge_preserves_start
 _OUTPUT_TRACK_TYPE_ORDER: dict[StreamType, int] = {"video": 0, "audio": 1, "subtitle": 2}
 
 
-class _PairMatchResult(NamedTuple):
-    """A PairMatcher outcome for one (base, source) video pair."""
-    matching: SegmentsMappingResult
-    source_duration: int | None
-
-
 class _StreamEntry(NamedTuple):
     stream_type: StreamType
     mkvmerge_track_id: int
@@ -88,9 +82,9 @@ class _GroupContext:
     base_audio_end_ms: int | None = None
     files_details: Mapping[str, Any] = field(default_factory=dict)
     alignment_paths: frozenset[str] = frozenset()
-    # Validated PairMatcher results by source path, filled before any track
+    # Validated PairMatcher mappings by source path, filled before any track
     # is aligned; the base video is fixed per group.
-    aligned_sources: dict[str, _PairMatchResult] = field(default_factory=dict)
+    aligned_sources: dict[str, SegmentsMappingResult] = field(default_factory=dict)
 
 
 _MKVMERGE_TRACK_SELECTION_FLAGS = {
@@ -485,17 +479,12 @@ class MeltPerformer:
         group: _GroupContext,
         mwd: str,
         source_path: str,
-    ) -> _PairMatchResult:
+    ) -> SegmentsMappingResult:
         """Run PairMatcher for the group's base video and *source_path*."""
         video_path_base = group.base_video.path
         lhs_id = group.file_ids[video_path_base]
         rhs_id = group.file_ids[source_path]
         self.logger.info("Matching video content: #%d - #%d", lhs_id, rhs_id)
-        duration = self._video_track_duration(
-            source_path,
-            group.files_details,
-            logger=self.logger,
-        )
         matcher = PairMatcher(
             self.interruption, mwd, video_path_base, source_path,
             self.logger.getChild("PairMatcher"),
@@ -503,10 +492,7 @@ class MeltPerformer:
             cache=self.cache,
             media_analysis_session=self.media_analysis,
         )
-        return _PairMatchResult(
-            matching=matcher.create_segments_mapping(),
-            source_duration=duration,
-        )
+        return matcher.create_segments_mapping()
 
     def _align_sources(
         self,
@@ -554,16 +540,20 @@ class MeltPerformer:
         # verdict is reached while that directory exists.
         with self.workspace.scoped_dir("matching") as mwd:
             with generic_utils.TqdmBouncingBar(desc="Matching", **generic_utils.get_tqdm_defaults()):
-                match_result = self._pair_match(group, mwd, source_path)
-            matching = match_result.matching
+                matching = self._pair_match(group, mwd, source_path)
 
             if matching.mapping:
-                assert match_result.source_duration is not None
+                source_duration_ms = self._video_track_duration(
+                    source_path,
+                    group.files_details,
+                    logger=self.logger,
+                )
+                assert source_duration_ms is not None
                 debug_routines.log_coverage(
                     self.logger,
                     matching.mapping,
                     group.base_duration_ms,
-                    match_result.source_duration,
+                    source_duration_ms,
                     matching.lhs_fps,
                     matching.rhs_fps,
                     file_ids[base_path],
@@ -578,7 +568,7 @@ class MeltPerformer:
                 max_temporary_frame_offset=self.max_temporary_frame_offset,
                 logger=self.logger,
             )
-        group.aligned_sources[source_path] = match_result
+        group.aligned_sources[source_path] = matching
 
     def _patch_mismatched_audio(
         self,
@@ -592,20 +582,17 @@ class MeltPerformer:
         assert base_duration is not None
         base_audio_end = group.base_audio_end_ms
         ffprobe_stream_index = audio_stream.ffprobe_stream_index
-        match_result = group.aligned_sources[audio_stream.path]
+        matching = group.aligned_sources[audio_stream.path]
         with self.workspace.scoped_dir("audio_patch") as mwd, \
              generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
-            matching = match_result.matching
-            duration = match_result.source_duration
-
             plan = self._plan_audio(base_video, source_video, matching)
             strategy = plan.strategy
             mapping = plan.mapping
 
             self.logger.debug(
-                "Audio patching: base_duration=%d ms, source_duration=%d ms, "
-                "mapping_relation=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
-                base_duration, duration, matching.relation.value,
+                "Audio patching: base_duration=%d ms, mapping_relation=%s, "
+                "lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
+                base_duration, matching.relation.value,
                 matching.lhs_fps, matching.rhs_fps, len(mapping),
             )
             if mapping:
@@ -804,7 +791,7 @@ class MeltPerformer:
             group.file_ids,
             group.files_details,
         )
-        matching = group.aligned_sources[source_video.path].matching
+        matching = group.aligned_sources[source_video.path]
         return self.subtitle_alignment.align(
             subtitle_stream,
             matching,

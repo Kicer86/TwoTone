@@ -27,7 +27,6 @@ from twotone.tools.melt.melt_performer import (
     VideoToAudioTimeline,
     _AudioStrategy,
     _GroupContext,
-    _PairMatchResult,
     _StreamEntry,
 )
 from twotone.tools.melt.melt_plan import MeltGroupPlan, MeltTitlePlan
@@ -104,13 +103,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
         base_path = "/media/base.mkv"
         source_path = "/media/source.mkv"
 
-        with patch(
-            "twotone.tools.melt.melt_performer.PairMatcher",
-        ) as matcher_type, patch.object(
-            video_utils,
-            "get_video_duration",
-            return_value=6000,
-        ):
+        with patch("twotone.tools.melt.melt_performer.PairMatcher") as matcher_type:
             matcher_type.return_value.create_segments_mapping.return_value = Mock()
             performer._pair_match(
                 _GroupContext(
@@ -137,6 +130,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             file_ids={base_path: 1, source_path: 2},
             base_video=VideoStreamRef(base_path, 0, 0, None),
             base_duration_ms=6000,
+            files_details=self._video_length_details(source_path, 6000),
         )
         matching = SegmentsMappingResult(
             mapping=[(0, 0), (6000, 6000)],
@@ -146,9 +140,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             lhs_fps=25.0,
             rhs_fps=25.0,
         )
-        match_result = _PairMatchResult(matching, 6000)
-
-        with patch.object(performer, "_pair_match", return_value=match_result), \
+        with patch.object(performer, "_pair_match", return_value=matching), \
              patch.object(mapping_validation, "validate_mapping") as validate:
             performer._align_source(group, source_path, consumer="subtitle")
 
@@ -160,7 +152,11 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             max_temporary_frame_offset=5.0,
             logger=performer.logger,
         )
-        self.assertIs(group.aligned_sources[source_path], match_result)
+        self.assertIs(group.aligned_sources[source_path], matching)
+
+    @staticmethod
+    def _video_length_details(path: str, length_ms: int) -> dict:
+        return {path: {"tracks": {"video": [{"tid": 0, "ffprobe_stream_index": 0, "length": length_ms}]}}}
 
     @staticmethod
     def _aligned_files_details(*paths: str, subtitle_format: str | None = None) -> dict:
@@ -173,17 +169,14 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
         return details
 
     @staticmethod
-    def _aligned_match(mapping: list[tuple[int, int]]) -> _PairMatchResult:
-        return _PairMatchResult(
-            SegmentsMappingResult(
-                mapping=mapping,
-                lhs_all_frames={},
-                rhs_all_frames={},
-                relation=MappingRelation.GLOBAL_LINEAR,
-                lhs_fps=25.0,
-                rhs_fps=25.0,
-            ),
-            6000,
+    def _aligned_match(mapping: list[tuple[int, int]]) -> SegmentsMappingResult:
+        return SegmentsMappingResult(
+            mapping=mapping,
+            lhs_all_frames={},
+            rhs_all_frames={},
+            relation=MappingRelation.GLOBAL_LINEAR,
+            lhs_fps=25.0,
+            rhs_fps=25.0,
         )
 
     @contextmanager
@@ -226,7 +219,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
     def test_prepare_stream_entries_matches_and_validates_each_source_once(self):
         performer = self._make_performer()
         base, source = "/tmp/base.mkv", "/tmp/source.mkv"
-        match_result = self._aligned_match([(0, 0), (6000, 6000)])
+        matching = self._aligned_match([(0, 0), (6000, 6000)])
         audio_streams = [AudioStreamRef(source, 1, 1, "pol"), AudioStreamRef(source, 2, 2, "eng")]
         subtitle = SubtitleStreamRef(source, 3, 3, "pol")
 
@@ -234,7 +227,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             return AudioPatchResult(audio_stream, 0, 6000, "unscaled-normalization")
 
         with self._stream_preparation_probes(performer), \
-             patch.object(performer, "_pair_match", return_value=match_result) as pair_match, \
+             patch.object(performer, "_pair_match", return_value=matching) as pair_match, \
              patch.object(
                  mapping_validation,
                  "validate_mapping",
@@ -287,7 +280,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
                 max_temporary_frame_offset=1.0,
             )
 
-    def test_pair_match_takes_source_duration_from_plan_track_length(self):
+    def test_align_source_reports_coverage_with_the_plan_track_length(self):
         # The coverage report compares the two video tracks, so the source
         # length comes from the same plan data as the base length, not from
         # a container that also spans a longer audio track.
@@ -297,17 +290,16 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
         group = _GroupContext(
             file_ids={base_path: 1, source_path: 2},
             base_video=VideoStreamRef(base_path, 0, 0, None),
-            files_details={
-                source_path: {"tracks": {"video": [{"tid": 0, "length": 5960}]}},
-            },
+            base_duration_ms=6000,
+            files_details=self._video_length_details(source_path, 5960),
         )
 
-        with patch("twotone.tools.melt.melt_performer.PairMatcher") as matcher_type, \
-             patch.object(video_utils, "get_video_duration", return_value=6000):
-            matcher_type.return_value.create_segments_mapping.return_value = Mock()
-            result = performer._pair_match(group, "/tmp/matching", source_path)
+        with patch.object(performer, "_pair_match", return_value=self._aligned_match([(0, 0), (5960, 5960)])), \
+             patch.object(video_utils, "get_video_duration", return_value=6000), \
+             patch.object(debug_routines, "log_coverage") as log_coverage:
+            performer._align_source(group, source_path, consumer="audio")
 
-        self.assertEqual(result.source_duration, 5960)
+        self.assertEqual(log_coverage.call_args.args[2:4], (6000, 5960))
 
     def test_group_base_duration_reads_the_selected_video_track(self):
         # The base duration pads and validates the output against the
@@ -1127,17 +1119,14 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
         # routes to the global-time-scale patcher whose output path we probe.
         mapping = [(0, 0), (base_duration, 58000)]
 
-        def make_match_result(source_duration: int) -> _PairMatchResult:
-            return _PairMatchResult(
-                matching=SegmentsMappingResult(
-                    mapping=mapping,
-                    lhs_all_frames={},
-                    rhs_all_frames={},
-                    relation=MappingRelation.GLOBAL_LINEAR,
-                    lhs_fps=24.0,
-                    rhs_fps=24.0,
-                ),
-                source_duration=source_duration,
+        def make_matching() -> SegmentsMappingResult:
+            return SegmentsMappingResult(
+                mapping=mapping,
+                lhs_all_frames={},
+                rhs_all_frames={},
+                relation=MappingRelation.GLOBAL_LINEAR,
+                lhs_fps=24.0,
+                rhs_fps=24.0,
             )
 
         group = _GroupContext(
@@ -1145,8 +1134,8 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             base_video=VideoStreamRef(base_video, 0, 0, None),
             base_duration_ms=base_duration,
         )
-        group.aligned_sources[audio_a] = make_match_result(base_duration)
-        group.aligned_sources[audio_b] = make_match_result(base_duration)
+        group.aligned_sources[audio_a] = make_matching()
+        group.aligned_sources[audio_b] = make_matching()
 
         patch_outputs = []
 
@@ -1232,27 +1221,25 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             file_ids={base_video.path: 1, source_video.path: 2},
             base_video=base_video,
             base_duration_ms=500000,
+            files_details=self._video_length_details(source_video.path, 500000),
         )
-        match_result = _PairMatchResult(
-            matching=SegmentsMappingResult(
-                mapping=mapping,
-                lhs_all_frames=lhs_frames,
-                rhs_all_frames=rhs_frames,
-                relation=MappingRelation.GLOBAL_LINEAR,
-                lhs_fps=25.0,
-                rhs_fps=25.0,
-                frame_slope=1.0,
-                content_discontinuities=tuple(
-                    matching_analysis.classify_global_linear_discontinuities(
-                        mapping, lhs_frames, rhs_frames,
-                        frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
-                    ).content
-                ),
+        matching = SegmentsMappingResult(
+            mapping=mapping,
+            lhs_all_frames=lhs_frames,
+            rhs_all_frames=rhs_frames,
+            relation=MappingRelation.GLOBAL_LINEAR,
+            lhs_fps=25.0,
+            rhs_fps=25.0,
+            frame_slope=1.0,
+            content_discontinuities=tuple(
+                matching_analysis.classify_global_linear_discontinuities(
+                    mapping, lhs_frames, rhs_frames,
+                    frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+                ).content
             ),
-            source_duration=500000,
         )
 
-        with patch.object(performer, "_pair_match", return_value=match_result), \
+        with patch.object(performer, "_pair_match", return_value=matching), \
              patch.object(debug_routines, "log_coverage"), \
              self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
             performer._align_source(group, source_video.path, consumer="audio")
@@ -1267,26 +1254,24 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             file_ids={base_video.path: 1, source_video.path: 2},
             base_video=base_video,
             base_duration_ms=600000,
+            files_details=self._video_length_details(source_video.path, 600000),
         )
-        match_result = _PairMatchResult(
-            matching=SegmentsMappingResult(
-                mapping=mapping,
-                lhs_all_frames={lhs: {"frame_id": lhs // 40, "path": None} for lhs, _ in mapping},
-                rhs_all_frames={rhs: {"frame_id": rhs // 40, "path": None} for _, rhs in mapping},
-                relation=MappingRelation.GLOBAL_LINEAR,
-                lhs_fps=25.0, rhs_fps=25.0, frame_slope=1.0,
-                content_discontinuities=tuple(
-                    matching_analysis.classify_global_linear_discontinuities(
-                        mapping,
-                        {lhs: {"frame_id": lhs // 40, "path": None} for lhs, _ in mapping},
-                        {rhs: {"frame_id": rhs // 40, "path": None} for _, rhs in mapping},
-                        frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
-                    ).content
-                ),
+        matching = SegmentsMappingResult(
+            mapping=mapping,
+            lhs_all_frames={lhs: {"frame_id": lhs // 40, "path": None} for lhs, _ in mapping},
+            rhs_all_frames={rhs: {"frame_id": rhs // 40, "path": None} for _, rhs in mapping},
+            relation=MappingRelation.GLOBAL_LINEAR,
+            lhs_fps=25.0, rhs_fps=25.0, frame_slope=1.0,
+            content_discontinuities=tuple(
+                matching_analysis.classify_global_linear_discontinuities(
+                    mapping,
+                    {lhs: {"frame_id": lhs // 40, "path": None} for lhs, _ in mapping},
+                    {rhs: {"frame_id": rhs // 40, "path": None} for _, rhs in mapping},
+                    frame_slope=1.0, lhs_fps=25.0, rhs_fps=25.0,
+                ).content
             ),
-            source_duration=600000,
         )
-        with patch.object(performer, "_pair_match", return_value=match_result), \
+        with patch.object(performer, "_pair_match", return_value=matching), \
              patch.object(debug_routines, "log_coverage"), \
              self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
             performer._align_source(group, source_video.path, consumer="audio")
@@ -1305,21 +1290,19 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             file_ids={base_video.path: 1, source_video.path: 2},
             base_video=base_video,
             base_duration_ms=2000000,
+            files_details=self._video_length_details(source_video.path, 2000000),
         )
-        match_result = _PairMatchResult(
-            matching=SegmentsMappingResult(
-                mapping=[(0, 0), (1600000, 1600000), (1700000, 1703000)],
-                lhs_all_frames={},
-                rhs_all_frames={},
-                relation=relation,
-                lhs_fps=25.0, rhs_fps=25.0, frame_slope=1.0,
-                timing_discontinuities=(timing_step,),
-                timing_discontinuity_debug_path="/tmp/timing-debug",
-            ),
-            source_duration=2000000,
+        matching = SegmentsMappingResult(
+            mapping=[(0, 0), (1600000, 1600000), (1700000, 1703000)],
+            lhs_all_frames={},
+            rhs_all_frames={},
+            relation=relation,
+            lhs_fps=25.0, rhs_fps=25.0, frame_slope=1.0,
+            timing_discontinuities=(timing_step,),
+            timing_discontinuity_debug_path="/tmp/timing-debug",
         )
 
-        with patch.object(performer, "_pair_match", return_value=match_result), \
+        with patch.object(performer, "_pair_match", return_value=matching), \
              self.assertLogs(performer.logger, level="ERROR") as captured, \
              self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity"):
             performer._align_source(group, source_video.path, consumer="audio")
@@ -1374,21 +1357,19 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             file_ids={base_video.path: 1, source_video.path: 2},
             base_video=base_video,
             base_duration_ms=1920000,
+            files_details=self._video_length_details(source_video.path, 1923000),
         )
-        match_result = _PairMatchResult(
-            matching=SegmentsMappingResult(
-                mapping=pairs,
-                lhs_all_frames=lhs_frames,
-                rhs_all_frames=rhs_frames,
-                relation=MappingRelation.GLOBAL_LINEAR,
-                lhs_fps=25.0,
-                rhs_fps=25.0,
-                frame_slope=fit.slope,
-                timing_discontinuities=tuple(timing_discontinuities),
-            ),
-            source_duration=1923000,
+        matching = SegmentsMappingResult(
+            mapping=pairs,
+            lhs_all_frames=lhs_frames,
+            rhs_all_frames=rhs_frames,
+            relation=MappingRelation.GLOBAL_LINEAR,
+            lhs_fps=25.0,
+            rhs_fps=25.0,
+            frame_slope=fit.slope,
+            timing_discontinuities=tuple(timing_discontinuities),
         )
-        with patch.object(performer, "_pair_match", return_value=match_result), \
+        with patch.object(performer, "_pair_match", return_value=matching), \
              patch.object(video_utils, "get_video_full_info", return_value={}), \
              self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity"):
             performer._align_source(group, source_video.path, consumer="audio")
@@ -1405,23 +1386,20 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             base_video=base_video,
             base_duration_ms=60000,
         )
-        group.aligned_sources[source_video.path] = _PairMatchResult(
-            matching=SegmentsMappingResult(
-                mapping=mapping,
-                lhs_all_frames={
-                    0: {"frame_id": 0, "path": None},
-                    60000: {"frame_id": 1440, "path": None},
-                },
-                rhs_all_frames={
-                    0: {"frame_id": 0, "path": None},
-                    60000: {"frame_id": 1440, "path": None},
-                },
-                relation=MappingRelation.GLOBAL_LINEAR,
-                lhs_fps=24.0,
-                rhs_fps=24.0,
-                frame_slope=1.0,
-            ),
-            source_duration=60000,
+        group.aligned_sources[source_video.path] = SegmentsMappingResult(
+            mapping=mapping,
+            lhs_all_frames={
+                0: {"frame_id": 0, "path": None},
+                60000: {"frame_id": 1440, "path": None},
+            },
+            rhs_all_frames={
+                0: {"frame_id": 0, "path": None},
+                60000: {"frame_id": 1440, "path": None},
+            },
+            relation=MappingRelation.GLOBAL_LINEAR,
+            lhs_fps=24.0,
+            rhs_fps=24.0,
+            frame_slope=1.0,
         )
         request = Mock(output_path="/tmp/patched.mka", source_audio=source_audio)
         result = AudioPatchResult(
@@ -1460,16 +1438,13 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             base_video=base_video,
             base_duration_ms=60000,
         )
-        group.aligned_sources[source_audio.path] = _PairMatchResult(
-            matching=SegmentsMappingResult(
-                mapping=mapping,
-                lhs_all_frames={},
-                rhs_all_frames={},
-                relation=MappingRelation.GLOBAL_LINEAR,
-                lhs_fps=24.0,
-                rhs_fps=24.0,
-            ),
-            source_duration=60000,
+        group.aligned_sources[source_audio.path] = SegmentsMappingResult(
+            mapping=mapping,
+            lhs_all_frames={},
+            rhs_all_frames={},
+            relation=MappingRelation.GLOBAL_LINEAR,
+            lhs_fps=24.0,
+            rhs_fps=24.0,
         )
         request = Mock(output_path="/tmp/patched.mka", source_audio=source_audio)
         result = AudioPatchResult(
@@ -1548,16 +1523,13 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             base_duration_ms=60000,
             base_audio_end_ms=60000,
         )
-        group.aligned_sources[source_audio.path] = _PairMatchResult(
-            matching=SegmentsMappingResult(
-                mapping=mapping,
-                lhs_all_frames={},
-                rhs_all_frames={},
-                relation=MappingRelation.GENERIC,
-                lhs_fps=24.0,
-                rhs_fps=24.0,
-            ),
-            source_duration=60000,
+        group.aligned_sources[source_audio.path] = SegmentsMappingResult(
+            mapping=mapping,
+            lhs_all_frames={},
+            rhs_all_frames={},
+            relation=MappingRelation.GENERIC,
+            lhs_fps=24.0,
+            rhs_fps=24.0,
         )
 
         def fake_request(
