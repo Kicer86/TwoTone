@@ -32,7 +32,7 @@ from .melt_cache import MeltCache
 from .melt_common import (
     AttachmentRef,
     AudioStreamRef,
-    FramesInfo,
+    FrameSpan,
     StreamType,
     SubtitleStreamRef,
     VideoStreamRef,
@@ -373,8 +373,7 @@ class MeltPerformer:
         plan: audio_strategy.AudioPlan,
         base_duration_ms: int,
         *,
-        lhs_frames: FramesInfo | None = None,
-        rhs_frames: FramesInfo | None = None,
+        matching: SegmentsMappingResult | None = None,
         fill_gaps_from_base: bool,
         output_end_ms: int | None = None,
     ) -> AudioPatchRequest:
@@ -383,9 +382,11 @@ class MeltPerformer:
 
         mapping_tuple = tuple(plan.mapping)
         segment = segment_range(mapping_tuple)
-        source_timeline = self._video_to_audio_timeline(source_video, source_audio, rhs_frames or {})
+        lhs_span = matching.lhs_frame_span if matching is not None else None
+        rhs_span = matching.rhs_frame_span if matching is not None else None
+        source_timeline = self._video_to_audio_timeline(source_video, source_audio, rhs_span)
         base_timeline = (
-            self._video_to_audio_timeline(base_video, base_audio, lhs_frames or {})
+            self._video_to_audio_timeline(base_video, base_audio, lhs_span)
             if base_audio is not None
             else None
         )
@@ -400,10 +401,10 @@ class MeltPerformer:
             source_timeline=source_timeline,
             base_timeline=base_timeline,
             fill_gaps_from_base=fill_gaps_from_base,
-            lhs_frames=lhs_frames or {},
-            rhs_frames=rhs_frames or {},
+            lhs_frames=matching.lhs_all_frames if matching is not None else {},
+            rhs_frames=matching.rhs_all_frames if matching is not None else {},
             strategy=plan.strategy,
-            output_mapping_to_video_ms=self._mapping_to_video_ms(base_video, lhs_frames or {}),
+            output_mapping_to_video_ms=self._mapping_to_video_ms(base_video, lhs_span),
             segment_count=plan.segment_count,
             unscaled_shift_ms=plan.unscaled_shift_ms,
         )
@@ -411,7 +412,7 @@ class MeltPerformer:
     def _mapping_to_video_ms(
         self,
         video_stream: VideoStreamRef,
-        frames: FramesInfo,
+        frame_span: FrameSpan | None,
     ) -> int:
         """Return the base-stream PTS corresponding to PairMatcher timestamp zero."""
         video_info = self.timeline.stream_info(
@@ -420,19 +421,19 @@ class MeltPerformer:
             video_stream.ffprobe_stream_index,
         )
         video_start_ms = self.timeline.stream_start_offset_ms(video_info)
-        mapping_start_ms = min(frames) if frames else video_start_ms
+        mapping_start_ms = frame_span.first_ms if frame_span is not None else video_start_ms
         return video_start_ms - mapping_start_ms
 
     def _video_to_audio_timeline(
         self,
         video_stream: VideoStreamRef,
         audio_stream: AudioStreamRef,
-        frames: FramesInfo,
+        frame_span: FrameSpan | None,
     ) -> VideoToAudioTimeline:
         """Build the explicit mapping-video-to-selected-audio transform."""
         audio_info = self.timeline.audio_stream_info(audio_stream)
         return VideoToAudioTimeline(
-            mapping_to_video_ms=self._mapping_to_video_ms(video_stream, frames),
+            mapping_to_video_ms=self._mapping_to_video_ms(video_stream, frame_span),
             audio_content_start_ms=self.timeline.audio_content_start_ms(audio_info),
             audio_content_end_ms=self.timeline.stream_end_offset_ms(audio_info),
         )
@@ -558,8 +559,6 @@ class MeltPerformer:
             )
 
             matching = match_result.matching
-            lhs_all_frames = matching.lhs_all_frames
-            rhs_all_frames = matching.rhs_all_frames
             duration = match_result.source_duration
 
             plan = self._plan_audio(video_path_base, audio_path, matching)
@@ -591,8 +590,7 @@ class MeltPerformer:
                 patched_audio,
                 plan,
                 base_duration,
-                lhs_frames=lhs_all_frames,
-                rhs_frames=rhs_all_frames,
+                matching=matching,
                 fill_gaps_from_base=self.fill_audio_gaps,
                 output_end_ms=(
                     base_audio_end
@@ -611,17 +609,18 @@ class MeltPerformer:
         matching: SegmentsMappingResult,
     ) -> audio_strategy.AudioPlan:
         """Probe the facts the audio strategy needs and plan the patch."""
+        lhs_span, rhs_span = matching.lhs_frame_span, matching.rhs_frame_span
         plan = audio_strategy.plan_audio(
             matching,
             tempo_ratio=self._effective_tempo_ratio(
                 video_path_base,
                 audio_path,
-                matching.lhs_all_frames,
-                matching.rhs_all_frames,
+                lhs_span,
+                rhs_span,
             ),
             stream_bias_ms=(
-                self._mapping_stream_bias_ms(video_path_base, matching.lhs_all_frames)
-                - self._mapping_stream_bias_ms(audio_path, matching.rhs_all_frames)
+                self._mapping_stream_bias_ms(video_path_base, lhs_span)
+                - self._mapping_stream_bias_ms(audio_path, rhs_span)
             ),
         )
         self.logger.info("  Audio strategy: %s", plan.strategy.value)
@@ -641,7 +640,7 @@ class MeltPerformer:
             )
         return plan
 
-    def _mapping_stream_bias_ms(self, path: str, frames: FramesInfo) -> int:
+    def _mapping_stream_bias_ms(self, path: str, frame_span: FrameSpan | None) -> int:
         """Offset from *path*'s mapping space to its stream space.
 
         The frame timestamps feeding the pair mapping are container-dependent:
@@ -651,16 +650,16 @@ class MeltPerformer:
         convention this side uses, so mapping deltas from two files can be
         compared in one (stream) space.
         """
-        if not frames:
+        if frame_span is None:
             return 0
         info = self.timeline.media_info(path)
         stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
         if stream is None:
             return 0
-        return TrackTimeline.stream_start_offset_ms(stream) - min(frames)
+        return TrackTimeline.stream_start_offset_ms(stream) - frame_span.first_ms
 
-    def _effective_video_fps(self, path: str, frames: FramesInfo) -> float | None:
-        if len(frames) < 2:
+    def _effective_video_fps(self, path: str, frame_span: FrameSpan | None) -> float | None:
+        if frame_span is None or frame_span.frame_count < 2:
             return None
 
         info = self.timeline.media_info(path)
@@ -684,20 +683,20 @@ class MeltPerformer:
             frame_count = int(stream.get("nb_frames") or 0)
         except (TypeError, ValueError):
             frame_count = 0
-        frame_span = frame_count - 1 if frame_count > 1 else len(frames) - 1
-
-        return frame_span * 1000 / duration_ms
+        if frame_count < 2:
+            frame_count = frame_span.frame_count
+        return (frame_count - 1) * 1000 / duration_ms
 
     def _effective_tempo_ratio(
         self,
         base_video: str,
         source_video: str,
-        lhs_all_frames: FramesInfo,
-        rhs_all_frames: FramesInfo,
+        lhs_frame_span: FrameSpan | None,
+        rhs_frame_span: FrameSpan | None,
     ) -> float | None:
         """Tempo ratio implied by the two files' effective fps, or None when unknown."""
-        lhs_effective_fps = self._effective_video_fps(base_video, lhs_all_frames)
-        rhs_effective_fps = self._effective_video_fps(source_video, rhs_all_frames)
+        lhs_effective_fps = self._effective_video_fps(base_video, lhs_frame_span)
+        rhs_effective_fps = self._effective_video_fps(source_video, rhs_frame_span)
         if lhs_effective_fps is None or rhs_effective_fps is None or rhs_effective_fps <= 0:
             return None
         return lhs_effective_fps / rhs_effective_fps
@@ -802,11 +801,11 @@ class MeltPerformer:
             description=description,
             source_mapping_to_video_ms=self._mapping_to_video_ms(
                 source_video,
-                matching.rhs_all_frames,
+                matching.rhs_frame_span,
             ),
             output_mapping_to_video_ms=self._mapping_to_video_ms(
                 group.base_video,
-                matching.lhs_all_frames,
+                matching.lhs_frame_span,
             ),
         )
 

@@ -12,6 +12,7 @@ from twotone.tools.melt import audio_strategy, debug_routines, mapping_validatio
 from twotone.tools.melt.static_source import StaticSource
 from twotone.tools.melt.streams_picker import StreamsPicker
 from twotone.tools.melt.melt_common import (
+    FrameSpan,
     AttachmentRef,
     AudioStreamRef,
     MeltInputFiles,
@@ -477,8 +478,8 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
         fake_info = {"streams": [{"codec_type": "video", "start_time": "0.500"}]}
 
         with patch.object(video_utils, "get_video_full_info", return_value=fake_info):
-            rebased = performer._mapping_stream_bias_ms("/tmp/a.mkv", {0: {}, 41: {}})
-            preserved = performer._mapping_stream_bias_ms("/tmp/a.mp4", {500: {}, 541: {}})
+            rebased = performer._mapping_stream_bias_ms("/tmp/a.mkv", FrameSpan(0, 41, 2))
+            preserved = performer._mapping_stream_bias_ms("/tmp/a.mp4", FrameSpan(500, 541, 2))
 
         self.assertEqual(rebased, 500)
         self.assertEqual(preserved, 0)
@@ -508,7 +509,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
         ):
             effective_fps = performer._effective_video_fps(
                 "/tmp/source.mkv",
-                {0: {}, 500: {}, 1000: {}},
+                FrameSpan(0, 1000, 3),
             )
 
         self.assertEqual(effective_fps, 2.0)
@@ -522,7 +523,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
         ):
             effective_fps = performer._effective_video_fps(
                 "/tmp/source.mkv",
-                {0: {}, 1000: {}},
+                FrameSpan(0, 1000, 2),
             )
 
         self.assertIsNone(effective_fps)
@@ -574,7 +575,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             timeline = performer._video_to_audio_timeline(
                 VideoStreamRef("/tmp/source.mkv", 0, 0, None),
                 AudioStreamRef("/tmp/source.mkv", 1, 1, "pol"),
-                {0: {"path": None}, 41: {"path": None}},
+                FrameSpan(0, 41, 2),
             )
 
         self.assertEqual(timeline.mapping_to_video_ms, 500)
@@ -603,7 +604,7 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
             timeline = performer._video_to_audio_timeline(
                 VideoStreamRef("/tmp/source.mkv", 0, 0, None),
                 AudioStreamRef("/tmp/source.mkv", 1, 1, "pol"),
-                {3: {"path": None}},
+                FrameSpan(3, 3, 1),
             )
 
         self.assertEqual(timeline.mapping_to_video_ms, 475)

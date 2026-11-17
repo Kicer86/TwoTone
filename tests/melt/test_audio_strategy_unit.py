@@ -6,6 +6,7 @@ from parameterized import parameterized
 from melt.helpers import MeltComponentFactories
 from twotone.tools.melt import audio_strategy
 from twotone.tools.melt.audio_patcher import AudioStrategy
+from twotone.tools.melt.melt_common import FrameSpan
 from twotone.tools.melt.melt_performer import _AudioStrategy
 from twotone.tools.melt.pair_matcher import MappingRelation, SegmentsMappingResult
 from twotone.tools.utils import video_utils
@@ -210,8 +211,8 @@ class AudioStrategyDecisionTest(MeltComponentFactories, unittest.TestCase):
             tempo_ratio = performer._effective_tempo_ratio(
                 "/tmp/base.mp4",
                 "/tmp/source.mkv",
-                lhs_frames,
-                rhs_frames,
+                FrameSpan.of(lhs_frames),
+                FrameSpan.of(rhs_frames),
             )
         self.assertEqual(probe.call_count, 2)
 
@@ -295,8 +296,8 @@ class AudioStrategyDecisionTest(MeltComponentFactories, unittest.TestCase):
             tempo_ratio = performer._effective_tempo_ratio(
                 "/tmp/base.mkv",
                 "/tmp/source.mp4",
-                lhs_frames,
-                rhs_frames,
+                FrameSpan.of(lhs_frames),
+                FrameSpan.of(rhs_frames),
             )
         result = audio_strategy.is_frame_rate_only_drift(
             mapping,
