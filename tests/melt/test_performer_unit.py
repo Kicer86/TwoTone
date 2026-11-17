@@ -192,6 +192,32 @@ class MeltPerformerUnitTest(MeltComponentFactories, unittest.TestCase):
 
         self.assertEqual(result.source_duration, 5960)
 
+    def test_group_base_duration_reads_the_selected_video_track(self):
+        # The base duration pads and validates the output against the
+        # selected base video, so it must not come from another video track
+        # of the same file.
+        performer = self._make_performer()
+        base_path = "/media/base.mkv"
+        files_details = {
+            base_path: {"tracks": {"video": [
+                {"tid": 0, "length": 4000},
+                {"tid": 1, "length": 6000},
+            ]}},
+        }
+
+        with patch.object(performer, "_base_output_end_ms", return_value=None), \
+             patch.object(performer, "_base_audio_end_ms", return_value=None), \
+             patch.object(video_utils, "get_video_duration", side_effect=AssertionError("plan data has the length")):
+            group = performer._group_context(
+                [VideoStreamRef(base_path, 1, 1, None)],
+                [],
+                {base_path: 1},
+                files_details,
+                (),
+            )
+
+        self.assertEqual(group.base_duration_ms, 6000)
+
     def test_process_duplicates_rejects_output_aliasing_input(self):
         performer = self._make_performer()
         title_dir = os.path.join(performer.output_dir, "Title")

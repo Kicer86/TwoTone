@@ -237,7 +237,11 @@ class MeltPerformer:
                     )
 
                     expected_duration_ms = (
-                        self._planned_video_duration_ms(video_streams[0], files_details)
+                        self._planned_video_duration_ms(
+                            video_streams[0].path,
+                            files_details,
+                            video_streams[0].mkvmerge_track_id,
+                        )
                         if video_streams
                         else None
                     )
@@ -268,14 +272,23 @@ class MeltPerformer:
 
     @staticmethod
     def _planned_video_duration_ms(
-        base_video: VideoStreamRef,
+        path: str,
         files_details: Mapping[str, Any],
+        mkvmerge_track_id: int | None = None,
     ) -> int | None:
-        track = find_track(
-            content_video_tracks(file_tracks(files_details, base_video.path, "video")),
-            base_video.mkvmerge_track_id,
+        """Video track length in ms from pre-probed plan data, or ``None``.
+
+        Reads the track *mkvmerge_track_id*, or the first content video
+        track with a known length when no track is named.
+        """
+        tracks = content_video_tracks(file_tracks(files_details, path, "video"))
+        if mkvmerge_track_id is not None:
+            track = find_track(tracks, mkvmerge_track_id)
+            tracks = [track] if track is not None else []
+        return next(
+            (track["length"] for track in tracks if track.get("length") is not None),
+            None,
         )
-        return track.get("length") if track is not None else None
 
     def build_mkvmerge_args(
         self,
@@ -690,21 +703,22 @@ class MeltPerformer:
             return None
         return lhs_effective_fps / rhs_effective_fps
 
-    @staticmethod
+    @classmethod
     def _video_track_duration(
+        cls,
         path: str,
         files_details: Mapping[str, Any],
         logger: logging.Logger | None = None,
+        mkvmerge_track_id: int | None = None,
     ) -> int | None:
-        """Return video track duration in ms from pre-probed plan data.
+        """Video track length in ms, falling back to the container duration.
 
-        Falls back to container-level ffprobe duration when plan data is
-        unavailable.
+        The ffprobe container duration is used only when plan data does not
+        know the track length.
         """
-        for track in content_video_tracks(file_tracks(files_details, path, "video")):
-            length = track.get("length")
-            if length is not None:
-                return length
+        planned = cls._planned_video_duration_ms(path, files_details, mkvmerge_track_id)
+        if planned is not None:
+            return planned
         return video_utils.get_video_duration(path, logger=logger)
 
     def _max_stream_end_ms(
@@ -957,6 +971,7 @@ class MeltPerformer:
                 base_video.path,
                 files_details,
                 logger=self.logger,
+                mkvmerge_track_id=base_video.mkvmerge_track_id,
             ),
             base_output_end_ms=self._base_output_end_ms(
                 base_video.path,
