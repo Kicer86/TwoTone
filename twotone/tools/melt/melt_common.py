@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal, NamedTuple, TypedDict
 
-from ..utils import generic_utils
+from ..utils import generic_utils, video_utils
 
 
 class FrameInfo(TypedDict):
@@ -145,6 +145,43 @@ def find_track(tracks: Iterable[dict[str, Any]], tid: int) -> dict[str, Any] | N
 def content_video_tracks(tracks: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return video tracks that are not attached pictures (cover art)."""
     return [track for track in tracks if not track.get("attached_pic", False)]
+
+
+def planned_video_duration_ms(
+    path: str,
+    files_details: Mapping[str, Any],
+    mkvmerge_track_id: int | None = None,
+) -> int | None:
+    """Video track length in ms from pre-probed plan data, or ``None``.
+
+    Reads the track *mkvmerge_track_id*, or the first content video track
+    with a known length when no track is named.
+    """
+    tracks = content_video_tracks(file_tracks(files_details, path, "video"))
+    if mkvmerge_track_id is not None:
+        track = find_track(tracks, mkvmerge_track_id)
+        tracks = [track] if track is not None else []
+    return next(
+        (track["length"] for track in tracks if track.get("length") is not None),
+        None,
+    )
+
+
+def video_track_duration_ms(
+    path: str,
+    files_details: Mapping[str, Any],
+    logger: logging.Logger | None = None,
+    mkvmerge_track_id: int | None = None,
+) -> int | None:
+    """Video track length in ms, falling back to the container duration.
+
+    The ffprobe container duration is used only when plan data does not
+    know the track length.
+    """
+    planned = planned_video_duration_ms(path, files_details, mkvmerge_track_id)
+    if planned is not None:
+        return planned
+    return video_utils.get_video_duration(path, logger=logger)
 
 
 def _fmt_fps(value: str) -> str | None:

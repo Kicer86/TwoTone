@@ -20,7 +20,8 @@ from common import (
 from parameterized import parameterized
 
 from twotone.tools.melt.melt_analyzer import MeltAnalyzer
-from twotone.tools.melt.melt_performer import MeltPerformer, _GroupContext
+from twotone.tools.melt.melt_performer import MeltPerformer
+from twotone.tools.melt.source_aligner import AlignmentGroup
 from twotone.tools.melt.static_source import StaticSource
 from twotone.tools.melt.melt_cache import MeltCache
 from twotone.tools.melt.melt_common import VideoStreamRef
@@ -194,7 +195,7 @@ class AudioTimelineDiscontinuityTest(TwoToneTestCase):
 
         context = ToolRuntimeContext(self.workspace, interruption, analysis)
         performer = MeltPerformer(logger=self.logger, context=context, output_dir=self.wd.path)
-        group = _GroupContext(
+        group = AlignmentGroup(
             file_ids={base: 1, source: 2},
             base_video=VideoStreamRef(base, 0, 0, None),
             base_duration_ms=20000,
@@ -206,7 +207,7 @@ class AudioTimelineDiscontinuityTest(TwoToneTestCase):
              )), \
              patch.object(PairMatcher, "_match_key_frames", return_value=pairs), \
              self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity.*PTS step"):
-            performer._align_source(group, source, consumer="audio")
+            performer.aligner._align_source(group, source, consumer="audio")
         self.assertNotIn(source, group.aligned_sources)
 
 

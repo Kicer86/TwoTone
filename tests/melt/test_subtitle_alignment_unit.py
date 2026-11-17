@@ -8,8 +8,8 @@ from common import run_ffmpeg, write_srt_subtitle
 
 from melt.helpers import MeltComponentFactories
 from twotone.tools.melt.melt_common import FramesInfo, SubtitleStreamRef, VideoStreamRef
-from twotone.tools.melt.melt_performer import _GroupContext
 from twotone.tools.melt.pair_matcher import MappingRelation, SegmentsMappingResult
+from twotone.tools.melt.source_aligner import AlignmentGroup
 
 
 class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
@@ -38,7 +38,7 @@ class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
         )
 
     def test_retime_subtitle_content_applies_global_shift_and_scale(self):
-        performer = self._make_performer()
+        aligner = self._make_source_aligner()
         content = pysubs2.SSAFile()
         content.append(pysubs2.SSAEvent(start=2000, end=4000, text="Line"))
         matching = self._subtitle_matching(
@@ -46,7 +46,7 @@ class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
             MappingRelation.GLOBAL_LINEAR,
         )
 
-        performer.subtitle_alignment.retime_content(
+        aligner.subtitle_alignment.retime_content(
             content,
             matching,
             source_mapping_to_video_ms=0,
@@ -57,7 +57,7 @@ class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
         self.assertEqual((content[0].start, content[0].end), (1750, 4250))
 
     def test_retime_subtitle_content_uses_piecewise_generic_mapping(self):
-        performer = self._make_performer()
+        aligner = self._make_source_aligner()
         content = pysubs2.SSAFile()
         content.append(pysubs2.SSAEvent(start=2000, end=7000, text="Line"))
         matching = self._subtitle_matching(
@@ -65,7 +65,7 @@ class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
             MappingRelation.GENERIC,
         )
 
-        performer.subtitle_alignment.retime_content(
+        aligner.subtitle_alignment.retime_content(
             content,
             matching,
             source_mapping_to_video_ms=0,
@@ -76,7 +76,7 @@ class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
         self.assertEqual((content[0].start, content[0].end), (2500, 7500))
 
     def test_retime_subtitle_content_rejects_event_outside_shared_content(self):
-        performer = self._make_performer()
+        aligner = self._make_source_aligner()
         content = pysubs2.SSAFile()
         content.append(pysubs2.SSAEvent(start=500, end=1500, text="Intro"))
         matching = self._subtitle_matching(
@@ -85,7 +85,7 @@ class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
         )
 
         with self.assertRaisesRegex(RuntimeError, "extends beyond verified shared content"):
-            performer.subtitle_alignment.retime_content(
+            aligner.subtitle_alignment.retime_content(
                 content,
                 matching,
                 source_mapping_to_video_ms=0,
@@ -93,8 +93,8 @@ class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
                 source_description="subtitle track #2 from file #2",
             )
 
-    def test_patch_mismatched_subtitle_rejects_image_based_track(self):
-        performer = self._make_performer()
+    def test_align_subtitle_rejects_image_based_track(self):
+        aligner = self._make_source_aligner()
         base_path = "/tmp/base.mkv"
         source_path = "/tmp/source.mkv"
         subtitle = SubtitleStreamRef(source_path, 2, 2, "pol")
@@ -109,19 +109,18 @@ class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
         }
 
         with self.assertRaisesRegex(RuntimeError, "image-based subtitle format"):
-            performer._patch_mismatched_subtitle(
-                _GroupContext(
+            aligner.align_subtitle(
+                AlignmentGroup(
                     file_ids={base_path: 1, source_path: 2},
                     base_video=VideoStreamRef(base_path, 0, 0, None),
                     base_duration_ms=10000,
                     files_details=details,
                 ),
-                VideoStreamRef(source_path, 0, 0, None),
                 subtitle,
             )
 
-    def test_patch_mismatched_subtitle_extracts_text_track_from_mp4(self):
-        performer = self._make_performer()
+    def test_align_subtitle_extracts_text_track_from_mp4(self):
+        aligner = self._make_source_aligner()
         with tempfile.TemporaryDirectory() as tmpdir:
             subtitle_path = os.path.join(tmpdir, "source.srt")
             source_path = os.path.join(tmpdir, "source.mp4")
@@ -149,6 +148,9 @@ class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
             details = {
                 source_path: {
                     "tracks": {
+                        "video": [
+                            {"tid": 0, "ffprobe_stream_index": 0},
+                        ],
                         "subtitle": [
                             {"tid": 1, "format": "mov_text"},
                         ],
@@ -156,17 +158,16 @@ class SubtitleAlignmentUnitTest(MeltComponentFactories, unittest.TestCase):
                 },
             }
 
-            group = _GroupContext(
+            group = AlignmentGroup(
                 file_ids={base_path: 1, source_path: 2},
                 base_video=VideoStreamRef(base_path, 0, 0, None),
                 base_duration_ms=5000,
                 files_details=details,
             )
             group.aligned_sources[source_path] = matching
-            with patch.object(performer, "_mapping_to_video_ms", return_value=0):
-                output_stream, _metadata = performer._patch_mismatched_subtitle(
+            with patch.object(aligner, "_mapping_to_video_ms", return_value=0):
+                output_stream, _metadata = aligner.align_subtitle(
                     group,
-                    VideoStreamRef(source_path, 0, 0, None),
                     SubtitleStreamRef(source_path, 1, 1, "pol"),
                 )
 

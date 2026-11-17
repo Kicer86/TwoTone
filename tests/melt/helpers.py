@@ -19,6 +19,7 @@ from common import (
 from twotone.tools.melt.audio_patcher import AudioPatcher
 from twotone.tools.melt.melt_analyzer import MeltAnalyzer
 from twotone.tools.melt.melt_performer import MeltPerformer
+from twotone.tools.melt.source_aligner import SourceAligner
 from twotone.tools.melt.static_source import StaticSource
 from twotone.tools.melt.track_timeline import TrackTimeline
 from twotone.tools.tool import ToolRuntimeContext
@@ -122,6 +123,20 @@ class MeltComponentFactories:
             context=context,
             output_dir=output.root,
         )
+
+    def _make_source_aligner(self) -> SourceAligner:
+        workspace = Workspace.temporary()
+        self.addCleanup(workspace.close)
+        interruption = generic_utils.InterruptibleProcess()
+        logger = logging.getLogger("test.SourceAligner")
+        media_analysis_session = media_analysis.MediaAnalysisSession(
+            workspace,
+            interruption,
+            logger.getChild("MediaAnalysis"),
+        )
+        context = ToolRuntimeContext(workspace, interruption, media_analysis_session)
+        timeline = TrackTimeline(workspace, logger)
+        return SourceAligner(logger, context, timeline, AudioPatcher(logger, timeline))
 
     def _make_audio_patcher(self) -> AudioPatcher:
         workspace = Workspace.temporary()

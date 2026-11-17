@@ -7,7 +7,6 @@ from melt.helpers import MeltComponentFactories
 from twotone.tools.melt import audio_strategy
 from twotone.tools.melt.audio_patcher import AudioStrategy
 from twotone.tools.melt.melt_common import FrameSpan
-from twotone.tools.melt.melt_performer import _AudioStrategy
 from twotone.tools.melt.pair_matcher import MappingRelation, SegmentsMappingResult
 from twotone.tools.utils import video_utils
 
@@ -165,7 +164,7 @@ class AudioStrategyDecisionTest(MeltComponentFactories, unittest.TestCase):
         self.assertEqual(shift, 0)
 
     def test_collapse_linear_mapping_sharpens_slope_with_metadata_tempo(self):
-        performer = self._make_performer()
+        aligner = self._make_source_aligner()
         # The matched endpoint carries a ~1 s low-entropy-zone error (observed
         # slope 1.0043 vs the real 1.0204); the effective-fps tempo agrees
         # with the pairs within tolerance, so it replaces the noisy slope and
@@ -208,7 +207,7 @@ class AudioStrategyDecisionTest(MeltComponentFactories, unittest.TestCase):
             }
 
         with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info) as probe:
-            tempo_ratio = performer._effective_tempo_ratio(
+            tempo_ratio = aligner._effective_tempo_ratio(
                 "/tmp/base.mp4",
                 "/tmp/source.mkv",
                 FrameSpan.of(lhs_frames),
@@ -246,7 +245,7 @@ class AudioStrategyDecisionTest(MeltComponentFactories, unittest.TestCase):
         self.assertIsNone(result)
 
     def test_frame_rate_only_drift_mapping_detected(self):
-        performer = self._make_performer()
+        aligner = self._make_source_aligner()
         # A 23<->24 fps resample preserving playback time: the effective fps
         # differ (tempo far from 1) and match the nominal ratio, while the
         # matched spans agree in wall-clock duration.  Such pairs must go the
@@ -293,7 +292,7 @@ class AudioStrategyDecisionTest(MeltComponentFactories, unittest.TestCase):
             }
 
         with patch.object(video_utils, "get_video_full_info", side_effect=fake_full_info):
-            tempo_ratio = performer._effective_tempo_ratio(
+            tempo_ratio = aligner._effective_tempo_ratio(
                 "/tmp/base.mkv",
                 "/tmp/source.mp4",
                 FrameSpan.of(lhs_frames),
@@ -338,7 +337,7 @@ class AudioStrategyDecisionTest(MeltComponentFactories, unittest.TestCase):
         # pure frame-rate drift.
         strategy = audio_strategy.choose_strategy(matching, tempo_ratio=None)
 
-        self.assertEqual(strategy, _AudioStrategy.SUBSEGMENT)
+        self.assertEqual(strategy, AudioStrategy.SUBSEGMENT)
 
     def test_linear_recovery_rejects_tmnt_piecewise_pairs(self):
         # A 23.976 fps base against a 30 fps resampled transfer with ad-break

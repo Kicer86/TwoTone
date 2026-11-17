@@ -10,17 +10,15 @@ from parameterized import parameterized
 from melt.helpers import MeltComponentFactories, _FAKE_PROCESS_OK
 from twotone.tools.melt.audio_patcher import (
     AudioPatcher,
+    AudioPatchRequest,
     AudioSourceWindow,
+    AudioStrategy,
+    TimelineInterval,
+    VideoToAudioTimeline,
     _AudioPart,
     segment_range,
 )
 from twotone.tools.melt.melt_common import AudioStreamRef
-from twotone.tools.melt.melt_performer import (
-    AudioPatchRequest,
-    TimelineInterval,
-    VideoToAudioTimeline,
-    _AudioStrategy,
-)
 from twotone.tools.utils import process_utils, video_utils
 
 
@@ -54,7 +52,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             lhs_frames={},
             rhs_frames={},
             output_mapping_to_video_ms=0,
-            strategy=_AudioStrategy.GLOBAL_TIME_SCALE,
+            strategy=AudioStrategy.GLOBAL_TIME_SCALE,
         )
         return patcher.execute(request).timeline_start_ms
 
@@ -489,7 +487,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             fill_gaps_from_base=False,
             lhs_frames={},
             rhs_frames={},
-            strategy=_AudioStrategy.UNSCALED,
+            strategy=AudioStrategy.UNSCALED,
         )
         decoded: list[dict[str, object]] = []
 
@@ -536,7 +534,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             lhs_frames={},
             rhs_frames={},
             output_mapping_to_video_ms=500,
-            strategy=_AudioStrategy.UNSCALED,
+            strategy=AudioStrategy.UNSCALED,
         )
         decoded: list[dict[str, object]] = []
 
@@ -576,7 +574,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             lhs_frames={},
             rhs_frames={},
             output_mapping_to_video_ms=478,
-            strategy=_AudioStrategy.UNSCALED,
+            strategy=AudioStrategy.UNSCALED,
         )
         decoded: list[dict[str, object]] = []
 
@@ -610,7 +608,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             lhs_frames={},
             rhs_frames={},
             output_mapping_to_video_ms=510,
-            strategy=_AudioStrategy.GLOBAL_TIME_SCALE,
+            strategy=AudioStrategy.GLOBAL_TIME_SCALE,
         )
 
         with patch.object(patcher.timeline, "decode_audio_stream_to_flac"), \
@@ -773,7 +771,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
                 source_per_base,
                 scaled_path,
                 sample_rate,
-                _AudioStrategy.GLOBAL_TIME_SCALE,
+                AudioStrategy.GLOBAL_TIME_SCALE,
                 label="fractional-rate regression audio",
             )
             run_ffmpeg([
@@ -890,7 +888,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             fill_gaps_from_base=False,
             lhs_frames={},
             rhs_frames={},
-            strategy=_AudioStrategy.GLOBAL_TIME_SCALE,
+            strategy=AudioStrategy.GLOBAL_TIME_SCALE,
         )
         calls: list[tuple[str, list[str]]] = []
 
@@ -944,7 +942,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             fill_gaps_from_base=False,
             lhs_frames={},
             rhs_frames={},
-            strategy=_AudioStrategy.SUBSEGMENT,
+            strategy=AudioStrategy.SUBSEGMENT,
             segment_count=1,
         )
         calls: list[tuple[str, list[str]]] = []
@@ -995,7 +993,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             fill_gaps_from_base=False,
             lhs_frames={},
             rhs_frames={},
-            strategy=_AudioStrategy.SUBSEGMENT,
+            strategy=AudioStrategy.SUBSEGMENT,
             segment_count=1,
         )
         calls: list[tuple[str, list[str]]] = []
@@ -1049,7 +1047,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             fill_gaps_from_base=False,
             lhs_frames={},
             rhs_frames={},
-            strategy=_AudioStrategy.SUBSEGMENT,
+            strategy=AudioStrategy.SUBSEGMENT,
             segment_count=2,
         )
         source_durations = [
@@ -1113,7 +1111,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             fill_gaps_from_base=False,
             lhs_frames={},
             rhs_frames={},
-            strategy=_AudioStrategy.UNSCALED,
+            strategy=AudioStrategy.UNSCALED,
         )
         decoded: list[dict[str, object]] = []
 
@@ -1189,7 +1187,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             fill_gaps_from_base=False,
             lhs_frames={},
             rhs_frames={},
-            strategy=_AudioStrategy.SUBSEGMENT,
+            strategy=AudioStrategy.SUBSEGMENT,
             segment_count=1,
         )
 
@@ -1227,7 +1225,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             fill_gaps_from_base=False,
             lhs_frames={},
             rhs_frames={},
-            strategy=_AudioStrategy.SUBSEGMENT,
+            strategy=AudioStrategy.SUBSEGMENT,
             segment_count=1,
         )
         decoded: list[tuple[AudioStreamRef, dict[str, object]]] = []
@@ -1279,7 +1277,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             fill_gaps_from_base=False,
             lhs_frames={},
             rhs_frames={},
-            strategy=_AudioStrategy.SUBSEGMENT,
+            strategy=AudioStrategy.SUBSEGMENT,
             segment_count=2,
         )
         calls: list[tuple[str, list[str]]] = []
@@ -1358,7 +1356,7 @@ class AudioPatcherUnitTest(MeltComponentFactories, unittest.TestCase):
             fill_gaps_from_base=False,
             lhs_frames={},
             rhs_frames={},
-            strategy=_AudioStrategy.SUBSEGMENT,
+            strategy=AudioStrategy.SUBSEGMENT,
         )
         first_segment = patcher._build_audio_subsegments(request.mapping, 1)[0]
         source_start_on_stream = source_start + mapping_to_video
