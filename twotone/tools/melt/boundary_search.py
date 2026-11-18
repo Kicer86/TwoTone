@@ -325,24 +325,26 @@ class BoundarySearch:
         """Move boundary pairs within *snap_frames* of a video edge onto it."""
         sides = (self.lhs, self.rhs)
         thresholds_ms = [snap_frames * 1000 / side.fps for side in sides]
-        # A video's last edge is its track length; the container duration
-        # can also span a longer audio track and is only a fallback.
-        durations = [
-            side.duration_ms
+        sorted_keys = [sorted(side.all_frames) for side in sides]
+        # Pairs are presentation timestamps, so a video ends at its first
+        # decoded frame plus its track length. The container duration can
+        # also span a longer audio track and is only a fallback.
+        ends = [
+            keys[0] + side.duration_ms
             if side.duration_ms is not None
             else video_utils.get_video_duration(side.path, logger=self.logger)
-            for side in sides
+            for side, keys in zip(sides, sorted_keys)
         ]
-        sorted_keys = [sorted(side.all_frames) for side in sides]
 
-        # ``sign`` orients the distance so it is measured inward from the edge.
+        # ``sign`` orients the distance so it is measured inward from the
+        # edge; a pair never moves inward, so the mapping stays ordered.
         for label, position, edges, sign in (
             ("first", 0, (0, 0), 1),
-            ("last", -1, tuple(durations), -1),
+            ("last", -1, tuple(ends), -1),
         ):
             pair = matching_pairs[position]
             snapped = tuple(
-                edge if sign * (timestamp - edge) <= threshold_ms else timestamp
+                edge if 0 <= sign * (timestamp - edge) <= threshold_ms else timestamp
                 for timestamp, edge, threshold_ms in zip(pair, edges, thresholds_ms)
             )
             if snapped == pair:

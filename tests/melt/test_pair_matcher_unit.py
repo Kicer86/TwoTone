@@ -701,6 +701,38 @@ class PairMatcherUnitTest(unittest.TestCase):
         self.assertEqual(result[0], (0, 0))
         self.assertEqual(result[-1], (9960, 9960))
 
+    def test_snap_measures_last_edge_from_the_first_decoded_frame(self):
+        """A video starting at 2 s with a 4 s track ends at 6 s, not 4 s."""
+        search = self._make_boundary_search(lhs_fps=25.0, rhs_fps=25.0)
+        search.lhs.duration_ms = 4000
+        search.rhs.duration_ms = 4000
+        keys = list(range(2000, 6000, 40))
+        search.lhs.all_frames = self._make_frames(keys)
+        search.rhs.all_frames = self._make_frames(keys)
+
+        matching_pairs = [(2000, 2000), (4000, 4000), (5920, 5920)]
+
+        with patch.object(video_utils, 'get_video_duration', return_value=6000):
+            result = search.snap_to_edges(matching_pairs, snap_frames=4)
+
+        self.assertEqual(result, [(2000, 2000), (4000, 4000), (6000, 6000)])
+
+    def test_snap_never_moves_the_last_pair_inward(self):
+        """A track length shorter than the decoded frames keeps the last pair."""
+        search = self._make_boundary_search(lhs_fps=25.0, rhs_fps=25.0)
+        search.lhs.duration_ms = 9000
+        search.rhs.duration_ms = 9000
+        keys = list(range(0, 10000, 40))
+        search.lhs.all_frames = self._make_frames(keys)
+        search.rhs.all_frames = self._make_frames(keys)
+
+        matching_pairs = [(400, 400), (5000, 5000), (9920, 9920)]
+
+        with patch.object(video_utils, 'get_video_duration', return_value=10000):
+            result = search.snap_to_edges(matching_pairs, snap_frames=4)
+
+        self.assertEqual(result[-1], (9920, 9920))
+
     # ---- detect_global_linear ----
     #
     # detect_global_linear only *detects* the frame relation (slope / intercept /
