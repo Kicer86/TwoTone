@@ -218,8 +218,8 @@ class SourceAligner:
         assert group.base_duration_ms is not None
         base_path = group.base_video.path
         file_ids = group.file_ids
-        # The matcher's diagnostics live in its working directory, so the
-        # verdict is reached while that directory exists.
+        # A refusal writes the matcher's diagnostics into its working
+        # directory, so the verdict is reached while that directory exists.
         with self.workspace.scoped_dir("matching") as mwd:
             with generic_utils.TqdmBouncingBar(desc="Matching", **generic_utils.get_tqdm_defaults()):
                 matching = self._pair_match(group, mwd, source_path)

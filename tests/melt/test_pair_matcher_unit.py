@@ -1409,6 +1409,45 @@ class PairMatcherUnitTest(unittest.TestCase):
                 else:
                     self.assertNotIn("--max-temporary-frame-offset", str(raised.exception))
 
+    def test_create_segments_mapping_dumps_discontinuities_only_when_refused(self):
+        # A 15-frame offset that returns at the next anchor: extracting every
+        # frame it spans is needed only when validation refuses it.
+        pairs = [(i * 100000, i * 100000 - (600 if i == 5 else 0)) for i in range(12)]
+        pm = self._make_pair_matcher()
+        pm.lhs.all_frames = self._make_frames_at_fps(27501, 25.0, "lhs")
+        pm.rhs.all_frames = self._make_frames_at_fps(27501, 25.0, "rhs")
+
+        with patch.object(pm, '_analysis_result_for', return_value=self._scene_analysis("fake", [])), \
+             patch.object(pm, '_detect_scenes', return_value=([], [])), \
+             patch.object(pm, '_probe_frames'), \
+             patch.object(pm, '_extract_scene_frames', return_value=([], [])), \
+             patch.object(pm, '_normalize_extracted', return_value=({}, {})), \
+             patch.object(pm, '_make_pairs', return_value=pairs), \
+             patch.object(pm, '_log_relation_diagnostics'), \
+             patch.object(debug_routines, 'summarize_pairs'), \
+             patch.object(pm.boundary_search, 'extrapolate_and_verify_global_linear', return_value=pairs), \
+             patch('twotone.tools.melt.pair_matcher.DebugRoutines') as debug_type:
+            dump = debug_type.return_value.dump_content_discontinuities
+            dump.return_value = "/tmp/content-debug"
+            result = pm.create_segments_mapping()
+        self.assertTrue(result.content_discontinuities)
+        dump.assert_not_called()
+
+        with self.assertLogs("test.mapping_validation", level="WARNING"):
+            mapping_validation.validate_mapping(
+                result,
+                consumer="audio",
+                lhs_id=1,
+                rhs_id=2,
+                max_temporary_frame_offset=15.0,
+                logger=logging.getLogger("test.mapping_validation"),
+            )
+        dump.assert_not_called()
+
+        with self.assertRaisesRegex(RuntimeError, "include /tmp/content-debug"):
+            self._validate(result)
+        dump.assert_called_once()
+
     def test_create_segments_mapping_keeps_unresolved_outer_steps(self):
         for edge in ("first", "last"):
             for reverse in (False, True):

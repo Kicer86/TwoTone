@@ -2,6 +2,7 @@
 import enum
 import logging
 import os
+from collections.abc import Callable, Sequence
 from functools import partial
 from math import isfinite
 from typing import NamedTuple
@@ -68,7 +69,10 @@ class SegmentsMappingResult(NamedTuple):
     # return at the next matched anchor.  Whether any is acceptable is decided
     # by ``mapping_validation``.
     content_discontinuities: tuple[Discontinuity, ...] = ()
-    content_discontinuity_debug_path: str | None = None
+    # Writes frame diagnostics for the given content discontinuities and
+    # returns their directory.  Rendering waits for a refusal, so accepted
+    # temporary offsets never pay for extracting every frame they span.
+    dump_content_discontinuities: Callable[[Sequence[Discontinuity]], str | None] | None = None
     timing_discontinuity_debug_path: str | None = None
     # Gaps the time-domain detector finds in a GENERIC mapping; its
     # ``max(2000 ms, 2%)`` tolerance is far coarser than the frame-based
@@ -401,12 +405,7 @@ class PairMatcher:
             else MappingRelation.GENERIC
         )
         timing_discontinuity_debug_path: str | None = None
-        content_discontinuity_debug_path: str | None = None
         generic_content_discontinuities: tuple[Discontinuity, ...] = ()
-        if content_discontinuities:
-            content_discontinuity_debug_path = self._report_content_discontinuities(
-                matching_pairs, content_discontinuities, debug,
-            )
         if timing_discontinuities:
             timing_discontinuity_debug_path = self._report_timing_discontinuities(
                 matching_pairs, timing_discontinuities, relation, debug,
@@ -435,7 +434,11 @@ class PairMatcher:
             frame_slope=global_linear_fit.slope if global_linear_fit is not None else None,
             timing_discontinuities=timing_discontinuities,
             content_discontinuities=content_discontinuities,
-            content_discontinuity_debug_path=content_discontinuity_debug_path,
+            dump_content_discontinuities=(
+                partial(self._report_content_discontinuities, matching_pairs, debug=debug)
+                if content_discontinuities
+                else None
+            ),
             timing_discontinuity_debug_path=timing_discontinuity_debug_path,
             generic_content_discontinuities=generic_content_discontinuities,
         )
@@ -1507,10 +1510,11 @@ class PairMatcher:
     def _report_content_discontinuities(
         self,
         matching_pairs: list[tuple[int, int]],
-        content_discontinuities: tuple[Discontinuity, ...],
+        content_discontinuities: Sequence[Discontinuity],
+        *,
         debug: DebugRoutines,
     ) -> str | None:
-        """Dump diagnostics for unresolved content steps and return their path."""
+        """Dump diagnostics for refused content steps and return their path."""
         debug.dump_matches(matching_pairs, "localized discontinuities")
         groups = matching_analysis.group_content_discontinuities(
             list(content_discontinuities)

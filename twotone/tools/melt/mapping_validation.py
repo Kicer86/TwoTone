@@ -168,7 +168,7 @@ def _refuse_content_discontinuities(
     rhs_label: str,
     logger: logging.Logger,
 ) -> None:
-    """Log the unresolved regions and raise the user-facing error."""
+    """Dump and log the unresolved regions, then raise the user-facing error."""
     groups = matching_analysis.group_content_discontinuities(discontinuities)
     suggested_temporary_offsets: list[int] = []
     for group in groups:
@@ -177,6 +177,11 @@ def _refuse_content_discontinuities(
         )
         if excursion is not None and excursion[0] > max_temporary_frame_offset:
             suggested_temporary_offsets.append(excursion[0])
+    debug_path = (
+        matching.dump_content_discontinuities(discontinuities)
+        if matching.dump_content_discontinuities is not None
+        else None
+    )
     raise RuntimeError(debug_routines.unresolved_content_discontinuities_error(
         logger,
         groups,
@@ -187,5 +192,5 @@ def _refuse_content_discontinuities(
         rhs_fps=matching.rhs_fps,
         compensation_tolerance_frames=matching_analysis.MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES,
         suggested_temporary_offsets=suggested_temporary_offsets,
-        debug_path=matching.content_discontinuity_debug_path,
+        debug_path=debug_path,
     ))

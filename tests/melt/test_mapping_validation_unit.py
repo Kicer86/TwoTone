@@ -1,6 +1,7 @@
 import logging
 import os
 import unittest
+from unittest.mock import Mock
 
 from twotone.tools.melt import mapping_validation, matching_analysis
 from twotone.tools.melt.matching_analysis import Discontinuity
@@ -87,6 +88,8 @@ class MappingValidationTest(unittest.TestCase):
         )
         self.assertEqual([gap[4] for gap in gaps], [200, -200])
 
+        dump = Mock(return_value="/tmp/debug")
+
         def matching(content: list[Discontinuity]) -> SegmentsMappingResult:
             return _matching(
                 mapping=mapping,
@@ -94,6 +97,7 @@ class MappingValidationTest(unittest.TestCase):
                 rhs_all_frames=rhs_frames,
                 relation=MappingRelation.GLOBAL_LINEAR,
                 content_discontinuities=tuple(content),
+                dump_content_discontinuities=dump,
             )
 
         with self.assertLogs("test.mapping_validation", level="WARNING") as captured:
@@ -104,11 +108,14 @@ class MappingValidationTest(unittest.TestCase):
             and "00:00:01,800 (1800 ms)" in message
             for message in captured.output
         ))
+        # An accepted offset needs no frame diagnostics.
+        dump.assert_not_called()
 
         # One step alone does not return to the outer offset.
         with self.assertLogs("test.mapping_validation", level="ERROR"), \
              self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
             self._validate(matching(gaps[:1]), max_temporary_frame_offset=5.0)
+        dump.assert_called_once_with(gaps[:1])
 
     def test_default_temporary_frame_offset_limit_rejects_three_frames(self):
         lhs_timestamps = [0, 1000, 2000, 3000]
@@ -150,6 +157,7 @@ class MappingValidationTest(unittest.TestCase):
             Discontinuity(2476726, 2485901, 2476853, 2485821, 209),
         )
 
+        dump = Mock(return_value="/tmp/debug")
         with self.assertLogs("test.mapping_validation", level="DEBUG") as captured, \
              self.assertRaises(RuntimeError) as raised:
             self._validate(
@@ -158,11 +166,12 @@ class MappingValidationTest(unittest.TestCase):
                     rhs_all_frames=rhs_frames,
                     relation=MappingRelation.GLOBAL_LINEAR,
                     content_discontinuities=gaps,
-                    content_discontinuity_debug_path="/tmp/debug",
+                    dump_content_discontinuities=dump,
                 ),
                 lhs_id=2,
                 rhs_id=1,
             )
+        dump.assert_called_once_with(list(gaps))
 
         summary = next(
             message for message in captured.output
@@ -206,7 +215,7 @@ class MappingValidationTest(unittest.TestCase):
                 rhs_all_frames={0: {"frame_id": 0}, 1200: {"frame_id": 30}},
                 relation=MappingRelation.GLOBAL_LINEAR,
                 content_discontinuities=(Discontinuity(0, 1000, 0, 1200, -200),),
-                content_discontinuity_debug_path="/tmp/debug",
+                dump_content_discontinuities=Mock(return_value="/tmp/debug"),
             ))
 
         message = str(raised.exception)
