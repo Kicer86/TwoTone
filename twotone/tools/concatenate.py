@@ -233,6 +233,8 @@ class Concatenate(generic_utils.InterruptibleProcess):
 
 
 class ConcatenateTool(Tool):
+    REQUIRED_TOOLS = ("ffmpeg", "ffprobe", "mkvmerge")
+
     def __init__(self) -> None:
         super().__init__()
 

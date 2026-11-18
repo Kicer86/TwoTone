@@ -1,16 +1,10 @@
-import enum
 import logging
-import math
 import os
-import statistics
-from bisect import bisect_right
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
-from fractions import Fraction
+from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
-import pysubs2
 from tqdm import tqdm
 
 from ..tool import ToolRuntimeContext
@@ -19,41 +13,27 @@ from ..utils import (
     generic_utils,
     language_utils,
     process_utils,
-    subtitles_utils,
     video_utils,
 )
-from .debug_routines import DebugRoutines
+from .audio_patcher import AudioPatcher
+from .mapping_validation import DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
 from .melt_cache import MeltCache
 from .melt_common import (
     AttachmentRef,
     AudioStreamRef,
-    FramesInfo,
-    MeltInputFiles,
     StreamType,
     SubtitleStreamRef,
     VideoStreamRef,
-    format_timestamp_range,
+    planned_video_duration_ms,
+    video_track_duration_ms,
 )
-from .pair_matcher import (
-    CoverageSummary,
-    MappingRelation,
-    PairMatcher,
-    SegmentsMappingResult,
-)
-from .track_timeline import TrackTimelineMixin
+from .melt_plan import MeltTitlePlan
+from .source_aligner import AlignmentGroup, SourceAligner
+from .track_timeline import TrackTimeline, mkvmerge_preserves_start
 
 
-class _SegmentRange(NamedTuple):
-    lhs_start: int
-    lhs_end: int
-    rhs_start: int
-    rhs_end: int
-
-
-class _PairMatchResult(NamedTuple):
-    """A cached PairMatcher outcome for one (base, source) video pair."""
-    matching: SegmentsMappingResult
-    source_duration: int
+# Position of each track type in the output file's track order.
+_OUTPUT_TRACK_TYPE_ORDER: dict[StreamType, int] = {"video": 0, "audio": 1, "subtitle": 2}
 
 
 class _StreamEntry(NamedTuple):
@@ -67,145 +47,39 @@ class _StreamEntry(NamedTuple):
     default: bool | None = None
 
 
-class _AudioStrategy(enum.Enum):
-    """How a mismatched source audio track is fitted to the base video."""
-
-    # No time-scale needed — normalize the source audio without changing its
-    # speed, then position it by its content start plus the matched-pair
-    # timeline shift via mkvmerge --sync (or a head trim for negative shifts).
-    UNSCALED = "unscaled_normalized"
-    # A real playback-speed difference with a global linear relation — trim
-    # and time-scale the whole track once (the constant-offset patcher).
-    GLOBAL_TIME_SCALE = "constant_offset"
-    # No clean global relation — patch per-scene subsegments with atempo.
-    SUBSEGMENT = "subsegment"
-
-
-@dataclass(frozen=True)
-class TimelineInterval:
-    """A closed-open interval on a named millisecond timeline."""
-
-    start_ms: int
-    end_ms: int
-
-    def __post_init__(self) -> None:
-        if self.end_ms < self.start_ms:
-            raise ValueError("Timeline interval end precedes its start.")
-
-    @property
-    def duration_ms(self) -> int:
-        return self.end_ms - self.start_ms
-
-
-@dataclass(frozen=True)
-class VideoToAudioTimeline:
-    """Translate PairMatcher video timestamps to one selected audio stream.
-
-    PairMatcher timestamps are produced by ``showinfo`` and may be rebased by a
-    container.  Decoded FLAC, in contrast, is deliberately rebased to its first
-    audio-content sample.  This transform makes the two origins explicit so no
-    patcher can use a raw RHS video timestamp as an audio cut position.
-    """
-
-    mapping_to_video_ms: int
-    audio_content_start_ms: int
-    audio_content_end_ms: int | None = None
-
-    def video_to_stream_ms(self, timestamp_ms: int) -> int:
-        """Return the timestamp on the selected stream's source timeline."""
-        return timestamp_ms + self.mapping_to_video_ms
-
-    def video_to_rebased_audio_ms(self, timestamp_ms: int) -> int:
-        """Return the timestamp on the selected decoded-FLAC timeline."""
-        return self.video_to_stream_ms(timestamp_ms) - self.audio_content_start_ms
-
-    def rebased_audio_to_video_ms(self, timestamp_ms: int) -> int:
-        """Return the PairMatcher timestamp corresponding to decoded-FLAC time."""
-        return timestamp_ms - self.mapping_to_video_ms + self.audio_content_start_ms
-
-
-@dataclass(frozen=True)
-class AudioPatchRequest:
-    """All immutable inputs shared by Melt audio patch strategies."""
-
-    working_dir: str
-    output_path: str
-    base_video: VideoStreamRef
-    source_video: VideoStreamRef
-    source_audio: AudioStreamRef
-    base_audio: AudioStreamRef | None
-    mapping: tuple[tuple[int, int], ...]
-    target_interval: TimelineInterval
-    output_interval: TimelineInterval
-    base_duration_ms: int
-    source_timeline: VideoToAudioTimeline
-    base_timeline: VideoToAudioTimeline | None
-    fill_gaps_from_base: bool
-    lhs_frames: FramesInfo
-    rhs_frames: FramesInfo
-    # PairMatcher timestamps may be rebased while the selected base video
-    # retains a positive container PTS.  Patched audio is muxed beside that
-    # untouched video, so translate every physical patch position back to the
-    # base stream's output timeline before returning an mkvmerge --sync value.
-    output_mapping_to_video_ms: int = 0
-
-
-@dataclass(frozen=True)
-class AudioPatchResult:
-    """A validated patched audio track and its exact output-timeline placement."""
-
-    stream: AudioStreamRef
-    timeline_start_ms: int
-    duration_ms: int
-    transformation: str
-
-
-@dataclass(frozen=True)
-class _AudioMappingSegment:
-    target: TimelineInterval
-    source: TimelineInterval
-
-
-@dataclass(frozen=True)
-class AudioSourceWindow:
-    """A requested source-stream window and the samples physically available in it.
-
-    ``requested`` stays on the selected audio stream's timestamp timeline.  It
-    deliberately retains portions before/after physical audio content, so the
-    executor can carry those virtual gaps through a later time transform and
-    place the emitted samples on the output timeline correctly.
-    """
-
-    requested: TimelineInterval
-    available: TimelineInterval
-
-    def __post_init__(self) -> None:
-        if self.available.start_ms < self.requested.start_ms \
-                or self.available.end_ms > self.requested.end_ms:
-            raise ValueError("Available audio must be contained in its requested window.")
-
-    @property
-    def missing_prefix_ms(self) -> int:
-        return self.available.start_ms - self.requested.start_ms
-
-    @property
-    def missing_suffix_ms(self) -> int:
-        return self.requested.end_ms - self.available.end_ms
-
-
-@dataclass(frozen=True)
-class _AudioPart:
-    path: str
-    duration_ms: int
-    source_window: AudioSourceWindow | None = None
-
-
 class _PreparedStreams(NamedTuple):
     entries: list[_StreamEntry]
     input_files: set[str]
 
 
-class MeltPerformer(TrackTimelineMixin):
+_MKVMERGE_TRACK_SELECTION_FLAGS = {
+    "video":       ("--video-tracks",    "--no-video"),
+    "audio":       ("--audio-tracks",    "--no-audio"),
+    "subtitle":    ("--subtitle-tracks",  "--no-subtitles"),
+    "attachments": ("--attachments",      "--no-attachments"),
+}
+
+
+def _yes_no(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+@dataclass
+class _MkvmergeFileOptions:
+    """Per-input mkvmerge options collected before serialization."""
+
+    track_ids: dict[str, list[int]] = field(
+        default_factory=lambda: {stype: [] for stype in _MKVMERGE_TRACK_SELECTION_FLAGS},
+    )
+    languages: dict[int, str] = field(default_factory=dict)
+    defaults: set[int] = field(default_factory=set)
+    default_overrides: dict[int, bool] = field(default_factory=dict)
+    names: dict[int, str] = field(default_factory=dict)
+    forced: dict[int, bool] = field(default_factory=dict)
+    sync_offsets: dict[int, int] = field(default_factory=dict)
+
+
+class MeltPerformer:
     def __init__(
         self,
         logger: logging.Logger,
@@ -213,46 +87,43 @@ class MeltPerformer(TrackTimelineMixin):
         output_dir: str,
         cache: MeltCache | None = None,
         fill_audio_gaps: bool = False,
-        max_temporary_frame_offset: float = PairMatcher.DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
+        max_temporary_frame_offset: float = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
     ) -> None:
         self.logger = logger
         self.interruption = context.interruption
         self.output_dir = output_dir
-        self.cache = cache
-        self.fill_audio_gaps = fill_audio_gaps
-        self.max_temporary_frame_offset = max_temporary_frame_offset
-        self._normalized_audio_cache: dict[tuple[str, int, int | None, int | None], str] = {}
-        self._pair_match_cache: dict[tuple[str, str], _PairMatchResult] = {}
-        self._media_info_cache: dict[str, dict[str, Any]] = {}
-        self._stream_info_cache: dict[tuple[str, str, int], dict[str, Any] | None] = {}
-        self._input_file_ids: dict[str, int] = {}
-        self.media_analysis = context.media_analysis
         self.workspace = context.workspace
+        self.timeline = TrackTimeline(self.workspace, self.logger, context.media_analysis)
+        self.audio_patcher = AudioPatcher(self.logger, self.timeline)
+        self.aligner = SourceAligner(
+            self.logger,
+            context,
+            self.timeline,
+            self.audio_patcher,
+            cache=cache,
+            fill_audio_gaps=fill_audio_gaps,
+            max_temporary_frame_offset=max_temporary_frame_offset,
+        )
 
-    def process_duplicates(self, plan: list[dict[str, Any]]) -> None:
-        planned_items = [item for item in plan if item.get("groups")]
+    def process_duplicates(self, plan: Sequence[MeltTitlePlan]) -> None:
+        planned_items = [item for item in plan if item.groups]
         for item in tqdm(planned_items, desc="Titles", unit="title", **generic_utils.get_tqdm_defaults(), position=0):
-            title = item["title"]
-            groups = item.get("groups", [])
+            title = item.title
+            groups = item.groups
 
             self.logger.info("Processing title: %s (%d group(s))", title, len(groups))
 
             for group in tqdm(groups, desc="Videos", unit="video", **generic_utils.get_tqdm_defaults(), position=1):
                 self.interruption.check_for_stop()
 
-                output_name = group["output_name"]
-                files = group.get("files", [])
-                input_files = MeltInputFiles(files)
+                input_files = group.input_files
                 file_ids = input_files.ids
 
                 # Use analysis results
-                streams_info = group.get("streams", {})
-                attachments = group.get("attachments", [])
-                video_streams = [VideoStreamRef(*stream) for stream in streams_info.get("video", [])]
-                audio_streams = [AudioStreamRef(*stream) for stream in streams_info.get("audio", [])]
-                subtitle_streams = [SubtitleStreamRef(*stream) for stream in streams_info.get("subtitle", [])]
-                attachment_refs = [AttachmentRef(*attachment) for attachment in attachments]
-                chapter_source = group.get("chapter_source")
+                video_streams = group.video_streams or ()
+                audio_streams = group.audio_streams or ()
+                subtitle_streams = group.subtitle_streams or ()
+                attachment_refs = group.attachments
                 required_input_files = self._collect_required_input_files(
                     video_streams,
                     audio_streams,
@@ -260,15 +131,17 @@ class MeltPerformer(TrackTimelineMixin):
                     attachment_refs,
                 )
 
-                output = self._build_output_path(title, output_name)
-                self._reject_output_input_alias(output, set(files) | required_input_files)
+                output = self._build_output_path(title, group.output_name)
+                self._reject_output_input_alias(
+                    output,
+                    set(input_files.paths) | required_input_files,
+                )
 
                 output_parent = os.path.dirname(output)
                 os.makedirs(output_parent, exist_ok=True)
 
-                self._normalized_audio_cache.clear()
-                self._pair_match_cache.clear()
-                files_details = group.get("files_details", {})
+                self.audio_patcher.reset_cache()
+                files_details = group.files_details
 
                 with self.workspace.staging_for(output) as staged_output:
                     # Convert streams to unified list (and patch audios if needed)
@@ -279,20 +152,25 @@ class MeltPerformer(TrackTimelineMixin):
                         attachment_refs,
                         file_ids,
                         files_details,
-                        alignment_paths=set(group.get("alignment_paths", [])),
+                        alignment_paths=group.alignment_paths,
                     )
 
-                    # Sort streams by language alphabetically, unknown languages last
+                    # Video, audio, then subtitles; within each type
+                    # alphabetically by language, unknown languages last.
                     streams_list_sorted = sorted(
                         prepared_streams.entries,
-                        key=lambda stream: (stream.language is None, stream.language or ""),
+                        key=lambda stream: (
+                            _OUTPUT_TRACK_TYPE_ORDER[stream.stream_type],
+                            stream.language is None,
+                            stream.language or "",
+                        ),
                     )
 
                     # Decide which track should be default
                     default_audio_stream = next((s for s in prepared_streams.entries if s.stream_type == "audio"), None)
                     default_audio_lang = default_audio_stream.language if default_audio_stream else None
                     preferred_audio = self._choose_preferred_audio(
-                        group.get("audio_prod_lang"),
+                        group.audio_prod_lang,
                         streams_list_sorted,
                         default_audio_lang,
                     )
@@ -303,7 +181,9 @@ class MeltPerformer(TrackTimelineMixin):
                         attachment_refs,
                         preferred_audio,
                         prepared_streams.input_files,
-                        self._extract_chapters(chapter_source) if chapter_source else None,
+                        self._extract_chapters(group.chapter_source)
+                        if group.chapter_source
+                        else None,
                     )
 
                     self.logger.info("Generating file: %s", self._display_path(output))
@@ -313,7 +193,11 @@ class MeltPerformer(TrackTimelineMixin):
                     )
 
                     expected_duration_ms = (
-                        self._planned_video_duration_ms(video_streams[0], files_details)
+                        planned_video_duration_ms(
+                            video_streams[0].path,
+                            files_details,
+                            video_streams[0].mkvmerge_track_id,
+                        )
                         if video_streams
                         else None
                     )
@@ -342,17 +226,6 @@ class MeltPerformer(TrackTimelineMixin):
                     "refusing to overwrite an input file."
                 )
 
-    @staticmethod
-    def _planned_video_duration_ms(
-        base_video: VideoStreamRef,
-        files_details: Mapping[str, Any],
-    ) -> int | None:
-        tracks = files_details.get(base_video.path, {}).get("tracks", {}).get("video", [])
-        for track in tracks:
-            if track.get("tid") == base_video.mkvmerge_track_id and not track.get("attached_pic", False):
-                return track.get("length")
-        return None
-
     def build_mkvmerge_args(
         self,
         output_path: str,
@@ -365,78 +238,57 @@ class MeltPerformer(TrackTimelineMixin):
         generation_args: list[str] = ["-o", output_path]
         if chapters_file:
             generation_args.extend(["--chapters", chapters_file])
-        files_opts: dict[str, dict[str, Any]] = {
-            path: {
-                "video": [],
-                "audio": [],
-                "subtitle": [],
-                "attachments": [],
-                "languages": {},
-                "defaults": set(),
-                "default_overrides": {},
-                "names": {},
-                "forced": {},
-                "sync_offsets": {},
-            }
-            for path in required_input_files
-        }
+        files_opts = {path: _MkvmergeFileOptions() for path in required_input_files}
+        file_indices = {path: index for index, path in enumerate(files_opts)}
 
         # Collect per-file options and track order
         track_order: list[str] = []
         for stream in streams_list_sorted:
-            fo: dict[str, Any] = files_opts[stream.path]
-            fo[stream.stream_type].append(stream.mkvmerge_track_id)
-            fo["languages"][stream.mkvmerge_track_id] = stream.language or "und"
+            fo = files_opts[stream.path]
+            tid = stream.mkvmerge_track_id
+            fo.track_ids[stream.stream_type].append(tid)
+            fo.languages[tid] = stream.language or "und"
             if stream.stream_type in ("audio", "subtitle") and preferred_audio and stream == preferred_audio:
-                fo["defaults"].add(stream.mkvmerge_track_id)
+                fo.defaults.add(tid)
             if stream.default is not None:
-                fo["default_overrides"][stream.mkvmerge_track_id] = stream.default
+                fo.default_overrides[tid] = stream.default
             if stream.name is not None:
-                fo["names"][stream.mkvmerge_track_id] = stream.name
+                fo.names[tid] = stream.name
             if stream.forced is not None:
-                fo["forced"][stream.mkvmerge_track_id] = stream.forced
+                fo.forced[tid] = stream.forced
             if stream.sync_offset_ms is not None:
-                fo["sync_offsets"][stream.mkvmerge_track_id] = stream.sync_offset_ms
-            file_index = generic_utils.get_key_position(files_opts, stream.path)
-            track_order.append(f"{file_index}:{stream.mkvmerge_track_id}")
+                fo.sync_offsets[tid] = stream.sync_offset_ms
+            track_order.append(f"{file_indices[stream.path]}:{tid}")
 
         for file_path, tid in attachments:
-            fo = files_opts[file_path]
-            fo["attachments"].append(tid)
+            files_opts[file_path].track_ids["attachments"].append(tid)
 
         # Serialize options into mkvmerge args, file by file
-        _STREAM_TYPE_OPTS = {
-            "video":       ("--video-tracks",    "--no-video"),
-            "audio":       ("--audio-tracks",    "--no-audio"),
-            "subtitle":    ("--subtitle-tracks",  "--no-subtitles"),
-            "attachments": ("--attachments",      "--no-attachments"),
-        }
-
         for file_path, fo in files_opts.items():
-            for stype, (include_flag, exclude_flag) in _STREAM_TYPE_OPTS.items():
-                if fo[stype]:
-                    generation_args.extend([include_flag, ",".join(str(i) for i in fo[stype])])
+            for stype, (include_flag, exclude_flag) in _MKVMERGE_TRACK_SELECTION_FLAGS.items():
+                ids = fo.track_ids[stype]
+                if ids:
+                    generation_args.extend([include_flag, ",".join(str(i) for i in ids)])
                 else:
                     generation_args.append(exclude_flag)
 
-            for tid, lang in fo["languages"].items():
+            for tid, lang in fo.languages.items():
                 generation_args.extend(["--language", f"{tid}:{lang}"])
 
-            for tid, name in fo["names"].items():
+            for tid, name in fo.names.items():
                 generation_args.extend(["--track-name", f"{tid}:{name}"])
 
-            for tid, forced in fo["forced"].items():
-                generation_args.extend(["--forced-display-flag", f"{tid}:{'yes' if forced else 'no'}"])
+            for tid, forced in fo.forced.items():
+                generation_args.extend(["--forced-display-flag", f"{tid}:{_yes_no(forced)}"])
 
             if preferred_audio:
-                for tid in fo["audio"] + fo["subtitle"]:
-                    flag = "yes" if tid in fo["defaults"] else "no"
-                    generation_args.extend(["--default-track", f"{tid}:{flag}"])
+                for tid in fo.track_ids["audio"] + fo.track_ids["subtitle"]:
+                    generation_args.extend(["--default-track", f"{tid}:{_yes_no(tid in fo.defaults)}"])
             else:
-                for tid, default in fo["default_overrides"].items():
-                    generation_args.extend(["--default-track", f"{tid}:{'yes' if default else 'no'}"])
+                for tid, default in fo.default_overrides.items():
+                    generation_args.extend(["--default-track", f"{tid}:{_yes_no(default)}"])
 
-            for tid, offset_ms in fo["sync_offsets"].items():
+            for tid, offset_ms in fo.sync_offsets.items():
                 generation_args.extend(["--sync", f"{tid}:{offset_ms}"])
 
             generation_args.append("--no-chapters")
@@ -459,707 +311,6 @@ class MeltPerformer(TrackTimelineMixin):
         )
         return chapters_file
 
-    def patch_audio_constant_offset(
-        self,
-        wd: str,
-        base_video: VideoStreamRef,
-        source_video: VideoStreamRef,
-        source_audio: AudioStreamRef,
-        base_audio: AudioStreamRef | None,
-        output_path: str,
-        segment_pairs: list[tuple[int, int]],
-        *,
-        fill_gaps_from_base: bool = True,
-    ) -> int:
-        """Compatibility entry point for one globally scaled audio patch.
-
-        The production path constructs :class:`AudioPatchRequest` before
-        selecting a strategy.  Keeping this small wrapper preserves the focused
-        unit-level seam while ensuring it executes the exact same pipeline.
-        """
-        base_duration_ms = video_utils.get_video_duration(base_video.path, logger=self.logger)
-        if base_duration_ms is None:
-            raise RuntimeError(f"Could not determine base video duration for {base_video.path}.")
-        request = self._create_audio_patch_request(
-            wd,
-            base_video,
-            source_video,
-            source_audio,
-            base_audio,
-            output_path,
-            segment_pairs,
-            base_duration_ms,
-            fill_gaps_from_base=fill_gaps_from_base,
-        )
-        return self._execute_audio_patch(request, _AudioStrategy.GLOBAL_TIME_SCALE).timeline_start_ms
-
-    def _create_audio_patch_request(
-        self,
-        working_dir: str,
-        base_video: VideoStreamRef,
-        source_video: VideoStreamRef,
-        source_audio: AudioStreamRef,
-        base_audio: AudioStreamRef | None,
-        output_path: str,
-        mapping: Sequence[tuple[int, int]],
-        base_duration_ms: int,
-        *,
-        lhs_frames: FramesInfo | None = None,
-        rhs_frames: FramesInfo | None = None,
-        fill_gaps_from_base: bool,
-        output_end_ms: int | None = None,
-    ) -> AudioPatchRequest:
-        if not mapping:
-            raise RuntimeError("Cannot patch audio without matched frame pairs.")
-
-        mapping_tuple = tuple(mapping)
-        segment = self._segment_range(mapping_tuple)
-        source_timeline = self._video_to_audio_timeline(source_video, source_audio, rhs_frames or {})
-        base_timeline = (
-            self._video_to_audio_timeline(base_video, base_audio, lhs_frames or {})
-            if base_audio is not None
-            else None
-        )
-        return AudioPatchRequest(
-            working_dir=working_dir,
-            output_path=output_path,
-            base_video=base_video,
-            source_video=source_video,
-            source_audio=source_audio,
-            base_audio=base_audio,
-            mapping=mapping_tuple,
-            target_interval=TimelineInterval(segment.lhs_start, segment.lhs_end),
-            output_interval=TimelineInterval(0, output_end_ms if output_end_ms is not None else base_duration_ms),
-            base_duration_ms=base_duration_ms,
-            source_timeline=source_timeline,
-            base_timeline=base_timeline,
-            fill_gaps_from_base=fill_gaps_from_base,
-            lhs_frames=lhs_frames or {},
-            rhs_frames=rhs_frames or {},
-            output_mapping_to_video_ms=self._mapping_to_video_ms(base_video, lhs_frames or {}),
-        )
-
-    def _mapping_to_video_ms(
-        self,
-        video_stream: VideoStreamRef,
-        frames: FramesInfo,
-    ) -> int:
-        """Return the base-stream PTS corresponding to PairMatcher timestamp zero."""
-        video_info = self._stream_info(
-            video_stream.path,
-            "video",
-            video_stream.ffprobe_stream_index,
-        )
-        video_start_ms = self._stream_start_offset_ms(video_info)
-        mapping_start_ms = min(frames) if frames else video_start_ms
-        return video_start_ms - mapping_start_ms
-
-    def _video_to_audio_timeline(
-        self,
-        video_stream: VideoStreamRef,
-        audio_stream: AudioStreamRef,
-        frames: FramesInfo,
-    ) -> VideoToAudioTimeline:
-        """Build the explicit mapping-video-to-selected-audio transform."""
-        audio_info = self._audio_stream_info(audio_stream)
-        return VideoToAudioTimeline(
-            mapping_to_video_ms=self._mapping_to_video_ms(video_stream, frames),
-            audio_content_start_ms=self._audio_content_start_ms(audio_info),
-            audio_content_end_ms=self._stream_end_offset_ms(audio_info),
-        )
-
-    def _execute_audio_patch(
-        self,
-        request: AudioPatchRequest,
-        strategy: _AudioStrategy,
-        *,
-        segment_count: int = 1,
-        min_subsegment_duration: float = 30.0,
-        unscaled_shift_ms: int = 0,
-    ) -> AudioPatchResult:
-        """Decode, transform, concatenate, and validate one audio patch request.
-
-        Every strategy shares this executor.  A strategy only decides how the
-        mapping is divided and the time transform of each resulting segment.
-        """
-        working_dir = os.path.join(request.working_dir, "audio_extraction")
-        os.makedirs(working_dir, exist_ok=True)
-
-        source_params = self._get_audio_params(request.source_audio)
-        normalized_params = (
-            source_params[0],
-            source_params[1],
-            self._flac_safe_fmt(source_params[2]),
-        )
-        segments = self._build_strategy_audio_segments(
-            request,
-            strategy,
-            segment_count=segment_count,
-            min_subsegment_duration=min_subsegment_duration,
-            unscaled_shift_ms=unscaled_shift_ms,
-        )
-        covered_target_interval = TimelineInterval(
-            segments[0].target.start_ms,
-            segments[-1].target.end_ms,
-        )
-
-        if strategy == _AudioStrategy.SUBSEGMENT and request.lhs_frames and request.rhs_frames:
-            debug_dir = os.path.join(working_dir, "debug")
-            os.makedirs(debug_dir, exist_ok=True)
-            DebugRoutines(debug_dir, request.lhs_frames, request.rhs_frames).dump_pairs([
-                (
-                    segment.target.start_ms,
-                    segment.target.end_ms,
-                    segment.source.start_ms,
-                    segment.source.end_ms,
-                )
-                for segment in segments
-            ])
-
-        self.logger.info(
-            "Audio patch for %s (%s): base=[%d…%d] ms, source=[%d…%d] ms, segments=%d",
-            self._audio_source_description(request.source_audio),
-            strategy.value,
-            request.target_interval.start_ms,
-            request.target_interval.end_ms,
-            segments[0].source.start_ms,
-            segments[-1].source.end_ms,
-            len(segments),
-        )
-
-        source_parts: list[_AudioPart] = []
-        for index, segment in enumerate(segments):
-            raw_label = (
-                "source_trimmed"
-                if strategy == _AudioStrategy.GLOBAL_TIME_SCALE
-                else "source_unscaled"
-                if strategy == _AudioStrategy.UNSCALED
-                else f"source_segment_{index}"
-            )
-            raw_part = self._decode_audio_window(
-                request.source_audio,
-                request.source_timeline,
-                segment.source,
-                os.path.join(working_dir, f"{raw_label}.flac"),
-                normalized_params,
-                label=f"{raw_label} audio",
-            )
-            source_per_base = segment.source.duration_ms / segment.target.duration_ms
-            scaled_label = (
-                "source_scaled"
-                if strategy == _AudioStrategy.GLOBAL_TIME_SCALE
-                else "source_unscaled_normalized"
-                if strategy == _AudioStrategy.UNSCALED
-                else f"source_segment_{index}_scaled"
-            )
-            source_parts.append(self._scale_audio_part(
-                raw_part,
-                source_per_base,
-                os.path.join(working_dir, f"{scaled_label}.flac"),
-                source_params[1],
-                strategy,
-                label=f"{scaled_label} audio",
-                progress_source=self._audio_source_description(request.source_audio),
-            ))
-
-        physical_source_interval = self._source_patch_target_interval(
-            segments,
-            source_parts,
-        )
-        source_timeline_start_ms = physical_source_interval.start_ms
-        start_correction_ms = source_timeline_start_ms - covered_target_interval.start_ms
-        if request.fill_gaps_from_base and start_correction_ms > self._SIGNIFICANT_START_CORRECTION_MS:
-            raise RuntimeError(
-                f"Audio start correction of {start_correction_ms} ms detected "
-                "in fill-audio-gaps mode. The source container's audio starts "
-                "later than its video, which cannot be compensated when head/tail "
-                "are filled from the base file. Use default (silence) mode instead."
-            )
-
-        head_part, tail_part = self._prepare_audio_gap_parts(
-            request,
-            physical_source_interval,
-            normalized_params,
-            working_dir,
-        )
-        timeline_start_ms = request.output_mapping_to_video_ms + source_timeline_start_ms
-        if head_part is not None:
-            assert request.base_timeline is not None
-            head_start_on_base = max(0, request.base_timeline.video_to_rebased_audio_ms(0))
-            timeline_start_ms = (
-                request.output_mapping_to_video_ms
-                + request.base_timeline.rebased_audio_to_video_ms(head_start_on_base)
-            )
-
-        self._concat_and_encode(
-            [part.path for part in source_parts],
-            head_part is not None,
-            head_part.path if head_part is not None else "",
-            tail_part is not None,
-            tail_part.path if tail_part is not None else "",
-            os.path.join(working_dir, "concat.txt"),
-            request.output_path,
-            channel_layout=self._get_audio_channel_layout(request.source_audio),
-            progress_description=(
-                "Encoding aligned audio from "
-                f"{self._audio_source_description(request.source_audio)}: FLAC -> AAC"
-            ),
-            logger=self.logger,
-        )
-
-        expected_duration_ms = sum(part.duration_ms for part in source_parts)
-        if head_part is not None:
-            expected_duration_ms += head_part.duration_ms
-        if tail_part is not None:
-            expected_duration_ms += tail_part.duration_ms
-        actual_duration_ms = video_utils.get_video_duration(request.output_path, logger=self.logger)
-        if actual_duration_ms is None:
-            raise RuntimeError(f"Could not determine patched audio duration for {request.output_path}.")
-        self._validate_audio_duration(
-            actual_duration_ms,
-            expected_duration_ms,
-            "final patched audio",
-            sample_rate=source_params[1],
-            segment_count=len(source_parts),
-            encoded=True,
-        )
-        expected_end_ms = (
-            request.output_mapping_to_video_ms + request.output_interval.end_ms
-            if head_part is not None or tail_part is not None
-            else request.output_mapping_to_video_ms + physical_source_interval.end_ms
-        )
-        self._validate_audio_placement(
-            timeline_start_ms,
-            actual_duration_ms,
-            expected_end_ms,
-            source_params[1],
-            len(source_parts),
-        )
-
-        transformation = (
-            "unscaled-normalization"
-            if strategy == _AudioStrategy.UNSCALED
-            else
-            "global-time-scale"
-            if strategy == _AudioStrategy.GLOBAL_TIME_SCALE
-            else f"subsegment-atempo ({len(source_parts)} segments)"
-        )
-        return AudioPatchResult(
-            stream=AudioStreamRef(request.output_path, 0, 0, request.source_audio.language),
-            timeline_start_ms=timeline_start_ms,
-            duration_ms=actual_duration_ms,
-            transformation=transformation,
-        )
-
-    def _build_strategy_audio_segments(
-        self,
-        request: AudioPatchRequest,
-        strategy: _AudioStrategy,
-        *,
-        segment_count: int,
-        min_subsegment_duration: float,
-        unscaled_shift_ms: int,
-    ) -> list[_AudioMappingSegment]:
-        """Return strategy-specific time transforms, without touching audio data."""
-        if strategy == _AudioStrategy.UNSCALED:
-            # ``unscaled_shift_ms`` is measured in stream space, while this
-            # segment must stay in PairMatcher's RHS video space.  Translate
-            # it through both mapping origins; the common decoder then adds
-            # the source origin exactly once when it cuts source-stream PTS.
-            # This preserves small AAC/container phases (such as 22 ms) but
-            # does not turn a shared positive container offset into a fake
-            # half-second audio prefix.
-            source_start_ms = (
-                -unscaled_shift_ms
-                + request.output_mapping_to_video_ms
-                - request.source_timeline.mapping_to_video_ms
-            )
-            return [_AudioMappingSegment(
-                request.output_interval,
-                TimelineInterval(
-                    source_start_ms,
-                    source_start_ms + request.output_interval.duration_ms,
-                ),
-            )]
-        if strategy == _AudioStrategy.SUBSEGMENT:
-            return self._build_audio_subsegments(
-                request.mapping,
-                segment_count,
-                min_subsegment_duration,
-            )
-
-        source_range = self._segment_range(request.mapping)
-        return [_AudioMappingSegment(
-            request.target_interval,
-            TimelineInterval(source_range.rhs_start, source_range.rhs_end),
-        )]
-
-    @staticmethod
-    def _build_audio_subsegments(
-        mapping: Sequence[tuple[int, int]],
-        segment_count: int,
-        min_subsegment_duration: float,
-    ) -> list[_AudioMappingSegment]:
-        segment = MeltPerformer._segment_range(mapping)
-        target_duration = segment.lhs_end - segment.lhs_start
-        if target_duration <= 0:
-            raise RuntimeError("Audio mapping has no positive target duration.")
-
-        count = max(1, segment_count)
-        targets = [segment.lhs_start + index * target_duration // count for index in range(count + 1)]
-
-        def closest_pair(value: int) -> tuple[int, int]:
-            return min(mapping, key=lambda pair: abs(pair[0] - value))
-
-        selected_pairs: list[tuple[int, int]] = []
-        for target in targets:
-            pair = closest_pair(target)
-            if not selected_pairs or pair != selected_pairs[-1]:
-                selected_pairs.append(pair)
-
-        raw_segments = [
-            [
-                selected_pairs[index][0],
-                selected_pairs[index + 1][0],
-                selected_pairs[index][1],
-                selected_pairs[index + 1][1],
-            ]
-            for index in range(len(selected_pairs) - 1)
-            if selected_pairs[index + 1][0] > selected_pairs[index][0]
-            and selected_pairs[index + 1][1] > selected_pairs[index][1]
-        ]
-        if not raw_segments:
-            raise RuntimeError("Audio mapping cannot form a positive subsegment.")
-
-        minimum_ms = round(min_subsegment_duration * 1000)
-        while len(raw_segments) > 1:
-            short_index = next((
-                index for index, part in enumerate(raw_segments)
-                if part[1] - part[0] < minimum_ms or part[3] - part[2] < minimum_ms
-            ), None)
-            if short_index is None:
-                break
-            if short_index == 0:
-                first, second = raw_segments[0], raw_segments[1]
-                raw_segments[1] = [first[0], second[1], first[2], second[3]]
-                del raw_segments[0]
-            else:
-                previous, current = raw_segments[short_index - 1], raw_segments[short_index]
-                raw_segments[short_index - 1] = [previous[0], current[1], previous[2], current[3]]
-                del raw_segments[short_index]
-
-        return [
-            _AudioMappingSegment(
-                TimelineInterval(part[0], part[1]),
-                TimelineInterval(part[2], part[3]),
-            )
-            for part in raw_segments
-        ]
-
-    def _decode_audio_window(
-        self,
-        stream: AudioStreamRef,
-        timeline: VideoToAudioTimeline,
-        video_interval: TimelineInterval,
-        output_path: str,
-        normalize_to: tuple[int, int, str],
-        *,
-        label: str,
-    ) -> _AudioPart:
-        """Decode one video-time interval while retaining unavailable audio gaps."""
-        stream_start_ms = timeline.video_to_stream_ms(video_interval.start_ms)
-        stream_end_ms = timeline.video_to_stream_ms(video_interval.end_ms)
-        requested_window = TimelineInterval(stream_start_ms, stream_end_ms)
-        available_start_ms = max(0, requested_window.start_ms, timeline.audio_content_start_ms)
-        available_end_ms = requested_window.end_ms
-        if timeline.audio_content_end_ms is not None:
-            available_end_ms = min(available_end_ms, timeline.audio_content_end_ms)
-        available_window = TimelineInterval(
-            available_start_ms,
-            max(available_start_ms, available_end_ms),
-        )
-        planned_source_window = AudioSourceWindow(requested_window, available_window)
-        if planned_source_window.available.duration_ms <= 0:
-            raise RuntimeError(f"{label} lies outside the selected audio stream.")
-
-        self._decode_audio_stream_to_flac(
-            stream,
-            output_path,
-            # The audio file can carry only physical samples.  Keep the wider
-            # requested range in ``planned_source_window`` for later placement, but
-            # cut the FLAC exactly to the available range so decoder tail
-            # padding never turns a virtual suffix into extra audio.
-            trim_start_ms=max(0, planned_source_window.available.start_ms),
-            trim_end_ms=max(0, planned_source_window.available.end_ms),
-            normalize_to=normalize_to,
-            logger=self.logger,
-        )
-        actual_duration_ms = video_utils.get_video_duration(output_path, logger=self.logger)
-        if actual_duration_ms is None:
-            raise RuntimeError(f"Could not determine duration for {label}.")
-        if actual_duration_ms > planned_source_window.available.duration_ms:
-            raise RuntimeError(
-                f"Decoded {label} exceeds its requested source window: got "
-                f"{actual_duration_ms} ms, expected at most "
-                f"{planned_source_window.available.duration_ms} ms."
-            )
-        if actual_duration_ms == planned_source_window.available.duration_ms:
-            self._validate_audio_duration(
-                actual_duration_ms,
-                planned_source_window.available.duration_ms,
-                label,
-                sample_rate=normalize_to[1],
-            )
-
-        # Stream/container duration metadata can extend beyond the decodable
-        # samples (for example after AAC priming removal).  Treat that early
-        # EOF as a virtual suffix in the same source-window model used for a
-        # declared stream end.  Every patch strategy subsequently scales and
-        # places this window through the common executor.
-        actual_available_window = TimelineInterval(
-            planned_source_window.available.start_ms,
-            planned_source_window.available.start_ms + actual_duration_ms,
-        )
-        source_window = AudioSourceWindow(requested_window, actual_available_window)
-        return _AudioPart(output_path, actual_duration_ms, source_window)
-
-    def _scale_audio_part(
-        self,
-        source_part: _AudioPart,
-        source_per_base: float,
-        output_path: str,
-        sample_rate: int,
-        strategy: _AudioStrategy,
-        *,
-        label: str,
-        progress_source: str | None = None,
-    ) -> _AudioPart:
-        if source_per_base > 0:
-            target_duration_ms = round(source_part.duration_ms / source_per_base)
-            no_filter_tolerance_ms = self._audio_duration_tolerance_ms(sample_rate)
-            duration_deviation_ms = abs(source_part.duration_ms - target_duration_ms)
-            needs_time_scale = (
-                strategy != _AudioStrategy.UNSCALED
-                and duration_deviation_ms > no_filter_tolerance_ms
-            )
-        else:
-            raise RuntimeError("Audio mapping has no positive source duration.")
-
-        if needs_time_scale:
-            if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
-                filter_arg = self._global_time_scale_filter(
-                    source_part.duration_ms,
-                    target_duration_ms,
-                    sample_rate,
-                )
-            else:
-                # The factor must retain enough precision for a film-length segment;
-                # three decimal places can accumulate hundreds of milliseconds of drift.
-                filter_arg = f"atempo={source_per_base:.12g}"
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y", "-i", source_part.path,
-                    "-filter:a", filter_arg,
-                    "-sample_fmt", "s32", "-c:a", "flac",
-                    output_path,
-                ], show_progress=True,
-                    progress_description=(
-                        f"Time-scaling {progress_source}: FLAC -> FLAC"
-                        if progress_source is not None
-                        else "Time-scaling audio"
-                    ),
-                    logger=self.logger)
-            )
-            actual_duration_ms = video_utils.get_video_duration(output_path, logger=self.logger)
-            if actual_duration_ms is not None:
-                self._validate_audio_duration(
-                    actual_duration_ms,
-                    target_duration_ms,
-                    label,
-                    sample_rate=sample_rate,
-                    filter_tail_samples=(
-                        self._ATEMPO_TAIL_SAMPLES
-                        if strategy == _AudioStrategy.SUBSEGMENT
-                        else 0
-                    ),
-                )
-                scaled_part = _AudioPart(output_path, actual_duration_ms, source_part.source_window)
-            else:
-                raise RuntimeError(f"Could not determine duration for {label}.")
-        else:
-            # Strategy selection may deliberately classify a near-unity global
-            # relation as unscaled.  That coarse classification must not leak
-            # into the physical transform: when no filter runs, the only valid
-            # expected duration is the unmodified source part's duration.  The
-            # duration-deviation comparison above is the per-part acceptance
-            # check for this no-op; final placement validates its aggregate.
-            scaled_part = source_part
-        return scaled_part
-
-    @classmethod
-    def _global_time_scale_filter(
-        cls,
-        source_duration_ms: int,
-        target_duration_ms: int,
-        sample_rate: int,
-    ) -> str:
-        """Build a global scale that fits this part's sample-duration budget.
-
-        FFmpeg rounds ``asetrate`` to an integer sample rate.  Supplying one
-        rounded virtual rate therefore accumulates drift on film-length audio.
-        Represent the requested part duration ratio as a bounded rational,
-        resample between both integer rates, then relabel the result with the
-        source sample rate.  Retain the simple direct integer-rate transform
-        when it already fits this part's physical duration budget; otherwise
-        increase rational precision until it does.  This keeps the intended
-        pitch/tempo transform without an ``atempo`` tail buffer or destructive
-        duration trim.
-        """
-        if source_duration_ms > 0 and target_duration_ms > 0:
-            requested_ratio = Fraction(source_duration_ms, target_duration_ms)
-        else:
-            raise ValueError("Global audio scaling requires positive source and target durations.")
-
-        if 0 < sample_rate <= cls._MAX_RATIONAL_SCALE_RATE:
-            source_samples = round(Fraction(source_duration_ms * sample_rate, 1000))
-            target_samples = round(Fraction(target_duration_ms * sample_rate, 1000))
-            duration_tolerance_ms = cls._audio_duration_tolerance_ms(sample_rate)
-        else:
-            raise ValueError(
-                "Global rational audio scaling supports sample rates from 1 to "
-                f"{cls._MAX_RATIONAL_SCALE_RATE} Hz."
-            )
-
-        selected_rates: tuple[int, int] | None = None
-        # This is the original one-rate transform expressed as a rational
-        # virtual/real rate pair.  Avoid needlessly changing resampler phase
-        # behavior for a short part when its accumulated sample error is
-        # already physically unobservable.
-        direct_virtual_sample_rate = round(Fraction(
-            source_duration_ms * sample_rate,
-            target_duration_ms,
-        ))
-        if 0 < direct_virtual_sample_rate <= cls._MAX_RATIONAL_SCALE_RATE:
-            direct_scaled_samples = round(Fraction(
-                source_samples * sample_rate,
-                direct_virtual_sample_rate,
-            ))
-            direct_sample_error = abs(direct_scaled_samples - target_samples)
-            if direct_sample_error * 1000 <= duration_tolerance_ms * sample_rate:
-                selected_rates = (direct_virtual_sample_rate, sample_rate)
-
-        rate_limit = max(sample_rate, cls._PREFERRED_RATIONAL_SCALE_RATE)
-        while rate_limit <= cls._MAX_RATIONAL_SCALE_RATE and selected_rates is None:
-            ratio = requested_ratio.limit_denominator(rate_limit)
-            largest_ratio_component = max(ratio.numerator, ratio.denominator)
-            maximum_multiplier = cls._MAX_RATIONAL_SCALE_RATE // largest_ratio_component
-            if maximum_multiplier > 0:
-                preferred_multiplier = max(1, round(sample_rate / ratio.denominator))
-                rate_multiplier = min(preferred_multiplier, maximum_multiplier)
-                virtual_sample_rate = ratio.numerator * rate_multiplier
-                resample_rate = ratio.denominator * rate_multiplier
-                if (
-                    0 < virtual_sample_rate <= cls._MAX_RATIONAL_SCALE_RATE
-                    and 0 < resample_rate <= cls._MAX_RATIONAL_SCALE_RATE
-                ):
-                    scaled_samples = round(Fraction(
-                        source_samples * resample_rate,
-                        virtual_sample_rate,
-                    ))
-                    sample_error = abs(scaled_samples - target_samples)
-                    if sample_error * 1000 <= duration_tolerance_ms * sample_rate:
-                        selected_rates = (virtual_sample_rate, resample_rate)
-
-            if selected_rates is None and rate_limit < cls._MAX_RATIONAL_SCALE_RATE:
-                rate_limit = min(cls._MAX_RATIONAL_SCALE_RATE, rate_limit * 2)
-            else:
-                break
-
-        if selected_rates is not None:
-            virtual_sample_rate, resample_rate = selected_rates
-            filters = [
-                f"asetrate={virtual_sample_rate}",
-                f"aresample={resample_rate}",
-            ]
-            if resample_rate != sample_rate:
-                filters.append(f"asetrate={sample_rate}")
-            filter_arg = ",".join(filters)
-        else:
-            raise RuntimeError(
-                "Cannot represent global audio scaling from "
-                f"{source_duration_ms} ms to {target_duration_ms} ms within the "
-                f"{duration_tolerance_ms} ms duration budget using FFmpeg rates up to "
-                f"{cls._MAX_RATIONAL_SCALE_RATE} Hz."
-            )
-        return filter_arg
-
-    def _source_patch_start_ms(
-        self,
-        first_segment: _AudioMappingSegment,
-        first_part: _AudioPart,
-    ) -> int:
-        if first_part.source_window is None:
-            raise RuntimeError("Decoded audio part is missing its source window.")
-        source_per_base = first_segment.source.duration_ms / first_segment.target.duration_ms
-        return first_segment.target.start_ms + round(
-            first_part.source_window.missing_prefix_ms / source_per_base
-        )
-
-    def _source_patch_target_interval(
-        self,
-        segments: Sequence[_AudioMappingSegment],
-        source_parts: Sequence[_AudioPart],
-    ) -> TimelineInterval:
-        """Return the physical output range after virtual source gaps are removed."""
-        if not segments or len(segments) != len(source_parts):
-            raise RuntimeError("Audio patch has no one-to-one segment and part layout.")
-        first_part = source_parts[0]
-        last_part = source_parts[-1]
-        if first_part.source_window is None or last_part.source_window is None:
-            raise RuntimeError("Decoded audio part is missing its source window.")
-
-        start_ms = self._source_patch_start_ms(segments[0], first_part)
-        last_segment = segments[-1]
-        source_per_base = last_segment.source.duration_ms / last_segment.target.duration_ms
-        end_ms = last_segment.target.end_ms - round(
-            last_part.source_window.missing_suffix_ms / source_per_base
-        )
-        return TimelineInterval(start_ms, max(start_ms, end_ms))
-
-    def _prepare_audio_gap_parts(
-        self,
-        request: AudioPatchRequest,
-        physical_source_interval: TimelineInterval,
-        normalize_to: tuple[int, int, str],
-        working_dir: str,
-    ) -> tuple[_AudioPart | None, _AudioPart | None]:
-        if not request.fill_gaps_from_base:
-            return None, None
-        if request.base_audio is None or request.base_timeline is None:
-            raise RuntimeError("Cannot fill audio gaps without an explicitly selected base audio stream.")
-
-        head_part = None
-        tail_part = None
-        if physical_source_interval.start_ms > request.output_interval.start_ms:
-            head_part = self._decode_audio_window(
-                request.base_audio,
-                request.base_timeline,
-                TimelineInterval(request.output_interval.start_ms, physical_source_interval.start_ms),
-                os.path.join(working_dir, "head.flac"),
-                normalize_to,
-                label="base-audio head",
-            )
-        if physical_source_interval.end_ms < request.output_interval.end_ms:
-            tail_part = self._decode_audio_window(
-                request.base_audio,
-                request.base_timeline,
-                TimelineInterval(physical_source_interval.end_ms, request.output_interval.end_ms),
-                os.path.join(working_dir, "tail.flac"),
-                normalize_to,
-                label="base-audio tail",
-            )
-        return head_part, tail_part
-
     @staticmethod
     def _collect_required_input_files(
         video_streams: Sequence[VideoStreamRef],
@@ -1174,1368 +325,217 @@ class MeltPerformer(TrackTimelineMixin):
             | {attachment.path for attachment in attachments}
         )
 
-    @staticmethod
-    def _fmt_time(seconds: float) -> str:
-        """Format seconds as a compact human-readable time string."""
-        if seconds < 0:
-            return f"-{MeltPerformer._fmt_time(-seconds)}"
-        h = int(seconds // 3600)
-        remainder = seconds - h * 3600
-        m = int(remainder // 60)
-        s = remainder - m * 60
-        if h > 0:
-            return f"{h}:{m:02d}:{s:04.1f}"
-        if m > 0:
-            return f"{m}:{s:04.1f}"
-        return f"{s:.1f}s"
-
-    def _render_overlap_diagram(
-        self,
-        lhs_id: int,
-        rhs_id: int,
-        lhs_duration_ms: int,
-        rhs_duration_ms: int,
-        summary: CoverageSummary,
-    ) -> list[str]:
-        """Build ASCII overlap diagram lines for two partially-overlapping files.
-
-        All positions are projected onto the lhs (base) timeline so that speed
-        differences between files don't distort the visual overlap.  That
-        projection can surprise: the rhs bar and its timestamps are stretched
-        or shrunk by the speed factor, so they may exceed the file's real
-        duration — when the factor is not 1, a trailing note spells this out.
-        """
-        lhs_dur = lhs_duration_ms / 1000
-        rhs_dur = rhs_duration_ms / 1000
-        lhs_sg = summary["lhs_start_gap_s"]
-        rhs_sg = summary["rhs_start_gap_s"]
-        lhs_eg = summary["lhs_end_gap_s"]
-        rhs_eg = summary["rhs_end_gap_s"]
-
-        # Compute speed factor to project rhs times onto lhs timeline.
-        # shared_dur_lhs / shared_dur_rhs gives how much rhs time stretches on the lhs axis.
-        shared_dur_lhs = lhs_dur - lhs_sg - lhs_eg
-        shared_dur_rhs = rhs_dur - rhs_sg - rhs_eg
-        speed = shared_dur_lhs / shared_dur_rhs if shared_dur_rhs > 0 else 1.0
-
-        # Unified timeline positions (lhs starts at t=0, rhs projected onto lhs time)
-        lhs_s, lhs_e = 0.0, lhs_dur
-        rhs_s = lhs_sg - rhs_sg * speed
-        rhs_e = (lhs_dur - lhs_eg) + rhs_eg * speed
-
-        t_min = min(lhs_s, rhs_s)
-        t_max = max(lhs_e, rhs_e)
-        if t_max - t_min <= 0:
-            return []
-
-        _THRESH = 0.0  # ignore gaps smaller than _THRESH
-        _MIN_GAP = 6   # minimum column width for a visible gap
-        _W = 70        # total diagram width in columns
-
-        left_gap = abs(lhs_s - rhs_s)
-        right_gap = abs(lhs_e - rhs_e)
-        has_left = left_gap > _THRESH
-        has_right = right_gap > _THRESH
-
-        left_w = _MIN_GAP if has_left else 0
-        right_w = _MIN_GAP if has_right else 0
-        mid_w = _W - left_w - right_w
-
-        # Determine bar column ranges; when there's no gap both bars share that edge
-        lhs_c0 = 0 if (lhs_s <= rhs_s or not has_left) else left_w
-        rhs_c0 = 0 if (rhs_s <= lhs_s or not has_left) else left_w
-        lhs_c1 = _W if (lhs_e >= rhs_e or not has_right) else left_w + mid_w
-        rhs_c1 = _W if (rhs_e >= lhs_e or not has_right) else left_w + mid_w
-
-        def _make_bar(c0: int, c1: int, label: str) -> str:
-            width = max(c1 - c0, len(label) + 2)
-            inner = width - 2
-            pl = (inner - len(label)) // 2
-            pr = inner - len(label) - pl
-            return " " * c0 + "|" + "_" * pl + label + "_" * pr + "|"
-
-        bar_lhs = _make_bar(lhs_c0, lhs_c1, f"#{lhs_id}")
-        bar_rhs = _make_bar(rhs_c0, rhs_c1, f"#{rhs_id}")
-
-        # Collect edge timestamps on the unified timeline (relative to t_min)
-        edge_list: list[tuple[int, float]] = [
-            (lhs_c0, lhs_s - t_min), (rhs_c0, rhs_s - t_min),
-            (lhs_c1, lhs_e - t_min), (rhs_c1, rhs_e - t_min),
-        ]
-        seen: set[tuple[int, int]] = set()
-        edges: list[tuple[int, str]] = []
-        for col, t in sorted(edge_list):
-            key = (col, round(t * 10))
-            if key not in seen:
-                seen.add(key)
-                edges.append((col, self._fmt_time(t)))
-
-        # Place labels on up to two rows, avoiding overlap
-        rows: list[list[str]] = [
-            [" "] * (_W + 20),
-            [" "] * (_W + 20),
-        ]
-        row_end = [-1, -1]
-        for c, label in edges:
-            for r in range(2):
-                if c >= row_end[r] and c + len(label) <= len(rows[r]):
-                    for i, ch in enumerate(label):
-                        rows[r][c + i] = ch
-                    row_end[r] = c + len(label) + 1
-                    break
-
-        lines = [bar_lhs, bar_rhs]
-        for row in rows:
-            s = "".join(row).rstrip()
-            if s:
-                lines.append(s)
-        if abs(speed - 1.0) >= 0.001:
-            lines.append(
-                f"(#{rhs_id} plays at a different speed; its bar and times are projected "
-                f"onto #{lhs_id}'s timeline — {self._fmt_time(rhs_dur)} of #{rhs_id} "
-                f"spans {self._fmt_time(rhs_e - rhs_s)} there)"
-            )
-        return lines
-
-    def _log_coverage(
-        self,
-        mappings: list[tuple[int, int]],
-        lhs_duration_ms: int,
-        rhs_duration_ms: int,
-        lhs_fps: float,
-        rhs_fps: float,
-        lhs_id: int,
-        rhs_id: int,
-    ) -> None:
-        """Log an exact coverage report for a compared pair of files.
-
-        Files of equal length that share all content are dismissed in one
-        line.  Everything else gets the full report: exact edge gaps (to the
-        millisecond, no thresholds hide small differences), both durations,
-        the speed ratio, and the overlap diagram.  Files of different length
-        are by definition not identical — with one exception spelled out
-        explicitly: the same frames end to end played at a different frame
-        rate.
-        """
-        summary = PairMatcher.coverage_summary(
-            mappings,
-            lhs_duration_ms,
-            rhs_duration_ms,
-            lhs_fps=lhs_fps,
-            rhs_fps=rhs_fps,
-        )
-        ratio = summary["ratio"]
-        same_speed = abs(ratio - 1.0) < 0.001
-        same_length = lhs_duration_ms == rhs_duration_ms
-
-        if same_length and same_speed and summary["full_coverage"]:
-            self.logger.info(
-                "Files are 100%% visually identical: #%d ↔ #%d",
-                lhs_id, rhs_id,
-            )
-            return
-
-        lhs_len = generic_utils.ms_to_time(lhs_duration_ms)
-        rhs_len = generic_utils.ms_to_time(rhs_duration_ms)
-        if summary["full_coverage"]:
-            # The only way identical content yields different lengths: the
-            # same frames played at a different frame rate.
-            self.logger.info(
-                "Files share all content but play at different speeds "
-                "(same frames, different frame rate; speed ratio %.5f): "
-                "#%d (%s) ↔ #%d (%s)",
-                ratio, lhs_id, lhs_len, rhs_id, rhs_len,
-            )
-        else:
-            self.logger.info(
-                "Files are NOT fully identical: #%d (%s) ↔ #%d (%s)",
-                lhs_id, lhs_len, rhs_id, rhs_len,
-            )
-            if not same_speed:
-                self.logger.info("  speed ratio: %.5f", ratio)
-        self.logger.info(
-            "  shared content starts at %.3f s in #%d and at %.3f s in #%d",
-            summary["lhs_start_gap_s"], lhs_id, summary["rhs_start_gap_s"], rhs_id,
-        )
-        self.logger.info(
-            "  shared content ends %.3f s before end of #%d and %.3f s before end of #%d",
-            summary["lhs_end_gap_s"], lhs_id, summary["rhs_end_gap_s"], rhs_id,
-        )
-
-        diagram = self._render_overlap_diagram(
-            lhs_id, rhs_id, lhs_duration_ms, rhs_duration_ms, summary,
-        )
-        if diagram:
-            self.logger.info("Overlap diagram:\n%s", "\n".join(diagram))
-
-    @staticmethod
-    def _segment_range(pairs: Sequence[tuple[int, int]]) -> _SegmentRange:
-        """Return the bounding lhs/rhs range from a list of (lhs, rhs) pairs."""
-        left, right = zip(*pairs)
-        return _SegmentRange(min(left), max(left), min(right), max(right))
-
-    def _get_audio_params(self, audio_stream: AudioStreamRef) -> tuple[int, int, str]:
-        """Return (channels, sample_rate, sample_fmt) for a selected stream."""
-        stream = self._audio_stream_info(audio_stream)
-        if stream is None:
-            raise RuntimeError(
-                f"ffprobe audio stream #{audio_stream.ffprobe_stream_index} "
-                f"not found in {audio_stream.path}."
-            )
-        return int(stream["channels"]), int(stream["sample_rate"]), stream["sample_fmt"]
-
-    def _get_audio_channel_layout(self, audio_stream: AudioStreamRef) -> str | None:
-        """Return the selected stream's channel layout, or None."""
-        stream = self._audio_stream_info(audio_stream)
-        if stream is None:
-            raise RuntimeError(
-                f"ffprobe audio stream #{audio_stream.ffprobe_stream_index} "
-                f"not found in {audio_stream.path}."
-            )
-        return stream.get("channel_layout") or None
-
-    _FPS_RATIO_TOLERANCE = 0.001
-    # A start correction below this is normal probe noise; above it the audio
-    # placement genuinely moves — logged, and rejected in fill-gaps mode where
-    # it cannot be compensated.
-    _SIGNIFICANT_START_CORRECTION_MS = 50
-    # Effective-fps ratios closer to 1.0 than this are treated as the same
-    # playback speed (probe noise), not a real tempo difference.
-    _MIN_TEMPO_RATIO_DELTA = 0.005
-    # A mapping counts as pure frame-rate drift only when the matched spans
-    # agree in wall-clock duration within this fraction.
-    _MAX_SAME_SPEED_SPAN_DELTA = 0.01
-    # An effective-fps tempo ratio may replace the matched pairs' time mapping
-    # only when both agree within this fraction; a larger disagreement means
-    # the files are not frame-for-frame and the fps ratio says nothing about
-    # the time mapping.
-    _MAX_FPS_VS_OBSERVED_RATIO_ERROR = 0.05
-    # Collapsing a linear mapping to one global time-scale requires the
-    # matched span to cover at least this fraction of the base video;
-    # projecting a global tempo from a small matched window is guesswork.
-    _MIN_LINEAR_REBUILD_COVERAGE = 0.80
-    # Number of subsegments the per-scene audio patcher splits the mapped
-    # range into.
-    _SUBSEGMENT_COUNT = 20
-    # FFmpeg's atempo filter can retain up to one 1024-sample processing block
-    # at EOF.  Its duration check must account for that bounded filter tail,
-    # while final placement validation still catches accumulated error.
-    _ATEMPO_TAIL_SAMPLES = 1024
-    # Start global rational resampling at a conventional high-resolution rate.
-    # The selector doubles this only when its per-part sample calculation
-    # proves the approximation is too coarse.
-    _PREFERRED_RATIONAL_SCALE_RATE = 192000
-    # FFmpeg's asetrate accepts integer rates from 1 through INT_MAX.  Apply
-    # that same hard bound to every generated asetrate/aresample value.
-    _MAX_RATIONAL_SCALE_RATE = 2147483647
-
-    @staticmethod
-    def _needs_fps_scaling(ratio: float) -> bool:
-        """Classify a global span as a real playback-speed change.
-
-        This is a strategy-selection policy, not a decision to skip a
-        physical transform for an individual audio part.  Per-part scaling is
-        instead determined by the sample-derived duration budget in
-        :meth:`_scale_audio_part`.
-        """
-        return (
-            ratio >= 1.0 + MeltPerformer._FPS_RATIO_TOLERANCE
-            or ratio <= 1.0 - MeltPerformer._FPS_RATIO_TOLERANCE
-        )
-
-    @staticmethod
-    def _audio_duration_tolerance_ms(
-        sample_rate: int,
-        *,
-        segment_count: int = 1,
-        encoded: bool = False,
-        filter_tail_samples: int = 0,
-    ) -> int:
-        """Return the measurable duration budget for a FLAC/AAC transformation.
-
-        Each independently time-scaled segment can round by one sample.  The
-        final AAC encode can additionally round to one 1024-sample AAC frame.
-        Some filters, such as atempo, can retain a bounded tail block at EOF.
-        ffprobe then reports the result in milliseconds.  This is a physical
-        error budget, not a percentage that grows with film length.
-        """
-        if sample_rate <= 0:
-            raise ValueError("Audio sample rate must be positive.")
-        sample_rounding_ms = math.ceil(max(1, segment_count) * 1000 / sample_rate)
-        aac_frame_ms = math.ceil(1024 * 1000 / sample_rate) if encoded else 0
-        filter_tail_ms = math.ceil(max(0, filter_tail_samples) * 1000 / sample_rate)
-        probe_rounding_ms = 2
-        return sample_rounding_ms + aac_frame_ms + filter_tail_ms + probe_rounding_ms
-
-    def _validate_audio_duration(
-        self,
-        actual_ms: int,
-        expected_ms: int,
-        label: str,
-        *,
-        sample_rate: int = 48000,
-        segment_count: int = 1,
-        encoded: bool = False,
-        filter_tail_samples: int = 0,
-    ) -> None:
-        """Raise when duration exceeds the sample/filter-derived precision budget."""
-        tolerance_ms = self._audio_duration_tolerance_ms(
-            sample_rate,
-            segment_count=segment_count,
-            encoded=encoded,
-            filter_tail_samples=filter_tail_samples,
-        )
-        deviation_ms = abs(actual_ms - expected_ms)
-        if deviation_ms > tolerance_ms:
-            raise RuntimeError(
-                f"Audio duration mismatch in {label}: got {actual_ms} ms, "
-                f"expected {expected_ms} ms (difference: {deviation_ms} ms, "
-                f"max allowed: {tolerance_ms} ms)."
-            )
-
-    def _validate_audio_placement(
-        self,
-        start_ms: int,
-        duration_ms: int,
-        expected_end_ms: int,
-        sample_rate: int,
-        segment_count: int,
-    ) -> None:
-        actual_end_ms = start_ms + duration_ms
-        tolerance_ms = self._audio_duration_tolerance_ms(
-            sample_rate,
-            segment_count=segment_count,
-            encoded=True,
-        )
-        if abs(actual_end_ms - expected_end_ms) > tolerance_ms:
-            raise RuntimeError(
-                "Patched audio placement mismatch: "
-                f"track ends at {actual_end_ms} ms, expected {expected_end_ms} ms "
-                f"(max allowed: {tolerance_ms} ms)."
-            )
-
-    @staticmethod
-    def _flac_safe_fmt(sample_fmt: str) -> str:
-        """Return a FLAC-compatible sample format (FLAC does not support float formats)."""
-        base = sample_fmt.removesuffix("p")
-        if base in ("flt", "dbl"):
-            return "s32"
-        return sample_fmt
-
-    # Channel layouts that have a standard AAC channel configuration index.
-    # Non-standard layouts (e.g., "5.1(side)") force the AAC encoder to use a
-    # Program Config Element (PCE) which many decoders/muxers handle poorly,
-    # leading to missing channel_layout metadata and garbled channel ordering.
-    _AAC_STANDARD_LAYOUTS = frozenset({
-        "mono", "stereo", "3.0", "4.0", "5.0", "5.1", "6.1", "7.1",
-    })
-
-    @staticmethod
-    def _concat_and_encode(
-        parts: list[str],
-        has_head: bool,
-        head_path: str,
-        has_tail: bool,
-        tail_path: str,
-        concat_list_path: str,
-        output_path: str,
-        channel_layout: str | None = None,
-        progress_description: str = "Encoding audio to AAC",
-        logger: logging.Logger | None = None,
-    ) -> None:
-        """Concatenate audio parts (head + middle segments + tail) and encode to AAC.
-
-        All input parts are expected to be FLAC. The concat demuxer merges them
-        and encodes directly to AAC in a single ffmpeg pass.
-
-        *channel_layout*, when given, is the source channel layout string
-        (e.g., ``"5.1(side)"``).  Non-standard layouts are normalized to the
-        closest standard AAC configuration to avoid PCE encoding issues.
-        """
-        def _esc(p: str) -> str:
-            return p.replace("'", "'\\''" )
-
-        with open(concat_list_path, "w", encoding="utf-8") as f:
-            if has_head:
-                f.write(f"file '{_esc(head_path)}'\n")
-            for seg in parts:
-                f.write(f"file '{_esc(seg)}'\n")
-            if has_tail:
-                f.write(f"file '{_esc(tail_path)}'\n")
-
-        needs_layout_fix = (
-            channel_layout is not None
-            and channel_layout not in MeltPerformer._AAC_STANDARD_LAYOUTS
-        )
-        layout_args: list[str] = []
-        if needs_layout_fix:
-            # Force standard layout selection via aformat filter so the AAC
-            # encoder uses a channel configuration index (no PCE).
-            allowed = "|".join(sorted(MeltPerformer._AAC_STANDARD_LAYOUTS))
-            layout_args = ["-af", f"aformat=channel_layouts={allowed}"]
-
-        process_utils.raise_on_error(
-            process_utils.start_process("ffmpeg", [
-                "-y", "-f", "concat", "-safe", "0",
-                "-i", concat_list_path,
-                *layout_args,
-                "-c:a", "aac",
-                output_path,
-            ], show_progress=True, progress_description=progress_description, logger=logger)
-        )
-
-    def _patch_audio_segment(
-        self,
-        wd: str,
-        base_video: VideoStreamRef,
-        source_video: VideoStreamRef,
-        source_audio: AudioStreamRef,
-        base_audio: AudioStreamRef | None,
-        output_path: str,
-        segment_pairs: list[tuple[int, int]],
-        segment_count: int,
-        lhs_frames: FramesInfo,
-        rhs_frames: FramesInfo,
-        min_subsegment_duration: float = 30.0,
-        *,
-        fill_gaps_from_base: bool = True,
-    ) -> int:
-        """Compatibility entry point for a subsegment patch request."""
-        base_duration_ms = video_utils.get_video_duration(base_video.path, logger=self.logger)
-        if base_duration_ms is None:
-            raise RuntimeError(f"Could not determine base video duration for {base_video.path}.")
-        request = self._create_audio_patch_request(
-            wd,
-            base_video,
-            source_video,
-            source_audio,
-            base_audio,
-            output_path,
-            segment_pairs,
-            base_duration_ms,
-            lhs_frames=lhs_frames,
-            rhs_frames=rhs_frames,
-            fill_gaps_from_base=fill_gaps_from_base,
-        )
-        return self._execute_audio_patch(
-            request,
-            _AudioStrategy.SUBSEGMENT,
-            segment_count=segment_count,
-            min_subsegment_duration=min_subsegment_duration,
-        ).timeline_start_ms
-
     def _build_output_path(self, title: str, output_name: str) -> str:
         return os.path.join(self.output_dir, title, output_name + ".mkv")
 
     def _display_path(self, path: str) -> str:
         return files_utils.format_path(path, self.output_dir)
 
-    def _pair_match(
+    def _max_stream_end_ms(
         self,
-        mwd: str,
-        video_path_base: str,
-        source_path: str,
-        file_ids: dict[str, int],
-    ) -> _PairMatchResult:
-        """Return the (cached) PairMatcher result for a (base, source) pair."""
-        lhs_id = file_ids[video_path_base]
-        rhs_id = file_ids[source_path]
-        cache_key = (video_path_base, source_path)
-        match_result = self._pair_match_cache.get(cache_key)
-
-        if match_result is None:
-            self.logger.info("Matching video content: #%d - #%d", lhs_id, rhs_id)
-            duration = video_utils.get_video_duration(source_path)
-            matcher = PairMatcher(
-                self.interruption, mwd, video_path_base, source_path,
-                self.logger.getChild("PairMatcher"),
-                lhs_label=f"#{lhs_id}", rhs_label=f"#{rhs_id}",
-                cache=self.cache,
-                media_analysis_session=self.media_analysis,
-                max_temporary_frame_offset=self.max_temporary_frame_offset,
-            )
-            match_result = _PairMatchResult(
-                matching=matcher.create_segments_mapping(),
-                source_duration=duration,
-            )
-            self._pair_match_cache[cache_key] = match_result
-        else:
-            self.logger.info(
-                "Reusing PairMatcher results for #%d ↔ #%d (same video pair).",
-                lhs_id, rhs_id,
-            )
-        return match_result
-
-    def _validated_pair_match(
-        self,
-        working_dir: str,
-        base_path: str,
-        source_path: str,
-        base_duration_ms: int,
-        file_ids: dict[str, int],
-        *,
-        consumer: str,
-    ) -> _PairMatchResult:
-        """Return one safe, cached mapping for an aligned source track."""
-        first_match = (base_path, source_path) not in self._pair_match_cache
-        match_result = self._pair_match(
-            working_dir,
-            base_path,
-            source_path,
-            file_ids,
-        )
-        matching = match_result.matching
-
-        if first_match and matching.mapping:
-            self._log_coverage(
-                matching.mapping,
-                base_duration_ms,
-                match_result.source_duration,
-                matching.lhs_fps,
-                matching.rhs_fps,
-                file_ids[base_path],
-                file_ids[source_path],
-            )
-
-        discontinuities = matching.content_discontinuities
-        if matching.relation is MappingRelation.GENERIC:
-            discontinuities = discontinuities or tuple(
-                PairMatcher.find_content_discontinuities(matching.mapping)
-            )
-
-        if matching.timing_discontinuities:
-            for lhs_from, lhs_to, rhs_from, rhs_to, deficit in matching.timing_discontinuities:
-                self.logger.error(
-                    "  Unsupported %s timeline discontinuity: %s in #%d ↔ %s in #%d "
-                    "(%+d ms)",
-                    consumer,
-                    format_timestamp_range(lhs_from, lhs_to),
-                    file_ids[base_path],
-                    format_timestamp_range(rhs_from, rhs_to),
-                    file_ids[source_path],
-                    deficit,
-                )
-            if matching.timing_discontinuity_debug_path is not None:
-                self.logger.error(
-                    "Full frame diagnostics: %s",
-                    os.path.join(
-                        matching.timing_discontinuity_debug_path,
-                        "details.txt",
-                    ),
-                )
-            raise RuntimeError(
-                f"Unsupported {consumer} timeline discontinuity: the matched PTS mapping "
-                "has a PTS step despite continuous decoded video"
-            )
-
-        if discontinuities:
-            for lhs_from, lhs_to, rhs_from, rhs_to, deficit in discontinuities:
-                suffix = (
-                    f", {deficit * matching.rhs_fps / 1000:+.1f} frames"
-                    if matching.relation is MappingRelation.GLOBAL_LINEAR else ""
-                )
-                self.logger.error(
-                    "  Suspected content discontinuity: %s in #%d ↔ %s in #%d "
-                    "(%+d ms%s)",
-                    format_timestamp_range(lhs_from, lhs_to),
-                    file_ids[base_path],
-                    format_timestamp_range(rhs_from, rhs_to),
-                    file_ids[source_path],
-                    deficit,
-                    suffix,
-                )
-            raise RuntimeError(
-                "Unresolved suspected content discontinuities: insufficient evidence to rule out "
-                "holes in the scene sequence (e.g. commercial-break cuts) — patching "
-                f"{consumer} across such discontinuities is not supported yet"
-            )
-
-        if not matching.mapping:
-            raise RuntimeError(
-                f"Cannot align {consumer}: no shared video timeline mapping was found."
-            )
-        return match_result
-
-    def _patch_mismatched_audio(
-        self,
-        base_video: VideoStreamRef,
-        source_video: VideoStreamRef,
-        audio_stream: AudioStreamRef,
-        base_audio: AudioStreamRef | None,
-        base_duration: int,
-        base_audio_end: int | None,
-        file_ids: dict[str, int],
-    ) -> AudioPatchResult:
-        """Run PairMatcher and apply the appropriate audio patching strategy."""
-        self._input_file_ids = dict(file_ids)
-        video_path_base = base_video.path
-        audio_path = audio_stream.path
-        ffprobe_stream_index = audio_stream.ffprobe_stream_index
-        with self.workspace.scoped_dir("matching") as mwd, \
-             generic_utils.TqdmBouncingBar(desc="Processing", **generic_utils.get_tqdm_defaults()):
-            match_result = self._validated_pair_match(
-                mwd,
-                video_path_base,
-                audio_path,
-                base_duration,
-                file_ids,
-                consumer="audio",
-            )
-
-            matching = match_result.matching
-            lhs_all_frames = matching.lhs_all_frames
-            rhs_all_frames = matching.rhs_all_frames
-            duration = match_result.source_duration
-
-            strategy = self._choose_audio_strategy(
-                video_path_base, audio_path, matching,
-            )
-            self.logger.info("  Audio strategy: %s", strategy.value)
-            mapping = self._prepare_audio_mapping(
-                strategy, video_path_base, audio_path, matching,
-            )
-
-            unscaled_shift_ms = 0
-            if strategy == _AudioStrategy.UNSCALED:
-                stream_bias_ms = (
-                    self._mapping_stream_bias_ms(video_path_base, matching.lhs_all_frames)
-                    - self._mapping_stream_bias_ms(audio_path, matching.rhs_all_frames)
-                )
-                unscaled_shift_ms = self._unscaled_timeline_shift_ms(
-                    mapping,
-                    matching.lhs_fps,
-                    stream_bias_ms=stream_bias_ms,
-                    rhs_fps=matching.rhs_fps,
-                )
-                if unscaled_shift_ms:
-                    self.logger.info(
-                        "  Unscaled timeline shift: %+d ms (matched content offset)",
-                        unscaled_shift_ms,
-                    )
-
-            self.logger.debug(
-                "Audio patching: base_duration=%d ms, source_duration=%d ms, "
-                "mapping_relation=%s, lhs_fps=%.3f, rhs_fps=%.3f, mapping_pairs=%d",
-                base_duration, duration, matching.relation.value,
-                matching.lhs_fps, matching.rhs_fps, len(mapping),
-            )
-            if mapping:
-                self.logger.debug(
-                    "  Mapping range: lhs=[%d … %d] ms, rhs=[%d … %d] ms",
-                    mapping[0][0], mapping[-1][0], mapping[0][1], mapping[-1][1],
-                )
-
-            patched_audio = self._temporary_audio_path("patched_audio", ffprobe_stream_index)
-            request = self._create_audio_patch_request(
-                mwd,
-                base_video,
-                source_video,
-                audio_stream,
-                base_audio,
-                patched_audio,
-                mapping,
-                base_duration,
-                lhs_frames=lhs_all_frames,
-                rhs_frames=rhs_all_frames,
-                fill_gaps_from_base=self.fill_audio_gaps,
-                output_end_ms=(
-                    base_audio_end
-                    if strategy == _AudioStrategy.UNSCALED and base_audio_end is not None
-                    else base_duration
-                ),
-            )
-            result = self._execute_audio_patch(
-                request,
-                strategy,
-                segment_count=self._SUBSEGMENT_COUNT if strategy == _AudioStrategy.SUBSEGMENT else 1,
-                unscaled_shift_ms=unscaled_shift_ms,
-            )
-            self.logger.info("  Desired audio start: %d ms", result.timeline_start_ms)
-            return result
-
-    def _choose_audio_strategy(
-        self,
-        video_path_base: str,
-        audio_path: str,
-        matching: SegmentsMappingResult,
-    ) -> _AudioStrategy:
-        """Pick the strategy for fitting the source audio to the base video.
-
-        Decision table (mapping relation × observed drift):
-
-        - GLOBAL_LINEAR, same speed          → UNSCALED
-        - GLOBAL_LINEAR, real speed change   → GLOBAL_TIME_SCALE
-        - GENERIC, pure frame-rate drift     → UNSCALED
-        - GENERIC otherwise                  → SUBSEGMENT
-
-        UNSCALED applies when no global time-scale is needed: a same-speed
-        global-linear relation (a constant offset, or a frame-rate conversion
-        that preserves playback time — different fps but same speed), or a
-        generic match that is a pure frame-rate drift.  Only a genuine
-        playback-speed difference (e.g. a 25 fps PAL transfer vs 24 fps) is
-        time-scaled.  UNSCALED still normalizes through the FLAC-domain flow
-        because mismatched inputs need deterministic trimming and placement; a
-        constant timeline shift carried by the mapping (shared content genuinely
-        starting on different wall-clock positions, with no container offset
-        recording it) is applied at placement time — see
-        ``_unscaled_timeline_shift_ms``.
-
-        The mapping the chosen strategy must be applied with is built
-        separately by ``_prepare_audio_mapping``.
-        """
-        mapping = matching.mapping
-
-        seg_raw = self._segment_range(mapping)
-        raw_source_span = seg_raw.rhs_end - seg_raw.rhs_start
-        raw_base_span = seg_raw.lhs_end - seg_raw.lhs_start
-        raw_source_per_base = raw_source_span / raw_base_span if raw_base_span else 1.0
-        frame_rate_only_drift = self._is_frame_rate_only_drift_mapping(
-            video_path_base,
-            audio_path,
-            mapping,
-            matching.lhs_all_frames,
-            matching.rhs_all_frames,
-            matching.lhs_fps,
-            matching.rhs_fps,
-        )
-
-        if matching.relation == MappingRelation.GLOBAL_LINEAR:
-            # Scale only when the span ratio is a real speed change and not
-            # merely a same-speed frame-rate conversion.
-            needs_scaling = self._needs_fps_scaling(raw_source_per_base) and not frame_rate_only_drift
-            return _AudioStrategy.GLOBAL_TIME_SCALE if needs_scaling else _AudioStrategy.UNSCALED
-
-        if frame_rate_only_drift:
-            return _AudioStrategy.UNSCALED
-
-        return _AudioStrategy.SUBSEGMENT
-
-    def _prepare_audio_mapping(
-        self,
-        strategy: _AudioStrategy,
-        video_path_base: str,
-        audio_path: str,
-        matching: SegmentsMappingResult,
-    ) -> list[tuple[int, int]]:
-        """Build the audio mapping the chosen strategy must be applied with.
-
-        UNSCALED keeps the raw pairs (they only derive a placement shift);
-        GLOBAL_TIME_SCALE needs the strict cleanup for its trim ranges;
-        SUBSEGMENT may additionally collapse an effectively linear match to
-        one clean line (``_try_collapse_linear_mapping``) so the subsegment
-        patcher scales correctly — container metadata may sharpen the line's
-        slope there but never override what the pairs observe.  Mapping edges
-        are not touched here — boundary decisions belong to ``PairMatcher``.
-        """
-        if strategy == _AudioStrategy.UNSCALED:
-            return matching.mapping
-
-        mapping = self._strict_mapping(matching.mapping)
-        if strategy == _AudioStrategy.GLOBAL_TIME_SCALE:
-            return mapping
-
-        tempo_ratio = self._effective_tempo_ratio(
-            video_path_base,
-            audio_path,
-            matching.lhs_all_frames,
-            matching.rhs_all_frames,
-        )
-        recovered_mapping = self._try_collapse_linear_mapping(
-            mapping,
-            matching.lhs_all_frames,
-            tempo_ratio,
-        )
-        if recovered_mapping is not None:
-            mapping = recovered_mapping
-            self.logger.info(
-                "  Collapsed linear audio mapping: using %s-%s ↔ %s-%s",
-                generic_utils.ms_to_time(mapping[0][0]),
-                generic_utils.ms_to_time(mapping[-1][0]),
-                generic_utils.ms_to_time(mapping[0][1]),
-                generic_utils.ms_to_time(mapping[-1][1]),
-            )
-        return mapping
-
-    @staticmethod
-    def _mapping_stream_bias_ms(path: str, frames: FramesInfo) -> int:
-        """Offset from *path*'s mapping space to its stream space.
-
-        The frame timestamps feeding the pair mapping are container-dependent:
-        some demuxers keep the video stream's start offset in frame PTS (mp4),
-        others hand out frames rebased to zero (mkv).  The gap between the
-        probed stream start and the first probed frame measures which
-        convention this side uses, so mapping deltas from two files can be
-        compared in one (stream) space.
-        """
-        if not frames:
-            return 0
-        info = video_utils.get_video_full_info(path)
-        stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
-        if stream is None:
-            return 0
-        return MeltPerformer._stream_start_offset_ms(stream) - min(frames)
-
-    @staticmethod
-    def _unscaled_timeline_shift_ms(
-        mapping: list[tuple[int, int]],
-        lhs_fps: float | None,
-        stream_bias_ms: int = 0,
-        rhs_fps: float | None = None,
-    ) -> int:
-        """Base-minus-source timeline shift carried by an unscaled mapping.
-
-        UNSCALED plays the source audio without changing speed, so the only degree of
-        freedom left is where the track starts on the base timeline.  The
-        matched pairs yield that shift as the median of ``lhs - rhs``,
-        corrected by ``stream_bias_ms`` — the difference of the two sides'
-        mapping-to-stream biases (see ``_mapping_stream_bias_ms``) — so the
-        shift lands in stream space, the space tracks are placed in.  There a
-        container start offset cancels out: content restored to its canonical
-        position by such an offset yields a zero shift and keeps being placed
-        by its content start alone.
-
-        A delta close to the base's whole-frame grid is the unambiguous case
-        (for example, dropped leading frames) and stays snapped to that grid.
-        Small off-grid deltas are timestamp phase noise: two independently
-        quantized frame timestamps can differ by up to half a frame from each
-        side.  A delta larger than that ambiguity can nevertheless be real when
-        the inputs use different frame rates; accept its millisecond median
-        when both its robust spread and its beginning-to-end drift remain
-        within the same quantization budget.
-        """
-        if not mapping or not lhs_fps or lhs_fps <= 0:
-            return 0
-
-        lhs_frame_ms = 1000 / lhs_fps
-        ordered_deltas = [
-            lhs - rhs + stream_bias_ms
-            for lhs, rhs in sorted(mapping)
-        ]
-        median_delta = statistics.median(ordered_deltas)
-        frames = round(median_delta / lhs_frame_ms)
-        snapped_delta = frames * lhs_frame_ms
-        if abs(median_delta - snapped_delta) <= lhs_frame_ms / 4:
-            return round(snapped_delta)
-
-        rhs_frame_ms = (
-            1000 / rhs_fps
-            if rhs_fps is not None and rhs_fps > 0
-            else lhs_frame_ms
-        )
-        quantization_budget_ms = (lhs_frame_ms + rhs_frame_ms) / 2
-        if abs(median_delta) <= quantization_budget_ms:
-            return 0
-
-        deviations = sorted(abs(delta - median_delta) for delta in ordered_deltas)
-        p95_index = math.ceil(0.95 * len(deviations)) - 1
-        p95_deviation = deviations[p95_index]
-        edge_count = max(1, len(ordered_deltas) // 5)
-        edge_drift = abs(
-            statistics.median(ordered_deltas[:edge_count])
-            - statistics.median(ordered_deltas[-edge_count:])
-        )
-        if (
-            p95_deviation > quantization_budget_ms
-            or edge_drift > quantization_budget_ms
-        ):
-            return 0
-
-        return round(median_delta)
-
-    @staticmethod
-    def _strict_mapping(mapping: list[tuple[int, int]]) -> list[tuple[int, int]]:
-        """Collapse duplicate or non-monotonic matches before retiming tracks."""
-        if len(mapping) < 2:
-            return mapping
-
-        result: list[tuple[int, int]] = []
-        for lhs_time, rhs_time in sorted(mapping):
-            if result and rhs_time == result[-1][1]:
-                result[-1] = (lhs_time, rhs_time)
-                continue
-            if result and (lhs_time <= result[-1][0] or rhs_time < result[-1][1]):
-                continue
-            result.append((lhs_time, rhs_time))
-
-        return result if result else mapping
-
-    @staticmethod
-    def _video_playable_duration_ms(path: str) -> int | None:
-        info = video_utils.get_video_full_info(path)
-        stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
-        if stream is None:
-            return None
-
-        end_ms = MeltPerformer._stream_end_offset_ms(stream)
-        if end_ms is None:
-            return None
-        return max(0, end_ms - MeltPerformer._stream_start_offset_ms(stream))
-
-    @staticmethod
-    def _effective_video_fps(path: str, frames: FramesInfo) -> float | None:
-        if len(frames) < 2:
-            return None
-
-        duration_ms = MeltPerformer._video_playable_duration_ms(path)
-        if duration_ms is None or duration_ms <= 0:
-            return None
-
-        frame_span = MeltPerformer._video_frame_span(path, frames)
-        if frame_span <= 0:
-            return None
-
-        return frame_span * 1000 / duration_ms
-
-    @staticmethod
-    def _effective_tempo_ratio(
-        base_video: str,
-        source_video: str,
-        lhs_all_frames: FramesInfo,
-        rhs_all_frames: FramesInfo,
-    ) -> float | None:
-        """Tempo ratio implied by the two files' effective fps, or None when unknown."""
-        lhs_effective_fps = MeltPerformer._effective_video_fps(base_video, lhs_all_frames)
-        rhs_effective_fps = MeltPerformer._effective_video_fps(source_video, rhs_all_frames)
-        if lhs_effective_fps is None or rhs_effective_fps is None or rhs_effective_fps <= 0:
-            return None
-        return lhs_effective_fps / rhs_effective_fps
-
-    @staticmethod
-    def _video_frame_span(path: str, frames: FramesInfo) -> int:
-        info = video_utils.get_video_full_info(path)
-        stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
-        if stream is not None:
-            try:
-                frame_count = int(stream.get("nb_frames") or 0)
-            except (TypeError, ValueError):
-                frame_count = 0
-            if frame_count > 1:
-                return frame_count - 1
-        return len(frames) - 1
-
-    @staticmethod
-    def _try_collapse_linear_mapping(
-        mapping: list[tuple[int, int]],
-        lhs_all_frames: FramesInfo,
-        tempo_ratio: float | None,
-    ) -> list[tuple[int, int]] | None:
-        """Collapse a linear mapping to the two endpoints of a tempo-built line.
-
-        The pairs are frame-quantized and can carry a corrupted anchor from a
-        low-entropy zone; *tempo_ratio* (the effective-fps tempo from
-        container metadata) is free of both defects, so when it agrees with
-        the pairs' slope within ``_MAX_FPS_VS_OBSERVED_RATIO_ERROR``,
-        describes a real speed change, and the matched span covers
-        ≥ ``_MIN_LINEAR_REBUILD_COVERAGE`` of the base, the mapping is
-        replaced with a two-point line at that tempo — one global time-scale.
-        """
-        if not lhs_all_frames or tempo_ratio is None or tempo_ratio <= 0:
-            return None
-
-        pairs = sorted(mapping)
-        slope = PairMatcher._linear_mapping_slope(pairs)
-        if slope is None:
-            return None
-        if abs(tempo_ratio / slope - 1.0) >= MeltPerformer._MAX_FPS_VS_OBSERVED_RATIO_ERROR:
-            return None
-        if abs(tempo_ratio - 1.0) < MeltPerformer._MIN_TEMPO_RATIO_DELTA:
-            return None
-
-        first_lhs, first_rhs = pairs[0]
-        last_lhs, _ = pairs[-1]
-        lhs_span = last_lhs - first_lhs
-        lhs_frame_span = max(lhs_all_frames) - min(lhs_all_frames)
-        if lhs_frame_span <= 0 or lhs_span < lhs_frame_span * MeltPerformer._MIN_LINEAR_REBUILD_COVERAGE:
-            return None
-
-        return [
-            (first_lhs, first_rhs),
-            (last_lhs, first_rhs + round(lhs_span * tempo_ratio)),
-        ]
-
-    @staticmethod
-    def _is_frame_rate_only_drift_mapping(
-        base_video: str,
-        source_video: str,
-        mapping: list[tuple[int, int]],
-        lhs_all_frames: FramesInfo,
-        rhs_all_frames: FramesInfo,
-        lhs_nominal_fps: float | None,
-        rhs_nominal_fps: float | None,
-    ) -> bool:
-        if len(mapping) < 2 or lhs_nominal_fps is None or rhs_nominal_fps is None or rhs_nominal_fps <= 0:
-            return False
-
-        tempo_ratio = MeltPerformer._effective_tempo_ratio(
-            base_video, source_video, lhs_all_frames, rhs_all_frames,
-        )
-        if tempo_ratio is None:
-            return False
-        nominal_ratio = lhs_nominal_fps / rhs_nominal_fps
-        if abs(tempo_ratio - 1.0) < MeltPerformer._MIN_TEMPO_RATIO_DELTA:
-            return False
-        if abs(tempo_ratio / nominal_ratio - 1.0) >= MeltPerformer._MIN_TEMPO_RATIO_DELTA:
-            return False
-
-        observed_pairs = sorted(mapping)
-        if len(observed_pairs) >= 4:
-            observed_pairs = observed_pairs[1:-1]
-
-        seg = MeltPerformer._segment_range(observed_pairs)
-        target_duration = seg.lhs_end - seg.lhs_start
-        source_duration = seg.rhs_end - seg.rhs_start
-        if target_duration <= 0 or source_duration <= 0:
-            return False
-
-        observed_ratio = source_duration / target_duration
-        return abs(observed_ratio - 1.0) < MeltPerformer._MAX_SAME_SPEED_SPAN_DELTA
-
-    @staticmethod
-    def _video_track_duration(
         path: str,
-        files_details: dict[str, Any],
-        logger: logging.Logger | None = None,
+        stream_type: StreamType,
+        streams: Sequence[VideoStreamRef | AudioStreamRef],
     ) -> int | None:
-        """Return video track duration in ms from pre-probed plan data.
-
-        Falls back to container-level ffprobe duration when plan data is
-        unavailable.
-        """
-        details = files_details.get(path)
-        if details:
-            for track in details.get("tracks", {}).get("video", []):
-                if not track.get("attached_pic", False):
-                    length = track.get("length")
-                    if length is not None:
-                        return length
-        return video_utils.get_video_duration(path, logger=logger)
-
-    def _temporary_audio_path(self, label: str, ffprobe_stream_index: int) -> str:
-        return self.workspace.unique_file(f"{label}_{ffprobe_stream_index}", "mka")
-
-    def _prepare_normalized_unscaled_audio(
-        self,
-        source_stream: AudioStreamRef,
-        desired_end_ms: int | None = None,
-        desired_start_ms: int | None = None,
-    ) -> AudioStreamRef:
-        """Prepare an audio stream for mkvmerge without changing playback speed.
-
-        The flow stays in a single FLAC-domain pass: decode to a priming-free
-        FLAC, optionally trim it to the output timeline, then encode to AAC
-        exactly once.
-
-        ``desired_start_ms`` is where the decoded stream's first sample lands on
-        the output timeline; the caller muxes the track at that position.  A
-        negative value means that much of the head precedes the timeline and is
-        cut here instead (the caller then muxes at zero).  ``desired_end_ms``
-        bounds the track to the output-timeline end.
-
-        Every extra AAC encode re-applies encoder-delay priming on builds that
-        expose it (see ``track_timeline``), shifting the track ~21 ms per pass —
-        hence the single-encode discipline, shared with the constant-offset
-        patch path.
-        """
-        source_path = source_stream.path
-        ffprobe_stream_index = source_stream.ffprobe_stream_index
-        cache_key = (source_path, ffprobe_stream_index, desired_end_ms, desired_start_ms)
-        cached_path = self._normalized_audio_cache.get(cache_key)
-        if cached_path is not None:
-            return AudioStreamRef(cached_path, 0, 0, source_stream.language)
-
-        flac_path = self._temporary_audio_path("normalized_unscaled_flac", ffprobe_stream_index)
-        self._decode_audio_stream_to_flac(
-            source_stream,
-            flac_path,
-            sample_fmt="s32",
-            logger=self.logger,
-        )
-
-        prepared_flac = flac_path
-        if desired_end_ms is not None:
-            if desired_start_ms is None:
-                desired_start_ms = self._source_stream_start_offset_ms(flac_path, "audio", 0)
-            window_start_ms = max(0, -desired_start_ms)
-            window_end_ms = max(window_start_ms, desired_end_ms - desired_start_ms)
-            prepared_flac = self._temporary_audio_path("normalized_unscaled_trim", ffprobe_stream_index)
-            trim_filter = (
-                f"atrim=start={window_start_ms / 1000:.6f}:end={window_end_ms / 1000:.6f},"
-                "asetpts=PTS-STARTPTS"
-            )
-            process_utils.raise_on_error(
-                process_utils.start_process("ffmpeg", [
-                    "-y", "-i", flac_path, "-map", "0:a:0",
-                    "-filter:a", trim_filter,
-                    "-sample_fmt", "s32", "-c:a", "flac", prepared_flac,
-                ], show_progress=True,
-                    progress_description=(
-                        f"Trimming FLAC from {self._audio_source_description(source_stream)} "
-                        f"to {generic_utils.ms_to_time(window_start_ms)}-"
-                        f"{generic_utils.ms_to_time(window_end_ms)}"
-                    ),
-                    logger=self.logger)
-            )
-
-        output_path = self._temporary_audio_path("normalized_unscaled_audio", ffprobe_stream_index)
-        channel_layout = self._get_audio_channel_layout(source_stream)
-        self._concat_and_encode(
-            [prepared_flac], False, "", False, "",
-            self.workspace.unique_file(
-                f"normalized_unscaled_concat_{ffprobe_stream_index}",
-                "txt",
-            ),
-            output_path,
-            channel_layout=channel_layout,
-            progress_description=(
-                "Encoding normalized audio from "
-                f"{self._audio_source_description(source_stream)}: FLAC -> AAC"
-            ),
-            logger=self.logger,
-        )
-
-        self._normalized_audio_cache[cache_key] = output_path
-        return AudioStreamRef(output_path, 0, 0, source_stream.language)
+        ends = [
+            end
+            for stream in streams
+            if stream.path == path
+            and (end := self.timeline.source_stream_end_offset_ms(
+                stream.path,
+                stream_type,
+                stream.ffprobe_stream_index,
+            )) is not None
+        ]
+        return max(ends, default=None)
 
     def _base_output_end_ms(
         self,
-        video_path_base: str,
+        group: AlignmentGroup,
         video_streams: Sequence[VideoStreamRef],
-        audio_streams: Sequence[AudioStreamRef],
     ) -> int | None:
-        ends: list[int] = []
-        for video_stream in video_streams:
-            if video_stream.path == video_path_base:
-                end = self._source_stream_end_offset_ms(
-                    video_stream.path,
-                    "video",
-                    video_stream.ffprobe_stream_index,
-                )
-                if end is not None:
-                    ends.append(end)
-        for audio_stream in audio_streams:
-            if audio_stream.path == video_path_base:
-                end = self._source_stream_end_offset_ms(
-                    audio_stream.path,
-                    "audio",
-                    audio_stream.ffprobe_stream_index,
-                )
-                if end is not None:
-                    ends.append(end)
-        return max(ends) if ends else None
+        """End of the output timeline: the later of the base video and audio ends."""
+        ends = [
+            end
+            for end in (
+                self._max_stream_end_ms(group.base_video.path, "video", video_streams),
+                group.base_audio_end_ms,
+            )
+            if end is not None
+        ]
+        return max(ends, default=None)
 
     def _base_audio_end_ms(
         self,
         video_path_base: str,
         audio_streams: Sequence[AudioStreamRef],
     ) -> int | None:
-        ends: list[int] = []
-        for stream in audio_streams:
-            if stream.path == video_path_base:
-                end = self._source_stream_end_offset_ms(
-                    stream.path,
-                    "audio",
-                    stream.ffprobe_stream_index,
-                )
-                if end is not None:
-                    ends.append(end)
-        return max(ends) if ends else None
+        return self._max_stream_end_ms(video_path_base, "audio", audio_streams)
 
-    @staticmethod
-    def _primary_video_ref(path: str, files_details: dict[str, Any]) -> VideoStreamRef:
-        tracks = files_details.get(path, {}).get("tracks", {}).get("video", [])
-        for track in tracks:
-            if track.get("attached_pic", False):
-                continue
-            mkvmerge_track_id = track.get("tid")
-            ffprobe_stream_index = track.get("ffprobe_stream_index")
-            if isinstance(mkvmerge_track_id, int) and isinstance(ffprobe_stream_index, int):
-                return VideoStreamRef(
-                    path,
-                    mkvmerge_track_id,
-                    ffprobe_stream_index,
-                    track.get("language"),
-                )
-        raise RuntimeError(f"No fully identified video track found in {path}.")
-
-    @staticmethod
-    def _subtitle_track_details(
-        stream: SubtitleStreamRef,
-        files_details: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        tracks = files_details.get(stream.path, {}).get("tracks", {}).get("subtitle", [])
-        return next(
-            (track for track in tracks if track.get("tid") == stream.mkvmerge_track_id),
-            {},
+    def _stream_entry(
+        self,
+        stream_type: StreamType,
+        stream: VideoStreamRef | AudioStreamRef | SubtitleStreamRef,
+        desired_start_ms: int | None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> _StreamEntry:
+        metadata = metadata or {}
+        return _StreamEntry(
+            stream_type,
+            stream.mkvmerge_track_id,
+            stream.path,
+            stream.language,
+            self.timeline.track_sync_offset_ms(
+                stream.path,
+                stream_type,
+                stream.ffprobe_stream_index,
+                desired_start_ms,
+            ),
+            metadata.get("name") or metadata.get("title"),
+            bool(metadata["forced"]) if "forced" in metadata else None,
+            bool(metadata["default"]) if "default" in metadata else None,
         )
 
-    @staticmethod
-    def _map_subtitle_timestamp(
-        timestamp_ms: int,
-        mapping: Sequence[tuple[int, int]],
-        relation: MappingRelation,
-    ) -> int:
-        """Map one RHS subtitle timestamp to the LHS video timeline."""
-        if len(mapping) < 2:
-            raise RuntimeError("Subtitle timeline mapping needs at least two anchors.")
-
-        if relation is MappingRelation.GLOBAL_LINEAR:
-            lhs_start, rhs_start = mapping[0]
-            lhs_end, rhs_end = mapping[-1]
-        else:
-            rhs_values = [pair[1] for pair in mapping]
-            index = min(max(0, bisect_right(rhs_values, timestamp_ms) - 1), len(mapping) - 2)
-            lhs_start, rhs_start = mapping[index]
-            lhs_end, rhs_end = mapping[index + 1]
-
-        rhs_span = rhs_end - rhs_start
-        if rhs_span <= 0:
-            raise RuntimeError("Subtitle timeline mapping is not strictly monotonic.")
-        lhs_span = lhs_end - lhs_start
-        return round(lhs_start + (timestamp_ms - rhs_start) * lhs_span / rhs_span)
-
-    def _retime_subtitle_content(
+    def _prepare_video_entries(
         self,
-        content: pysubs2.SSAFile,
-        matching: SegmentsMappingResult,
-        *,
-        source_mapping_to_video_ms: int,
-        output_mapping_to_video_ms: int,
-        source_description: str,
-    ) -> None:
-        mapping = self._strict_mapping(matching.mapping)
-        if len(mapping) < 2:
-            raise RuntimeError(
-                f"Cannot align {source_description}: fewer than two monotonic mapping anchors."
+        video_streams: Sequence[VideoStreamRef],
+    ) -> list[_StreamEntry]:
+        entries: list[_StreamEntry] = []
+        for stream in video_streams:
+            desired_start_ms = self.timeline.source_stream_start_offset_ms(
+                stream.path,
+                "video",
+                stream.ffprobe_stream_index,
             )
+            entries.append(self._stream_entry("video", stream, desired_start_ms))
+        return entries
 
-        first_rhs = mapping[0][1]
-        last_rhs = mapping[-1][1]
-        frame_ms = 1000 / matching.rhs_fps
-        edge_tolerance_ms = round(PairMatcher._MAX_BOUNDARY_ERROR_FRAMES * frame_ms)
-        rhs_frame_times = sorted(matching.rhs_all_frames)
-        accepted_start = first_rhs
-        accepted_end = last_rhs
-        if rhs_frame_times:
-            if first_rhs - rhs_frame_times[0] <= edge_tolerance_ms:
-                accepted_start = rhs_frame_times[0]
-            if rhs_frame_times[-1] - last_rhs <= edge_tolerance_ms:
-                accepted_end = round(rhs_frame_times[-1] + frame_ms)
-
-        for index, event in enumerate(content, start=1):
-            source_start = event.start - source_mapping_to_video_ms
-            source_end = event.end - source_mapping_to_video_ms
-            if source_start < accepted_start or source_end > accepted_end:
-                raise RuntimeError(
-                    f"Cannot align {source_description}: subtitle event #{index} "
-                    f"({event.start}-{event.end} ms) extends beyond verified shared content "
-                    f"({accepted_start + source_mapping_to_video_ms}-"
-                    f"{accepted_end + source_mapping_to_video_ms} ms)."
+    def _prepare_audio_entries(
+        self,
+        audio_streams: Sequence[AudioStreamRef],
+        group: AlignmentGroup,
+        base_output_end_ms: int | None,
+    ) -> list[_StreamEntry]:
+        base_video = group.base_video
+        entries: list[_StreamEntry] = []
+        for audio_stream in audio_streams:
+            path = audio_stream.path
+            output_stream = audio_stream
+            preserves_base_container_timing = (
+                path == base_video.path
+                and mkvmerge_preserves_start(path)
+            )
+            if preserves_base_container_timing:
+                desired_start_ms = self.timeline.source_stream_start_offset_ms(
+                    path,
+                    "audio",
+                    audio_stream.ffprobe_stream_index,
+                )
+            else:
+                desired_start_ms = self.timeline.audio_content_start_ms(
+                    self.timeline.audio_stream_info(audio_stream)
                 )
 
-            mapped_start = self._map_subtitle_timestamp(
-                min(max(source_start, first_rhs), last_rhs),
-                mapping,
-                matching.relation,
-            )
-            mapped_end = self._map_subtitle_timestamp(
-                min(max(source_end, first_rhs), last_rhs),
-                mapping,
-                matching.relation,
-            )
-            event.start = mapped_start + output_mapping_to_video_ms
-            event.end = mapped_end + output_mapping_to_video_ms
-            if event.end <= event.start:
-                raise RuntimeError(
-                    f"Cannot align {source_description}: subtitle event #{index} "
-                    "has no positive duration after retiming."
+            if path in group.alignment_paths:
+                patched = self.aligner.patch_audio(group, audio_stream)
+                output_stream = patched.stream
+                desired_start_ms = patched.timeline_start_ms
+            else:
+                normalization_reason = (
+                    self.timeline.audio_mkvmerge_normalization_reason(audio_stream)
+                    if not preserves_base_container_timing
+                    else None
                 )
+                trim_end_ms: int | None = None
+                if path != base_video.path and base_output_end_ms is not None:
+                    audio_end_ms = self.timeline.source_stream_end_offset_ms(
+                        path,
+                        "audio",
+                        audio_stream.ffprobe_stream_index,
+                    )
+                    if audio_end_ms is not None and audio_end_ms > base_output_end_ms:
+                        trim_end_ms = base_output_end_ms
 
-    def _patch_mismatched_subtitle(
+                if normalization_reason is not None or trim_end_ms is not None:
+                    reasons = []
+                    if normalization_reason is not None:
+                        reasons.append(normalization_reason)
+                    if trim_end_ms is not None:
+                        reasons.append(
+                            "trimming to the output timeline at "
+                            f"{generic_utils.ms_to_time(trim_end_ms)}"
+                        )
+                    self.logger.info(
+                        "Preparing audio track #%d from file #%d for muxing: %s.",
+                        audio_stream.mkvmerge_track_id,
+                        group.file_ids[path],
+                        " and ".join(reasons),
+                    )
+                    output_stream = self.audio_patcher.prepare_normalized_unscaled_audio(
+                        audio_stream,
+                        desired_end_ms=trim_end_ms,
+                        desired_start_ms=desired_start_ms,
+                    )
+
+            entries.append(self._stream_entry("audio", output_stream, desired_start_ms))
+        return entries
+
+    def _prepare_subtitle_entries(
         self,
-        base_video: VideoStreamRef,
-        source_video: VideoStreamRef,
-        subtitle_stream: SubtitleStreamRef,
-        base_duration_ms: int,
+        subtitle_streams: Sequence[SubtitleStreamRef],
+        group: AlignmentGroup,
+    ) -> list[_StreamEntry]:
+        entries: list[_StreamEntry] = []
+        for subtitle_stream in subtitle_streams:
+            output_stream = subtitle_stream
+            output_metadata: dict[str, Any] = {}
+            if subtitle_stream.path in group.alignment_paths:
+                output_stream, output_metadata = self.aligner.align_subtitle(
+                    group, subtitle_stream,
+                )
+                desired_start_ms = None
+            else:
+                desired_start_ms = self.timeline.source_stream_start_offset_ms(
+                    subtitle_stream.path,
+                    "subtitle",
+                    subtitle_stream.ffprobe_stream_index,
+                )
+            entries.append(self._stream_entry(
+                "subtitle",
+                output_stream,
+                desired_start_ms,
+                output_metadata,
+            ))
+        return entries
+
+    def _group_context(
+        self,
+        video_streams: Sequence[VideoStreamRef],
+        audio_streams: Sequence[AudioStreamRef],
         file_ids: dict[str, int],
         files_details: Mapping[str, Any],
-    ) -> tuple[SubtitleStreamRef, dict[str, Any]]:
-        details = self._subtitle_track_details(subtitle_stream, files_details)
-        subtitle_format = str(details.get("format") or details.get("codec") or "unknown")
-        normalized_format = subtitle_format.lower()
-        image_format_markers = ("pgs", "vobsub", "dvd_subtitle", "dvb_subtitle")
-        description = (
-            f"subtitle track #{subtitle_stream.mkvmerge_track_id} "
-            f"from file #{file_ids[subtitle_stream.path]}"
-        )
-        if any(marker in normalized_format for marker in image_format_markers):
-            raise RuntimeError(
-                f"Cannot align {description}: image-based subtitle format "
-                f"'{subtitle_format}' is not supported."
-            )
-
-        with self.workspace.scoped_dir("matching") as matching_dir:
-            match_result = self._validated_pair_match(
-                matching_dir,
+        alignment_paths: Iterable[str],
+    ) -> AlignmentGroup:
+        base_video = video_streams[0]
+        return AlignmentGroup(
+            file_ids=file_ids,
+            base_video=base_video,
+            base_audio=next(
+                (stream for stream in audio_streams if stream.path == base_video.path),
+                None,
+            ),
+            base_duration_ms=video_track_duration_ms(
                 base_video.path,
-                source_video.path,
-                base_duration_ms,
-                file_ids,
-                consumer="subtitle",
-            )
-
-        extension = os.path.splitext(subtitle_stream.path)[1].lower()
-        if extension in self._MKVMERGE_PRESERVES_START_EXTENSIONS:
-            extracted_base = self.workspace.unique_file("subtitle_source")
-            extracted = video_utils.extract_subtitle_to_temp(
-                subtitle_stream.path,
-                [subtitle_stream.mkvmerge_track_id],
-                extracted_base,
+                files_details,
                 logger=self.logger,
-            ).get(subtitle_stream.mkvmerge_track_id)
-        else:
-            extracted = self.workspace.unique_file("subtitle_source", "ass")
-            process_utils.raise_on_error(
-                process_utils.start_process(
-                    "ffmpeg",
-                    [
-                        "-y",
-                        "-i", subtitle_stream.path,
-                        "-map", f"0:{subtitle_stream.ffprobe_stream_index}",
-                        "-c:s", "ass",
-                        extracted,
-                    ],
-                    logger=self.logger,
-                )
-            )
-        if extracted is None or not os.path.exists(extracted):
-            raise RuntimeError(f"Cannot align {description}: subtitle extraction failed.")
-
-        content = subtitles_utils.open_subtitle_file(extracted, logger=self.logger)
-        if content is None:
-            raise RuntimeError(
-                f"Cannot align {description}: extracted format '{subtitle_format}' "
-                "cannot be parsed as text subtitles."
-            )
-
-        matching = match_result.matching
-        self._retime_subtitle_content(
-            content,
-            matching,
-            source_mapping_to_video_ms=self._mapping_to_video_ms(
-                source_video,
-                matching.rhs_all_frames,
+                mkvmerge_track_id=base_video.mkvmerge_track_id,
             ),
-            output_mapping_to_video_ms=self._mapping_to_video_ms(
-                base_video,
-                matching.lhs_all_frames,
+            base_audio_end_ms=self._base_audio_end_ms(
+                base_video.path,
+                audio_streams,
             ),
-            source_description=description,
-        )
-        output_path = self.workspace.unique_file("aligned_subtitle", "ass")
-        content.save(output_path, format_="ass", encoding="utf-8")
-        return (
-            SubtitleStreamRef(output_path, 0, 0, subtitle_stream.language),
-            details,
+            files_details=files_details,
+            alignment_paths=frozenset(alignment_paths),
         )
 
     def _prepare_stream_entries(
@@ -2545,185 +545,31 @@ class MeltPerformer(TrackTimelineMixin):
         subtitle_streams: Sequence[SubtitleStreamRef],
         attachments: Sequence[AttachmentRef],
         file_ids: dict[str, int],
-        files_details: dict[str, Any] | None = None,
-        alignment_paths: set[str] | None = None,
+        files_details: Mapping[str, Any] | None = None,
+        alignment_paths: Iterable[str] = (),
     ) -> _PreparedStreams:
-        video_streams = [VideoStreamRef(*stream) for stream in video_streams]
-        audio_streams = [AudioStreamRef(*stream) for stream in audio_streams]
-        subtitle_streams = [SubtitleStreamRef(*stream) for stream in subtitle_streams]
-        attachments = [AttachmentRef(*attachment) for attachment in attachments]
-        self._input_file_ids = dict(file_ids)
-        streams_list: list[_StreamEntry] = []
-        base_video = video_streams[0]
-        video_path_base = base_video.path
-        base_audio = next((stream for stream in audio_streams if stream.path == video_path_base), None)
-        details = files_details or {}
-        alignment_paths = alignment_paths or set()
-        base_duration = self._video_track_duration(video_path_base, details, logger=self.logger)
-        base_output_end_ms = self._base_output_end_ms(video_path_base, video_streams, audio_streams)
-        base_audio_end_ms = self._base_audio_end_ms(video_path_base, audio_streams)
-        for video_stream in video_streams:
-            video_desired_start_ms = self._source_stream_start_offset_ms(
-                video_stream.path,
-                "video",
-                video_stream.ffprobe_stream_index,
-            )
-            streams_list.append(_StreamEntry(
-                "video",
-                video_stream.mkvmerge_track_id,
-                video_stream.path,
-                video_stream.language,
-                self._track_sync_offset_ms(
-                    video_stream.path,
-                    "video",
-                    video_stream.ffprobe_stream_index,
-                    video_desired_start_ms,
-                ),
-            ))
-
-        for audio_stream in audio_streams:
-            path = audio_stream.path
-            output_stream = audio_stream
-            extension = os.path.splitext(path)[1].lower()
-            preserves_base_container_timing = (
-                path == video_path_base
-                and extension in self._MKVMERGE_PRESERVES_START_EXTENSIONS
-            )
-            if preserves_base_container_timing:
-                # The selected video and audio remain in their original Matroska
-                # container until mkvmerge reads them together.  Keep its timestamps
-                # and CodecDelay intact instead of decoding AAC merely to remove
-                # encoder priming.
-                audio_desired_start_ms = self._source_stream_start_offset_ms(
-                    path,
-                    "audio",
-                    audio_stream.ffprobe_stream_index,
-                )
-            else:
-                audio_desired_start_ms = self._audio_content_start_ms(
-                    self._audio_stream_info(audio_stream)
-                )
-            if path in alignment_paths:
-                assert base_duration is not None
-                source_video = self._primary_video_ref(path, details)
-                patched = self._patch_mismatched_audio(
-                    base_video,
-                    source_video,
-                    audio_stream,
-                    base_audio,
-                    base_duration,
-                    base_audio_end_ms,
-                    file_ids,
-                )
-                output_stream = patched.stream
-                audio_desired_start_ms = patched.timeline_start_ms
-            else:
-                # Aligned audio is direct-passthrough by default: keep
-                # the original file/stream and let final mkvmerge mux it.  Use
-                # the FLAC-domain normalization flow only when direct mkvmerge
-                # would change timing semantics or the track must be trimmed to
-                # the output timeline.
-                needs_mkvmerge_normalization = (
-                    not preserves_base_container_timing
-                    and self._audio_needs_mkvmerge_normalization(audio_stream)
-                )
-                normalization_reason = (
-                    self._audio_mkvmerge_normalization_reason(audio_stream)
-                    if needs_mkvmerge_normalization
-                    else None
-                )
-                trim_end_ms: int | None = None
-                if path != video_path_base and audio_desired_start_ms is not None and base_output_end_ms is not None:
-                    audio_end_ms = self._source_stream_end_offset_ms(
-                        path,
-                        "audio",
-                        audio_stream.ffprobe_stream_index,
-                    )
-                    if audio_end_ms is not None and audio_end_ms > base_output_end_ms:
-                        trim_end_ms = base_output_end_ms
-                needs_unscaled_preparation = needs_mkvmerge_normalization or trim_end_ms is not None
-                if needs_unscaled_preparation:
-                    reasons = []
-                    if needs_mkvmerge_normalization:
-                        reasons.append(normalization_reason or "normalizing AAC timing")
-                    if trim_end_ms is not None:
-                        reasons.append(
-                            "trimming to the output timeline at "
-                            f"{generic_utils.ms_to_time(trim_end_ms)}"
-                        )
-                    self.logger.info(
-                        "Preparing audio track #%d from file #%d for muxing: %s.",
-                        audio_stream.mkvmerge_track_id, file_ids[path],
-                        " and ".join(reasons),
-                    )
-                    output_stream = self._prepare_normalized_unscaled_audio(
-                        audio_stream,
-                        desired_end_ms=trim_end_ms,
-                        desired_start_ms=audio_desired_start_ms,
-                    )
-            streams_list.append(_StreamEntry(
-                "audio",
-                output_stream.mkvmerge_track_id,
-                output_stream.path,
-                output_stream.language,
-                self._track_sync_offset_ms(
-                    output_stream.path,
-                    "audio",
-                    output_stream.ffprobe_stream_index,
-                    audio_desired_start_ms,
-                ),
-            ))
-
-        for subtitle_stream in subtitle_streams:
-            subtitle_output_stream = subtitle_stream
-            details_for_output: dict[str, Any] = {}
-            desired_start_ms: int | None
-            if subtitle_stream.path in alignment_paths:
-                assert base_duration is not None
-                source_video = self._primary_video_ref(subtitle_stream.path, details)
-                subtitle_output_stream, details_for_output = self._patch_mismatched_subtitle(
-                    base_video,
-                    source_video,
-                    subtitle_stream,
-                    base_duration,
-                    file_ids,
-                    details,
-                )
-                # The rewritten ASS events already use the base output PTS.
-                desired_start_ms = None
-            else:
-                desired_start_ms = self._source_stream_start_offset_ms(
-                    subtitle_stream.path,
-                    "subtitle",
-                    subtitle_stream.ffprobe_stream_index,
-                )
-            streams_list.append(_StreamEntry(
-                "subtitle",
-                subtitle_output_stream.mkvmerge_track_id,
-                subtitle_output_stream.path,
-                subtitle_output_stream.language,
-                self._track_sync_offset_ms(
-                    subtitle_output_stream.path,
-                    "subtitle",
-                    subtitle_output_stream.ffprobe_stream_index,
-                    desired_start_ms,
-                ),
-                details_for_output.get("name") or details_for_output.get("title"),
-                (
-                    bool(details_for_output["forced"])
-                    if "forced" in details_for_output else None
-                ),
-                (
-                    bool(details_for_output["default"])
-                    if "default" in details_for_output else None
-                ),
-            ))
+        self.timeline.set_input_file_ids(file_ids)
+        group = self._group_context(
+            video_streams,
+            audio_streams,
+            file_ids,
+            files_details or {},
+            alignment_paths,
+        )
+        self.aligner.align_sources(group, audio_streams, subtitle_streams)
+        entries = self._prepare_video_entries(video_streams)
+        entries.extend(self._prepare_audio_entries(
+            audio_streams,
+            group,
+            self._base_output_end_ms(group, video_streams),
+        ))
+        entries.extend(self._prepare_subtitle_entries(subtitle_streams, group))
 
         input_files = (
-            {entry.path for entry in streams_list}
+            {entry.path for entry in entries}
             | {attachment.path for attachment in attachments}
         )
-        return _PreparedStreams(streams_list, input_files)
+        return _PreparedStreams(entries, input_files)
 
     def _choose_preferred_audio(
         self,

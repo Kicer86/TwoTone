@@ -2,25 +2,26 @@
 import enum
 import logging
 import os
-from bisect import bisect_right
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
-from math import ceil, floor, isfinite
-from typing import NamedTuple, TypedDict
+from collections.abc import Callable, Sequence
+from functools import partial
+from math import isfinite
+from typing import NamedTuple
 
-import cv2 as cv
 import numpy as np
 from sklearn.linear_model import LinearRegression, RANSACRegressor
-from tqdm import tqdm
 
-from ..utils import files_utils, generic_utils, image_utils, media_analysis, video_utils
+from ..utils import generic_utils, image_utils, media_analysis
+from . import debug_routines, frame_comparison, matching_analysis
+from .boundary_search import BoundarySearch
 from .debug_routines import DebugRoutines
+from .frame_comparison import FrameComparison, MatchingSide
+from .matching_analysis import Discontinuity, DiscontinuityGroup
 from .melt_cache import MeltCache
-from .melt_common import FrameInfo, FramesInfo, format_timestamp, format_timestamp_range
+from .melt_common import FrameInfo, FrameSpan, FramesInfo
 from .phash_cache import PhashCache
 
+GlobalLinearDiscontinuityReport = matching_analysis.GlobalLinearDiscontinuityReport
 
-DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = 2.0
 
 
 class MappingRelation(enum.Enum):
@@ -42,40 +43,15 @@ class GlobalLinearFit(NamedTuple):
 
     ``is_constant_offset`` is True for the ``slope == 1`` special case.
     ``time_scale = slope*lhs_fps/rhs_fps`` is the *nominal-fps* stretch factor,
-    used only for plausibility checks and logging.  It must NOT be used to
+    used only for logging.  It must NOT be used to
     scale audio: when the declared fps differs from the real timestamp ratio it
     drifts audibly (~1.2 s across a film).  Audio scaling uses the matched-span
-    timestamp ratio instead (see ``MeltPerformer.patch_audio_constant_offset``).
+    timestamp ratio instead; ``AudioPatcher`` applies that global time scale.
     """
     slope: float
     intercept: float
     is_constant_offset: bool
     time_scale: float
-
-
-class GlobalLinearDiscontinuityReport(NamedTuple):
-    """Suspected content cuts and timestamp steps with continuous decode order.
-
-    Content entries remain unresolved until verified against images. Timing
-    entries also prohibit audio execution: equal decoded advances do not make
-    the source PTS representable by one supported audio transform. Inferred
-    frame steps nominate refinement regions but alone prove neither verdict.
-    """
-
-    content: list[tuple[int, int, int, int, int]]
-    timing: list[tuple[int, int, int, int, int]]
-    frame_steps: tuple[tuple[int, int, int, int, int], ...] = ()
-
-
-class CoverageSummary(TypedDict):
-    """Human-readable coverage report for two matched files."""
-
-    full_coverage: bool
-    lhs_start_gap_s: float
-    rhs_start_gap_s: float
-    lhs_end_gap_s: float
-    rhs_end_gap_s: float
-    ratio: float
 
 
 class SegmentsMappingResult(NamedTuple):
@@ -87,109 +63,127 @@ class SegmentsMappingResult(NamedTuple):
     rhs_fps: float
     frame_slope: float | None = None
     # A candidate frame relation is not audio certification when these exist.
-    timing_discontinuities: tuple[tuple[int, int, int, int, int], ...] = ()
-    # PairMatcher returns only content-continuous mappings, but keeping the
-    # verdict explicit lets downstream execution defend that contract without
-    # reclassifying the mapping.
-    content_discontinuities: tuple[tuple[int, int, int, int, int], ...] = ()
+    timing_discontinuities: tuple[Discontinuity, ...] = ()
+    # Frame-based content gaps the global-linear classification could not
+    # resolve with local scene evidence, including temporary offsets that
+    # return at the next matched anchor.  Whether any is acceptable is decided
+    # by ``mapping_validation``.
+    content_discontinuities: tuple[Discontinuity, ...] = ()
+    # Writes frame diagnostics for the given content discontinuities and
+    # returns their directory.  Rendering waits for a refusal, so accepted
+    # temporary offsets never pay for extracting every frame they span.
+    dump_content_discontinuities: Callable[[Sequence[Discontinuity]], str | None] | None = None
     timing_discontinuity_debug_path: str | None = None
+    # Gaps the time-domain detector finds in a GENERIC mapping; its
+    # ``max(2000 ms, 2%)`` tolerance is far coarser than the frame-based
+    # global-linear classification.
+    generic_content_discontinuities: tuple[Discontinuity, ...] = ()
 
+    # Track alignment needs only the extent of each decoded timeline; the
+    # per-frame caches above serve diagnostics.
+    @property
+    def lhs_frame_span(self) -> FrameSpan | None:
+        return FrameSpan.of(self.lhs_all_frames)
 
-class _BoundarySearchContext(NamedTuple):
-    """Shared inputs of one directional boundary walk.
-
-    ``anchor`` is the known pair the walk starts from and ``reference`` the
-    farther known pair used for ratio-consistency checks; ``direction`` is -1
-    toward the video start, +1 toward the end.
-    """
-    lhs: FramesInfo
-    rhs: FramesInfo
-    lhs_keys: list[int]
-    rhs_keys: list[int]
-    phash: "PhashCache"
-    anchor: tuple[int, int]
-    reference: tuple[int, int]
-    ratio: float
-    cutoff: float
-    direction: int
-
-
-class _VerifySide(NamedTuple):
-    """One video's frame sources for boundary-gap verification.
-
-    ``comparison_cache`` maps a frame timestamp to its comparison-space image
-    (normalized and, when ``crop_fn`` is set, cropped to the shared region);
-    entries are produced lazily by ``PairMatcher._comparison_image``.
-    """
-    video_path: str
-    raw_dir: str
-    all_frames: FramesInfo
-    normalized: FramesInfo
-    crop_fn: Callable[[int], tuple[int, int, int, int]] | None
-    comparison_dir: str
-    comparison_cache: dict[int, str | None]
-
-
-class _BoundaryVerifyContext(NamedTuple):
-    """Comparison engine for verifying boundary-gap frames.
-
-    Both sides are compared in the exact representation the matching core
-    uses — normalized frames cropped to the shared region interpolated from
-    the matched pairs — against a cutoff calibrated on those matched pairs.
-    """
-    lhs: _VerifySide
-    rhs: _VerifySide
-    phash: PhashCache
-    cutoff: float
+    @property
+    def rhs_frame_span(self) -> FrameSpan | None:
+        return FrameSpan.of(self.rhs_all_frames)
 
 
 class PairMatcher:
 
-    _MAX_BOUNDARY_ERROR_FRAMES = 2
-    # Minimum phash distance treated as "still the same frame".  The adaptive
-    # cutoff (median + 2*std of the matched pairs) collapses to 0 when the
-    # surviving matches are pixel-perfect; without a floor, any check keyed on it
-    # would then demand pixel-perfect frames — impossible across a speed or
-    # resolution difference — so it is floored to this value.
-    _MIN_PHASH_CUTOFF = 16
-    # Cutoff floor for verifying boundary-gap frames (bits, of the 256-bit
-    # hash), applied in the comparison space (normalized frames cropped to the
-    # shared region).  Gap samples carry noise the matched calibration pairs
-    # do not: the fitted prediction can be a frame or two off (retried against
-    # ±2 neighbours) and the interpolated crop is extrapolated past the
-    # outermost match, where its per-pair estimation error no longer cancels
-    # between the two sides.  Measured in this space: genuinely shared gap
-    # samples on the degraded/speed-changed fixtures reach ~74 and the same
-    # frame across a real cross-geometry pair (16:9 open matte vs 2.35:1
-    # crop) sits at ~62, while divergent intros stay ≥ 122 — 96 keeps >20
-    # bits of margin to both sides.  Pairs whose matched frames are even
-    # farther apart raise the cutoff adaptively (see
-    # _build_boundary_verify_context).
-    _MIN_BOUNDARY_GAP_PHASH_CUTOFF = 96
-    # Entropy above which a frame carries enough texture for reliable
-    # phash/ORB comparison (see _is_rich).
-    _RICH_FRAME_ENTROPY = 3.5
-    # How many consecutive unverifiable samples the boundary-gap walk crosses
-    # before declaring divergence.  One isolated miss is phash noise (motion
-    # blur, hash saturation on smooth content) and must not end a multi-minute
-    # extension; a genuinely divergent intro/outro spans many samples, so two
-    # in a row already identify it.  The boundary only ever lands on a
-    # verified sample, never on a tolerated miss.
-    _MAX_BOUNDARY_GAP_MISSES = 1
-    _BOUNDARY_PREDICTION_JITTER_FRAMES = 2
-    # Entropy below which a boundary-gap frame counts as decisively black for
-    # the black-vs-content rejection.  _RICH_FRAME_ENTROPY marks frames too
-    # flat for reliable phash matching, but flat-yet-lit content (title
-    # cards, sky-heavy shots, ~3.5-4.0) straddles it: a framing difference
-    # between two transfers can push one side just below and hard-fail a
-    # genuinely shared frame.  Real black lead-ins/outs measure ~0-1; only
-    # those may veto a rich opposite side — borderline pairs fall through to
-    # phash.
-    _BLACK_FRAME_ENTROPY = 2.0
     # Global-linear detection thresholds, shared with the relation-diagnostics
     # log so the quoted limits never drift from the real ones.
     _MAX_CONSTANT_OFFSET_STD = 1.0
     _MAX_DRIFT_SLOPE_DELTA = 0.05
+    _MAX_MEDIAN_RESIDUAL_FRAMES = 1.5
+    _MAX_P95_RESIDUAL_FRAMES = 4.0
+    _MAX_OUTLIER_RATIO = 0.25
+    _MIN_GLOBAL_LINEAR_SPAN_FRAMES = 250
+    _SCENE_THRESHOLD = 0.30
+
+    def __init__(
+        self,
+        interruption: generic_utils.InterruptibleProcess,
+        wd: str,
+        lhs_path: str,
+        rhs_path: str,
+        logger: logging.Logger,
+        lhs_label: str = "#1",
+        rhs_label: str = "#2",
+        cache: MeltCache | None = None,
+        *,
+        media_analysis_session: media_analysis.MediaAnalysisSession,
+    ) -> None:
+        self.interruption = interruption
+        self.wd = os.path.join(wd, "pair_matcher")
+        self.logger = logger
+        self.cache = cache
+        self.media_analysis = media_analysis_session
+        self.phash = PhashCache()
+        lhs_video_data, rhs_video_data = (
+            self._primary_video_data(path)
+            for path in (lhs_path, rhs_path)
+        )
+        lhs_wd = os.path.join(self.wd, "lhs")
+        rhs_wd = os.path.join(self.wd, "rhs")
+        self.lhs = MatchingSide.create(
+            lhs_path,
+            lhs_label,
+            generic_utils.fps_str_to_float(lhs_video_data["fps"]),
+            lhs_video_data.get("length"),
+            lhs_wd,
+        )
+        self.rhs = MatchingSide.create(
+            rhs_path,
+            rhs_label,
+            generic_utils.fps_str_to_float(rhs_video_data["fps"]),
+            rhs_video_data.get("length"),
+            rhs_wd,
+        )
+        self.debug_wd = os.path.join(self.wd, "debug")
+
+        for directory in (
+            lhs_wd,
+            rhs_wd,
+            *self.lhs.directories(),
+            *self.rhs.directories(),
+            self.debug_wd,
+        ):
+            os.makedirs(directory)
+
+        self.frame_comparison = FrameComparison(
+            self.interruption,
+            self.logger,
+            self.lhs,
+            self.rhs,
+        )
+        self.boundary_search = BoundarySearch(
+            self.logger,
+            self.lhs,
+            self.rhs,
+            self.frame_comparison,
+        )
+
+    def _primary_video_data(self, path: str) -> dict:
+        probe = self.media_analysis.probe(path)
+        if probe.error is not None:
+            raise RuntimeError(probe.error)
+        return probe.normalized_data["video"][0]
+
+    def _analysis_result_for(
+        self,
+        path: str,
+        label: str,
+        features: media_analysis.MediaAnalysisFeature,
+    ) -> media_analysis.VideoScanResult:
+        request = media_analysis.MediaAnalysisRequest(
+            path=path,
+            label=label,
+            features=features,
+        )
+        return self.media_analysis.fulfill(request, raise_on_error=True)
+
     def has_identical_timeline_content(self) -> bool:
         """Quickly certify that both videos show the same content in-place.
 
@@ -199,56 +193,76 @@ class PairMatcher:
         for the authoritative answer.  It never declares different-looking
         transfers incompatible by itself.
         """
-        if self.lhs_duration_ms is None or self.rhs_duration_ms is None:
+        if self.lhs.duration_ms is None or self.rhs.duration_ms is None:
             return False
-        if self.lhs_duration_ms != self.rhs_duration_ms:
+        if self.lhs.duration_ms != self.rhs.duration_ms:
             return False
 
-        duration = self.lhs_duration_ms
+        duration = self.lhs.duration_ms
         if duration <= 0:
             return False
 
-        if self.lhs_fps == self.rhs_fps:
+        if self.lhs.fps == self.rhs.fps:
             lhs_scan = self._analysis_result_for(
-                self.lhs_path,
-                self.lhs_label,
+                self.lhs.path,
+                self.lhs.label,
                 media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             )
             rhs_scan = self._analysis_result_for(
-                self.rhs_path,
-                self.rhs_label,
+                self.rhs.path,
+                self.rhs.label,
                 media_analysis.MediaAnalysisFeature.IDENTITY_SAMPLES,
             )
             return self._scans_have_identical_timeline_content(lhs_scan, rhs_scan)
 
-        timestamps = list(media_analysis.identity_timestamps(duration, self.lhs_fps))
+        timestamps = list(media_analysis.identity_timestamps(duration, self.lhs.fps))
         self._probe_frames()
-        lhs_timestamps = [self._nearest_frame_timestamp(self.lhs_all_frames, timestamp) for timestamp in timestamps]
-        rhs_timestamps = [self._nearest_frame_timestamp(self.rhs_all_frames, timestamp) for timestamp in timestamps]
+        lhs_timestamps = [self._nearest_frame_timestamp(self.lhs.all_frames, timestamp) for timestamp in timestamps]
+        rhs_timestamps = [self._nearest_frame_timestamp(self.rhs.all_frames, timestamp) for timestamp in timestamps]
         identity_wd = os.path.join(self.debug_wd, "identity")
-        lhs_frames = self._extract_identity_samples(
-            self.lhs_path, self.lhs_all_frames, lhs_timestamps, os.path.join(identity_wd, "lhs"), self.lhs_label,
-        )
-        rhs_frames = self._extract_identity_samples(
-            self.rhs_path, self.rhs_all_frames, rhs_timestamps, os.path.join(identity_wd, "rhs"), self.rhs_label,
-        )
+        lhs_frames = self._extract_identity_samples(self.lhs, lhs_timestamps, os.path.join(identity_wd, "lhs"))
+        rhs_frames = self._extract_identity_samples(self.rhs, rhs_timestamps, os.path.join(identity_wd, "rhs"))
         if lhs_frames is None or rhs_frames is None:
             return False
 
-        for timestamp, lhs_timestamp, rhs_timestamp in zip(timestamps, lhs_timestamps, rhs_timestamps):
-            distance = abs(
-                self.phash.get(self._extracted_path(lhs_frames[lhs_timestamp]))
-                - self.phash.get(self._extracted_path(rhs_frames[rhs_timestamp]))
-            )
-            if distance > self._MIN_PHASH_CUTOFF:
-                self.logger.debug(
-                    "Equal-length identity check failed at %d ms (pHash distance %d).",
-                    timestamp, distance,
-                )
-                return False
+        return self._identity_samples_match([
+            (timestamp, lhs_frames[lhs_timestamp], rhs_frames[rhs_timestamp])
+            for timestamp, lhs_timestamp, rhs_timestamp in zip(timestamps, lhs_timestamps, rhs_timestamps)
+        ])
 
-        self.logger.debug("Equal-length identity check passed (%d samples).", len(timestamps))
-        return True
+    def _extract_identity_samples(
+        self,
+        side: MatchingSide,
+        timestamps: list[int],
+        identity_wd: str,
+    ) -> FramesInfo | None:
+        sample_frames = {timestamp: side.all_frames[timestamp] for timestamp in set(timestamps)}
+        frame_ranges = [
+            (int(info["frame_id"]), int(info["frame_id"]))
+            for info in sample_frames.values()
+        ]
+        os.makedirs(identity_wd, exist_ok=True)
+        self.frame_comparison.extract_frames(
+            side.path,
+            identity_wd,
+            frame_ranges,
+            sample_frames,
+            f"Identity samples: {side.label}",
+        )
+        if any(info.get("path") is None for info in sample_frames.values()):
+            self.logger.debug("Could not extract all identity-check frames from %s.", side.path)
+            return None
+        normalized_wd = os.path.join(identity_wd, "normalized")
+        os.makedirs(normalized_wd, exist_ok=True)
+        return self.frame_comparison.normalize_frames(
+            sample_frames,
+            normalized_wd,
+            desc=f"Normalizing identity samples: {side.label}",
+        )
+
+    @staticmethod
+    def _nearest_frame_timestamp(frames: FramesInfo, timestamp: int) -> int:
+        return min(frames, key=lambda candidate: abs(candidate - timestamp))
 
     def _scans_have_identical_timeline_content(
         self,
@@ -257,8 +271,8 @@ class PairMatcher:
     ) -> bool:
         lhs_samples = lhs_scan.identity_samples
         rhs_samples = rhs_scan.identity_samples
-        lhs_expected = len(media_analysis.identity_timestamps(self.lhs_duration_ms or 0, self.lhs_fps))
-        rhs_expected = len(media_analysis.identity_timestamps(self.rhs_duration_ms or 0, self.rhs_fps))
+        lhs_expected = len(media_analysis.identity_timestamps(self.lhs.duration_ms or 0, self.lhs.fps))
+        rhs_expected = len(media_analysis.identity_timestamps(self.rhs.duration_ms or 0, self.rhs.fps))
 
         def has_complete_distinct_samples(
             samples: tuple[media_analysis.VideoSample, ...],
@@ -288,29 +302,22 @@ class PairMatcher:
         lhs_frames = self._normalize_scan_samples(
             lhs_samples,
             os.path.join(identity_wd, "lhs"),
-            self.lhs_label,
+            self.lhs.label,
         )
         rhs_frames = self._normalize_scan_samples(
             rhs_samples,
             os.path.join(identity_wd, "rhs"),
-            self.rhs_label,
+            self.rhs.label,
         )
 
-        for lhs_sample, rhs_sample in zip(lhs_samples, rhs_samples):
-            distance = abs(
-                self.phash.get(self._extracted_path(lhs_frames[lhs_sample.timestamp_ms]))
-                - self.phash.get(self._extracted_path(rhs_frames[rhs_sample.timestamp_ms]))
+        return self._identity_samples_match([
+            (
+                lhs_sample.target_ms,
+                lhs_frames[lhs_sample.timestamp_ms],
+                rhs_frames[rhs_sample.timestamp_ms],
             )
-            if distance > self._MIN_PHASH_CUTOFF:
-                self.logger.debug(
-                    "Equal-length identity check failed near %d ms (pHash distance %d).",
-                    lhs_sample.target_ms,
-                    distance,
-                )
-                return False
-
-        self.logger.debug("Equal-length identity check passed (%d samples).", len(lhs_samples))
-        return True
+            for lhs_sample, rhs_sample in zip(lhs_samples, rhs_samples)
+        ])
 
     def _normalize_scan_samples(
         self,
@@ -326,2154 +333,40 @@ class PairMatcher:
             )
             for sample in samples
         }
-        return self._normalize_frames(
+        return self.frame_comparison.normalize_frames(
             frames,
             output_dir,
             desc=f"Normalizing identity samples: {label}",
         )
 
-    @staticmethod
-    def _nearest_frame_timestamp(frames: FramesInfo, timestamp: int) -> int:
-        return min(frames, key=lambda candidate: abs(candidate - timestamp))
-
-    def _extract_identity_samples(
+    def _identity_samples_match(
         self,
-        video_path: str,
-        all_frames: FramesInfo,
-        timestamps: list[int],
-        identity_wd: str,
-        label: str,
-    ) -> FramesInfo | None:
-        sample_frames = {timestamp: all_frames[timestamp] for timestamp in set(timestamps)}
-        frame_ranges = [
-            (int(info["frame_id"]), int(info["frame_id"]))
-            for info in sample_frames.values()
-        ]
-        os.makedirs(identity_wd, exist_ok=True)
-        video_utils.extract_frames_at_ranges(
-            video_path,
-            identity_wd,
-            frame_ranges,
-            sample_frames,
-            scale=(960, -2),
-            format="png",
-            interruption=self.interruption,
-            desc=f"Identity samples: {label}",
-            logger=self.logger,
-        )
-        if any(info.get("path") is None for info in sample_frames.values()):
-            self.logger.debug("Could not extract all identity-check frames from %s.", video_path)
-            return None
-        normalized_wd = os.path.join(identity_wd, "normalized")
-        os.makedirs(normalized_wd, exist_ok=True)
-        return self._normalize_frames(
-            sample_frames,
-            normalized_wd,
-            desc=f"Normalizing identity samples: {label}",
-        )
-
-    def __init__(
-        self,
-        interruption: generic_utils.InterruptibleProcess,
-        wd: str,
-        lhs_path: str,
-        rhs_path: str,
-        logger: logging.Logger,
-        lhs_label: str = "#1",
-        rhs_label: str = "#2",
-        cache: MeltCache | None = None,
-        *,
-        media_analysis_session: media_analysis.MediaAnalysisSession,
-        max_temporary_frame_offset: float = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
-    ) -> None:
-        if (
-            not isfinite(max_temporary_frame_offset)
-            or max_temporary_frame_offset < DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
-        ):
-            raise ValueError(
-                "Maximum temporary frame offset must be finite and at least "
-                f"{DEFAULT_MAX_TEMPORARY_FRAME_OFFSET:g}."
-            )
-        self.interruption = interruption
-        self.wd = os.path.join(wd, "pair_matcher")
-        self.lhs_path = lhs_path
-        self.rhs_path = rhs_path
-        self.lhs_label = lhs_label
-        self.rhs_label = rhs_label
-        self.logger = logger
-        self.cache = cache
-        self.media_analysis = media_analysis_session
-        self.max_temporary_frame_offset = max_temporary_frame_offset
-        self.phash = PhashCache()
-        lhs_video_data = video_utils.get_video_data(lhs_path, logger=self.logger)["video"][0]
-        rhs_video_data = video_utils.get_video_data(rhs_path, logger=self.logger)["video"][0]
-        self.lhs_fps = generic_utils.fps_str_to_float(lhs_video_data["fps"])
-        self.rhs_fps = generic_utils.fps_str_to_float(rhs_video_data["fps"])
-        self.lhs_duration_ms: int | None = lhs_video_data.get("length")
-        self.rhs_duration_ms: int | None = rhs_video_data.get("length")
-
-        # Every probed frame timestamp -> {"frame_id": ..., "path": ...}.
-        # Filled by the create_segments_mapping pipeline (_probe_frames) and
-        # mutated in place as frames get extracted (path set), normalized and
-        # edge-snapped (synthetic entries added).
-        self.lhs_all_frames: FramesInfo = {}
-        self.rhs_all_frames: FramesInfo = {}
-
-        lhs_wd = os.path.join(self.wd, "lhs")
-        rhs_wd = os.path.join(self.wd, "rhs")
-
-        self.lhs_all_wd = os.path.join(lhs_wd, "all")
-        self.rhs_all_wd = os.path.join(rhs_wd, "all")
-        self.lhs_boundary_wd = os.path.join(lhs_wd, "boundary")
-        self.rhs_boundary_wd = os.path.join(rhs_wd, "boundary")
-        self.lhs_normalized_wd = os.path.join(lhs_wd, "norm")
-        self.rhs_normalized_wd = os.path.join(rhs_wd, "norm")
-        self.lhs_normalized_cropped_wd = os.path.join(lhs_wd, "norm_cropped")
-        self.rhs_normalized_cropped_wd = os.path.join(rhs_wd, "norm_cropped")
-        self.lhs_boundary_cmp_wd = os.path.join(lhs_wd, "boundary_cmp")
-        self.rhs_boundary_cmp_wd = os.path.join(rhs_wd, "boundary_cmp")
-        self.debug_wd = os.path.join(self.wd, "debug")
-
-        for d in [lhs_wd,
-                  rhs_wd,
-                  self.lhs_all_wd,
-                  self.rhs_all_wd,
-                  self.lhs_boundary_wd,
-                  self.rhs_boundary_wd,
-                  self.lhs_normalized_wd,
-                  self.rhs_normalized_wd,
-                  self.lhs_normalized_cropped_wd,
-                  self.rhs_normalized_cropped_wd,
-                  self.lhs_boundary_cmp_wd,
-                  self.rhs_boundary_cmp_wd,
-                  self.debug_wd,
-        ]:
-            os.makedirs(d)
-
-    def _analysis_result_for(
-        self,
-        path: str,
-        label: str,
-        features: media_analysis.MediaAnalysisFeature,
-    ) -> media_analysis.VideoScanResult:
-        request = media_analysis.MediaAnalysisRequest(
-            path=path,
-            label=label,
-            features=features,
-        )
-        return self.media_analysis.fulfill(request, raise_on_error=True)
-
-    @staticmethod
-    def calculate_ratio(pairs: list[tuple[int, int]]) -> float:
-        ratios = [(r[0] - l[0]) / (r[1] - l[1]) for l, r in zip(pairs[:-1], pairs[1:]) if (r[1] - l[1]) != 0]
-        if not ratios:
-            return float("nan")
-        median_ratio = np.median(ratios)
-        return float(median_ratio)
-
-    @staticmethod
-    def _timeline_frame_ids(frames: FramesInfo, fps: float) -> dict[int, int]:
-        """Map timestamps to decode ordinals augmented with empty timeline slots.
-
-        A nominal FPS can be slightly inaccurate, so using ``timestamp * fps``
-        as an absolute coordinate accumulates a false drift across long videos.
-        Instead, retain decoder ordinals and infer empty presentation slots
-        from local PTS gaps. This preserves sparse AVI coordinates, but rounding
-        variable cadence can also invent slots. A slot difference alone cannot
-        establish a timing discontinuity; that requires observed timestamp evidence.
-        """
-        timestamps = sorted(frames)
-        if not timestamps:
-            return {}
-
-        first_timestamp = timestamps[0]
-        coordinate = int(frames[first_timestamp]["frame_id"])
-        result = {first_timestamp: coordinate}
-        previous_timestamp = first_timestamp
-        previous_decode_id = coordinate
-
-        for timestamp in timestamps[1:]:
-            decode_id = int(frames[timestamp]["frame_id"])
-            decode_advance = max(1, decode_id - previous_decode_id)
-            timeline_advance = max(1, round((timestamp - previous_timestamp) * fps / 1000))
-            coordinate += max(decode_advance, timeline_advance)
-            result[timestamp] = coordinate
-            previous_timestamp = timestamp
-            previous_decode_id = decode_id
-
-        return result
-
-    # Maximum relative deviation between an observed pair ratio and the
-    # expected one before a match is considered inconsistent.
-    _MAX_RELATIVE_RATIO_ERROR = 0.05
-
-    @staticmethod
-    def is_ratio_acceptable(ratio: float, perfect_ratio: float) -> bool:
-        return abs(ratio - perfect_ratio) < PairMatcher._MAX_RELATIVE_RATIO_ERROR * perfect_ratio
-
-    # A gap between consecutive matched pairs may miss the mapping's median
-    # local slope by at most this much (absolute, and relative for long gaps)
-    # before it counts as a hole in the shared scene sequence.  Speed waviness
-    # (a VHS-style source) oscillates around the median and stays well below;
-    # a content cut (e.g. a commercial break) is one-sided and multi-second.
-    _MAX_GAP_TIME_DEFICIT_MS = 2000
-    _MAX_GAP_TIME_DEFICIT_RATIO = 0.02
-    # A GLOBAL_LINEAR mapping promises frame-accurate progression. A local
-    # advance may differ from the fitted relation by at most two frames before
-    # it requires refinement or an explicit temporary-excursion override.
-    # Unlike the GENERIC time-domain tolerance below, this limit must not grow
-    # with gap length: a content cut is a step in frame offset, not drift.
-    _MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES = 2.0
-    DEFAULT_MAX_TEMPORARY_FRAME_OFFSET = DEFAULT_MAX_TEMPORARY_FRAME_OFFSET
-    _SCENE_THRESHOLD = 0.30
-
-    @staticmethod
-    def _flagged_gap_deficits(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
-        """Gaps of sorted *pairs* whose rhs advance defies the median slope.
-
-        For every gap between consecutive pairs the expected rhs advance is
-        the lhs advance times the mapping's median local slope — a robust
-        reference that a few corrupted gaps cannot drag away.  A gap whose
-        rhs advance misses that expectation by more than
-        ``max(_MAX_GAP_TIME_DEFICIT_MS, _MAX_GAP_TIME_DEFICIT_RATIO * gap)``
-        in either direction gets flagged.
-
-        Returns ``(gap_index, deficit_ms)`` per flagged gap, where gap ``i``
-        spans ``pairs[i]`` → ``pairs[i + 1]``; a positive deficit means rhs
-        advances less than the slope predicts there, a negative one means
-        lhs does.
-        """
-        if len(pairs) < 3:
-            return []
-
-        slopes = [
-            (r2 - r1) / (l2 - l1)
-            for (l1, r1), (l2, r2) in zip(pairs[:-1], pairs[1:])
-            if l2 > l1
-        ]
-        if not slopes:
-            return []
-        median_slope = float(np.median(slopes))
-
-        flagged: list[tuple[int, int]] = []
-        for i, ((l1, r1), (l2, r2)) in enumerate(zip(pairs[:-1], pairs[1:])):
-            gap = l2 - l1
-            if gap <= 0:
-                continue
-            deficit = round(gap * median_slope - (r2 - r1))
-            threshold = max(
-                PairMatcher._MAX_GAP_TIME_DEFICIT_MS,
-                PairMatcher._MAX_GAP_TIME_DEFICIT_RATIO * gap,
-            )
-            if abs(deficit) > threshold:
-                flagged.append((i, deficit))
-        return flagged
-
-    @staticmethod
-    def find_content_discontinuities(
-        mapping: list[tuple[int, int]],
-    ) -> list[tuple[int, int, int, int, int]]:
-        """Locate holes in the shared scene sequence of a matched pair.
-
-        A gap whose rhs advance misses the median-slope expectation (see
-        ``_flagged_gap_deficits``) marks content present on one side only.
-
-        Returns ``(lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms)`` per
-        offending gap; a positive deficit means rhs is missing content there,
-        a negative one means lhs is.
-        """
-        pairs = sorted(mapping)
-        return [
-            (pairs[i][0], pairs[i + 1][0], pairs[i][1], pairs[i + 1][1], deficit)
-            for i, deficit in PairMatcher._flagged_gap_deficits(pairs)
-        ]
-
-    @staticmethod
-    def find_global_linear_content_discontinuities(
-        mapping: list[tuple[int, int]],
-        lhs_all_frames: FramesInfo,
-        rhs_all_frames: FramesInfo,
-        *,
-        frame_slope: float,
-        lhs_fps: float,
-        rhs_fps: float,
-        require_decoded_confirmation: bool = True,
-    ) -> list[tuple[int, int, int, int, int]]:
-        """Locate absolute frame-step errors in a GLOBAL_LINEAR mapping.
-
-        The fitted relation predicts ``rhs_advance = frame_slope *
-        lhs_advance`` between every two matched anchors. A content removal or
-        insertion changes that advance by a fixed number of frames; scaling
-        the tolerance with the time between sparse anchors would hide exactly
-        such edits. First and last intervals are bracketed by matched anchors
-        too; boundary extension outside those anchors cannot verify their
-        interior. Every suspicious interval needs refinement or content evidence. When
-        ``require_decoded_confirmation`` is true, a timeline step must also be
-        visible in decoded frame ordinals before it is reported as a content
-        discontinuity. Otherwise, include inferred slot steps as refinement
-        candidates even without an observed PTS step. These are suspicious
-        intervals, not proof of an edit:
-        a false visual match can also produce opposite steps. Sparse support
-        or a later compensating step cannot clear them; callers must refine
-        the observations or verify the suspected false match against content.
-        The returned deficit remains milliseconds for error reporting.
-        An empty content list does not certify audio timing; execution decisions
-        must consume the full report from ``_classify_global_linear_discontinuities``,
-        whose timing entries measure deviations from the observed timestamp slope.
-        """
-        report = PairMatcher._classify_global_linear_discontinuities(
-            mapping, lhs_all_frames, rhs_all_frames,
-            frame_slope=frame_slope, lhs_fps=lhs_fps, rhs_fps=rhs_fps,
-        )
-        if require_decoded_confirmation:
-            return report.content
-        # Refinement still needs slot-based candidates, even when the current
-        # timestamp observations do not establish an unsupported timing step.
-        gaps = {gap[:4]: gap for gap in (*report.frame_steps, *report.content, *report.timing)}
-        return sorted(gaps.values())
-
-    @staticmethod
-    def _classify_global_linear_discontinuities(
-        mapping: list[tuple[int, int]],
-        lhs_all_frames: FramesInfo,
-        rhs_all_frames: FramesInfo,
-        *,
-        frame_slope: float,
-        lhs_fps: float,
-        rhs_fps: float,
-    ) -> GlobalLinearDiscontinuityReport:
-        pairs = sorted(mapping)
-        if len(pairs) < 2 or frame_slope <= 0 or lhs_fps <= 0 or rhs_fps <= 0:
-            return GlobalLinearDiscontinuityReport([], [])
-
-        lhs_ids = PairMatcher._timeline_frame_ids(lhs_all_frames, lhs_fps)
-        rhs_ids = PairMatcher._timeline_frame_ids(rhs_all_frames, rhs_fps)
-        try:
-            frame_pairs = [
-                (lhs_ids[lhs_ts], rhs_ids[rhs_ts])
-                for lhs_ts, rhs_ts in pairs
-            ]
-            decoded_frame_pairs = [
-                (
-                    int(lhs_all_frames[lhs_ts]["frame_id"]),
-                    int(rhs_all_frames[rhs_ts]["frame_id"]),
-                )
-                for lhs_ts, rhs_ts in pairs
-            ]
-        except KeyError:
-            return GlobalLinearDiscontinuityReport(
-                PairMatcher.find_content_discontinuities(pairs), [],
-            )
-
-        decoded_slopes = [
-            (rhs2 - rhs1) / (lhs2 - lhs1)
-            for (lhs1, rhs1), (lhs2, rhs2) in zip(
-                decoded_frame_pairs,
-                decoded_frame_pairs[1:],
-            )
-            if lhs2 > lhs1 and rhs2 > rhs1
-        ]
-        decoded_slope = float(np.median(decoded_slopes)) if decoded_slopes else None
-        timestamp_slopes = [
-            (rhs2 - rhs1) / (lhs2 - lhs1)
-            for (lhs1, rhs1), (lhs2, rhs2) in zip(pairs, pairs[1:])
-            if lhs2 > lhs1 and rhs2 > rhs1
-        ]
-        timestamp_slope = float(np.median(timestamp_slopes)) if timestamp_slopes else None
-
-        content_result: list[tuple[int, int, int, int, int]] = []
-        timing_result: list[tuple[int, int, int, int, int]] = []
-        frame_steps = []
-        for index, (
-            (lhs1, rhs1),
-            (lhs2, rhs2),
-            (lhs_decoded1, rhs_decoded1),
-            (lhs_decoded2, rhs_decoded2),
-        ) in enumerate(
-            zip(
-                frame_pairs,
-                frame_pairs[1:],
-                decoded_frame_pairs,
-                decoded_frame_pairs[1:],
-            )
-        ):
-            lhs_advance = lhs2 - lhs1
-            rhs_advance = rhs2 - rhs1
-            if lhs_advance <= 0 or rhs_advance <= 0:
-                continue
-            deficit_frames = lhs_advance * frame_slope - rhs_advance
-            if abs(deficit_frames) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:
-                frame_steps.append((
-                    pairs[index][0], pairs[index + 1][0],
-                    pairs[index][1], pairs[index + 1][1], round(deficit_frames * 1000 / rhs_fps),
-                ))
-            decoded_deficit = None
-            if decoded_slope is not None:
-                decoded_lhs_advance = lhs_decoded2 - lhs_decoded1
-                decoded_rhs_advance = rhs_decoded2 - rhs_decoded1
-                if decoded_lhs_advance > 0 and decoded_rhs_advance > 0:
-                    decoded_deficit = (
-                        decoded_lhs_advance * decoded_slope - decoded_rhs_advance
-                    )
-            if (
-                decoded_deficit is not None
-                and abs(decoded_deficit) <= PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-            ):
-                # Continuous decode order rules out a content step, but audio
-                # safety depends on PTS. Use the observed tempo, not rounded
-                # slots or the nominal-FPS conversion of the frame slope.
-                if timestamp_slope is None:
-                    continue
-                lhs_from, rhs_from = pairs[index]
-                lhs_to, rhs_to = pairs[index + 1]
-                deficit_ms = (lhs_to - lhs_from) * timestamp_slope - (rhs_to - rhs_from)
-                deficit_frames = deficit_ms * rhs_fps / 1000
-                result = timing_result
-            else:
-                deficit_ms = deficit_frames * 1000 / rhs_fps
-                result = content_result
-            if abs(deficit_frames) > PairMatcher._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES:
-                result.append((
-                    pairs[index][0], pairs[index + 1][0],
-                    pairs[index][1], pairs[index + 1][1], round(deficit_ms),
-                ))
-        return GlobalLinearDiscontinuityReport(content_result, timing_result, tuple(frame_steps))
-
-    def _refine_scenes_in_region(
-        self,
-        gap: tuple[int, int, int, int, int],
-        lhs_scene_changes: list[int],
-        rhs_scene_changes: list[int],
-    ) -> tuple[list[int], list[int], bool]:
-        """Extend one scene list and return timestamps within the region."""
-        lhs_from, lhs_to, rhs_from, rhs_to, _ = gap
-        lhs_local = [ts for ts in lhs_scene_changes if lhs_from < ts < lhs_to]
-        rhs_local = [ts for ts in rhs_scene_changes if rhs_from < ts < rhs_to]
-
-        lhs_side = (
-            self.lhs_path, self.lhs_label,
-            lhs_from, lhs_to, self.lhs_all_frames, lhs_scene_changes,
-        )
-        rhs_side = (
-            self.rhs_path, self.rhs_label,
-            rhs_from, rhs_to, self.rhs_all_frames, rhs_scene_changes,
-        )
-        if len(lhs_local) <= len(rhs_local):
-            sides = (lhs_side, rhs_side)
-        else:
-            sides = (rhs_side, lhs_side)
-
-        self.logger.debug(
-            "Refining suspicious region: %s %s-%s (%d scene(s)) "
-            "↔ %s %s-%s (%d scene(s)); checking the sparser side first",
-            self.lhs_label, generic_utils.ms_to_time(lhs_from),
-            generic_utils.ms_to_time(lhs_to), len(lhs_local),
-            self.rhs_label, generic_utils.ms_to_time(rhs_from),
-            generic_utils.ms_to_time(rhs_to), len(rhs_local),
-        )
-        scenes_added = False
-        for side_index, (path, label, start_ms, end_ms, all_frames, scenes) in enumerate(sides):
-            analysis = self._analysis_result_for(
-                path,
-                label,
-                media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
-            )
-            frame_timestamps = sorted(all_frames)
-            candidates: dict[int, float] = {}
-            for candidate in analysis.scene_candidates:
-                if not start_ms < candidate.timestamp_ms < end_ms:
-                    continue
-                timestamp = self._snap_to_nearest_frame(
-                    frame_timestamps,
-                    candidate.timestamp_ms,
-                )
-                if start_ms < timestamp < end_ms and timestamp not in scenes:
-                    candidates[timestamp] = max(
-                        candidates.get(timestamp, 0.0),
-                        candidate.score,
-                    )
-
-            ranked_scores = sorted(candidates.values(), reverse=True)
-            if not ranked_scores:
-                self.logger.debug(
-                    "Local scene refinement %s found no new candidates",
-                    label,
-                )
-                continue
-
-            # Several candidates can balance the initially sparser side. The
-            # fallback side is already at least as dense, so consume only its
-            # strongest candidate before rematching and narrowing the gap.
-            desired_count = (
-                max(1, abs(len(lhs_local) - len(rhs_local)))
-                if side_index == 0
-                else 1
-            )
-            cutoff = ranked_scores[min(desired_count, len(ranked_scores)) - 1]
-            new_scenes = sorted(
-                timestamp
-                for timestamp, score in candidates.items()
-                if score >= cutoff
-            )
-            scenes.extend(new_scenes)
-            scenes_added = True
-            self.logger.debug(
-                "Local scene refinement %s selected %d scene(s) at score %.6f",
-                label, len(new_scenes), cutoff,
-            )
-            break
-
-        if not scenes_added:
-            self.logger.debug(
-                "Local scene refinement found no new candidates on either side; "
-                "region remains unresolved",
-            )
-
-        return (
-            sorted({lhs_from, lhs_to, *(ts for ts in lhs_scene_changes if lhs_from < ts < lhs_to)}),
-            sorted({rhs_from, rhs_to, *(ts for ts in rhs_scene_changes if rhs_from < ts < rhs_to)}),
-            scenes_added,
-        )
-
-    def _drop_pairs_breaking_local_linearity(
-        self, pairs: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
-        *, frame_slope: float | None = None,
-    ) -> list[tuple[int, int]]:
-        """Remove a cancelling excursion only after content disproves the pair.
-
-        Opposite edits and a false match have the same timing signature. The
-        existing gap detector nominates candidates; sequence verification must
-        support the neighbours' line and contradict the candidate on both sides.
-        Without that evidence the pair, and its suspicious gaps, survive.
-        """
-        result = sorted(pairs)
-        while True:
-            if frame_slope is not None:
-                gaps = self.find_global_linear_content_discontinuities(
-                    result, self.lhs_all_frames, self.rhs_all_frames,
-                    frame_slope=frame_slope, lhs_fps=self.lhs_fps, rhs_fps=self.rhs_fps,
-                )
-                indices = {pair: i for i, pair in enumerate(result)}
-                flagged = [(indices[(l1, r1)], deficit) for l1, _, r1, _, deficit in gaps]
-            else:
-                flagged = PairMatcher._flagged_gap_deficits(result)
-            rogue: tuple[int, int, int] | None = None
-            for (gap_a, deficit_a), (gap_b, deficit_b) in zip(flagged, flagged[1:]):
-                if gap_b != gap_a + 1 or deficit_a * deficit_b >= 0:
-                    continue
-                merged_gap = result[gap_b + 1][0] - result[gap_a][0]
-                threshold = (
-                    self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES * 1000 / self.rhs_fps
-                    if frame_slope is not None else max(
-                        self._MAX_GAP_TIME_DEFICIT_MS,
-                        self._MAX_GAP_TIME_DEFICIT_RATIO * merged_gap,
-                    )
-                )
-                if abs(deficit_a + deficit_b) <= threshold and self._verify_false_pair(
-                    result[gap_a], result[gap_b], result[gap_b + 1],
-                    lhs_normalized_frames, rhs_normalized_frames,
-                ):
-                    rogue = (gap_a + 1, deficit_a, deficit_b)
-                    break
-            if rogue is None:
-                return result
-            rogue_index, deficit_before, deficit_after = rogue
-            lhs_ts, rhs_ts = result.pop(rogue_index)
-            self.logger.warning(
-                "Dropping content-disproved pair %s ↔ %s (%+d ms before, %+d ms after)",
-                generic_utils.ms_to_time(lhs_ts),
-                generic_utils.ms_to_time(rhs_ts),
-                deficit_before,
-                deficit_after,
-            )
-
-    def _verify_false_pair(
-        self, before: tuple[int, int], pair: tuple[int, int], after: tuple[int, int],
-        lhs_normalized_frames: FramesInfo, rhs_normalized_frames: FramesInfo,
+        samples: list[tuple[int, FrameInfo, FrameInfo]],
     ) -> bool:
-        """Verify a replacement sequence before discarding an isolated anchor.
-
-        Expand a sequence around the anchor, staying within half the distance
-        to its neighbours on both timelines. Each temporal side needs two
-        distinct rich replacement pairs and rich contradiction of the original.
-        Unavailable or low-entropy images supply no evidence for that comparison;
-        a rich replacement mismatch vetoes removal. Repeated/static content that
-        also supports the original remains ambiguous. Comparisons reuse the
-        normalized, shared-crop space and calibrated cutoff, extracting only
-        the next small batch until there is enough evidence or the bound is hit.
-        """
-        if not self.lhs_all_frames or not self.rhs_all_frames:
-            return False
-        if any(l not in lhs_normalized_frames or r not in rhs_normalized_frames
-               for l, r in (before, after)):
-            return False
-        lhs_ts, rhs_ts = pair
-        if after[0] <= before[0] or after[1] <= before[1]:
-            return False
-        slope = (after[1] - before[1]) / (after[0] - before[0])
-        radius = min(
-            (lhs_ts - before[0]) // 2, (after[0] - lhs_ts) // 2,
-            int((rhs_ts - before[1]) / (2 * slope)),
-            int((after[1] - rhs_ts) / (2 * slope)),
-        )
-        if radius <= 0:
-            return False
-        ctx = self._build_boundary_verify_context(
-            [before, after], lhs_normalized_frames, rhs_normalized_frames,
-            minimum_cutoff=self._MIN_PHASH_CUTOFF,
-        )
-        # These samples interpolate between neighbours. The boundary-gap
-        # allowance for extrapolated crops/predictions can accept distinct
-        # pictures here, hiding the evidence against a false anchor. Use the
-        # local calibration (with the ordinary comparison floor) for both
-        # replacement support and contradiction, retaining mismatch vetoes.
-        supported: list[set[tuple[int, int]]] = [set(), set()]
-        contradicted = [False, False]
-        # Leave two batches inside even a short window: one unusable sample
-        # must not exhaust the opportunities for two distinct rich pairs.
-        step = max(1, min(250, radius // 4))
-        for distance in range(step, radius + 1, 2 * step):
-            self.interruption.check_for_stop()
-            offsets = [-distance, distance]
-            if distance + step <= radius:
-                offsets.extend((-(distance + step), distance + step))
-            if distance == step:
-                offsets.insert(0, 0)
-            samples = []
-            for offset in offsets:
-                lhs = self._nearest_frame_timestamp(self.lhs_all_frames, lhs_ts + offset)
-                predicted = round(before[1] + (lhs - before[0]) * slope)
-                original = round(rhs_ts + (lhs - lhs_ts) * slope)
-                if not (before[1] < predicted < after[1] and before[1] < original < after[1]):
-                    return False
-                samples.append((
-                    lhs,
-                    self._nearest_frame_timestamp(self.rhs_all_frames, predicted),
-                    self._nearest_frame_timestamp(self.rhs_all_frames, original),
-                ))
-            self._prefetch_boundary_images(
-                self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames,
-                [lhs for lhs, _, _ in samples],
-            )
-            self._prefetch_boundary_images(
-                self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames,
-                [ts for _, predicted, original in samples for ts in (predicted, original)],
-            )
-            for lhs, predicted, original in samples:
-                lhs_img = self._comparison_image(ctx.lhs, lhs)
-                predicted_img = self._comparison_image(ctx.rhs, predicted)
-                if not all(img is not None and self._is_rich(img)
-                           for img in (lhs_img, predicted_img)):
-                    continue
-                if not self._boundary_content_matches(ctx, lhs, predicted):
-                    return False
-                if lhs == lhs_ts:
-                    continue
-                side = int(lhs > lhs_ts)
-                # Snapping sparse timestamps must not count one image twice.
-                if all(lhs != l and predicted != r for l, r in supported[side]):
-                    supported[side].add((lhs, predicted))
-                original_img = self._comparison_image(ctx.rhs, original)
-                if original_img is not None and self._is_rich(original_img):
-                    if not self._boundary_content_matches(ctx, lhs, original):
-                        contradicted[side] = True
-            if all(len(pairs) >= 2 for pairs in supported) and all(contradicted):
-                return True
-        return False
-
-    # A mapping counts as effectively linear when every pair sits within this
-    # distance of the line through its endpoints.
-    _MAX_LINEAR_RESIDUAL_MS = 1000
-
-    @staticmethod
-    def _linear_mapping_slope(pairs: list[tuple[int, int]]) -> float | None:
-        """Slope of the line through the endpoints of sorted *pairs*.
-
-        Returns None when any interior pair sits further than
-        ``_MAX_LINEAR_RESIDUAL_MS`` from that line — the mapping is not
-        linear and no line-based repair may be applied to it.
-        """
-        if len(pairs) < 2:
-            return None
-
-        first_lhs, first_rhs = pairs[0]
-        last_lhs, last_rhs = pairs[-1]
-        lhs_span = last_lhs - first_lhs
-        if lhs_span <= 0:
-            return None
-
-        slope = (last_rhs - first_rhs) / lhs_span
-        if slope <= 0:
-            return None
-
-        for lhs_time, rhs_time in pairs[1:-1]:
-            predicted_rhs = first_rhs + (lhs_time - first_lhs) * slope
-            if abs(predicted_rhs - rhs_time) > PairMatcher._MAX_LINEAR_RESIDUAL_MS:
-                return None
-        return slope
-
-
-    @staticmethod
-    def coverage_summary(
-        mappings: list[tuple[int, int]],
-        lhs_duration_ms: int,
-        rhs_duration_ms: int,
-        *,
-        lhs_fps: float,
-        rhs_fps: float,
-    ) -> CoverageSummary:
-        """Compute a human-readable coverage summary for matched files.
-
-        ``full_coverage`` is True when matched content reaches both video edges
-        within at most two frames per input; the ``*_gap_s`` fields report the
-        unmatched seconds at each edge and ``ratio`` the speed ratio between
-        the two files.
-        """
-        first = mappings[0]
-        last = mappings[-1]
-
-        lhs_start_gap = first[0]
-        rhs_start_gap = first[1]
-        lhs_end_gap = max(0, lhs_duration_ms - last[0])
-        rhs_end_gap = max(0, rhs_duration_ms - last[1])
-
-        if lhs_fps <= 0 or rhs_fps <= 0:
-            raise ValueError("FPS values must be positive")
-
-        lhs_frame_duration_ms = 1000 / lhs_fps
-        rhs_frame_duration_ms = 1000 / rhs_fps
-        lhs_edge_tolerance_ms = (
-            PairMatcher._MAX_BOUNDARY_ERROR_FRAMES * lhs_frame_duration_ms
-        )
-        rhs_edge_tolerance_ms = (
-            PairMatcher._MAX_BOUNDARY_ERROR_FRAMES * rhs_frame_duration_ms
-        )
-
-        # A frame timestamp marks the start of the frame. The expected timestamp
-        # of the final frame is therefore one frame duration before the stream end.
-        lhs_end_error = max(0, lhs_end_gap - lhs_frame_duration_ms)
-        rhs_end_error = max(0, rhs_end_gap - rhs_frame_duration_ms)
-        full_coverage = (
-            lhs_start_gap <= lhs_edge_tolerance_ms
-            and lhs_end_error <= lhs_edge_tolerance_ms
-            and rhs_start_gap <= rhs_edge_tolerance_ms
-            and rhs_end_error <= rhs_edge_tolerance_ms
-        )
-
-        return {
-            "full_coverage": full_coverage,
-            "lhs_start_gap_s": lhs_start_gap / 1000,
-            "rhs_start_gap_s": rhs_start_gap / 1000,
-            "lhs_end_gap_s": lhs_end_gap / 1000,
-            "rhs_end_gap_s": rhs_end_gap / 1000,
-            "ratio": PairMatcher.calculate_ratio(mappings),
-        }
-
-    @staticmethod
-    def filter_phash_outliers(phash: PhashCache, pairs: list[tuple[int, int]], lhs_set: FramesInfo, rhs_set: FramesInfo) -> list[tuple[int, int]]:
-        if len(pairs) <= 3:
-            # Too few data points for reliable MAD-based outlier detection.
-            # Let downstream filters (ORB, history check) handle quality control.
-            return pairs
-
-        dists_array = np.array([
-            abs(phash.get(PairMatcher._extracted_path(lhs_set[l])) - phash.get(PairMatcher._extracted_path(rhs_set[r])))
-            for l, r in pairs
-        ], dtype=float)
-        med = float(np.median(dists_array))
-        mad = float(np.median(np.abs(dists_array - med)))
-        threshold = med + 1.5 * mad
-        return [pair for pair, dist in zip(pairs, dists_array) if dist <= threshold]
-
-    @staticmethod
-    def summarize_pairs(phash: PhashCache, pairs: list[tuple[int, int]], lhs: FramesInfo, rhs: FramesInfo, verbose: bool = False) -> str:
-        if not pairs:
-            return "Pairs: 0"
-
-        distances = []
-        for lhs_ts, rhs_ts in pairs:
-            lhs_path = PairMatcher._path_or_none(lhs, lhs_ts)
-            rhs_path = PairMatcher._path_or_none(rhs, rhs_ts)
-            if lhs_path is None or rhs_path is None:
-                continue
-            d = abs(phash.get(lhs_path) - phash.get(rhs_path))
-            distances.append((d, lhs_ts, rhs_ts))
-
-        if not distances:
-            return f"Pairs: {len(pairs)} (no extracted paths for summary)"
-
-        arr = np.array([d[0] for d in distances])
-        median = np.median(arr)
-        mean = np.mean(arr)
-        std = np.std(arr)
-        max_val = np.max(arr)
-        min_val = np.min(arr)
-
-        # Identify the max pair
-        max_entry = max(distances, key=lambda x: x[0])
-        max_lhs_path = PairMatcher._path_or_none(lhs, max_entry[1]) or "?"
-        max_rhs_path = PairMatcher._path_or_none(rhs, max_entry[2]) or "?"
-
-        summary = (
-            f"Pairs: {len(pairs)} | "
-            f"Median: {median:.2f} | "
-            f"Mean: {mean:.2f} | "
-            f"Std Dev: {std:.2f} | "
-            f"Min: {min_val} | "
-            f"Max: {max_val} | "
-            f"Max Pair: {max_lhs_path} <-> {max_rhs_path}"
-        )
-
-        if verbose:
-            details = []
-            for dist, lhs_ts, rhs_ts in distances:
-                lp = PairMatcher._path_or_none(lhs, lhs_ts) or "?"
-                rp = PairMatcher._path_or_none(rhs, rhs_ts) or "?"
-                details.append(f"  {lp} <-> {rp} | Diff: {dist}")
-            summary += "\nDetailed pairs:" + "\n" + "\n".join(details)
-
-        return summary
-
-    @staticmethod
-    def summarize_segments(pairs: list[tuple[int, int]], lhs_fps: float, rhs_fps: float, verbose: bool = True, lhs_label: str = "#1", rhs_label: str = "#2") -> str:
-        if len(pairs) < 2:
-            return "Not enough pairs to build segments."
-
-        pairs_sorted = sorted(pairs)
-        segments = []
-
-        lhs_frame_step = 1000.0 / lhs_fps
-        rhs_frame_step = 1000.0 / rhs_fps
-        max_quant_error = max(lhs_frame_step, rhs_frame_step)
-
-        for (lhs1, rhs1), (lhs2, rhs2) in zip(pairs_sorted[:-1], pairs_sorted[1:]):
-            lhs_delta = lhs2 - lhs1
-            rhs_delta = rhs2 - rhs1
-            if rhs_delta <= 0:
-                continue
-            ratio = lhs_delta / rhs_delta
-
-            # Estimate ratio uncertainty
-            min_delta = min(lhs_delta, rhs_delta)
-            ratio_error = (2 * max_quant_error) / min_delta if min_delta > 0 else float("inf")
-            confidence = "LOW" if ratio_error > 0.1 else "OK"
-
-            segments.append((lhs1, lhs2, rhs1, rhs2, lhs_delta, rhs_delta, ratio, ratio_error, confidence))
-
-        if not segments:
-            return "No valid segments."
-
-        ratios = np.array([s[6] for s in segments])
-        out = [
-            f"Segments: {len(segments)} | "
-            f"Median ratio: {np.median(ratios):.4f} | "
-            f"Mean ratio: {np.mean(ratios):.4f} | "
-            f"Std Dev: {np.std(ratios):.4f} | "
-            f"Min: {np.min(ratios):.4f} | Max: {np.max(ratios):.4f}"
-        ]
-
-        if verbose:
-            out.append("\nDetailed segments:")
-            for lhs1, lhs2, rhs1, rhs2, ldelta, rdelta, ratio, err, conf in segments:
-                out.append(
-                    f"  {lhs_label} {lhs1}->{lhs2} ({ldelta:4} ms), "
-                    f"{rhs_label} {rhs1}->{rhs2} ({rdelta:4} ms), "
-                    f"Ratio: {ratio:.4f}, "
-                    f"Error~{err:.2%}, Confidence: {conf}"
-                )
-
-        return '\n'.join(out)
-
-    def look_for_boundaries(self, lhs: FramesInfo, rhs: FramesInfo, first: tuple[int, int], last: tuple[int, int], cutoff: float, max_gap_seconds: float = 15.0, extrapolate: bool = True):
-        """Find the first and last common frame pair by walking outward from known matches.
-
-        Uses the linear time mapping derived from *first* and *last* to predict
-        where each LHS frame should appear in RHS, then walks from the current
-        boundaries toward the edges of the video.  Allows configurable gaps of
-        non-matching frames before giving up, instead of stopping on first miss.
-
-        When the search enters a low-entropy region (dark frames, end credits),
-        phash matching becomes unreliable.  In that case the boundary is
-        extrapolated linearly from well-matched pairs, but only if both files
-        show a consistent entropy transition at the predicted position.
-        """
-        PairMatcher._assert_frames_extracted(lhs, "look_for_boundaries(lhs)")
-        PairMatcher._assert_frames_extracted(rhs, "look_for_boundaries(rhs)")
-
-        self.logger.debug("Improving boundaries")
-        self.logger.debug(f"Current first: {first} and last: {last}")
-        phash = PhashCache()
-        ratio = PairMatcher.calculate_ratio([first, last])
-
-        # When first == last (single pair) the ratio is NaN;
-        # fall back to fps-based ratio.
-        if np.isnan(ratio):
-            ratio = self.lhs_fps / self.rhs_fps
-
-        cutoff = self._floored_phash_cutoff(cutoff)
-
-        lhs_keys = sorted(lhs.keys())
-        rhs_keys = sorted(rhs.keys())
-
-        start_ctx = _BoundarySearchContext(
-            lhs=lhs, rhs=rhs, lhs_keys=lhs_keys, rhs_keys=rhs_keys, phash=phash,
-            anchor=first, reference=last, ratio=ratio, cutoff=cutoff, direction=-1,
-        )
-        end_ctx = start_ctx._replace(anchor=last, reference=first, direction=1)
-
-        # --- Fast edge pre-check ---
-        # Before the iterative search, check whether both videos share content
-        # at each edge.  When they do, extend the gap budget for the boundary
-        # walk so it does not give up before reaching the video edge.  The
-        # anchor and prediction logic are left untouched for maximum precision.
-        gap_budgets = {-1: max_gap_seconds, 1: max_gap_seconds}
-        for ctx in (start_ctx, end_ctx):
-            label = "start" if ctx.direction == -1 else "end"
-            if not self._edge_content_matches(ctx):
+        """Compare identity samples given as ``(target_ms, lhs_frame, rhs_frame)``."""
+        for target_ms, lhs_frame, rhs_frame in samples:
+            distance = frame_comparison.phash_distance(self.phash, lhs_frame, rhs_frame)
+            if distance > frame_comparison.MIN_PHASH_CUTOFF:
                 self.logger.debug(
-                    f"Edge pre-check ({label}): edges do NOT visually match "
-                    f"— using default gap budget {max_gap_seconds}s"
+                    "Equal-length identity check failed near %d ms (pHash distance %d).",
+                    target_ms,
+                    distance,
                 )
-                continue
+                return False
 
-            edge_lhs = lhs_keys[0] if ctx.direction == -1 else lhs_keys[-1]
-            distance_s = abs(ctx.anchor[0] - edge_lhs) / 1000.0
-            gap_budgets[ctx.direction] = max(max_gap_seconds, distance_s + 2.0)
-            self.logger.debug(
-                f"Edge pre-check ({label}): edges match, "
-                f"extending gap budget to {gap_budgets[ctx.direction]:.1f}s "
-                f"(anchor={ctx.anchor[0]}ms, edge={edge_lhs}ms, distance={distance_s:.1f}s)"
-            )
-
-        first_gap_seconds = gap_budgets[-1]
-        last_gap_seconds = gap_budgets[1]
-
-        refined_first, first_low_entropy = self._find_boundary(start_ctx, first_gap_seconds)
-        self.logger.debug(
-            f"Boundary start: walked {first[0]}ms → {refined_first[0]}ms "
-            f"({'entered low-entropy zone' if first_low_entropy else 'gap budget or edge reached'}, "
-            f"budget={first_gap_seconds:.1f}s)"
-        )
-
-        refined_last, last_low_entropy = self._find_boundary(end_ctx, last_gap_seconds)
-        self.logger.debug(
-            f"Boundary end: walked {last[0]}ms → {refined_last[0]}ms "
-            f"({'entered low-entropy zone' if last_low_entropy else 'gap budget or edge reached'}, "
-            f"budget={last_gap_seconds:.1f}s)"
-        )
-
-        if extrapolate:
-            # Extrapolate through low-entropy regions when possible
-            refined_first = self.extrapolate_through_low_entropy(
-                lhs, rhs, refined_first, refined_last, ratio, direction=-1,
-                entered_low_entropy=first_low_entropy,
-            )
-            refined_last = self.extrapolate_through_low_entropy(
-                lhs, rhs, refined_last, refined_first, ratio, direction=1,
-                entered_low_entropy=last_low_entropy,
-            )
-
-        return refined_first, refined_last
-
-    def extrapolate_through_low_entropy(
-        self,
-        lhs: FramesInfo,
-        rhs: FramesInfo,
-        boundary: tuple[int, int],
-        reference: tuple[int, int],
-        ratio: float,
-        direction: int,
-        entered_low_entropy: bool,
-    ) -> tuple[int, int]:
-        """Extend *boundary* through a low-entropy zone to the video edge.
-
-        When the boundary search stops at a low-entropy zone (black frames,
-        end credits, etc.), this method checks whether the region between the
-        current boundary and the video edge is consistently low-entropy in
-        *both* files.  If so, the boundary is linearly extrapolated to the
-        edge; otherwise it is kept unchanged (the files likely have different
-        intro/outro content).
-
-        The coarse step used by ``find_boundary`` may overshoot the exact
-        content→dark transition by a few frames.  To compensate, this method
-        walks from the boundary toward the edge, skips any high-entropy frames
-        near the boundary (at most ``step * 3``), and then verifies that the
-        remaining zone to the edge is entirely low-entropy.  The tolerance is
-        ``step * 3`` rather than ``step`` because the RHS boundary is predicted
-        via the linear ratio and may be off by more than the walk stride.
-        """
-        if not entered_low_entropy:
-            return boundary
-
-        label = "start" if direction == -1 else "end"
-        lhs_keys = sorted(lhs.keys())
-        rhs_keys = sorted(rhs.keys())
-        step = max(1, int(self.lhs_fps * 0.5))
-        max_skip = step * 3
-
-        # Determine LHS edge and gap frames between boundary and edge
-        if direction == -1:
-            edge_lhs = lhs_keys[0]
-            lhs_gap = [k for k in lhs_keys if k < boundary[0]]
-        else:
-            edge_lhs = lhs_keys[-1]
-            lhs_gap = [k for k in lhs_keys if k > boundary[0]]
-
-        if not lhs_gap:
-            return boundary
-
-        # Verify LHS gap is low-entropy
-        if not self._verify_gap_is_low_entropy(lhs, lhs_gap, max_skip, direction, label, self.lhs_label):
-            return boundary
-
-        # Predict RHS edge position and clamp to valid range
-        predicted_rhs = int(boundary[1] + (edge_lhs - boundary[0]) / ratio)
-        clamped_rhs = max(rhs_keys[0], min(rhs_keys[-1], predicted_rhs))
-
-        # Determine RHS gap between boundary and predicted edge
-        if direction == -1:
-            rhs_gap = [k for k in rhs_keys if k < boundary[1] and k >= clamped_rhs]
-        else:
-            rhs_gap = [k for k in rhs_keys if k > boundary[1] and k <= clamped_rhs]
-
-        # Verify RHS gap is low-entropy
-        if rhs_gap and not self._verify_gap_is_low_entropy(rhs, rhs_gap, max_skip, direction, label, self.rhs_label):
-            return boundary
-
-        # Both files have consistently low-entropy gaps — extrapolate to edge
-        new_rhs = PairMatcher._snap_to_nearest_frame(rhs_keys, clamped_rhs)
-
-        self.logger.debug(
-            f"Boundary {label}: extrapolating through low-entropy zone from "
-            f"({boundary[0]}, {boundary[1]}) to ({edge_lhs}, {new_rhs})."
-        )
-        return (edge_lhs, new_rhs)
-
-    def detect_global_linear(
-        self,
-        matching_pairs: list[tuple[int, int]],
-        lhs_all_frames: FramesInfo,
-        rhs_all_frames: FramesInfo,
-        *,
-        max_slope_delta: float = _MAX_DRIFT_SLOPE_DELTA,
-        max_median_residual_frames: float = 1.5,
-        max_p95_residual_frames: float = 4.0,
-        max_outlier_ratio: float = 0.25,
-        max_audio_time_scale_delta: float = 0.30,
-        max_constant_offset_std: float = _MAX_CONSTANT_OFFSET_STD,
-        min_span_frames: int = 250,
-    ) -> GlobalLinearFit | None:
-        """Detect a single global linear frame relationship over the matched pairs.
-
-        Both files are assumed related by ``rhs_frame ~= slope*lhs_frame +
-        intercept`` in presentation-timeline frame coordinates.  Unlike decode
-        ordinals, these coordinates retain empty AVI frame slots.  A constant
-        frame offset is just the ``slope == 1`` special case, so it is tried
-        first (it needs only two well-separated matches); when the offset is not
-        constant the slope and intercept are fitted with RANSAC.  Either way the
-        audio is later placed with one global time-scale, so a constant offset
-        and a time-scaled drift share the same handling.
-
-        ``time_scale = slope*lhs_fps/rhs_fps`` may differ from 1 (e.g. a 25 fps
-        PAL speedup vs 24 fps); that only means the audio must be stretched.  It
-        is rejected when larger than ``max_audio_time_scale_delta`` (an
-        implausible match).
-
-        This method only *detects* the relation and returns the fit; it does
-        **not** decide the first/last common pair.  The boundaries are found by
-        the content/entropy-aware boundary walk (shared with the GENERIC path),
-        which uses the certified pairs' full observed timestamp correspondence as its predictor
-        and stops at genuine divergence. Blindly
-        extrapolating the line to the video edges would pair unrelated content
-        across divergent intros/outros and is non-deterministic across ffmpeg
-        builds, so it is deliberately avoided.
-        """
-        if len(matching_pairs) < 2:
-            return None
-
-        try:
-            lhs_frame_ids_by_timestamp = self._timeline_frame_ids(lhs_all_frames, self.lhs_fps)
-            rhs_frame_ids_by_timestamp = self._timeline_frame_ids(rhs_all_frames, self.rhs_fps)
-            lhs_frame_ids = np.array(
-                [lhs_frame_ids_by_timestamp[l] for l, _ in matching_pairs], dtype=float
-            )
-            rhs_frame_ids = np.array(
-                [rhs_frame_ids_by_timestamp[r] for _, r in matching_pairs], dtype=float
-            )
-        except KeyError:
-            return None
-
-        fit = self._fit_constant_offset(
-            lhs_frame_ids, rhs_frame_ids, matching_pairs,
-            max_std=max_constant_offset_std, min_two_pair_span=min_span_frames,
-        )
-        is_constant_offset = fit is not None
-        if fit is None:
-            fit = self._fit_linear_drift(
-                lhs_frame_ids, rhs_frame_ids,
-                max_slope_delta=max_slope_delta,
-                max_median_residual_frames=max_median_residual_frames,
-                max_p95_residual_frames=max_p95_residual_frames,
-                max_outlier_ratio=max_outlier_ratio,
-                min_span_frames=min_span_frames,
-            )
-        if fit is None:
-            return None
-        slope, intercept = fit
-
-        time_scale = slope * self.lhs_fps / self.rhs_fps
-        if abs(time_scale - 1.0) > max_audio_time_scale_delta:
-            self.logger.debug(
-                f"Global-linear check: slope={slope:.6f} implies audio time scale "
-                f"{time_scale:.5f}, beyond the realistic {max_audio_time_scale_delta:.3f} — skipping"
-            )
-            return None
-
-        self._log_global_linear(slope, intercept, time_scale, is_constant_offset)
-        return GlobalLinearFit(slope=slope, intercept=intercept,
-                               is_constant_offset=is_constant_offset, time_scale=time_scale)
-
-    def _fit_constant_offset(
-        self,
-        lhs_frame_ids: np.ndarray,
-        rhs_frame_ids: np.ndarray,
-        matching_pairs: list[tuple[int, int]],
-        *,
-        max_std: float,
-        min_two_pair_span: int,
-    ) -> tuple[float, float] | None:
-        """Fit a constant frame offset (slope == 1).
-
-        Returns ``(slope=1.0, intercept)`` where ``rhs_frame ~= lhs_frame +
-        intercept``, or ``None`` when the offset is not sufficiently constant.
-        """
-        if len(matching_pairs) == 2:
-            span = min(int(np.ptp(lhs_frame_ids)), int(np.ptp(rhs_frame_ids)))
-            if span < min_two_pair_span:
-                self.logger.debug(
-                    f"Constant-offset check: only two pairs spanning {span} frames — skipping"
-                )
-                return None
-
-        offsets = lhs_frame_ids - rhs_frame_ids
-        std_offset = float(np.std(offsets))
-        if std_offset > max_std:
-            self.logger.debug(
-                f"Constant-offset check: frame-number std={std_offset:.2f} exceeds {max_std:.1f} — skipping"
-            )
-            return None
-
-        ratio = PairMatcher.calculate_ratio(matching_pairs)
-        expected_ratio = self.rhs_fps / self.lhs_fps
-        if not PairMatcher.is_ratio_acceptable(ratio, expected_ratio):
-            self.logger.debug(
-                f"Constant-offset check: ratio={ratio:.4f} too far from expected {expected_ratio:.4f} — skipping"
-            )
-            return None
-
-        k = round(float(np.median(offsets)))  # lhs_frame - rhs_frame
-        self.logger.debug(
-            "Constant offset detected: %d frame(s) (median=%.1f, std=%.2f).",
-            k, float(np.median(offsets)), std_offset,
-        )
-        return (1.0, float(-k))
-
-    def _fit_linear_drift(
-        self,
-        lhs_frame_ids: np.ndarray,
-        rhs_frame_ids: np.ndarray,
-        *,
-        max_slope_delta: float,
-        max_median_residual_frames: float,
-        max_p95_residual_frames: float,
-        max_outlier_ratio: float,
-        min_span_frames: int,
-    ) -> tuple[float, float] | None:
-        """Fit a drift line with RANSAC.
-
-        Returns ``(slope, intercept)`` for ``rhs_frame ~= slope*lhs_frame +
-        intercept`` with ``slope`` close to 1.0 or to the nominal fps ratio
-        (a playback-time-preserving frame-rate conversion), or ``None`` when
-        the matches do not fit a clean line.
-        """
-        if len(lhs_frame_ids) < 4:
-            return None
-
-        lhs_span = float(np.max(lhs_frame_ids) - np.min(lhs_frame_ids))
-        if lhs_span < min_span_frames:
-            self.logger.debug(
-                f"Linear-drift check: matched frame span {lhs_span:.0f} is below {min_span_frames} frames — skipping"
-            )
-            return None
-
-        ransac = RANSACRegressor(
-            LinearRegression(), residual_threshold=max_p95_residual_frames, random_state=0,
-        )
-        ransac.fit(lhs_frame_ids.reshape(-1, 1), rhs_frame_ids)
-        inliers = ransac.inlier_mask_
-        if inliers is None:
-            inliers = np.ones(len(lhs_frame_ids), dtype=bool)
-
-        inlier_count = int(np.sum(inliers))
-        if inlier_count < 4:
-            self.logger.debug(
-                f"Linear-drift check: only {inlier_count}/{len(lhs_frame_ids)} pairs fit the model — skipping"
-            )
-            return None
-
-        outlier_ratio = 1.0 - inlier_count / len(lhs_frame_ids)
-        if outlier_ratio > max_outlier_ratio:
-            self.logger.debug(
-                f"Linear-drift check: outlier ratio {outlier_ratio:.1%} exceeds {max_outlier_ratio:.1%} — skipping"
-            )
-            return None
-
-        model = LinearRegression()
-        model.fit(lhs_frame_ids[inliers].reshape(-1, 1), rhs_frame_ids[inliers])
-        slope = float(model.coef_[0])
-        intercept = float(model.intercept_)
-
-        if slope <= 0:
-            self.logger.debug(f"Linear-drift check: non-positive slope {slope:.6f} — skipping")
-            return None
-
-        # A physically meaningful frame slope is anchored either at 1.0 (the
-        # same frame indices — a PAL-type speedup carries the difference in
-        # the declared fps) or at the nominal fps ratio (a frame-rate
-        # conversion that preserves playback time re-times every frame).
-        # Anything far from both anchors is not a plausible global relation.
-        nominal_fps_ratio = self.rhs_fps / self.lhs_fps if self.lhs_fps else 1.0
-        slope_delta = min(
-            abs(slope / anchor - 1.0) for anchor in (1.0, nominal_fps_ratio)
-        )
-        if slope_delta > max_slope_delta:
-            self.logger.debug(
-                f"Linear-drift check: slope={slope:.6f} differs from both 1.0 and "
-                f"the fps ratio {nominal_fps_ratio:.6f} by more than {max_slope_delta:.6f} — skipping"
-            )
-            return None
-
-        predicted_rhs = model.predict(lhs_frame_ids[inliers].reshape(-1, 1))
-        residuals = np.abs(rhs_frame_ids[inliers] - predicted_rhs)
-        median_residual = float(np.median(residuals))
-        p95_residual = float(np.percentile(residuals, 95))
-        if median_residual > max_median_residual_frames or p95_residual > max_p95_residual_frames:
-            self.logger.debug(
-                f"Linear-drift check: residuals too high "
-                f"(median={median_residual:.2f}, p95={p95_residual:.2f}) — skipping"
-            )
-            return None
-
-        return (slope, intercept)
-
-    def _log_global_linear(
-        self,
-        slope: float,
-        intercept: float,
-        time_scale: float,
-        is_constant_offset: bool,
-    ) -> None:
-        """Log the detected global linear relation (the fit, not the boundaries)."""
-        if is_constant_offset:
-            k = int(round(-intercept))  # lhs_frame - rhs_frame
-            if k > 0:
-                relation_text = (
-                    f"a small constant frame offset of {k} frame(s); "
-                    f"{self.lhs_label} starts the shared content later than {self.rhs_label}"
-                )
-            elif k < 0:
-                relation_text = (
-                    f"a small constant frame offset of {-k} frame(s); "
-                    f"{self.rhs_label} starts the shared content later than {self.lhs_label}"
-                )
-            else:
-                relation_text = "no frame offset"
-        else:
-            relation_text = f"a linear frame drift (slope={slope:.6f}, intercept={intercept:+.1f})"
-
-        if abs(time_scale - 1.0) > 0.005:
-            relation_text += f", audio time-scaled by {time_scale:.5f}"
-
-        self.logger.info("Files %s and %s share content with %s.", self.lhs_label, self.rhs_label, relation_text)
-
-    def _extrapolate_and_verify_global_linear(
-        self,
-        fit: GlobalLinearFit,
-        matching_pairs: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
-    ) -> list[tuple[int, int]]:
-        """Extend certified pairs along their observed time relation through verified content.
-
-        The frame fit certifies the relation; the matched timestamp span predicts
-        where the same content should be. Nominal FPS only supplies units for
-        sampling and jitter, without rounding PTS gaps into inferred slots.
-        Each boundary is projected to the overlap of the full
-        frame ranges and then **content-verified across the whole gap** between
-        the outermost match and the projected edge: the extension is kept only
-        when every sampled predicted pair in that gap is visually the same frame
-        or both low-entropy (a shared black lead-in/out).  A single endpoint check
-        is not enough — a divergent outro can still fade to black on its last
-        frame — so the gap is sampled.  When it does not verify, the boundary is
-        left at the outermost real match; the line is never blindly projected
-        across divergent content.
-
-        Verification uses the same comparison engine as the matching core: the
-        gap frames are normalized and cropped to the shared region interpolated
-        from the matched pairs, and compared against a cutoff calibrated on
-        those pairs (see ``_build_boundary_verify_context``).
-        """
-        result = sorted(matching_pairs)
-        if fit.slope <= 0 or len(result) < 2:
-            return result
-
-        verify_ctx = self._build_boundary_verify_context(
-            matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
-        )
-
-        # Derive a robust timestamp predictor from the full observed
-        # correspondence, never from the frame fit's nominal-FPS time scale.
-        # Median pairwise slopes keep one noisy outer anchor from defining the
-        # line, while the median observed intercept incorporates every anchor.
-        # Working directly in milliseconds preserves observed PTS and avoids
-        # converting to nominal frame units only to convert back at the edge.
-        observed_pairs = np.asarray(result, dtype=float)
-        pair_slopes = [
-            (rhs2 - rhs1) / (lhs2 - lhs1)
-            for index, (lhs1, rhs1) in enumerate(observed_pairs)
-            for lhs2, rhs2 in observed_pairs[index + 1:]
-            if lhs2 != lhs1
-        ]
-        if not pair_slopes:
-            return result
-        slope = float(np.median(pair_slopes))
-        intercept = float(np.median(
-            observed_pairs[:, 1] - slope * observed_pairs[:, 0]
-        ))
-        lhs_timestamps = sorted(self.lhs_all_frames)
-        rhs_timestamps = sorted(self.rhs_all_frames)
-        lhs_min_time, lhs_max_time = lhs_timestamps[0], lhs_timestamps[-1]
-        rhs_min_time, rhs_max_time = rhs_timestamps[0], rhs_timestamps[-1]
-
-        # Snap a boundary whose projection lands within a few frames of BOTH
-        # video edges onto the edges themselves — the fit's slope error
-        # accumulates over a long extrapolation, so an equal-length shared
-        # lead-in/out can project a couple frames short of the edge (and would
-        # otherwise stay there, off by 2-3 frames per ffmpeg build).  A
-        # genuinely offset lead-in/out (e.g. 2s vs 6s black) is far past the
-        # tolerance and keeps its predicted position.  The snapped target is
-        # still content-verified by the walk below, never blindly accepted.
-        lhs_snap_tolerance_ms = 4 * 1000 / self.lhs_fps
-        rhs_snap_tolerance_ms = 4 * 1000 / self.rhs_fps
-
-        first_lhs_time = max(lhs_min_time, (rhs_min_time - intercept) / slope)
-        first_rhs_time = slope * first_lhs_time + intercept
-        if (
-            first_lhs_time - lhs_min_time <= lhs_snap_tolerance_ms
-            and abs(slope * lhs_min_time + intercept - rhs_min_time)
-            <= rhs_snap_tolerance_ms
-        ):
-            first_lhs_time = lhs_min_time
-            first_rhs_time = rhs_min_time
-        first_rhs_time = max(rhs_min_time, min(rhs_max_time, first_rhs_time))
-        self._maybe_insert_verified_boundary(
-            result, "start", slope, intercept, first_lhs_time, first_rhs_time,
-            lhs_timestamps, rhs_timestamps, verify_ctx,
-        )
-
-        last_lhs_time = min(lhs_max_time, (rhs_max_time - intercept) / slope)
-        last_rhs_time = slope * last_lhs_time + intercept
-        if (
-            lhs_max_time - last_lhs_time <= lhs_snap_tolerance_ms
-            and abs(slope * lhs_max_time + intercept - rhs_max_time)
-            <= rhs_snap_tolerance_ms
-        ):
-            last_lhs_time = lhs_max_time
-            last_rhs_time = rhs_max_time
-        last_rhs_time = max(rhs_min_time, min(rhs_max_time, last_rhs_time))
-        self._maybe_insert_verified_boundary(
-            result, "end", slope, intercept, last_lhs_time, last_rhs_time,
-            lhs_timestamps, rhs_timestamps, verify_ctx,
-        )
-
-        return result
-
-    def _build_boundary_verify_context(
-        self,
-        matching_pairs: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
-        *, minimum_cutoff: int = _MIN_BOUNDARY_GAP_PHASH_CUTOFF,
-    ) -> _BoundaryVerifyContext:
-        """Build the comparison engine used to content-verify boundary-gap frames.
-
-        Mirrors what the matching core and the GENERIC boundary walk compare:
-        normalized frames cropped to the shared region interpolated from the
-        matched pairs (``_find_interpolated_crop``), with the phash cutoff
-        calibrated on the matched pairs themselves in that same representation
-        (``_calculate_cutoff``, floored by ``minimum_cutoff``). Boundary callers
-        allow extra extrapolation noise by default; interior sequence checks
-        use the ordinary comparison floor. This keeps geometry
-        differences between the two transfers — letterboxing, an open-matte
-        master vs a widescreen crop, different grading — from failing
-        genuinely shared frames, which is exactly what a fixed cutoff on raw
-        extractions did.
-        """
-        crop_fns = PairMatcher._find_interpolated_crop(
-            matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
-        )
-        if crop_fns is None:
-            self.logger.debug(
-                "Boundary verification: no usable crop geometry found for any "
-                "matched pair — comparing uncropped normalized frames"
-            )
-            lhs_crop_fn = rhs_crop_fn = None
-        else:
-            lhs_crop_fn, rhs_crop_fn = crop_fns
-
-        lhs_side = _VerifySide(
-            video_path=self.lhs_path, raw_dir=self.lhs_boundary_wd,
-            all_frames=self.lhs_all_frames, normalized=lhs_normalized_frames,
-            crop_fn=lhs_crop_fn, comparison_dir=self.lhs_boundary_cmp_wd, comparison_cache={},
-        )
-        rhs_side = _VerifySide(
-            video_path=self.rhs_path, raw_dir=self.rhs_boundary_wd,
-            all_frames=self.rhs_all_frames, normalized=rhs_normalized_frames,
-            crop_fn=rhs_crop_fn, comparison_dir=self.rhs_boundary_cmp_wd, comparison_cache={},
-        )
-
-        phash = PhashCache()
-        lhs_cmp: FramesInfo = {}
-        rhs_cmp: FramesInfo = {}
-        for lhs_ts, rhs_ts in matching_pairs:
-            lhs_img = self._comparison_image(lhs_side, lhs_ts)
-            rhs_img = self._comparison_image(rhs_side, rhs_ts)
-            if lhs_img is None or rhs_img is None:
-                continue
-            lhs_cmp[lhs_ts] = PairMatcher._get_new_info(lhs_normalized_frames[lhs_ts], lhs_img)
-            rhs_cmp[rhs_ts] = PairMatcher._get_new_info(rhs_normalized_frames[rhs_ts], rhs_img)
-
-        usable_pairs = [
-            (l, r) for l, r in matching_pairs if l in lhs_cmp and r in rhs_cmp
-        ]
-        # The adaptive term preserves transfer differences measured in this
-        # comparison space, even when they exceed the caller's noise floor.
-        cutoff = max(
-            self._calculate_cutoff(phash, usable_pairs, lhs_cmp, rhs_cmp),
-            minimum_cutoff,
-        )
-        self.logger.debug(
-            f"Boundary verification cutoff: {cutoff:.1f} "
-            f"(calibrated on {len(usable_pairs)} matched pair(s))"
-        )
-
-        return _BoundaryVerifyContext(lhs=lhs_side, rhs=rhs_side, phash=phash, cutoff=cutoff)
-
-    def _comparison_image(self, side: _VerifySide, ts: int) -> str | None:
-        """Comparison-space image for the frame at *ts*, produced lazily.
-
-        Reuses the already-normalized image when the frame went through the
-        matching pipeline; otherwise resolves its decode ordinal from the
-        timestamp, extracts it on demand, and normalizes it the same way.  The
-        side's interpolated crop is then applied, so gap frames are compared in
-        exactly the representation the matched pairs were calibrated in.
-        """
-        if ts in side.comparison_cache:
-            return side.comparison_cache[ts]
-
-        # Extraction errors invalidate the analysis; they are not content mismatches.
-        norm_info = side.normalized.get(ts)
-        raw_path = None
-        if norm_info is None:
-            raw_path = self._ensure_boundary_image(
-                side.video_path, side.raw_dir, side.all_frames, ts,
-            )
-
-        path: str | None = None
-        try:
-            if norm_info is not None:
-                norm_path = norm_info["path"]
-            else:
-                if raw_path is None:
-                    norm_path = None
-                else:
-                    norm_path = os.path.join(side.comparison_dir, f"n_{ts}.png")
-                    PairMatcher._normalize_image(raw_path, norm_path)
-
-            if norm_path is not None:
-                if side.crop_fn is None:
-                    path = norm_path
-                else:
-                    path = os.path.join(side.comparison_dir, f"c_{ts}.png")
-                    PairMatcher._crop_image(norm_path, path, side.crop_fn(ts))
-        except Exception as e:  # pragma: no cover - preparation failure is non-fatal
-            self.logger.debug("Comparison image preparation failed for %dms: %s", ts, e)
-            path = None
-
-        side.comparison_cache[ts] = path
-        return path
-
-    @staticmethod
-    def _resolve_timestamp_samples(
-        timestamps: list[int], sample_times: list[float],
-        round_sample: Callable[[float], int] = round,
-    ) -> dict[float, tuple[int, int]]:
-        """Resolve requested times to (sample time, displayed image PTS).
-
-        ``timestamps`` is sorted. Between decoded frames, hold the preceding
-        image. Exact decoded timestamps retain their PTS. Callers may round a
-        projected edge outward so integer milliseconds do not shorten a
-        content-verified overlap.
-        """
-        samples = {}
-        for sample_time in set(sample_times):
-            index = bisect_right(timestamps, sample_time)
-            if index > 0 and timestamps[index - 1] == sample_time:
-                timestamp = timestamps[index - 1]
-                samples[sample_time] = (timestamp, timestamp)
-            elif 0 < index < len(timestamps):
-                previous, following = timestamps[index - 1], timestamps[index]
-                image_ts = previous
-                sample_ts = round_sample(sample_time)
-                if sample_ts == following:
-                    image_ts = sample_ts
-                samples[sample_time] = (sample_ts, image_ts)
-        return samples
-
-    def _maybe_insert_verified_boundary(
-        self,
-        result: list[tuple[int, int]],
-        side: str,
-        slope: float,
-        intercept: float,
-        lhs_time: float,
-        rhs_time: float,
-        lhs_timestamps: list[int],
-        rhs_timestamps: list[int],
-        verify_ctx: _BoundaryVerifyContext,
-    ) -> None:
-        """Extend the boundary toward the projected edge as far as content verifies.
-
-        Walks from the outermost match toward the projected boundary and keeps the
-        furthest predicted pair that is still content-verified.  A gap that is
-        shared all the way (black lead-out, or frame-identical tail) reaches the
-        edge; a gap that starts shared but then diverges (shared body then a
-        different outro) stops at the divergence; a gap that diverges immediately
-        (different intro) does not move the boundary at all.
-        """
-        lhs_sample = self._resolve_timestamp_samples(
-            lhs_timestamps, [lhs_time]
-        ).get(lhs_time)
-        rhs_sample = self._resolve_timestamp_samples(
-            rhs_timestamps, [rhs_time]
-        ).get(rhs_time)
-        if lhs_sample is None or rhs_sample is None:
-            return
-        lhs_ts, rhs_ts = lhs_sample[0], rhs_sample[0]
-
-        anchor = result[0] if side == "start" else result[-1]
-        if side == "start":
-            beyond = lhs_ts < anchor[0] or rhs_ts < anchor[1]
-        else:
-            beyond = lhs_ts > anchor[0] or rhs_ts > anchor[1]
-        if not beyond or (lhs_ts, rhs_ts) == anchor:
-            return
-
-        verified = self._walk_shared_boundary(
-            slope, intercept, anchor[0], lhs_time, rhs_time,
-            lhs_timestamps, rhs_timestamps, verify_ctx,
-        )
-        if verified is None or verified == anchor:
-            self.logger.debug(
-                "Global-linear %s gap diverges before any shared frame — keeping the "
-                "boundary at the outermost match", side,
-            )
-            return
-
-        if side == "start":
-            result.insert(0, verified)
-        else:
-            result.append(verified)
-
-    def _walk_shared_boundary(
-        self,
-        slope: float,
-        intercept: float,
-        anchor_lhs_time: float,
-        boundary_lhs_time: float,
-        boundary_rhs_time: float,
-        lhs_timestamps: list[int],
-        rhs_timestamps: list[int],
-        verify_ctx: _BoundaryVerifyContext,
-    ) -> tuple[int, int] | None:
-        """Walk ~0.5s-spaced predicted pairs from the match toward the projected
-        boundary; return the furthest ``(lhs_ts, rhs_ts)`` that is still shared.
-
-        Sampling the whole gap (not just its endpoint) distinguishes a shared black
-        lead-out from a divergent outro that merely fades to black on its last
-        frame, and stopping on divergence (``_MAX_BOUNDARY_GAP_MISSES``
-        consecutive unverifiable samples) keeps the shared body that precedes
-        a different tail.  The boundary only advances over verified samples,
-        so a tolerated miss never becomes the boundary itself.  Returns
-        ``None`` when the walk diverges before verifying anything.
-        """
-        step_ms = max(1, int(self.lhs_fps * 0.5)) * 1000 / self.lhs_fps
-
-        # Ordered timestamp samples from just past the match to the projected
-        # boundary (inclusive); the boundary uses its snapped rhs time.
-        # Balance only a final interval within the rhs jitter tolerance: a
-        # sample there could retry the edge's black image instead of the gap.
-        # Keep the established sampling grid throughout the rest of the gap.
-        distance = boundary_lhs_time - anchor_lhs_time
-        direction = 1 if distance >= 0 else -1
-        lhs_sample_times = [
-            anchor_lhs_time + direction * step_ms * i
-            for i in range(1, int(np.ceil(abs(distance) / step_ms)))
-        ]
-        jitter = self._BOUNDARY_PREDICTION_JITTER_FRAMES
-        rhs_frame_ms = 1000 / self.rhs_fps
-        if (
-            lhs_sample_times
-            and abs(slope * (boundary_lhs_time - lhs_sample_times[-1]))
-            <= jitter * rhs_frame_ms
-        ):
-            previous = (
-                lhs_sample_times[-2]
-                if len(lhs_sample_times) > 1
-                else anchor_lhs_time
-            )
-            lhs_sample_times[-1] = round((previous + boundary_lhs_time) / 2)
-        samples = [
-            (lhs_time, slope * lhs_time + intercept)
-            for lhs_time in lhs_sample_times
-        ]
-        samples.append((boundary_lhs_time, boundary_rhs_time))
-
-        # Bulk-extract every sampled frame up front (two ffmpeg calls),
-        # including the ±2 rhs neighbours used by the prediction-jitter retry,
-        # so the per-sample verification below only reads images instead of
-        # spawning one-frame ffmpeg extractions.
-        lhs_samples = self._resolve_timestamp_samples(
-            lhs_timestamps, [lhs_time for lhs_time, _ in samples]
-        )
-        rhs_samples = self._resolve_timestamp_samples(rhs_timestamps, [
-            rhs_time + delta * rhs_frame_ms
-            for _, rhs_time in samples
-            for delta in range(-jitter, jitter + 1)
-        ])
-        # The projection is continuous but mapping timestamps are integer
-        # milliseconds. Round only the final edge outward; nearest rounding is
-        # retained for every gap sample, including held-frame resolution.
-        boundary_round = floor if direction < 0 else ceil
-        lhs_samples.update(self._resolve_timestamp_samples(
-            lhs_timestamps, [boundary_lhs_time], boundary_round,
-        ))
-        rhs_samples.update(self._resolve_timestamp_samples(
-            rhs_timestamps, [boundary_rhs_time], boundary_round,
-        ))
-        self._prefetch_boundary_images(
-            self.lhs_path, self.lhs_boundary_wd, self.lhs_all_frames,
-            [image_ts for _, image_ts in lhs_samples.values()],
-        )
-        self._prefetch_boundary_images(
-            self.rhs_path, self.rhs_boundary_wd, self.rhs_all_frames,
-            [image_ts for _, image_ts in rhs_samples.values()],
-        )
-
-        best: tuple[int, int] | None = None
-        consecutive_misses = 0
-        for lhs_time, rhs_time in samples:
-            lhs_sample = lhs_samples.get(lhs_time)
-            rhs_sample = rhs_samples.get(rhs_time)
-            if lhs_sample is None or rhs_sample is None:
-                break
-            if self._shared_content_at_prediction(
-                verify_ctx, rhs_time, lhs_sample[1], rhs_samples
-            ):
-                best = (lhs_sample[0], rhs_sample[0])
-                consecutive_misses = 0
-            else:
-                consecutive_misses += 1
-                if consecutive_misses > self._MAX_BOUNDARY_GAP_MISSES:
-                    break
-        return best
-
-    def _shared_content_at_prediction(
-        self,
-        verify_ctx: _BoundaryVerifyContext,
-        rhs_time: float,
-        lhs_ts: int,
-        rhs_samples: dict[float, tuple[int, int]],
-    ) -> bool:
-        """Content-check the predicted pair, tolerating ±2 frames of rhs jitter.
-
-        The fit's rhs prediction can be a frame or two off (rounding, and
-        frame-probe differences between ffmpeg builds); in fast motion that is
-        enough to push the exact predicted pair past the phash cutoff even for
-        genuinely shared content.  Retry against the rhs neighbours before
-        declaring divergence — a divergent intro/outro fails for every
-        neighbour, so the tolerance does not weaken divergence rejection, and
-        the returned boundary pair stays the predicted one (on the fitted
-        line), keeping the boundary error within the allowed 1-2 frames.
-        """
-        jitter = self._BOUNDARY_PREDICTION_JITTER_FRAMES
-        rhs_frame_ms = 1000 / self.rhs_fps
-        for delta in sorted(range(-jitter, jitter + 1), key=abs):
-            candidate_time = rhs_time + delta * rhs_frame_ms
-            candidate = rhs_samples.get(candidate_time)
-            if candidate is None:
-                continue
-            if self._boundary_content_matches(verify_ctx, lhs_ts, candidate[1]):
-                return True
-        return False
-
-    def _prefetch_boundary_images(
-        self, video_path: str, out_dir: str, frames: FramesInfo, timestamps: list[int],
-    ) -> None:
-        """Extract any not-yet-extracted timestamps in a single ffmpeg pass."""
-        missing = sorted({
-            int(frames[ts]["frame_id"])
-            for ts in timestamps
-            if ts in frames and not frames[ts].get("path")
-        })
-        if not missing:
-            return
-        video_utils.extract_frames_at_ranges(
-            video_path, out_dir, [(fid, fid) for fid in missing], frames,
-            scale=(960, -2), format="png", interruption=self.interruption,
-            desc="Verifying boundary gap", logger=self.logger,
-        )
-
-    def _boundary_content_matches(self, ctx: _BoundaryVerifyContext, lhs_ts: int, rhs_ts: int) -> bool:
-        """Verify that the extrapolated boundary frames actually share content.
-
-        True when both frames are low-entropy (a shared black lead-in/out) or
-        their phash distance in the shared comparison space stays within the
-        pair-calibrated cutoff.  Both the representation (normalized frames
-        cropped to the shared region) and the cutoff come from the matched
-        pairs via ``_build_boundary_verify_context`` — the same engine the
-        matching core and the GENERIC boundary walk use — so transfer
-        differences the calibration already absorbed (geometry, grading, codec
-        degradation) cannot fail genuinely shared frames, while a divergent
-        intro/outro still lands far above the cutoff.
-
-        A decisively black frame (see ``_BLACK_FRAME_ENTROPY``) against a rich
-        one is rejected outright — one file is still in its lead-in/out while
-        the other already shows content; a merely flat-vs-rich split is left
-        to the phash comparison.
-        """
-        lhs_path = self._comparison_image(ctx.lhs, lhs_ts)
-        rhs_path = self._comparison_image(ctx.rhs, rhs_ts)
-        if lhs_path is None or rhs_path is None:
-            self.logger.debug(
-                f"Boundary gap sample {lhs_ts}ms vs {rhs_ts}ms: "
-                f"no comparison image ({lhs_path}, {rhs_path})"
-            )
-            return False
-
-        lhs_entropy = image_utils.image_entropy(lhs_path)
-        rhs_entropy = image_utils.image_entropy(rhs_path)
-        if lhs_entropy <= self._RICH_FRAME_ENTROPY and rhs_entropy <= self._RICH_FRAME_ENTROPY:
-            return True
-        if min(lhs_entropy, rhs_entropy) < self._BLACK_FRAME_ENTROPY:
-            self.logger.debug(
-                f"Boundary gap sample {lhs_ts}ms vs {rhs_ts}ms: black vs content "
-                f"(entropies {lhs_entropy:.2f}, {rhs_entropy:.2f})"
-            )
-            return False
-        distance = abs(ctx.phash.get(lhs_path) - ctx.phash.get(rhs_path))
-        self.logger.debug(
-            f"Boundary gap sample {lhs_ts}ms vs {rhs_ts}ms: "
-            f"phash distance {distance} vs cutoff {ctx.cutoff:.1f}"
-        )
-        return distance <= ctx.cutoff
-
-    def _ensure_boundary_image(
-        self, video_path: str, out_dir: str, frames: FramesInfo, ts: int,
-    ) -> str | None:
-        """Return an on-disk image path for *ts*, extracting it on demand.
-
-        The frame is already probed (so its timestamp entry exists) but may lack
-        an extracted image; this extracts just that single frame for boundary
-        verification, far cheaper than the full boundary refinement.
-        """
-        info = frames.get(ts)
-        if info is None:
-            return None
-        if info.get("path"):
-            return info["path"]
-        frame_id = int(info["frame_id"])
-        video_utils.extract_frames_at_ranges(
-            video_path, out_dir, [(frame_id, frame_id)], frames,
-            scale=(960, -2), format="png", interruption=self.interruption,
-            desc="Verifying boundary frame", logger=self.logger,
-        )
-        return PairMatcher._path_or_none(frames, ts)
-
-    def snap_to_edges(
-        self,
-        matching_pairs: list[tuple[int, int]],
-        lhs_all_frames: FramesInfo,
-        rhs_all_frames: FramesInfo,
-        snap_frames: int = 16,
-    ) -> list[tuple[int, int]]:
-        """Snap first/last pair timestamps to video edges when within a few frames.
-
-        When the first or last mapping pair is very close to a video edge
-        (within *snap_frames* frames), keeping a tiny head or tail audio
-        segment is pointless and may cause artifacts.  This method extends
-        those pairs to the edge (timestamp 0 for start, video duration for
-        end) so downstream audio patching skips the trivial segments.
-
-        Synthetic entries are added to *lhs_all_frames* / *rhs_all_frames*
-        for any newly created timestamps (pointing to the nearest real frame
-        file) so debug routines remain functional.
-        """
-        lhs_threshold_ms = snap_frames * 1000 / self.lhs_fps
-        rhs_threshold_ms = snap_frames * 1000 / self.rhs_fps
-
-        lhs_duration = video_utils.get_video_duration(self.lhs_path, logger=self.logger)
-        rhs_duration = video_utils.get_video_duration(self.rhs_path, logger=self.logger)
-
-        lhs_keys = sorted(lhs_all_frames.keys())
-        rhs_keys = sorted(rhs_all_frames.keys())
-
-        first_l, first_r = matching_pairs[0]
-        last_l, last_r = matching_pairs[-1]
-
-        # --- Start edge ---
-        new_first_l = 0 if first_l <= lhs_threshold_ms else first_l
-        new_first_r = 0 if first_r <= rhs_threshold_ms else first_r
-
-        if (new_first_l, new_first_r) != (first_l, first_r):
-            self.logger.debug(
-                f"Edge snap: first pair ({first_l}, {first_r}) → "
-                f"({new_first_l}, {new_first_r})"
-            )
-            matching_pairs[0] = (new_first_l, new_first_r)
-            if new_first_l not in lhs_all_frames:
-                lhs_all_frames[new_first_l] = lhs_all_frames[lhs_keys[0]].copy()
-            if new_first_r not in rhs_all_frames:
-                rhs_all_frames[new_first_r] = rhs_all_frames[rhs_keys[0]].copy()
-
-        # --- End edge ---
-        new_last_l = lhs_duration if (lhs_duration - last_l) <= lhs_threshold_ms else last_l
-        new_last_r = rhs_duration if (rhs_duration - last_r) <= rhs_threshold_ms else last_r
-
-        if (new_last_l, new_last_r) != (last_l, last_r):
-            self.logger.debug(
-                f"Edge snap: last pair ({last_l}, {last_r}) → "
-                f"({new_last_l}, {new_last_r})"
-            )
-            matching_pairs[-1] = (new_last_l, new_last_r)
-            if new_last_l not in lhs_all_frames:
-                lhs_all_frames[new_last_l] = lhs_all_frames[lhs_keys[-1]].copy()
-            if new_last_r not in rhs_all_frames:
-                rhs_all_frames[new_last_r] = rhs_all_frames[rhs_keys[-1]].copy()
-
-        return matching_pairs
-
-    def _raise_for_unresolved_content_discontinuities(
-        self,
-        discontinuities: list[tuple[int, int, int, int, int]],
-        debug_path: str | None = None,
-    ) -> None:
-        groups = self._group_content_discontinuities(discontinuities)
-        suggested_temporary_offsets: list[int] = []
-        for group in groups:
-            excursion = self._temporary_frame_offset_excursion(group)
-            if (
-                excursion is not None
-                and excursion[0] > self.max_temporary_frame_offset
-            ):
-                suggested_temporary_offsets.append(excursion[0])
-            frame_errors = [
-                deficit_ms * self.rhs_fps / 1000
-                for *_, deficit_ms in group
-            ]
-            lhs_from, _, rhs_from, _, _ = group[0]
-            _, lhs_to, _, rhs_to, _ = group[-1]
-            lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
-            lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
-            rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
-            rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
-            compensating = (
-                len(group) > 1
-                and min(frame_errors) < 0 < max(frame_errors)
-                and abs(sum(frame_errors))
-                <= self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-            )
-            outer_start_offset = lhs_frame_from - rhs_frame_from
-            outer_end_offset = lhs_frame_to - rhs_frame_to
-            if compensating and outer_start_offset == outer_end_offset:
-                anchor_offsets = [outer_start_offset] + [
-                    int(self.lhs_all_frames[step_lhs_to]["frame_id"])
-                    - int(self.rhs_all_frames[step_rhs_to]["frame_id"])
-                    for _, step_lhs_to, _, step_rhs_to, _ in group
-                ]
-                inner_shift = max(
-                    abs(offset - outer_start_offset)
-                    for offset in anchor_offsets[1:-1]
-                )
-                if outer_start_offset > 0:
-                    offset_relation = (
-                        f" ({self.lhs_label} = {self.rhs_label} "
-                        f"+ {outer_start_offset})"
-                    )
-                elif outer_start_offset < 0:
-                    offset_relation = (
-                        f" ({self.lhs_label} = {self.rhs_label} "
-                        f"- {abs(outer_start_offset)})"
-                    )
-                else:
-                    offset_relation = ""
-                self.logger.error(
-                    "Local frame-sequence difference: the first and last matched "
-                    "frames use the same %d-frame offset%s, but inside this range "
-                    "the match shifts by %d frame%s.\n"
-                    "  %s: frames %d-%d; %s\n"
-                    "  %s: frames %d-%d; %s",
-                    abs(outer_start_offset),
-                    offset_relation,
-                    inner_shift,
-                    "" if inner_shift == 1 else "s",
-                    self.lhs_label,
-                    lhs_frame_from,
-                    lhs_frame_to,
-                    format_timestamp_range(lhs_from, lhs_to),
-                    self.rhs_label,
-                    rhs_frame_from,
-                    rhs_frame_to,
-                    format_timestamp_range(rhs_from, rhs_to),
-                )
-            else:
-                max_frame_error = max(abs(error) for error in frame_errors)
-                self.logger.error(
-                    "Local frame-sequence difference: matched-frame alignment "
-                    "changes by up to %.1f frames inside this range.\n"
-                    "  %s: frames %d-%d; %s\n"
-                    "  %s: frames %d-%d; %s",
-                    max_frame_error,
-                    self.lhs_label,
-                    lhs_frame_from,
-                    lhs_frame_to,
-                    format_timestamp_range(lhs_from, lhs_to),
-                    self.rhs_label,
-                    rhs_frame_from,
-                    rhs_frame_to,
-                    format_timestamp_range(rhs_from, rhs_to),
-                )
-            for lhs_from, lhs_to, rhs_from, rhs_to, deficit_ms in group:
-                lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
-                lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
-                rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
-                rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
-                self.logger.debug(
-                    "Suspected content discontinuity between matched anchors: %s "
-                    "(decoded frames %d-%d) in %s ↔ %s "
-                    "(decoded frames %d-%d) in %s (%+d ms, %+.1f frames)",
-                    format_timestamp_range(lhs_from, lhs_to),
-                    lhs_frame_from,
-                    lhs_frame_to,
-                    self.lhs_label,
-                    format_timestamp_range(rhs_from, rhs_to),
-                    rhs_frame_from,
-                    rhs_frame_to,
-                    self.rhs_label,
-                    deficit_ms,
-                    deficit_ms * self.rhs_fps / 1000,
-                )
-        if debug_path is not None:
-            details_path = os.path.join(debug_path, "details.txt")
-            self.logger.error(
-                "Full frame diagnostics: %s",
-                details_path,
-            )
-            investigation_target = details_path
-            report_material = debug_path
-        else:
-            investigation_target = "the frame ranges logged above"
-            report_material = "the complete melt log"
-
-        region_count = len(groups)
-        region_word = "region" if region_count == 1 else "regions"
-        investigation_scope = (
-            "the reported region"
-            if region_count == 1
-            else f"all {region_count} reported regions"
-        )
-        error = (
-            "Matched videos contain a local frame-sequence difference in "
-            f"{region_count} unresolved {region_word}. Inspect {investigation_scope} "
-            f"in {investigation_target}."
-        )
-        if suggested_temporary_offsets:
-            suggested_limit = max(suggested_temporary_offsets)
-            error += (
-                " If the frames confirm that each listed compensating temporary "
-                "shift is a real, acceptable difference between the videos, rerun with "
-                f"--max-temporary-frame-offset {suggested_limit}."
-            )
-            if len(suggested_temporary_offsets) < region_count:
-                error += (
-                    " This option applies only to those compensating shifts; it "
-                    "will not suppress the other reported regions."
-                )
-        error += (
-            " If the extracted frames do not confirm the reported sequence "
-            "difference, report a PairMatcher bug and include "
-            f"{report_material}."
-        )
-        raise RuntimeError(error)
-
-    @staticmethod
-    def _group_content_discontinuities(
-        discontinuities: list[tuple[int, int, int, int, int]],
-    ) -> list[list[tuple[int, int, int, int, int]]]:
-        """Group adjacent errors that share their middle matched anchor."""
-        groups: list[list[tuple[int, int, int, int, int]]] = []
-        for discontinuity in sorted(discontinuities):
-            if (
-                groups
-                and groups[-1][-1][1] == discontinuity[0]
-                and groups[-1][-1][3] == discontinuity[2]
-            ):
-                groups[-1].append(discontinuity)
-            else:
-                groups.append([discontinuity])
-        return groups
-
-    def _filter_allowed_temporary_frame_offset_excursions(
-        self,
-        discontinuities: list[tuple[int, int, int, int, int]],
-    ) -> list[tuple[int, int, int, int, int]]:
-        """Allow one temporary offset excursion that returns at the next anchor."""
-        remaining: list[tuple[int, int, int, int, int]] = []
-        for group in self._group_content_discontinuities(discontinuities):
-            excursion = self._temporary_frame_offset_excursion(group)
-            allowed = (
-                excursion is not None
-                and self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-                < excursion[0]
-                <= self.max_temporary_frame_offset
-            )
-            if allowed:
-                assert excursion is not None
-                temporary_offset, outer_offset = excursion
-                _, lhs_middle, _, rhs_middle, _ = group[0]
-                lhs_frame_middle = int(self.lhs_all_frames[lhs_middle]["frame_id"])
-                rhs_frame_middle = int(self.rhs_all_frames[rhs_middle]["frame_id"])
-                self.logger.warning(
-                    "Accepting temporary %d-frame alignment offset between "
-                    "%s frame %d at %s and %s frame %d at %s; the next "
-                    "matched frames return to the same outer offset of %+d frame(s).",
-                    temporary_offset,
-                    self.lhs_label,
-                    lhs_frame_middle,
-                    format_timestamp(lhs_middle),
-                    self.rhs_label,
-                    rhs_frame_middle,
-                    format_timestamp(rhs_middle),
-                    outer_offset,
-                )
-            else:
-                remaining.extend(group)
-        return remaining
-
-    def _temporary_frame_offset_excursion(
-        self,
-        group: list[tuple[int, int, int, int, int]],
-    ) -> tuple[int, int] | None:
-        """Return the temporary shift and outer offset for one restored jump."""
-        if len(group) != 2:
-            return None
-
-        lhs_from, lhs_middle, rhs_from, rhs_middle, _ = group[0]
-        _, lhs_to, _, rhs_to, _ = group[1]
-        lhs_frame_from = int(self.lhs_all_frames[lhs_from]["frame_id"])
-        lhs_frame_middle = int(self.lhs_all_frames[lhs_middle]["frame_id"])
-        lhs_frame_to = int(self.lhs_all_frames[lhs_to]["frame_id"])
-        rhs_frame_from = int(self.rhs_all_frames[rhs_from]["frame_id"])
-        rhs_frame_middle = int(self.rhs_all_frames[rhs_middle]["frame_id"])
-        rhs_frame_to = int(self.rhs_all_frames[rhs_to]["frame_id"])
-        outer_offset = lhs_frame_from - rhs_frame_from
-        if lhs_frame_to - rhs_frame_to != outer_offset:
-            return None
-
-        temporary_offset = abs(
-            (lhs_frame_middle - rhs_frame_middle) - outer_offset
-        )
-        return temporary_offset, outer_offset
-
-    def _extract_discontinuity_frames(
-        self,
-        groups: list[list[tuple[int, int, int, int, int]]],
-    ) -> None:
-        """Extract every missing decoded frame in final error regions."""
-        for video_path, target_dir, frames, label, side in (
-            (
-                self.lhs_path,
-                self.lhs_all_wd,
-                self.lhs_all_frames,
-                self.lhs_label,
-                "lhs",
-            ),
-            (
-                self.rhs_path,
-                self.rhs_all_wd,
-                self.rhs_all_frames,
-                self.rhs_label,
-                "rhs",
-            ),
-        ):
-            requested: set[int] = set()
-            for group in groups:
-                if side == "lhs":
-                    start_ms, end_ms = group[0][0], group[-1][1]
-                else:
-                    start_ms, end_ms = group[0][2], group[-1][3]
-                requested.update(
-                    timestamp
-                    for timestamp in frames
-                    if start_ms <= timestamp <= end_ms
-                )
-            missing = sorted(
-                timestamp
-                for timestamp in requested
-                if frames[timestamp].get("path") is None
-            )
-            if not missing:
-                continue
-            ranges = self._compute_frame_ranges(missing, frames, margin=0)
-            self.logger.info(
-                "Extracting %d missing diagnostic frame(s) for %s",
-                len(missing),
-                label,
-            )
-            video_utils.extract_frames_at_ranges(
-                video_path,
-                target_dir,
-                ranges,
-                frames,
-                scale=(960, -2),
-                format="png",
-                interruption=self.interruption,
-                desc=f"Extracting discontinuity diagnostics: {label}",
-                logger=self.logger,
-            )
+        self.logger.debug("Equal-length identity check passed (%d samples).", len(samples))
+        return True
 
     def create_segments_mapping(self) -> SegmentsMappingResult:
-
+        """Match both videos and map their shared content frame to frame."""
         lhs_analysis = self._analysis_result_for(
-            self.lhs_path,
-            self.lhs_label,
+            self.lhs.path,
+            self.lhs.label,
             media_analysis.MediaAnalysisFeature.MATCHING,
         )
         rhs_analysis = self._analysis_result_for(
-            self.rhs_path,
-            self.rhs_label,
+            self.rhs.path,
+            self.rhs.label,
             media_analysis.MediaAnalysisFeature.MATCHING,
         )
         lhs_scene_changes, rhs_scene_changes = self._detect_scenes(
@@ -2482,17 +375,16 @@ class PairMatcher:
         )
         self._probe_frames(lhs_analysis, rhs_analysis)
         lhs_scene_ranges, rhs_scene_ranges = self._extract_scene_frames(lhs_scene_changes, rhs_scene_changes)
-        lhs_normalized_frames, rhs_normalized_frames, lhs_key_frames, rhs_key_frames = self._normalize_extracted(
+        lhs_key_frames, rhs_key_frames = self._normalize_extracted(
             lhs_scene_changes, rhs_scene_changes,
         )
 
-        debug = DebugRoutines(self.debug_wd, self.lhs_all_frames, self.rhs_all_frames)
-        debug.dump_frames(lhs_key_frames, f"{self.lhs_label} key frames")
-        debug.dump_frames(rhs_key_frames, f"{self.rhs_label} key frames")
+        debug = DebugRoutines(self.debug_wd, self.lhs.all_frames, self.rhs.all_frames)
+        debug.dump_frames(lhs_key_frames, f"{self.lhs.label} key frames")
+        debug.dump_frames(rhs_key_frames, f"{self.rhs.label} key frames")
 
         matching_pairs = self._match_key_frames(
             lhs_key_frames, rhs_key_frames,
-            lhs_normalized_frames, rhs_normalized_frames,
             debug=debug,
         )
 
@@ -2501,1056 +393,200 @@ class PairMatcher:
         # understood without enabling --verbose.
         self._log_relation_diagnostics(matching_pairs)
 
-        # Detect a candidate global linear frame relation (constant offset =
-        # slope 1, or a fitted near-identity drift). If suspicious regions add
-        # observations, those final pairs must certify the relation again
-        # before it can determine boundary prediction or the audio strategy.
-        global_linear_fit = self.detect_global_linear(
-            matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
+        matching_pairs, global_linear_fit, timing_discontinuities, content_discontinuities = (
+            self._certify_global_linear(
+                matching_pairs, lhs_scene_changes, rhs_scene_changes,
+            )
         )
-        timing_discontinuities: tuple[tuple[int, int, int, int, int], ...] = ()
 
-        if global_linear_fit is not None:
-            initial_frame_slope = global_linear_fit.slope
-            discontinuity_report = self._classify_global_linear_discontinuities(
-                matching_pairs,
-                self.lhs_all_frames,
-                self.rhs_all_frames,
-                frame_slope=initial_frame_slope,
-                lhs_fps=self.lhs_fps,
-                rhs_fps=self.rhs_fps,
-            )
-            if discontinuity_report.content:
-                cleaned_pairs = self._drop_pairs_breaking_local_linearity(
-                    matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
-                    frame_slope=initial_frame_slope,
-                )
-                if cleaned_pairs != matching_pairs:
-                    matching_pairs = cleaned_pairs
-                    global_linear_fit = self.detect_global_linear(
-                        matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
-                    )
-                    discontinuity_report = self._classify_global_linear_discontinuities(
-                        matching_pairs,
-                        self.lhs_all_frames,
-                        self.rhs_all_frames,
-                        frame_slope=(
-                            global_linear_fit.slope
-                            if global_linear_fit is not None
-                            else initial_frame_slope
-                        ),
-                        lhs_fps=self.lhs_fps,
-                        rhs_fps=self.rhs_fps,
-                    )
-
-            if discontinuity_report.content:
-                refinement_slope = (
-                    global_linear_fit.slope
-                    if global_linear_fit is not None
-                    else initial_frame_slope
-                )
-                refined_pairs = self._refine_global_linear_discontinuities(
-                    matching_pairs,
-                    lhs_normalized_frames, rhs_normalized_frames,
-                    list(lhs_scene_changes), list(rhs_scene_changes),
-                    frame_slope=refinement_slope,
-                )
-                refined_pairs = self._drop_pairs_breaking_local_linearity(
-                    refined_pairs, lhs_normalized_frames, rhs_normalized_frames,
-                    frame_slope=refinement_slope,
-                )
-                refined_fit = self.detect_global_linear(
-                    refined_pairs, self.lhs_all_frames, self.rhs_all_frames,
-                )
-                discontinuity_report = self._classify_global_linear_discontinuities(
-                    refined_pairs,
-                    self.lhs_all_frames,
-                    self.rhs_all_frames,
-                    frame_slope=(
-                        refined_fit.slope
-                        if refined_fit is not None
-                        else refinement_slope
-                    ),
-                    lhs_fps=self.lhs_fps,
-                    rhs_fps=self.rhs_fps,
-                )
-
-                if discontinuity_report.content:
-                    discontinuity_report = discontinuity_report._replace(
-                        content=self._filter_allowed_temporary_frame_offset_excursions(
-                            discontinuity_report.content
-                        )
-                    )
-
-                if discontinuity_report.content:
-                    debug.dump_matches(refined_pairs, "localized discontinuities")
-                    discontinuity_groups = self._group_content_discontinuities(
-                        discontinuity_report.content
-                    )
-                    debug_path = debug.dump_content_discontinuities(
-                        discontinuity_groups,
-                        lhs_label=self.lhs_label,
-                        rhs_label=self.rhs_label,
-                        lhs_fps=self.lhs_fps,
-                        rhs_fps=self.rhs_fps,
-                        compensation_tolerance_frames=(
-                            self._MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES
-                        ),
-                        prepare_frames=lambda: (
-                            self._extract_discontinuity_frames(
-                                discontinuity_groups
-                            )
-                        ),
-                    )
-                    self._raise_for_unresolved_content_discontinuities(
-                        discontinuity_report.content,
-                        debug_path,
-                    )
-                matching_pairs = refined_pairs
-                global_linear_fit = refined_fit
-                if global_linear_fit is not None and not discontinuity_report.timing:
-                    self.logger.info(
-                        "Local scene refinement resolved all suspected content discontinuities."
-                    )
-                elif global_linear_fit is None and not discontinuity_report.timing:
-                    self.logger.info(
-                        "Local scene refinement found no confirmed content discontinuity, "
-                        "but the final observations do not support one global linear relation; "
-                        "using the generic mapping path."
-                    )
-            timing_discontinuities = tuple(discontinuity_report.timing)
-
-        if global_linear_fit is not None:
-            relation = MappingRelation.GLOBAL_LINEAR
-            frame_slope = global_linear_fit.slope
-            # Use the certified pairs' observed span to predict shared content,
-            # extend each boundary toward the video edge, and keep the
-            # extension only where the predicted pair is content-verified (same
-            # frame, or both low-entropy black).  A genuinely different intro/outro
-            # fails verification and the boundary stays at the outermost real
-            # match — the line is never blindly projected across divergent
-            # content. No later timestamp edge-snap may bypass verification.
-            if not timing_discontinuities:
-                matching_pairs = self._extrapolate_and_verify_global_linear(
-                    global_linear_fit, matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
-                )
-                debug.dump_matches(matching_pairs, "after verified global-linear extrapolation")
-        else:
-            relation = MappingRelation.GENERIC
-            frame_slope = None
-            if not timing_discontinuities:
-                # No global relation — fall back to the content/entropy-aware
-                # iterative boundary search.
-                matching_pairs = self._extract_and_refine_boundaries(
-                    matching_pairs, lhs_scene_ranges, rhs_scene_ranges,
-                    lhs_normalized_frames, rhs_normalized_frames, debug,
-                )
-                # The refined pairs can reveal a linear relation the sparse
-                # initial matching could not certify.  A mapping that now passes
-                # the full global-linear detection earns the same verified
-                # boundary extension as a detected global-linear one: the fitted
-                # line predicts the edge pairs, and every extension is
-                # content-verified before being kept.  This must run before the
-                # edge snap: snapped pairs are artificial timestamps with no
-                # normalized frames behind them, while the fit and the
-                # verification may only ever see real matched pairs.
-                generic_fit = self.detect_global_linear(
-                    matching_pairs, self.lhs_all_frames, self.rhs_all_frames,
-                )
-                if generic_fit is not None:
-                    matching_pairs = self._extrapolate_and_verify_global_linear(
-                        generic_fit, matching_pairs, lhs_normalized_frames, rhs_normalized_frames,
-                    )
-                    debug.dump_matches(matching_pairs, "after verified linear extrapolation")
-                matching_pairs = self.snap_to_edges(matching_pairs, self.lhs_all_frames, self.rhs_all_frames)
-
+        relation = (
+            MappingRelation.GLOBAL_LINEAR
+            if global_linear_fit is not None
+            else MappingRelation.GENERIC
+        )
+        timing_discontinuity_debug_path: str | None = None
+        generic_content_discontinuities: tuple[Discontinuity, ...] = ()
         if timing_discontinuities:
-            debug.dump_matches(matching_pairs, "timing discontinuities")
-            timing_discontinuity_groups = self._group_content_discontinuities(
-                list(timing_discontinuities)
+            timing_discontinuity_debug_path = self._report_timing_discontinuities(
+                matching_pairs, timing_discontinuities, relation, debug,
             )
-            timing_discontinuity_debug_path = debug.dump_timing_discontinuities(
-                timing_discontinuity_groups,
-                lhs_label=self.lhs_label,
-                rhs_label=self.rhs_label,
-                lhs_fps=self.lhs_fps,
-                rhs_fps=self.rhs_fps,
-                prepare_frames=lambda: self._extract_discontinuity_frames(
-                    timing_discontinuity_groups
-                ),
+        elif not self._has_content_gap(content_discontinuities):
+            matching_pairs = self._extend_boundaries(
+                matching_pairs,
+                global_linear_fit,
+                lhs_scene_ranges,
+                rhs_scene_ranges,
+                debug,
             )
-            self.logger.warning(
-                "Matched content has continuous decoded advances but discontinuous presentation timestamps; "
-                "the candidate %s frame relation is unsafe for audio execution.", relation.value,
-            )
-        else:
-            timing_discontinuity_debug_path = None
             self.logger.info("Mapping relation chosen: %s", relation.value)
+            if relation is MappingRelation.GENERIC:
+                generic_content_discontinuities = tuple(
+                    matching_analysis.find_content_discontinuities(matching_pairs)
+                )
 
         return SegmentsMappingResult(
             mapping=matching_pairs,
-            lhs_all_frames=self.lhs_all_frames,
-            rhs_all_frames=self.rhs_all_frames,
+            lhs_all_frames=self.lhs.all_frames,
+            rhs_all_frames=self.rhs.all_frames,
             relation=relation,
-            lhs_fps=self.lhs_fps,
-            rhs_fps=self.rhs_fps,
-            frame_slope=frame_slope,
+            lhs_fps=self.lhs.fps,
+            rhs_fps=self.rhs.fps,
+            frame_slope=global_linear_fit.slope if global_linear_fit is not None else None,
             timing_discontinuities=timing_discontinuities,
+            content_discontinuities=content_discontinuities,
+            dump_content_discontinuities=(
+                partial(self._report_content_discontinuities, matching_pairs, debug=debug)
+                if content_discontinuities
+                else None
+            ),
             timing_discontinuity_debug_path=timing_discontinuity_debug_path,
+            generic_content_discontinuities=generic_content_discontinuities,
         )
 
     def _log_relation_diagnostics(self, matching_pairs: list[tuple[int, int]]) -> None:
-        """Log the frame-space metrics that drive the mapping-relation choice.
-
-        Emitted at INFO so the constant-offset / linear-drift / generic decision
-        (and the audio strategy that follows from it) is visible without
-        --verbose.  The individual ``try_*`` methods still log their precise
-        rejection reasons at DEBUG.
-        """
-        expected_ratio = self.rhs_fps / self.lhs_fps if self.lhs_fps else float("nan")
-        self.logger.debug(
-            "Relation diagnostics: %s fps=%.4f, %s fps=%.4f, "
-            "expected lhs/rhs time ratio=%.4f, matched pairs=%d",
-            self.lhs_label, self.lhs_fps, self.rhs_label, self.rhs_fps,
-            expected_ratio, len(matching_pairs),
+        debug_routines.log_relation_diagnostics(
+            self.logger,
+            matching_pairs,
+            self.lhs.all_frames,
+            self.rhs.all_frames,
+            lhs_label=self.lhs.label,
+            rhs_label=self.rhs.label,
+            lhs_fps=self.lhs.fps,
+            rhs_fps=self.rhs.fps,
+            max_constant_offset_std=self._MAX_CONSTANT_OFFSET_STD,
+            max_drift_slope_delta=self._MAX_DRIFT_SLOPE_DELTA,
         )
 
-        if len(matching_pairs) < 2:
-            self.logger.debug("  too few matched pairs for offset/drift analysis")
-            return
-
-        try:
-            lhs_frame_ids_by_timestamp = self._timeline_frame_ids(self.lhs_all_frames, self.lhs_fps)
-            rhs_frame_ids_by_timestamp = self._timeline_frame_ids(self.rhs_all_frames, self.rhs_fps)
-            lhs_frame_ids = np.array(
-                [lhs_frame_ids_by_timestamp[l] for l, _ in matching_pairs],
-                dtype=float,
-            )
-            rhs_frame_ids = np.array(
-                [rhs_frame_ids_by_timestamp[r] for _, r in matching_pairs],
-                dtype=float,
-            )
-        except KeyError:
-            self.logger.debug("  matched frames lack frame coordinates; skipping offset/drift analysis")
-            return
-
-        frame_offsets = lhs_frame_ids - rhs_frame_ids
-        median_offset = float(np.median(frame_offsets))
-        std_offset = float(np.std(frame_offsets))
-        lhs_span = float(np.ptp(lhs_frame_ids))
-        ratio = PairMatcher.calculate_ratio(matching_pairs)
-
-        if lhs_span > 0:
-            slope = float(np.polyfit(lhs_frame_ids, rhs_frame_ids, 1)[0])
-        else:
-            slope = float("nan")
-        time_scale = slope * self.lhs_fps / self.rhs_fps if self.rhs_fps else float("nan")
-
-        self.logger.debug(
-            "  frame-offset median=%.2f std=%.2f (constant offset needs std<=%.1f, "
-            "else RANSAC drift with slope within %.2f of 1.0 or of the fps ratio); "
-            "matched frame span=%.0f; observed time ratio=%.4f; "
-            "frame slope=%.5f -> audio time scale=%.5f (audio is globally "
-            "time-scaled by this factor)",
-            median_offset, std_offset, self._MAX_CONSTANT_OFFSET_STD,
-            self._MAX_DRIFT_SLOPE_DELTA, lhs_span, ratio, slope, time_scale,
-        )
-
-    @staticmethod
-    def _normalize_image(src_path: str, dst_path: str) -> None:
-        """Bring one frame into the matcher's comparison space: grayscale, 5% border crop, 256x256."""
-        img = cv.imread(src_path, cv.IMREAD_GRAYSCALE)
-        if img is None:
-            raise RuntimeError(f"Failed to read frame from {src_path}")
-        height, width = img.shape
-        dx = int(width * 0.05)
-        dy = int(height * 0.05)
-        img = img[dy:height - dy, dx:width - dx]
-        img = cv.resize(img, (256, 256), interpolation=cv.INTER_AREA)
-        cv.imwrite(dst_path, img)
-
-    def _normalize_frames(self, frames_info: FramesInfo, wd: str, desc: str = "Normalizing frames", prefix: str = "") -> FramesInfo:
-        PairMatcher._assert_frames_extracted(frames_info, f"_normalize_frames({desc})")
-
-        def process_frame(item):
-            timestamp, info = item
-            self.interruption.check_for_stop()
-            path = info["path"]
-            _, file, ext = files_utils.split_path(path)
-            new_path = os.path.join(wd, prefix + file + "." + ext)
-            PairMatcher._normalize_image(path, new_path)
-
-            return timestamp, PairMatcher._get_new_info(info, new_path)
-
-        with ThreadPoolExecutor() as executor:
-            results_iter = executor.map(process_frame, frames_info.items())
-            results = []
-            with tqdm(total=len(frames_info), desc=desc, unit="frame",
-                      **generic_utils.get_tqdm_defaults()) as pbar:
-                for result in results_iter:
-                    results.append(result)
-                    pbar.update(1)
-
-        return dict(results)
-
-    @staticmethod
-    def _is_rich(frame_path: str) -> bool:
-        return image_utils.image_entropy(frame_path) > PairMatcher._RICH_FRAME_ENTROPY
-
-    @staticmethod
-    def _extracted_path(info: FrameInfo) -> str:
-        """Image path of a frame that must already be extracted.
-
-        The pipeline extracts frames before any visual comparison; a ``None``
-        here is the bug ``_assert_frames_extracted`` exists to catch.
-        """
-        path = info["path"]
-        if path is None:
-            raise AssertionError("frame used before extraction")
-        return path
-
-    @staticmethod
-    def _path_or_none(frames: FramesInfo, ts: int) -> str | None:
-        info = frames.get(ts)
-        return info["path"] if info else None
-
-    @staticmethod
-    def _get_new_info(info: FrameInfo, path: str) -> FrameInfo:
-        new_info = info.copy()
-        new_info["path"] = path
-        return new_info
-
-    @staticmethod
-    def _assert_frames_extracted(frames: FramesInfo, context: str = "") -> None:
-        """Validate that every entry in *frames* has a non-None path on disk.
-        Raises ``AssertionError`` with a detailed message when a frame
-        was probed but never extracted — this indicates a bug in the
-        extraction-range computation.
-        """
-        for ts, info in frames.items():
-            path = info.get("path")
-            if path is None:
-                frame_id = info.get("frame_id", "?")
-                raise AssertionError(
-                    f"Frame at {ts}ms (frame_id={frame_id}) has not been "
-                    f"extracted to disk.  This is a bug — the frame should "
-                    f"have been included in the extraction range.  "
-                    f"Context: {context}"
-                )
-
-    @staticmethod
-    def _filter_low_detailed(scenes: FramesInfo) -> FramesInfo:
-        valuable_scenes = {timestamp: info for timestamp, info in scenes.items()
-                           if PairMatcher._is_rich(PairMatcher._extracted_path(info))}
-        return valuable_scenes
-
-    @staticmethod
-    def _get_frames_for_timestamps(timestamps: list[int], frames_info: FramesInfo) -> FramesInfo:
-        frame_files = {timestamp: info for timestamp, info in frames_info.items() if timestamp in timestamps}
-        return frame_files
-
-    @staticmethod
-    def _compute_overlap(lhs_img: cv.typing.MatLike, rhs_img: cv.typing.MatLike, h) -> tuple[int, int, int, int]:
-        # Expect images to be in the grayscale
-        assert len(lhs_img.shape) == 2
-        assert len(rhs_img.shape) == 2
-
-        # Warp second image onto first
-        warped_im2 = cv.warpPerspective(rhs_img, h, (lhs_img.shape[1], lhs_img.shape[0]))
-
-        # Find overlapping region mask
-        gray1 = lhs_img
-        gray2 = warped_im2
-
-        mask1 = (gray1 > 0).astype(np.uint8)
-        mask2 = (gray2 > 0).astype(np.uint8)
-        overlap_mask = cv.bitwise_and(mask1, mask2)
-
-        # Find bounding rectangle of overlapping mask
-        x, y, w, h = cv.boundingRect(overlap_mask)
-        return (x, y, w, h)
-
-    @staticmethod
-    def _interpolate_crop_rects(timestamps_list: list[int], rects_list: list[tuple[int, int, int, int]]) -> Callable[[int], tuple[int, int, int, int]]:
-        """
-        Given a list of timestamps and matching crop rects, return a function that interpolates
-        a crop for any timestamp between and extrapolates outside the range.
-        rect = (x, y, w, h)
-        """
-
-        timestamps = np.array(timestamps_list)
-        rects = np.array(rects_list)
-
-        def interpolate(t):
-            if t <= timestamps[0]:
-                return tuple(rects[0])
-            elif t >= timestamps[-1]:
-                return tuple(rects[-1])
-            else:
-                x = np.interp(t, timestamps, rects[:, 0])
-                y = np.interp(t, timestamps, rects[:, 1])
-                w = np.interp(t, timestamps, rects[:, 2])
-                h = np.interp(t, timestamps, rects[:, 3])
-                return int(round(x)), int(round(y)), int(round(w)), int(round(h))
-
-        return interpolate
-
-    @staticmethod
-    def _find_interpolated_crop(pairs_with_timestamps: list[tuple[int, int]], lhs_frames: FramesInfo, rhs_frames: FramesInfo) -> tuple[Callable[[int], tuple[int, int, int, int]], Callable[[int], tuple[int, int, int, int]]] | None:
-        timestamps_lhs = []
-        timestamps_rhs = []
-        lhs_crops = []
-        rhs_crops = []
-
-        for lhs_t, rhs_t in pairs_with_timestamps:
-            lhs_info = lhs_frames[lhs_t]
-            rhs_info = rhs_frames[rhs_t]
-            lhs_img = cv.imread(PairMatcher._extracted_path(lhs_info), cv.IMREAD_GRAYSCALE)
-            rhs_img = cv.imread(PairMatcher._extracted_path(rhs_info), cv.IMREAD_GRAYSCALE)
-            if lhs_img is None or rhs_img is None:
-                continue
-
-            orb = cv.ORB_create(1000)  # type: ignore[attr-defined]
-            kp1, des1 = orb.detectAndCompute(lhs_img, None)
-            kp2, des2 = orb.detectAndCompute(rhs_img, None)
-            if des1 is None or des2 is None:
-                continue
-
-            matcher = cv.BFMatcher(cv.NORM_HAMMING, crossCheck=True)
-            matches = matcher.match(des1, des2)
-            if len(matches) < 3:
-                continue
-
-            matches = sorted(matches, key=lambda x: x.distance)
-            pts1 = np.array([kp1[m.queryIdx].pt for m in matches], dtype=np.float32)
-            pts2 = np.array([kp2[m.trainIdx].pt for m in matches], dtype=np.float32)
-
-            h_matrix, inliers = cv.estimateAffinePartial2D(pts2, pts1, method=cv.RANSAC)
-            if h_matrix is None:
-                continue
-
-            lhs_overlap = PairMatcher._compute_overlap(lhs_img, rhs_img, np.vstack([h_matrix, [0, 0, 1]]))
-            rhs_overlap = PairMatcher._compute_overlap(rhs_img, lhs_img, np.vstack([cv.invertAffineTransform(h_matrix), [0, 0, 1]]))
-
-            timestamps_lhs.append(lhs_t)
-            timestamps_rhs.append(rhs_t)
-            lhs_crops.append(lhs_overlap)
-            rhs_crops.append(rhs_overlap)
-
-        if not timestamps_lhs:
-            return None
-
-        # Return interpolators
-        return PairMatcher._interpolate_crop_rects(timestamps_lhs, lhs_crops), PairMatcher._interpolate_crop_rects(timestamps_rhs, rhs_crops)
-
-    @staticmethod
-    def _crop_image(src_path: str, dst_path: str, rect: tuple[int, int, int, int]) -> None:
-        """Crop one comparison-space frame to *rect* and rescale to 128x128."""
-        img = cv.imread(src_path, cv.IMREAD_GRAYSCALE)
-        if img is None:
-            raise RuntimeError(f"Failed to read frame from {src_path}")
-        x, y, w, h = rect
-        cropped = img[y:y+h, x:x+w]
-        cropped = cv.resize(cropped, (128, 128))
-        cv.imwrite(dst_path, cropped)
-
-    def _apply_crop_interpolated(self, frames: FramesInfo, dst_dir: str, crop_fn: Callable[[int], tuple[int, int, int, int]]) -> FramesInfo:
-        def _process_frame(item):
-            timestamp, info = item
-            self.interruption.check_for_stop()
-            path = info["path"]
-            dst_path = os.path.join(dst_dir, os.path.basename(path))
-            PairMatcher._crop_image(path, dst_path, crop_fn(timestamp))
-            return timestamp, PairMatcher._get_new_info(info, dst_path)
-
-        with ThreadPoolExecutor() as executor:
-            results = executor.map(_process_frame, frames.items())
-
-        return dict(results)
-
-    def _three_before(self, timestamps: list[int], target: int) -> list[int]:
-        timestamps = sorted(timestamps)
-        idx = int(np.searchsorted(timestamps, target))
-        return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-3):idx]))
-
-    def _nearest_three(self, timestamps: list[int], target: int) -> list[int]:
-        timestamps = sorted(timestamps)
-        idx = int(np.searchsorted(timestamps, target))
-        return list(filter(lambda x: x in timestamps, timestamps[max(0, idx-1):idx+2]))
-
-    @staticmethod
-    def _snap_to_nearest_frame(keys: list[int], target: int) -> int:
-        """Return the timestamp from *keys* closest to *target*."""
-        idx = int(np.searchsorted(keys, target))
-        candidates = []
-        if idx > 0:
-            candidates.append(keys[idx - 1])
-        if idx < len(keys):
-            candidates.append(keys[idx])
-        return min(candidates, key=lambda k: abs(k - target))
-
-    def _best_phash_match(
+    def _detect_scenes(
         self,
-        lhs_ts: int,
-        rhs_ts_guess: int,
-        lhs_all_set: FramesInfo,
-        rhs_all_set: FramesInfo,
-        *,
-        timeline_ratio: float = 1.0,
-    ) -> tuple[int, int] | None:
-        """Refine one scene anchor using its local frame sequence.
+        lhs_analysis: media_analysis.VideoScanResult,
+        rhs_analysis: media_analysis.VideoScanResult,
+    ) -> tuple[list[int], list[int]]:
+        """Phase 1: Detect scene changes in both files."""
+        lhs_scene_changes = self._detect_scenes_for(lhs_analysis, self.lhs.label)
+        rhs_scene_changes = self._detect_scenes_for(rhs_analysis, self.rhs.label)
 
-        A single perceptual hash cannot reliably distinguish adjacent frames
-        in a mostly static shot.  Score each candidate alignment across the
-        five-frame neighbourhood of the original lhs anchor instead.  This
-        keeps a scene cut aligned even when one wrong adjacent-frame pair has
-        a slightly smaller hash distance (or ties the correct pair).  Moving
-        the scene anchor additionally requires the winning sequence to look
-        like genuinely shared pictures.  With different picture geometry,
-        every raw-frame hash can be poor and tiny decoder-dependent differences
-        between those poor scores are not evidence of a one-frame correction.
-        """
-        lhs_keys = sorted(lhs_all_set)
-        rhs_keys = sorted(rhs_all_set)
-        lhs_near = self._nearest_three(lhs_keys, lhs_ts)
-        rhs_near = self._nearest_three(rhs_keys, rhs_ts_guess)
-        if not lhs_near or not rhs_near:
-            return None
+        if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
+            raise RuntimeError("Not enough scene changes detected")
 
-        if not isfinite(timeline_ratio) or timeline_ratio <= 0:
-            timeline_ratio = 1.0
+        return lhs_scene_changes, rhs_scene_changes
 
-        lhs_anchor_frame = int(lhs_all_set[lhs_ts]["frame_id"])
-        lhs_samples = sorted(
-            timestamp
-            for timestamp, info in lhs_all_set.items()
-            if abs(int(info["frame_id"]) - lhs_anchor_frame) <= 2
-        )
-        max_rhs_snap_error = max(2.0, 750.0 / self.rhs_fps)
-
-        sequence_candidates: list[tuple[float, float, int, int]] = []
-        single_frame_candidates: list[tuple[float, float, int, int]] = []
-        for lhs_candidate in lhs_near:
-            for rhs_candidate in rhs_near:
-                movement = (
-                    abs(lhs_candidate - lhs_ts) * self.lhs_fps
-                    + abs(rhs_candidate - rhs_ts_guess) * self.rhs_fps
-                ) / 1000
-                single_distance = abs(
-                    self.phash.get(self._extracted_path(lhs_all_set[lhs_candidate]))
-                    - self.phash.get(self._extracted_path(rhs_all_set[rhs_candidate]))
-                )
-                single_frame_candidates.append((
-                    float(single_distance), movement,
-                    lhs_candidate, rhs_candidate,
-                ))
-
-                distances = []
-                for lhs_sample in lhs_samples:
-                    predicted_rhs = (
-                        rhs_candidate
-                        + (lhs_sample - lhs_candidate) / timeline_ratio
-                    )
-                    rhs_sample = self._snap_to_nearest_frame(
-                        rhs_keys, round(predicted_rhs),
-                    )
-                    if abs(rhs_sample - predicted_rhs) > max_rhs_snap_error:
-                        break
-                    distances.append(abs(
-                        self.phash.get(self._extracted_path(lhs_all_set[lhs_sample]))
-                        - self.phash.get(self._extracted_path(rhs_all_set[rhs_sample]))
-                    ))
-
-                if len(distances) == len(lhs_samples) and len(distances) >= 3:
-                    sequence_candidates.append((
-                        float(np.mean(distances)), movement,
-                        lhs_candidate, rhs_candidate,
-                    ))
-
-        if sequence_candidates:
-            best = min(sequence_candidates)
-            if best[0] > self._MIN_PHASH_CUTOFF:
-                return lhs_ts, rhs_ts_guess
-        elif single_frame_candidates:
-            best = min(single_frame_candidates)
-        else:
-            return None
-        _, _, best_lhs, best_rhs = best
-        return best_lhs, best_rhs
-
-    def _build_matches(self, lhs: FramesInfo, rhs: FramesInfo) -> list[tuple[int, int, int]]:
-        lhs_items = list(lhs.items())
-        rhs_items = list(rhs.items())
-
-        all_matches = []
-        for lhs_ts, lhs_info in lhs_items:
-            lhs_hash = self.phash.get(self._extracted_path(lhs_info))
-            for rhs_ts, rhs_info in rhs_items:
-                rhs_hash = self.phash.get(self._extracted_path(rhs_info))
-                distance = abs(lhs_hash - rhs_hash)
-                all_matches.append((distance, lhs_ts, rhs_ts))
-
-        all_matches.sort()
-        return all_matches
-
-    def _build_initial_candidates(self, lhs: FramesInfo, rhs: FramesInfo) -> list[tuple[int, int]]:
-        all_matches = self._build_matches(lhs, rhs)
-
-        used_lhs = set()
-        used_rhs = set()
-        pairs = []
-
-        for distance, lhs_ts, rhs_ts in all_matches:
-            if lhs_ts not in used_lhs and rhs_ts not in used_rhs:
-                pairs.append((lhs_ts, rhs_ts))
-                used_lhs.add(lhs_ts)
-                used_rhs.add(rhs_ts)
-
-        return sorted(pairs)
-
-    def _reject_outliers(self, pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
-        if len(pairs) < 3:
-            return pairs
-
-        lhs_vals, rhs_vals = zip(*pairs)
-        lhs_array = np.array(lhs_vals).reshape(-1, 1)
-        rhs_array = np.array(rhs_vals)
-        model = RANSACRegressor(LinearRegression(), residual_threshold=5000)
-        model.fit(lhs_array, rhs_array)
-        inliers = model.inlier_mask_
-        return [p for p, keep in zip(pairs, inliers) if keep]
-
-    def _check_history(self, pair: tuple[int, int], lhs_pool: FramesInfo, rhs_pool: FramesInfo, cutoff: float) -> bool:
-        lhs_three = self._three_before(list(lhs_pool.keys()), pair[0])
-        rhs_three = self._three_before(list(rhs_pool.keys()), pair[1])
-
-        if len(lhs_three) < 3 and len(rhs_three) < 3:
-            return True
-        if not lhs_three or not rhs_three:
-            return True
-
-        # At least one available match before the current pair is required.
-        # Sparse or irregular PTS can leave one side with only one or two
-        # earlier frames even though the other side has the full three.
-        lhs_frames = {l: lhs_pool[l] for l in lhs_three}
-        rhs_frames = {r: rhs_pool[r] for r in rhs_three}
-        matches = self._build_matches(lhs_frames, rhs_frames)
-
-        if len(matches) > 0:
-            best_match = matches[0][0]
-
-            if best_match <= cutoff:
-                return True
-
-        return False
-
-    def _extrapolate_matches(self, known_pairs: list[tuple[int, int]], lhs_pool: FramesInfo, rhs_pool: FramesInfo, phash: PhashCache) -> list[tuple[int, int]]:
-        known_pairs.sort()
-        lhs_used = {l for l, _ in known_pairs}
-        rhs_used = {r for _, r in known_pairs}
-        lhs_free = sorted(set(lhs_pool.keys()) - lhs_used)
-        rhs_keys = sorted(rhs_pool.keys())
-
-        if len(known_pairs) < 2:
-            return known_pairs
-
-        median_ratio = PairMatcher.calculate_ratio(known_pairs)
-        first_known_pair = known_pairs[0]
-        cutoff = self._calculate_cutoff(phash, known_pairs, lhs_pool, rhs_pool)
-
-        new_pairs = []
-        for l in lhs_free:
-            expected_rhs = first_known_pair[1] + (l - first_known_pair[0]) / median_ratio
-            nearest_rhs_candidates = self._nearest_three(rhs_keys, int(expected_rhs))
-
-            for rhs_candidate in nearest_rhs_candidates:
-                ratio = (l - first_known_pair[0]) / (rhs_candidate - first_known_pair[1]) if (rhs_candidate - first_known_pair[1]) != 0 else None
-                if ratio and PairMatcher.is_ratio_acceptable(ratio, median_ratio):
-                    if rhs_candidate not in rhs_used:
-                        # make sure lhs and rhs_candidate are matching
-                        lhs_path = self._extracted_path(lhs_pool[l])
-                        rhs_path = self._extracted_path(rhs_pool[rhs_candidate])
-
-                        pdiff = abs(phash.get(lhs_path) - phash.get(rhs_path))
-                        phash_matching = pdiff < cutoff
-                        matching = image_utils.are_images_similar(lhs_path, rhs_path)
-                        if phash_matching and matching:
-                            new_pairs.append((l, rhs_candidate))
-                            rhs_used.add(rhs_candidate)
-                            break
-
-        return sorted(set(known_pairs + new_pairs))
-
-    def _crop_both_sets(
+    def _detect_scenes_for(
         self,
-        pairs_with_timestamps: list[tuple[int, int]],
-        lhs_frames: FramesInfo,
-        rhs_frames: FramesInfo,
-        lhs_cropped_dir: str,
-        rhs_cropped_dir: str
-    ) -> tuple[FramesInfo, FramesInfo]:
-        PairMatcher._assert_frames_extracted(lhs_frames, "_crop_both_sets(lhs)")
-        PairMatcher._assert_frames_extracted(rhs_frames, "_crop_both_sets(rhs)")
-
-        # Step 1: Get interpolated crop functions for both sets
-        crop_fns = PairMatcher._find_interpolated_crop(pairs_with_timestamps, lhs_frames, rhs_frames)
-        if crop_fns is None:
-            self.logger.debug("No usable crop geometry found for any matched pair — comparing uncropped frames")
-            return lhs_frames, rhs_frames
-        lhs_crop_fn, rhs_crop_fn = crop_fns
-
-        # Step 2: Apply interpolated cropping to each frame
-        lhs_cropped = self._apply_crop_interpolated(lhs_frames, lhs_cropped_dir, lhs_crop_fn)
-        rhs_cropped = self._apply_crop_interpolated(rhs_frames, rhs_cropped_dir, rhs_crop_fn)
-
-        return lhs_cropped, rhs_cropped
-
-    def _calculate_cutoff(
-        self,
-        phash: PhashCache,
-        pairs: list[tuple[int, int]],
-        lhs: FramesInfo,
-        rhs: FramesInfo
-    ) -> int:
-        if not pairs:
-            return 16  # sensible default when no pairs available
-
-        distances = [
-            abs(phash.get(self._extracted_path(lhs[lhs_ts])) - phash.get(self._extracted_path(rhs[rhs_ts])))
-            for lhs_ts, rhs_ts in pairs
-        ]
-
-        arr = np.array(distances)
-        median = np.median(arr)
-        std = np.std(arr)
-
-        return median + std * 2
-
-    @classmethod
-    def _floored_phash_cutoff(cls, cutoff: float) -> float:
-        """Adaptive phash cutoff, never tighter than ``_MIN_PHASH_CUTOFF``.
-
-        The adaptive cutoff (median + 2*std of the matched pairs' distances)
-        describes how far apart *the pairs themselves* are; checks that match
-        the pairs' surroundings — the boundary walk and the history check —
-        compare frames that are naturally a bit farther apart, so a cutoff of
-        2-4 (typical for well-matched degraded content) starves them and
-        collapses a dozen good matches to a couple, dropping the pair into
-        the GENERIC path.  Measured on the degraded/speed-changed fixtures:
-        neighbouring frames of genuinely shared content match within ≤ 8,
-        while divergent context (e.g. a pair sitting right at an intro
-        boundary) is ≥ 110 — the floor of 16 keeps a 2x/7x margin to both.
-        """
-        return max(cutoff, cls._MIN_PHASH_CUTOFF)
-
-    def _make_pairs(self, lhs: FramesInfo, rhs: FramesInfo, lhs_all: FramesInfo, rhs_all: FramesInfo) -> list[tuple[int, int]]:
-        # Pipeline
-        lhs = PairMatcher._filter_low_detailed(lhs)
-        rhs = PairMatcher._filter_low_detailed(rhs)
-
-        if not lhs or not rhs:
-            return []
-
-        initial = self._build_initial_candidates(lhs, rhs)
-        self.logger.debug(f"Initial candidates:        {PairMatcher.summarize_pairs(self.phash, initial, lhs_all, rhs_all)}")
-
-        stable = self._reject_outliers(initial)
-        self.logger.debug(f"After linear matching:     {PairMatcher.summarize_pairs(self.phash, stable, lhs_all, rhs_all)}")
-
-        stable = PairMatcher.filter_phash_outliers(self.phash, stable, lhs_all, rhs_all)
-        self.logger.debug(f"Phash outlier elimination: {PairMatcher.summarize_pairs(self.phash, stable, lhs_all, rhs_all)}")
-
-        extrapolated = self._extrapolate_matches(stable, lhs, rhs, self.phash)
-        self.logger.debug(f"Extrapolation:             {PairMatcher.summarize_pairs(self.phash, extrapolated, lhs_all, rhs_all)}")
-
-        timeline_ratio = (
-            PairMatcher.calculate_ratio(extrapolated)
-            if len(extrapolated) >= 2 else 1.0
-        )
-        extrapolated_refined: list[tuple[int, int]] = []
-        for l, r in extrapolated:
-            best_match = self._best_phash_match(
-                l, r, lhs_all, rhs_all,
-                timeline_ratio=timeline_ratio,
-            )
-            if best_match is not None:
-                extrapolated_refined.append(best_match)
-        self.logger.debug(f"Frame adjustment:          {PairMatcher.summarize_pairs(self.phash, extrapolated_refined, lhs_all, rhs_all)}")
-
-        outliers_eliminated = PairMatcher.filter_phash_outliers(self.phash, extrapolated_refined, lhs_all, rhs_all)
-        self.logger.debug(f"Phash outlier elimination: {PairMatcher.summarize_pairs(self.phash, outliers_eliminated, lhs_all, rhs_all)}")
-
-        orb_filtered = [
-            (lhs_ts, rhs_ts) for lhs_ts, rhs_ts in outliers_eliminated
-            if image_utils.are_images_similar(
-                self._extracted_path(lhs_all[lhs_ts]), self._extracted_path(rhs_all[rhs_ts]))
-        ]
-        self.logger.debug(f"After ORB elimination:     {PairMatcher.summarize_pairs(self.phash, orb_filtered, lhs_all, rhs_all)}")
-
-        raw_cutoff = self._calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
-        cutoff = self._floored_phash_cutoff(raw_cutoff)
-        final = [pair for pair in orb_filtered if self._check_history(pair, lhs_all, rhs_all, cutoff)]
-        self.logger.debug(f"After history analysis:    {PairMatcher.summarize_pairs(self.phash, final, lhs_all, rhs_all)}")
-
-        unique_pairs = sorted(set(final))
-
-        consistent = self._drop_pairs_breaking_local_linearity(unique_pairs, lhs_all, rhs_all)
-        self.logger.debug(f"Local linearity filter:    {PairMatcher.summarize_pairs(self.phash, consistent, lhs_all, rhs_all)}")
-
-        self.logger.debug(PairMatcher.summarize_segments(consistent, self.lhs_fps, self.rhs_fps, lhs_label=self.lhs_label, rhs_label=self.rhs_label))
-
-        return consistent
-
-    def _matched_predicted_pair(
-        self,
-        ctx: _BoundarySearchContext,
-        lhs_ts: int,
-        *,
-        clamp: bool = False,
-    ) -> tuple[int, int] | None:
-        """Best verified match for *lhs_ts* around its predicted rhs position.
-
-        Predicts the rhs timestamp from the anchor via the linear ratio, picks
-        the lowest-phash-distance pair among the three nearest rhs frames, and
-        accepts it only when the distance is within the cutoff and the pair's
-        ratio to the reference pair stays consistent.  With *clamp* the
-        prediction is clamped to the rhs key range first (for edge frames).
-        """
-        predicted_rhs = int(ctx.anchor[1] + (lhs_ts - ctx.anchor[0]) / ctx.ratio)
-        if clamp:
-            predicted_rhs = max(ctx.rhs_keys[0], min(ctx.rhs_keys[-1], predicted_rhs))
-        rhs_near = self._nearest_three(ctx.rhs_keys, predicted_rhs)
-
-        best_dist = float('inf')
-        best_pair: tuple[int, int] | None = None
-        for rhs_ts in rhs_near:
-            if rhs_ts not in ctx.rhs or lhs_ts not in ctx.lhs:
-                continue
-            d = abs(ctx.phash.get(self._extracted_path(ctx.lhs[lhs_ts])) - ctx.phash.get(self._extracted_path(ctx.rhs[rhs_ts])))
-            if d < best_dist:
-                best_dist = d
-                best_pair = (lhs_ts, rhs_ts)
-
-        if best_pair is None or best_dist > ctx.cutoff:
-            return None
-        if ctx.reference != best_pair:
-            cand_ratio = PairMatcher.calculate_ratio([best_pair, ctx.reference])
-            if not PairMatcher.is_ratio_acceptable(cand_ratio, ctx.ratio):
-                return None
-        return best_pair
-
-    def _edge_content_matches(self, ctx: _BoundarySearchContext) -> bool:
-        """Check if both videos share the same content at one edge.
-
-        ``ctx.direction`` = -1 checks the video start, +1 checks the video end.
-
-        Compares the edge frame of LHS against the edge frame of RHS (not
-        a prediction-based frame).  Validates with pHash, ratio consistency,
-        and ORB.  Returns ``True`` when the edge pair looks like a valid match,
-        meaning the boundary walk should be able to reach the edge.
-        """
-        edge_lhs_ts = ctx.lhs_keys[0] if ctx.direction == -1 else ctx.lhs_keys[-1]
-        edge_rhs_ts = ctx.rhs_keys[0] if ctx.direction == -1 else ctx.rhs_keys[-1]
-
-        if edge_lhs_ts not in ctx.lhs or edge_rhs_ts not in ctx.rhs:
-            return False
-
-        d = abs(ctx.phash.get(self._extracted_path(ctx.lhs[edge_lhs_ts])) - ctx.phash.get(self._extracted_path(ctx.rhs[edge_rhs_ts])))
-        if d > ctx.cutoff:
-            return False
-
-        # Ratio validation against the farther known pair
-        edge_pair = (edge_lhs_ts, edge_rhs_ts)
-        if ctx.reference != edge_pair:
-            cand_ratio = PairMatcher.calculate_ratio([edge_pair, ctx.reference])
-            if not PairMatcher.is_ratio_acceptable(cand_ratio, ctx.ratio):
-                return False
-
-        # ORB verification, preferring the half-resolution extracted frames
-        # over the context's (possibly cropped/normalized) variants.
-        lhs_path = self._path_or_none(self.lhs_all_frames, edge_lhs_ts) or self._extracted_path(ctx.lhs[edge_lhs_ts])
-        rhs_path = self._path_or_none(self.rhs_all_frames, edge_rhs_ts) or self._extracted_path(ctx.rhs[edge_rhs_ts])
-        return image_utils.are_images_similar(lhs_path, rhs_path)
-
-    def _is_sustained_dark_zone(self, ctx: _BoundarySearchContext, idx: int) -> bool:
-        """Check whether *idx* starts a sustained low-entropy zone (>= 1.5 s)."""
-        look_ahead = max(3, int(1.5 * self.lhs_fps))
-        for la in range(1, look_ahead + 1):
-            la_idx = idx + ctx.direction * la
-            if 0 <= la_idx < len(ctx.lhs_keys):
-                if PairMatcher._is_rich(self._extracted_path(ctx.lhs[ctx.lhs_keys[la_idx]])):
-                    return False
-            # past the edge — treat as sustained
-        return True
-
-    def _try_jump_past_dark_zone(
-        self,
-        ctx: _BoundarySearchContext,
-        idx: int,
-    ) -> tuple[tuple[int, int] | None, int]:
-        """Attempt to jump past a sustained dark zone.
-
-        Scans from *idx* in the walk direction until the first rich frame is
-        found, then tries a predicted match.  Returns ``(jumped_pair, jump_idx)``
-        where *jumped_pair* is ``None`` when the jump failed.
-        """
-        jump_idx = idx + ctx.direction
-        while 0 <= jump_idx < len(ctx.lhs_keys):
-            if PairMatcher._is_rich(self._extracted_path(ctx.lhs[ctx.lhs_keys[jump_idx]])):
-                jumped_pair = self._matched_predicted_pair(ctx, ctx.lhs_keys[jump_idx])
-                return jumped_pair, jump_idx
-            jump_idx += ctx.direction
-        return None, jump_idx
-
-    def _try_match_edge_frame(
-        self,
-        ctx: _BoundarySearchContext,
-        current_best: tuple[int, int],
-    ) -> tuple[int, int] | None:
-        """Try matching the actual video edge frame when the walk got close.
-
-        The coarse step size may have skipped the edge frame; this method
-        checks it explicitly.  Returns the matched pair or ``None``.
-        """
-        edge_idx = 0 if ctx.direction == -1 else len(ctx.lhs_keys) - 1
-        edge_ts = ctx.lhs_keys[edge_idx]
-        if edge_ts == current_best[0] or edge_ts not in ctx.lhs:
-            return None
-        return self._matched_predicted_pair(ctx, edge_ts, clamp=True)
-
-    def _find_boundary(
-        self,
-        ctx: _BoundarySearchContext,
-        gap_seconds: float,
-    ) -> tuple[tuple[int, int], bool]:
-        """Walk from the anchor in the context direction, matching predicted pairs.
-
-        Returns ``(best_pair, entered_low_entropy)`` where the flag indicates
-        that the search stopped because it reached a low-entropy zone rather
-        than exhausting the gap budget on high-entropy mismatches.
-        """
-        lhs_keys = ctx.lhs_keys
-
-        current_best = ctx.anchor
-        max_gap = int(gap_seconds * self.lhs_fps)
-        consecutive_misses = 0
-        entered_low_entropy = False
-
-        step = max(1, int(self.lhs_fps * 0.5))
-        start_idx = lhs_keys.index(ctx.anchor[0])
-        i = 0
-
-        while True:
-            i += step
-            idx = start_idx + ctx.direction * i
-            if idx < 0 or idx >= len(lhs_keys):
-                # The coarse step overshot the edge.  Switch to frame-by-frame
-                # walking from current_best so we don't miss near-edge matches.
-                if step > 1:
-                    best_idx = lhs_keys.index(current_best[0])
-                    i = ctx.direction * (best_idx - start_idx)
-                    step = 1
-                    continue
-                break
-
-            lhs_ts = lhs_keys[idx]
-
-            # Dark frame — check if it's a sustained dark zone
-            if not PairMatcher._is_rich(self._extracted_path(ctx.lhs[lhs_ts])):
-                if self._is_sustained_dark_zone(ctx, idx):
-                    jumped_pair, jump_idx = self._try_jump_past_dark_zone(ctx, idx)
-                    if jumped_pair is not None:
-                        self.logger.debug(
-                            f"Jumped over dark zone {lhs_ts}ms → {lhs_keys[jump_idx]}ms "
-                            f"(pair: {jumped_pair})"
-                        )
-                        current_best = jumped_pair
-                        consecutive_misses = 0
-                        i = ctx.direction * (jump_idx - start_idx)
-                        continue
-                    else:
-                        entered_low_entropy = True
-                        break
-                # Transient dark frame — treat as a miss
-                consecutive_misses += step
-                if consecutive_misses >= max_gap:
-                    break
-                continue
-
-            best_pair = self._matched_predicted_pair(ctx, lhs_ts)
-            if best_pair is not None:
-                current_best = best_pair
-                consecutive_misses = 0
-            else:
-                consecutive_misses += step
-                if consecutive_misses >= max_gap:
-                    break
-
-        # Try matching the actual edge frame
-        if not entered_low_entropy and consecutive_misses < max_gap:
-            edge_match = self._try_match_edge_frame(ctx, current_best)
-            if edge_match is not None:
-                current_best = edge_match
-
-        return current_best, entered_low_entropy
-
-    def _verify_gap_is_low_entropy(
-        self,
-        frames: FramesInfo,
-        gap_keys: list[int],
-        max_skip: int,
-        direction: int,
+        analysis: media_analysis.VideoScanResult,
         label: str,
-        side: str,
-    ) -> bool:
-        """Check that a gap between boundary and edge is mostly low-entropy.
+    ) -> list[int]:
+        scene_changes = analysis.scene_changes_at(self._SCENE_THRESHOLD)
 
-        Walks *gap_keys* (sorted from boundary toward edge) and:
-        1. Finds the first low-entropy frame,
-        2. Rejects if too many high-entropy frames precede it (> *max_skip*),
-        3. Rejects if the remaining portion has > 5% high-entropy frames.
+        self.logger.info(
+            "[1/6] Scene changes for %s selected from media scan at threshold "
+            "%.6f (%d scenes)",
+            label,
+            self._SCENE_THRESHOLD,
+            len(scene_changes),
+        )
+        return list(scene_changes)
 
-        Returns ``True`` when the gap can be extrapolated through.
-        """
-        from_boundary = sorted(gap_keys, reverse=(direction == -1))
-        le_start: int | None = None
-        for i, ts in enumerate(from_boundary):
-            if not PairMatcher._is_rich(PairMatcher._extracted_path(frames[ts])):
-                le_start = i
-                break
+    def _probe_frames(
+        self,
+        lhs_analysis: media_analysis.VideoScanResult | None = None,
+        rhs_analysis: media_analysis.VideoScanResult | None = None,
+    ) -> None:
+        """Phase 2: Probe all frame timestamps (fast — no images written)."""
+        for side, analysis in ((self.lhs, lhs_analysis), (self.rhs, rhs_analysis)):
+            if side.all_frames:
+                continue
+            if analysis is None:
+                analysis = self._analysis_result_for(
+                    side.path,
+                    side.label,
+                    media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
+                )
+            side.all_frames = self._probe_frames_for(analysis, side.label)
 
-        if le_start is None:
-            self.logger.warning(
-                f"Boundary {label}: gap in {side} is all high-entropy. "
-                f"Cannot extrapolate."
+    def _probe_frames_for(
+        self,
+        analysis: media_analysis.VideoScanResult,
+        label: str,
+    ) -> FramesInfo:
+        self.logger.info(
+            "[2/6] Frame probes for %s restored from media scan (%d frames)",
+            label,
+            len(analysis.frames),
+        )
+        return {
+            timestamp: FrameInfo(
+                frame_id=int(info["frame_id"]),
+                path=info["path"],
             )
-            return False
+            for timestamp, info in analysis.frames_copy().items()
+        }
 
-        if le_start > max_skip:
-            self.logger.warning(
-                f"Boundary {label}: {le_start} high-entropy {side} frames "
-                f"between boundary and low-entropy zone (max expected: {max_skip}). "
-                f"Cannot extrapolate."
-            )
-            return False
+    def _extract_scene_frames(
+        self,
+        lhs_scene_changes: list[int],
+        rhs_scene_changes: list[int],
+    ) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+        """Phase 3: Extract frames around scene changes and log key frames."""
+        scene_margin = 5
+        lhs_scene_ranges = self._compute_frame_ranges(lhs_scene_changes, self.lhs.all_frames, margin=scene_margin)
+        rhs_scene_ranges = self._compute_frame_ranges(rhs_scene_changes, self.rhs.all_frames, margin=scene_margin)
 
-        remaining = from_boundary[le_start:]
-        non_le = [k for k in remaining if PairMatcher._is_rich(PairMatcher._extracted_path(frames[k]))]
-        noise_ratio = len(non_le) / len(remaining) if remaining else 1.0
-        if noise_ratio > 0.05:
-            self.logger.warning(
-                f"Boundary {label}: {side} zone has {len(non_le)}/{len(remaining)} "
-                f"({noise_ratio:.1%}) high-entropy frames — not contiguous. "
-                f"Cannot extrapolate."
-            )
-            return False
-        elif non_le:
+        self.logger.info(
+            "Selective extraction: %d/%d frames for %s, %d/%d frames for %s",
+            sum(e - s + 1 for s, e in lhs_scene_ranges), len(self.lhs.all_frames), self.lhs.label,
+            sum(e - s + 1 for s, e in rhs_scene_ranges), len(self.rhs.all_frames), self.rhs.label,
+        )
+
+        sides = (
+            (self.lhs, lhs_scene_changes, lhs_scene_ranges),
+            (self.rhs, rhs_scene_changes, rhs_scene_ranges),
+        )
+        for side, _, scene_ranges in sides:
+            self._extract_scene_frames_for(side, scene_ranges)
+        for side, scene_changes, _ in sides:
             self.logger.debug(
-                f"Boundary {label}: tolerating {len(non_le)}/{len(remaining)} "
-                f"({noise_ratio:.1%}) sparse high-entropy frames in {side} zone."
+                "%s key frames: %s",
+                side.label,
+                " ".join(
+                    str(side.all_frames[timestamp]["frame_id"])
+                    for timestamp in scene_changes
+                    if timestamp in side.all_frames
+                ),
             )
 
-        return True
+        return lhs_scene_ranges, rhs_scene_ranges
+
+    def _extract_scene_frames_for(
+        self,
+        side: MatchingSide,
+        scene_ranges: list[tuple[int, int]],
+    ) -> None:
+        """Restore initial cached frames, then extract only missing requested frames."""
+        initial = not any(info.get("path") for info in side.all_frames.values())
+        restored = False
+        if initial and self.cache:
+            restored = self.cache.load_scene_frames(side.path, side.all_dir, side.all_frames)
+            if restored:
+                self.logger.info("[3/6] Scene frames for %s restored from cache", side.label)
+
+        requested = {frame for start, end in scene_ranges for frame in range(start, end + 1)}
+        missing = [
+            ts for ts, info in side.all_frames.items()
+            if int(info["frame_id"]) in requested and not info.get("path")
+        ]
+        if missing:
+            self.frame_comparison.extract_frames(
+                side.path, side.all_dir,
+                self._compute_frame_ranges(missing, side.all_frames, margin=0),
+                side.all_frames,
+                f"[3/6] Extracting scene frames: {side.label}",
+            )
+
+            # Restored frames may be symlinks into the cache; replacing that
+            # cache would invalidate the files currently used by this run.
+            if initial and not restored and self.cache:
+                self.cache.save_scene_frames(side.path, side.all_dir, side.all_frames)
 
     @staticmethod
     def _compute_frame_ranges(
@@ -3590,238 +626,704 @@ class PairMatcher:
 
         return merged
 
+    def _normalize_extracted(
+        self,
+        lhs_scene_changes: list[int],
+        rhs_scene_changes: list[int],
+    ) -> tuple[FramesInfo, FramesInfo]:
+        """Phase 4: Normalize newly extracted frames and identify key frames.
+
+        Returns (lhs_key_frames, rhs_key_frames).
+        """
+        for side in (self.lhs, self.rhs):
+            missing = {
+                ts: info for ts, info in self._extracted_subset(side.all_frames).items()
+                if ts not in side.normalized_frames
+            }
+            if missing:
+                side.normalized_frames.update(self.frame_comparison.normalize_frames(
+                    missing, side.normalized_dir, desc=f"[4/6] Normalizing: {side.label}",
+                ))
+
+        return (
+            frame_comparison.frames_for_timestamps(lhs_scene_changes, self.lhs.normalized_frames),
+            frame_comparison.frames_for_timestamps(rhs_scene_changes, self.rhs.normalized_frames),
+        )
+
     @staticmethod
     def _extracted_subset(all_frames: FramesInfo) -> FramesInfo:
         """Return only entries from *all_frames* that have been extracted (path is not None)."""
         return {ts: info for ts, info in all_frames.items() if info.get("path") is not None}
 
-    @staticmethod
-    def _complement_ranges(
-        scene_ranges: list[tuple[int, int]], max_frame: int,
-    ) -> list[tuple[int, int]]:
-        """Return frame ranges NOT covered by *scene_ranges*."""
-        merged = sorted(scene_ranges)
-        gaps: list[tuple[int, int]] = []
-        cursor = 0
-        for start, end in merged:
-            if cursor < start:
-                gaps.append((cursor, start - 1))
-            cursor = max(cursor, end + 1)
-        if cursor <= max_frame:
-            gaps.append((cursor, max_frame))
-        return gaps
-
-    def _detect_scenes(
-        self,
-        lhs_analysis: media_analysis.VideoScanResult,
-        rhs_analysis: media_analysis.VideoScanResult,
-    ) -> tuple[list[int], list[int]]:
-        """Phase 1: Detect scene changes in both files."""
-        lhs_scene_changes = self._detect_scenes_for(lhs_analysis, self.lhs_label)
-        rhs_scene_changes = self._detect_scenes_for(rhs_analysis, self.rhs_label)
-
-        if len(lhs_scene_changes) == 0 or len(rhs_scene_changes) == 0:
-            raise RuntimeError("Not enough scene changes detected")
-
-        return lhs_scene_changes, rhs_scene_changes
-
-    def _detect_scenes_for(
-        self,
-        analysis: media_analysis.VideoScanResult,
-        label: str,
-    ) -> list[int]:
-        scene_changes = analysis.scene_changes_at(self._SCENE_THRESHOLD)
-
-        self.logger.info(
-            "[1/6] Scene changes for %s selected from media scan at threshold "
-            "%.6f (%d scenes)",
-            label,
-            self._SCENE_THRESHOLD,
-            len(scene_changes),
-        )
-        return list(scene_changes)
-
-    def _probe_frames(
-        self,
-        lhs_analysis: media_analysis.VideoScanResult | None = None,
-        rhs_analysis: media_analysis.VideoScanResult | None = None,
-    ) -> None:
-        """Phase 2: Probe all frame timestamps (fast — no images written)."""
-        if not self.lhs_all_frames:
-            if lhs_analysis is None:
-                lhs_analysis = self._analysis_result_for(
-                    self.lhs_path,
-                    self.lhs_label,
-                    media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
-                )
-            self.lhs_all_frames = self._probe_frames_for(lhs_analysis, self.lhs_label)
-        if not self.rhs_all_frames:
-            if rhs_analysis is None:
-                rhs_analysis = self._analysis_result_for(
-                    self.rhs_path,
-                    self.rhs_label,
-                    media_analysis.MediaAnalysisFeature.FRAME_TIMESTAMPS,
-                )
-            self.rhs_all_frames = self._probe_frames_for(rhs_analysis, self.rhs_label)
-
-    def _probe_frames_for(
-        self,
-        analysis: media_analysis.VideoScanResult,
-        label: str,
-    ) -> FramesInfo:
-        self.logger.info(
-            "[2/6] Frame probes for %s restored from media scan (%d frames)",
-            label,
-            len(analysis.frames),
-        )
-        return {
-            timestamp: FrameInfo(
-                frame_id=int(info["frame_id"]),
-                path=info["path"],
-            )
-            for timestamp, info in analysis.frames_copy().items()
-        }
-
-    def _extract_scene_frames(
-        self,
-        lhs_scene_changes: list[int],
-        rhs_scene_changes: list[int],
-    ) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-        """Phase 3: Extract frames around scene changes and log key frames."""
-        scene_margin = 5
-        lhs_scene_ranges = self._compute_frame_ranges(lhs_scene_changes, self.lhs_all_frames, margin=scene_margin)
-        rhs_scene_ranges = self._compute_frame_ranges(rhs_scene_changes, self.rhs_all_frames, margin=scene_margin)
-
-        lhs_scene_frame_count = sum(e - s + 1 for s, e in lhs_scene_ranges)
-        rhs_scene_frame_count = sum(e - s + 1 for s, e in rhs_scene_ranges)
-        self.logger.info(
-            f"Selective extraction: {lhs_scene_frame_count}/{len(self.lhs_all_frames)} frames for {self.lhs_label}, "
-            f"{rhs_scene_frame_count}/{len(self.rhs_all_frames)} frames for {self.rhs_label}"
-        )
-
-        self._extract_scene_frames_for(
-            self.lhs_path, self.lhs_all_wd, lhs_scene_ranges, self.lhs_all_frames, self.lhs_label,
-        )
-        self._extract_scene_frames_for(
-            self.rhs_path, self.rhs_all_wd, rhs_scene_ranges, self.rhs_all_frames, self.rhs_label,
-        )
-
-        lhs_key_frames_str = [str(self.lhs_all_frames[lhs]["frame_id"]) for lhs in lhs_scene_changes if lhs in self.lhs_all_frames]
-        rhs_key_frames_str = [str(self.rhs_all_frames[rhs]["frame_id"]) for rhs in rhs_scene_changes if rhs in self.rhs_all_frames]
-
-        self.logger.debug(f"{self.lhs_label} key frames: {' '.join(lhs_key_frames_str)}")
-        self.logger.debug(f"{self.rhs_label} key frames: {' '.join(rhs_key_frames_str)}")
-
-        return lhs_scene_ranges, rhs_scene_ranges
-
-    def _extract_scene_frames_for(
-        self,
-        video_path: str,
-        target_dir: str,
-        scene_ranges: list[tuple[int, int]],
-        probed_metadata: FramesInfo,
-        label: str,
-    ) -> None:
-        """Restore initial cached frames, then extract only missing requested frames."""
-        initial = not any(info.get("path") for info in probed_metadata.values())
-        restored = False
-        if initial and self.cache:
-            restored = self.cache.load_scene_frames(video_path, target_dir, probed_metadata)
-            if restored:
-                self.logger.info("[3/6] Scene frames for %s restored from cache", label)
-
-        requested = {frame for start, end in scene_ranges for frame in range(start, end + 1)}
-        missing = [
-            ts for ts, info in probed_metadata.items()
-            if int(info["frame_id"]) in requested and not info.get("path")
-        ]
-        if missing:
-            video_utils.extract_frames_at_ranges(
-                video_path, target_dir,
-                self._compute_frame_ranges(missing, probed_metadata, margin=0),
-                probed_metadata,
-                scale=(960, -2), format="png", interruption=self.interruption,
-                desc=f"[3/6] Extracting scene frames: {label}", logger=self.logger,
-            )
-
-            # Restored frames may be symlinks into the cache; replacing that
-            # cache would invalidate the files currently used by this run.
-            if initial and not restored and self.cache:
-                self.cache.save_scene_frames(video_path, target_dir, probed_metadata)
-
-    def _normalize_extracted(
-        self,
-        lhs_scene_changes: list[int],
-        rhs_scene_changes: list[int],
-        lhs_normalized_frames: FramesInfo | None = None,
-        rhs_normalized_frames: FramesInfo | None = None,
-    ) -> tuple[FramesInfo, FramesInfo, FramesInfo, FramesInfo]:
-        """Phase 4: Normalize missing frames in-place and identify key frames.
-
-        Returns (lhs_normalized, rhs_normalized, lhs_key_frames, rhs_key_frames).
-        """
-        if lhs_normalized_frames is None:
-            lhs_normalized_frames = {}
-        if rhs_normalized_frames is None:
-            rhs_normalized_frames = {}
-        for all_frames, normalized, directory, label in (
-            (self.lhs_all_frames, lhs_normalized_frames, self.lhs_normalized_wd, self.lhs_label),
-            (self.rhs_all_frames, rhs_normalized_frames, self.rhs_normalized_wd, self.rhs_label),
-        ):
-            missing = {
-                ts: info for ts, info in self._extracted_subset(all_frames).items()
-                if ts not in normalized
-            }
-            if missing:
-                normalized.update(self._normalize_frames(
-                    missing, directory, desc=f"[4/6] Normalizing: {label}",
-                ))
-
-        lhs_key_frames = PairMatcher._get_frames_for_timestamps(lhs_scene_changes, lhs_normalized_frames)
-        rhs_key_frames = PairMatcher._get_frames_for_timestamps(rhs_scene_changes, rhs_normalized_frames)
-
-        return lhs_normalized_frames, rhs_normalized_frames, lhs_key_frames, rhs_key_frames
-
     def _match_key_frames(
         self,
         lhs_key_frames: FramesInfo,
         rhs_key_frames: FramesInfo,
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
         *,
         debug: DebugRoutines | None = None,
     ) -> list[tuple[int, int]]:
         """Match the initially selected scene frames."""
         self.logger.info("[5/6] Matching key frames")
-        matching_pairs = self._make_pairs(
-            lhs_key_frames,
-            rhs_key_frames,
-            lhs_normalized_frames,
-            rhs_normalized_frames,
-        )
+        matching_pairs = self._make_pairs(lhs_key_frames, rhs_key_frames)
         matching_pairs = sorted(set(matching_pairs))
         if not matching_pairs:
             raise RuntimeError("No matching pairs found between the two files")
 
         if debug is not None:
-            lhs_extracted = self._extracted_subset(self.lhs_all_frames)
-            rhs_extracted = self._extracted_subset(self.rhs_all_frames)
             debug.dump_matches(matching_pairs, "initial matching")
-            self.logger.debug("Pairs summary after initial matching:")
-            self.logger.debug(PairMatcher.summarize_pairs(
-                self.phash,
-                matching_pairs,
-                lhs_extracted,
-                rhs_extracted,
-                verbose=True,
-            ))
+            if self.logger.isEnabledFor(logging.DEBUG):
+                lhs_extracted = self._extracted_subset(self.lhs.all_frames)
+                rhs_extracted = self._extracted_subset(self.rhs.all_frames)
+                self.logger.debug("Pairs summary after initial matching:")
+                self.logger.debug(debug_routines.summarize_pairs(
+                    self.phash, matching_pairs, lhs_extracted, rhs_extracted,
+                    verbose=True,
+                ))
         return matching_pairs
+
+    def _make_pairs(self, lhs: FramesInfo, rhs: FramesInfo) -> list[tuple[int, int]]:
+        # Pipeline
+        lhs_all = self.lhs.normalized_frames
+        rhs_all = self.rhs.normalized_frames
+        lhs = frame_comparison.filter_low_detail(lhs)
+        rhs = frame_comparison.filter_low_detail(rhs)
+
+        if not lhs or not rhs:
+            return []
+
+        log_pairs = partial(
+            debug_routines.log_pairs_summary,
+            self.logger,
+            self.phash,
+            lhs_all,
+            rhs_all,
+        )
+        initial = self._build_initial_candidates(lhs, rhs)
+        log_pairs("Initial candidates:        ", initial)
+
+        stable = self._reject_outliers(initial)
+        log_pairs("After linear matching:     ", stable)
+
+        stable = PairMatcher.filter_phash_outliers(self.phash, stable, lhs_all, rhs_all)
+        log_pairs("Phash outlier elimination: ", stable)
+
+        extrapolated = self._extrapolate_matches(stable, lhs, rhs, self.phash)
+        log_pairs("Extrapolation:             ", extrapolated)
+
+        timeline_ratio = (
+            matching_analysis.calculate_ratio(extrapolated)
+            if len(extrapolated) >= 2 else 1.0
+        )
+        extrapolated_refined: list[tuple[int, int]] = []
+        for l, r in extrapolated:
+            best_match = self._best_phash_match(
+                l, r, lhs_all, rhs_all,
+                timeline_ratio=timeline_ratio,
+            )
+            if best_match is not None:
+                extrapolated_refined.append(best_match)
+        log_pairs("Frame adjustment:          ", extrapolated_refined)
+
+        outliers_eliminated = PairMatcher.filter_phash_outliers(self.phash, extrapolated_refined, lhs_all, rhs_all)
+        log_pairs("Phash outlier elimination: ", outliers_eliminated)
+
+        orb_filtered = [
+            (lhs_ts, rhs_ts) for lhs_ts, rhs_ts in outliers_eliminated
+            if image_utils.are_images_similar(
+                frame_comparison.extracted_path(lhs_all[lhs_ts]), frame_comparison.extracted_path(rhs_all[rhs_ts]))
+        ]
+        log_pairs("After ORB elimination:     ", orb_filtered)
+
+        raw_cutoff = frame_comparison.calculate_cutoff(self.phash, orb_filtered, lhs_all, rhs_all)
+        cutoff = frame_comparison.floored_phash_cutoff(raw_cutoff)
+        final = [pair for pair in orb_filtered if self._check_history(pair, lhs_all, rhs_all, cutoff)]
+        log_pairs("After history analysis:    ", final)
+
+        unique_pairs = sorted(set(final))
+
+        consistent = self._drop_pairs_breaking_local_linearity(unique_pairs)
+        log_pairs("Local linearity filter:    ", consistent)
+
+        if self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(debug_routines.summarize_segments(
+                consistent, self.lhs.fps, self.rhs.fps,
+                lhs_label=self.lhs.label, rhs_label=self.rhs.label,
+            ))
+
+        return consistent
+
+    def _build_initial_candidates(self, lhs: FramesInfo, rhs: FramesInfo) -> list[tuple[int, int]]:
+        all_matches = self._build_matches(lhs, rhs)
+
+        used_lhs = set()
+        used_rhs = set()
+        pairs = []
+
+        for distance, lhs_ts, rhs_ts in all_matches:
+            if lhs_ts not in used_lhs and rhs_ts not in used_rhs:
+                pairs.append((lhs_ts, rhs_ts))
+                used_lhs.add(lhs_ts)
+                used_rhs.add(rhs_ts)
+
+        return sorted(pairs)
+
+    def _build_matches(self, lhs: FramesInfo, rhs: FramesInfo) -> list[tuple[int, int, int]]:
+        lhs_items = list(lhs.items())
+        rhs_items = list(rhs.items())
+
+        all_matches = []
+        for lhs_ts, lhs_info in lhs_items:
+            lhs_hash = self.phash.get(frame_comparison.extracted_path(lhs_info))
+            for rhs_ts, rhs_info in rhs_items:
+                rhs_hash = self.phash.get(frame_comparison.extracted_path(rhs_info))
+                distance = abs(lhs_hash - rhs_hash)
+                all_matches.append((distance, lhs_ts, rhs_ts))
+
+        all_matches.sort()
+        return all_matches
+
+    def _best_phash_match(
+        self,
+        lhs_ts: int,
+        rhs_ts_guess: int,
+        lhs_all_set: FramesInfo,
+        rhs_all_set: FramesInfo,
+        *,
+        timeline_ratio: float = 1.0,
+    ) -> tuple[int, int] | None:
+        """Refine one scene anchor using its local frame sequence.
+
+        A single perceptual hash cannot reliably distinguish adjacent frames
+        in a mostly static shot.  Score each candidate alignment across the
+        five-frame neighbourhood of the original lhs anchor instead.  This
+        keeps a scene cut aligned even when one wrong adjacent-frame pair has
+        a slightly smaller hash distance (or ties the correct pair).  Moving
+        the scene anchor additionally requires the winning sequence to look
+        like genuinely shared pictures.  With different picture geometry,
+        every raw-frame hash can be poor and tiny decoder-dependent differences
+        between those poor scores are not evidence of a one-frame correction.
+        """
+        lhs_keys = sorted(lhs_all_set)
+        rhs_keys = sorted(rhs_all_set)
+        lhs_near = matching_analysis.nearest_three(lhs_keys, lhs_ts)
+        rhs_near = matching_analysis.nearest_three(rhs_keys, rhs_ts_guess)
+        if not lhs_near or not rhs_near:
+            return None
+
+        if not isfinite(timeline_ratio) or timeline_ratio <= 0:
+            timeline_ratio = 1.0
+
+        lhs_anchor_frame = int(lhs_all_set[lhs_ts]["frame_id"])
+        lhs_samples = sorted(
+            timestamp
+            for timestamp, info in lhs_all_set.items()
+            if abs(int(info["frame_id"]) - lhs_anchor_frame) <= 2
+        )
+        max_rhs_snap_error = max(2.0, 750.0 / self.rhs.fps)
+
+        sequence_candidates: list[tuple[float, float, int, int]] = []
+        single_frame_candidates: list[tuple[float, float, int, int]] = []
+        for lhs_candidate in lhs_near:
+            for rhs_candidate in rhs_near:
+                movement = (
+                    abs(lhs_candidate - lhs_ts) * self.lhs.fps
+                    + abs(rhs_candidate - rhs_ts_guess) * self.rhs.fps
+                ) / 1000
+                single_distance = frame_comparison.phash_distance(
+                    self.phash, lhs_all_set[lhs_candidate], rhs_all_set[rhs_candidate],
+                )
+                single_frame_candidates.append((
+                    float(single_distance), movement,
+                    lhs_candidate, rhs_candidate,
+                ))
+
+                distances = []
+                for lhs_sample in lhs_samples:
+                    predicted_rhs = (
+                        rhs_candidate
+                        + (lhs_sample - lhs_candidate) / timeline_ratio
+                    )
+                    rhs_sample = matching_analysis.snap_to_nearest_frame(
+                        rhs_keys, round(predicted_rhs),
+                    )
+                    if abs(rhs_sample - predicted_rhs) > max_rhs_snap_error:
+                        break
+                    distances.append(frame_comparison.phash_distance(
+                        self.phash, lhs_all_set[lhs_sample], rhs_all_set[rhs_sample],
+                    ))
+
+                if len(distances) == len(lhs_samples) and len(distances) >= 3:
+                    sequence_candidates.append((
+                        float(np.mean(distances)), movement,
+                        lhs_candidate, rhs_candidate,
+                    ))
+
+        if sequence_candidates:
+            best = min(sequence_candidates)
+            if best[0] > frame_comparison.MIN_PHASH_CUTOFF:
+                return lhs_ts, rhs_ts_guess
+        elif single_frame_candidates:
+            best = min(single_frame_candidates)
+        else:
+            return None
+        _, _, best_lhs, best_rhs = best
+        return best_lhs, best_rhs
+
+    def _check_history(self, pair: tuple[int, int], lhs_pool: FramesInfo, rhs_pool: FramesInfo, cutoff: float) -> bool:
+        lhs_three = self._three_before(list(lhs_pool.keys()), pair[0])
+        rhs_three = self._three_before(list(rhs_pool.keys()), pair[1])
+
+        if len(lhs_three) < 3 and len(rhs_three) < 3:
+            return True
+        if not lhs_three or not rhs_three:
+            return True
+
+        # At least one available match before the current pair is required.
+        # Sparse or irregular PTS can leave one side with only one or two
+        # earlier frames even though the other side has the full three.
+        lhs_frames = {l: lhs_pool[l] for l in lhs_three}
+        rhs_frames = {r: rhs_pool[r] for r in rhs_three}
+        matches = self._build_matches(lhs_frames, rhs_frames)
+
+        if len(matches) > 0:
+            best_match = matches[0][0]
+
+            if best_match <= cutoff:
+                return True
+
+        return False
+
+    def _three_before(self, timestamps: list[int], target: int) -> list[int]:
+        timestamps = sorted(timestamps)
+        idx = int(np.searchsorted(timestamps, target))
+        return timestamps[max(0, idx-3):idx]
+
+    def _reject_outliers(self, pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        if len(pairs) < 3:
+            return pairs
+
+        lhs_vals, rhs_vals = zip(*pairs)
+        lhs_array = np.array(lhs_vals).reshape(-1, 1)
+        rhs_array = np.array(rhs_vals)
+        model = RANSACRegressor(LinearRegression(), residual_threshold=5000)
+        model.fit(lhs_array, rhs_array)
+        inliers = model.inlier_mask_
+        return [p for p, keep in zip(pairs, inliers) if keep]
+
+    def _extrapolate_matches(self, known_pairs: list[tuple[int, int]], lhs_pool: FramesInfo, rhs_pool: FramesInfo, phash: PhashCache) -> list[tuple[int, int]]:
+        known_pairs.sort()
+        lhs_used = {l for l, _ in known_pairs}
+        rhs_used = {r for _, r in known_pairs}
+        lhs_free = sorted(set(lhs_pool.keys()) - lhs_used)
+        rhs_keys = sorted(rhs_pool.keys())
+
+        if len(known_pairs) < 2:
+            return known_pairs
+
+        median_ratio = matching_analysis.calculate_ratio(known_pairs)
+        first_known_pair = known_pairs[0]
+        cutoff = frame_comparison.calculate_cutoff(phash, known_pairs, lhs_pool, rhs_pool)
+
+        new_pairs = []
+        for l in lhs_free:
+            expected_rhs = first_known_pair[1] + (l - first_known_pair[0]) / median_ratio
+            nearest_rhs_candidates = matching_analysis.nearest_three(rhs_keys, int(expected_rhs))
+
+            for rhs_candidate in nearest_rhs_candidates:
+                ratio = (l - first_known_pair[0]) / (rhs_candidate - first_known_pair[1]) if (rhs_candidate - first_known_pair[1]) != 0 else None
+                if ratio and matching_analysis.is_ratio_acceptable(ratio, median_ratio):
+                    if rhs_candidate not in rhs_used:
+                        # make sure lhs and rhs_candidate are matching
+                        lhs_path = frame_comparison.extracted_path(lhs_pool[l])
+                        rhs_path = frame_comparison.extracted_path(rhs_pool[rhs_candidate])
+
+                        pdiff = abs(phash.get(lhs_path) - phash.get(rhs_path))
+                        phash_matching = pdiff < cutoff
+                        matching = image_utils.are_images_similar(lhs_path, rhs_path)
+                        if phash_matching and matching:
+                            new_pairs.append((l, rhs_candidate))
+                            rhs_used.add(rhs_candidate)
+                            break
+
+        return sorted(set(known_pairs + new_pairs))
+
+    @staticmethod
+    def filter_phash_outliers(phash: PhashCache, pairs: list[tuple[int, int]], lhs_set: FramesInfo, rhs_set: FramesInfo) -> list[tuple[int, int]]:
+        if len(pairs) <= 3:
+            # Too few data points for reliable MAD-based outlier detection.
+            # Let downstream filters (ORB, history check) handle quality control.
+            return pairs
+
+        dists_array = np.array([
+            frame_comparison.phash_distance(phash, lhs_set[l], rhs_set[r])
+            for l, r in pairs
+        ], dtype=float)
+        med = float(np.median(dists_array))
+        mad = float(np.median(np.abs(dists_array - med)))
+        threshold = med + 1.5 * mad
+        return [pair for pair, dist in zip(pairs, dists_array) if dist <= threshold]
+
+    def _drop_pairs_breaking_local_linearity(
+        self, pairs: list[tuple[int, int]],
+        *, frame_slope: float | None = None,
+    ) -> list[tuple[int, int]]:
+        """Remove a cancelling excursion only after content disproves the pair.
+
+        Opposite edits and a false match have the same timing signature. The
+        existing gap detector nominates candidates; sequence verification must
+        support the neighbours' line and contradict the candidate on both sides.
+        Without that evidence the pair, and its suspicious gaps, survive.
+        """
+        result = sorted(pairs)
+        while True:
+            if frame_slope is not None:
+                gaps = matching_analysis.find_global_linear_content_discontinuities(
+                    result, self.lhs.all_frames, self.rhs.all_frames,
+                    frame_slope=frame_slope, lhs_fps=self.lhs.fps, rhs_fps=self.rhs.fps,
+                )
+                indices = {pair: i for i, pair in enumerate(result)}
+                flagged = [(indices[(l1, r1)], deficit) for l1, _, r1, _, deficit in gaps]
+            else:
+                flagged = matching_analysis._flagged_gap_deficits(result)
+            rogue: tuple[int, int, int] | None = None
+            for (gap_a, deficit_a), (gap_b, deficit_b) in zip(flagged, flagged[1:]):
+                if gap_b != gap_a + 1 or deficit_a * deficit_b >= 0:
+                    continue
+                merged_gap = result[gap_b + 1][0] - result[gap_a][0]
+                threshold = (
+                    matching_analysis.MAX_GLOBAL_LINEAR_STEP_ERROR_FRAMES * 1000 / self.rhs.fps
+                    if frame_slope is not None else max(
+                        matching_analysis.MAX_GAP_TIME_DEFICIT_MS,
+                        matching_analysis.MAX_GAP_TIME_DEFICIT_RATIO * merged_gap,
+                    )
+                )
+                if abs(deficit_a + deficit_b) <= threshold and self._verify_false_pair(
+                    result[gap_a], result[gap_b], result[gap_b + 1],
+                ):
+                    rogue = (gap_a + 1, deficit_a, deficit_b)
+                    break
+            if rogue is None:
+                return result
+            rogue_index, deficit_before, deficit_after = rogue
+            lhs_ts, rhs_ts = result.pop(rogue_index)
+            self.logger.warning(
+                "Dropping content-disproved pair %s ↔ %s (%+d ms before, %+d ms after)",
+                generic_utils.ms_to_time(lhs_ts),
+                generic_utils.ms_to_time(rhs_ts),
+                deficit_before,
+                deficit_after,
+            )
+
+    def _verify_false_pair(
+        self, before: tuple[int, int], pair: tuple[int, int], after: tuple[int, int],
+    ) -> bool:
+        """Verify a replacement sequence before discarding an isolated anchor.
+
+        Expand a sequence around the anchor, staying within half the distance
+        to its neighbours on both timelines. Each temporal side needs two
+        distinct rich replacement pairs and rich contradiction of the original.
+        Unavailable or low-entropy images supply no evidence for that comparison;
+        a rich replacement mismatch vetoes removal. Repeated/static content that
+        also supports the original remains ambiguous. Comparisons reuse the
+        normalized, shared-crop space and calibrated cutoff, extracting only
+        the next small batch until there is enough evidence or the bound is hit.
+        """
+        if not self.lhs.all_frames or not self.rhs.all_frames:
+            return False
+        if any(l not in self.lhs.normalized_frames or r not in self.rhs.normalized_frames
+               for l, r in (before, after)):
+            return False
+        lhs_ts, rhs_ts = pair
+        if after[0] <= before[0] or after[1] <= before[1]:
+            return False
+        slope = (after[1] - before[1]) / (after[0] - before[0])
+        radius = min(
+            (lhs_ts - before[0]) // 2, (after[0] - lhs_ts) // 2,
+            int((rhs_ts - before[1]) / (2 * slope)),
+            int((after[1] - rhs_ts) / (2 * slope)),
+        )
+        if radius <= 0:
+            return False
+        ctx = self.frame_comparison.build_boundary_verify_context(
+            [before, after],
+            minimum_cutoff=frame_comparison.MIN_PHASH_CUTOFF,
+        )
+        # These samples interpolate between neighbours. The boundary-gap
+        # allowance for extrapolated crops/predictions can accept distinct
+        # pictures here, hiding the evidence against a false anchor. Use the
+        # local calibration (with the ordinary comparison floor) for both
+        # replacement support and contradiction, retaining mismatch vetoes.
+        supported: list[set[tuple[int, int]]] = [set(), set()]
+        contradicted = [False, False]
+        # Leave two batches inside even a short window: one unusable sample
+        # must not exhaust the opportunities for two distinct rich pairs.
+        step = max(1, min(250, radius // 4))
+        for distance in range(step, radius + 1, 2 * step):
+            self.interruption.check_for_stop()
+            offsets = [-distance, distance]
+            if distance + step <= radius:
+                offsets.extend((-(distance + step), distance + step))
+            if distance == step:
+                offsets.insert(0, 0)
+            samples = []
+            for offset in offsets:
+                lhs = self._nearest_frame_timestamp(self.lhs.all_frames, lhs_ts + offset)
+                predicted = round(before[1] + (lhs - before[0]) * slope)
+                original = round(rhs_ts + (lhs - lhs_ts) * slope)
+                if not (before[1] < predicted < after[1] and before[1] < original < after[1]):
+                    return False
+                samples.append((
+                    lhs,
+                    self._nearest_frame_timestamp(self.rhs.all_frames, predicted),
+                    self._nearest_frame_timestamp(self.rhs.all_frames, original),
+                ))
+            self.frame_comparison.prefetch(
+                self.lhs,
+                [lhs for lhs, _, _ in samples],
+            )
+            self.frame_comparison.prefetch(
+                self.rhs,
+                [ts for _, predicted, original in samples for ts in (predicted, original)],
+            )
+            for lhs, predicted, original in samples:
+                lhs_img = self.frame_comparison.comparison_image(ctx.lhs, lhs)
+                predicted_img = self.frame_comparison.comparison_image(
+                    ctx.rhs,
+                    predicted,
+                )
+                if not all(img is not None and frame_comparison.is_rich(img)
+                           for img in (lhs_img, predicted_img)):
+                    continue
+                if not self.frame_comparison.boundary_content_matches(
+                    ctx,
+                    lhs,
+                    predicted,
+                ):
+                    return False
+                if lhs == lhs_ts:
+                    continue
+                side = int(lhs > lhs_ts)
+                # Snapping sparse timestamps must not count one image twice.
+                if all(lhs != l and predicted != r for l, r in supported[side]):
+                    supported[side].add((lhs, predicted))
+                original_img = self.frame_comparison.comparison_image(
+                    ctx.rhs,
+                    original,
+                )
+                if original_img is not None and frame_comparison.is_rich(original_img):
+                    if not self.frame_comparison.boundary_content_matches(
+                        ctx,
+                        lhs,
+                        original,
+                    ):
+                        contradicted[side] = True
+            if all(len(pairs) >= 2 for pairs in supported) and all(contradicted):
+                return True
+        return False
+
+    def _certify_global_linear(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        lhs_scene_changes: list[int],
+        rhs_scene_changes: list[int],
+    ) -> tuple[
+        list[tuple[int, int]],
+        GlobalLinearFit | None,
+        tuple[Discontinuity, ...],
+        tuple[Discontinuity, ...],
+    ]:
+        """Certify one global linear frame relation for the matched pairs.
+
+        A candidate relation is a constant offset (slope 1) or a fitted
+        near-identity drift.  Suspected content discontinuities first drop
+        pairs that break local linearity, then gather scene evidence inside the
+        suspicious regions.  Whenever that changes the pairs, the final pairs
+        must certify the relation again before it can determine boundary
+        prediction or the audio strategy.
+
+        Returns the final pairs, the certified fit (``None`` for the generic
+        path), the timing discontinuities and the content discontinuities
+        local scene evidence could not resolve.
+        """
+        fit = self.detect_global_linear(
+            matching_pairs, self.lhs.all_frames, self.rhs.all_frames,
+        )
+        if fit is None:
+            return matching_pairs, None, (), ()
+
+        initial_frame_slope = fit.slope
+        report = self._classify_discontinuities(matching_pairs, initial_frame_slope)
+        if report.content:
+            cleaned_pairs = self._drop_pairs_breaking_local_linearity(
+                matching_pairs,
+                frame_slope=initial_frame_slope,
+            )
+            if cleaned_pairs != matching_pairs:
+                matching_pairs = cleaned_pairs
+                fit = self.detect_global_linear(
+                    matching_pairs, self.lhs.all_frames, self.rhs.all_frames,
+                )
+                report = self._classify_discontinuities(
+                    matching_pairs,
+                    fit.slope if fit is not None else initial_frame_slope,
+                )
+
+        if report.content:
+            matching_pairs, fit, report = self._refine_content_discontinuities(
+                matching_pairs,
+                lhs_scene_changes,
+                rhs_scene_changes,
+                frame_slope=fit.slope if fit is not None else initial_frame_slope,
+            )
+        return matching_pairs, fit, tuple(report.timing), tuple(report.content)
+
+    def detect_global_linear(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        lhs_all_frames: FramesInfo,
+        rhs_all_frames: FramesInfo,
+    ) -> GlobalLinearFit | None:
+        """Detect a single global linear frame relationship over the matched pairs.
+
+        Both files are assumed related by ``rhs_frame ~= slope*lhs_frame +
+        intercept`` in presentation-timeline frame coordinates.  Unlike decode
+        ordinals, these coordinates retain empty AVI frame slots.  A constant
+        frame offset is just the ``slope == 1`` special case, so it is tried
+        first (it needs only two well-separated matches); when the offset is not
+        constant the slope and intercept are fitted with RANSAC.  Either way the
+        audio is later placed with one global time-scale, so a constant offset
+        and a time-scaled drift share the same handling.
+
+        ``time_scale = slope*lhs_fps/rhs_fps`` may differ from 1 (e.g. a 25 fps
+        PAL speedup vs 24 fps); that only means the audio must be stretched.
+        Whether the implied speed change is plausible is decided by
+        ``mapping_validation``, not here.
+
+        This method only *detects* the relation and returns the fit; it does
+        **not** decide the first/last common pair.  The boundaries are found by
+        the content/entropy-aware boundary walk (shared with the GENERIC path),
+        which uses the certified pairs' full observed timestamp correspondence as its predictor
+        and stops at genuine divergence. Blindly
+        extrapolating the line to the video edges would pair unrelated content
+        across divergent intros/outros and is non-deterministic across ffmpeg
+        builds, so it is deliberately avoided.
+        """
+        if len(matching_pairs) < 2:
+            return None
+
+        try:
+            lhs_frame_ids_by_timestamp = matching_analysis.timeline_frame_ids(lhs_all_frames, self.lhs.fps)
+            rhs_frame_ids_by_timestamp = matching_analysis.timeline_frame_ids(rhs_all_frames, self.rhs.fps)
+            lhs_frame_ids = np.array(
+                [lhs_frame_ids_by_timestamp[l] for l, _ in matching_pairs], dtype=float
+            )
+            rhs_frame_ids = np.array(
+                [rhs_frame_ids_by_timestamp[r] for _, r in matching_pairs], dtype=float
+            )
+        except KeyError:
+            return None
+
+        fit = matching_analysis.fit_constant_offset(
+            lhs_frame_ids,
+            rhs_frame_ids,
+            matching_pairs,
+            lhs_fps=self.lhs.fps,
+            rhs_fps=self.rhs.fps,
+            max_std=self._MAX_CONSTANT_OFFSET_STD,
+            min_two_pair_span=self._MIN_GLOBAL_LINEAR_SPAN_FRAMES,
+            logger=self.logger,
+        )
+        is_constant_offset = fit is not None
+        if fit is None:
+            fit = matching_analysis.fit_linear_drift(
+                lhs_frame_ids,
+                rhs_frame_ids,
+                lhs_fps=self.lhs.fps,
+                rhs_fps=self.rhs.fps,
+                max_slope_delta=self._MAX_DRIFT_SLOPE_DELTA,
+                max_median_residual_frames=self._MAX_MEDIAN_RESIDUAL_FRAMES,
+                max_p95_residual_frames=self._MAX_P95_RESIDUAL_FRAMES,
+                max_outlier_ratio=self._MAX_OUTLIER_RATIO,
+                min_span_frames=self._MIN_GLOBAL_LINEAR_SPAN_FRAMES,
+                logger=self.logger,
+            )
+        if fit is None:
+            return None
+        slope, intercept = fit
+
+        time_scale = slope * self.lhs.fps / self.rhs.fps
+        debug_routines.log_global_linear_relation(
+            self.logger,
+            lhs_label=self.lhs.label,
+            rhs_label=self.rhs.label,
+            slope=slope,
+            intercept=intercept,
+            time_scale=time_scale,
+            is_constant_offset=is_constant_offset,
+        )
+        return GlobalLinearFit(slope=slope, intercept=intercept,
+                               is_constant_offset=is_constant_offset, time_scale=time_scale)
+
+    def _classify_discontinuities(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        frame_slope: float,
+    ) -> matching_analysis.GlobalLinearDiscontinuityReport:
+        return matching_analysis.classify_global_linear_discontinuities(
+            matching_pairs,
+            self.lhs.all_frames,
+            self.rhs.all_frames,
+            frame_slope=frame_slope,
+            lhs_fps=self.lhs.fps,
+            rhs_fps=self.rhs.fps,
+        )
+
+    def _refine_content_discontinuities(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        lhs_scene_changes: list[int],
+        rhs_scene_changes: list[int],
+        *,
+        frame_slope: float,
+    ) -> tuple[
+        list[tuple[int, int]],
+        GlobalLinearFit | None,
+        matching_analysis.GlobalLinearDiscontinuityReport,
+    ]:
+        """Resolve suspected content discontinuities with local scene evidence."""
+        refined_pairs = self._refine_global_linear_discontinuities(
+            matching_pairs,
+            list(lhs_scene_changes), list(rhs_scene_changes),
+            frame_slope=frame_slope,
+        )
+        refined_pairs = self._drop_pairs_breaking_local_linearity(
+            refined_pairs,
+            frame_slope=frame_slope,
+        )
+        refined_fit = self.detect_global_linear(
+            refined_pairs, self.lhs.all_frames, self.rhs.all_frames,
+        )
+        report = self._classify_discontinuities(
+            refined_pairs,
+            refined_fit.slope if refined_fit is not None else frame_slope,
+        )
+
+        if not report.content and not report.timing:
+            if refined_fit is not None:
+                self.logger.info(
+                    "Local scene refinement resolved all suspected content discontinuities."
+                )
+            else:
+                self.logger.info(
+                    "Local scene refinement found no confirmed content discontinuity, "
+                    "but the final observations do not support one global linear relation; "
+                    "using the generic mapping path."
+                )
+        return refined_pairs, refined_fit, report
 
     def _refine_global_linear_discontinuities(
         self,
         matching_pairs: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
         lhs_scene_changes: list[int],
         rhs_scene_changes: list[int],
         *,
@@ -3832,11 +1334,11 @@ class PairMatcher:
 
         def find_discontinuities(
             pairs: list[tuple[int, int]],
-        ) -> list[tuple[int, int, int, int, int]]:
-            return self.find_global_linear_content_discontinuities(
-                pairs, self.lhs_all_frames, self.rhs_all_frames,
+        ) -> list[Discontinuity]:
+            return matching_analysis.find_global_linear_content_discontinuities(
+                pairs, self.lhs.all_frames, self.rhs.all_frames,
                 frame_slope=frame_slope,
-                lhs_fps=self.lhs_fps, rhs_fps=self.rhs_fps,
+                lhs_fps=self.lhs.fps, rhs_fps=self.rhs.fps,
                 require_decoded_confirmation=False,
             )
 
@@ -3848,8 +1350,8 @@ class PairMatcher:
             "Starting local scene refinement for %d suspicious timing region(s): "
             "%s ↔ %s",
             len(discontinuities),
-            self.lhs_label,
-            self.rhs_label,
+            self.lhs.label,
+            self.rhs.label,
         )
 
         refined = set(matching_pairs)
@@ -3870,13 +1372,10 @@ class PairMatcher:
             )
             if scenes_added:
                 self._extract_scene_frames(lhs_scenes, rhs_scenes)
-                _, _, lhs_candidates, rhs_candidates = self._normalize_extracted(
-                    lhs_scenes, rhs_scenes, lhs_normalized_frames, rhs_normalized_frames,
+                lhs_candidates, rhs_candidates = self._normalize_extracted(
+                    lhs_scenes, rhs_scenes,
                 )
-                local_pairs = self._make_pairs(
-                    lhs_candidates, rhs_candidates,
-                    lhs_normalized_frames, rhs_normalized_frames,
-                )
+                local_pairs = self._make_pairs(lhs_candidates, rhs_candidates)
                 local_pairs = sorted({
                     (lhs_from, rhs_from), (lhs_to, rhs_to),
                     *(pair for pair in local_pairs
@@ -3902,168 +1401,301 @@ class PairMatcher:
         )
         return refined_pairs
 
+    def _refine_scenes_in_region(
+        self,
+        gap: Discontinuity,
+        lhs_scene_changes: list[int],
+        rhs_scene_changes: list[int],
+    ) -> tuple[list[int], list[int], bool]:
+        """Extend one scene list and return timestamps within the region."""
+        lhs_from, lhs_to, rhs_from, rhs_to, _ = gap
+        lhs_local = [ts for ts in lhs_scene_changes if lhs_from < ts < lhs_to]
+        rhs_local = [ts for ts in rhs_scene_changes if rhs_from < ts < rhs_to]
+
+        lhs_side = (self.lhs, lhs_from, lhs_to, lhs_scene_changes)
+        rhs_side = (self.rhs, rhs_from, rhs_to, rhs_scene_changes)
+        if len(lhs_local) <= len(rhs_local):
+            sides = (lhs_side, rhs_side)
+        else:
+            sides = (rhs_side, lhs_side)
+
+        self.logger.debug(
+            "Refining suspicious region: %s %s-%s (%d scene(s)) "
+            "↔ %s %s-%s (%d scene(s)); checking the sparser side first",
+            self.lhs.label, generic_utils.ms_to_time(lhs_from),
+            generic_utils.ms_to_time(lhs_to), len(lhs_local),
+            self.rhs.label, generic_utils.ms_to_time(rhs_from),
+            generic_utils.ms_to_time(rhs_to), len(rhs_local),
+        )
+        scenes_added = False
+        for side_index, (side, start_ms, end_ms, scenes) in enumerate(sides):
+            analysis = self._analysis_result_for(
+                side.path,
+                side.label,
+                media_analysis.MediaAnalysisFeature.SCENE_CHANGES,
+            )
+            frame_timestamps = sorted(side.all_frames)
+            candidates: dict[int, float] = {}
+            for candidate in analysis.scene_candidates:
+                if not start_ms < candidate.timestamp_ms < end_ms:
+                    continue
+                timestamp = matching_analysis.snap_to_nearest_frame(
+                    frame_timestamps,
+                    candidate.timestamp_ms,
+                )
+                if start_ms < timestamp < end_ms and timestamp not in scenes:
+                    candidates[timestamp] = max(
+                        candidates.get(timestamp, 0.0),
+                        candidate.score,
+                    )
+
+            ranked_scores = sorted(candidates.values(), reverse=True)
+            if not ranked_scores:
+                self.logger.debug(
+                    "Local scene refinement %s found no new candidates",
+                    side.label,
+                )
+                continue
+
+            # Several candidates can balance the initially sparser side. The
+            # fallback side is already at least as dense, so consume only its
+            # strongest candidate before rematching and narrowing the gap.
+            desired_count = (
+                max(1, abs(len(lhs_local) - len(rhs_local)))
+                if side_index == 0
+                else 1
+            )
+            cutoff = ranked_scores[min(desired_count, len(ranked_scores)) - 1]
+            new_scenes = sorted(
+                timestamp
+                for timestamp, score in candidates.items()
+                if score >= cutoff
+            )
+            scenes.extend(new_scenes)
+            scenes_added = True
+            self.logger.debug(
+                "Local scene refinement %s selected %d scene(s) at score %.6f",
+                side.label, len(new_scenes), cutoff,
+            )
+            break
+
+        if not scenes_added:
+            self.logger.debug(
+                "Local scene refinement found no new candidates on either side; "
+                "region remains unresolved",
+            )
+
+        return (
+            sorted({lhs_from, lhs_to, *(ts for ts in lhs_scene_changes if lhs_from < ts < lhs_to)}),
+            sorted({rhs_from, rhs_to, *(ts for ts in rhs_scene_changes if rhs_from < ts < rhs_to)}),
+            scenes_added,
+        )
+
+    def _has_content_gap(self, content_discontinuities: tuple[Discontinuity, ...]) -> bool:
+        """Whether a discontinuity interrupts the shared content.
+
+        A temporary offset that returns at the next matched anchor keeps the
+        shared content continuous; any other discontinuity leaves no single
+        mapping whose boundaries can be extended.
+        """
+        return any(
+            matching_analysis.temporary_frame_offset_excursion(
+                group, self.lhs.all_frames, self.rhs.all_frames,
+            ) is None
+            for group in matching_analysis.group_content_discontinuities(
+                list(content_discontinuities)
+            )
+        )
+
+    def _report_content_discontinuities(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        content_discontinuities: Sequence[Discontinuity],
+        *,
+        debug: DebugRoutines,
+    ) -> str | None:
+        """Dump diagnostics for refused content steps and return their path."""
+        debug.dump_matches(matching_pairs, "localized discontinuities")
+        groups = matching_analysis.group_content_discontinuities(
+            list(content_discontinuities)
+        )
+        return debug.dump_content_discontinuities(
+            groups,
+            lhs_label=self.lhs.label,
+            rhs_label=self.rhs.label,
+            lhs_fps=self.lhs.fps,
+            rhs_fps=self.rhs.fps,
+            prepare_frames=lambda: self._extract_discontinuity_frames(groups),
+        )
+
+    def _extract_discontinuity_frames(
+        self,
+        groups: list[DiscontinuityGroup],
+    ) -> None:
+        """Extract every missing decoded frame in final error regions."""
+        # Discontinuity fields come as (from, to) pairs: lhs first, then rhs.
+        for side, from_field in ((self.lhs, 0), (self.rhs, 2)):
+            frames = side.all_frames
+            requested: set[int] = set()
+            for group in groups:
+                start_ms, end_ms = group[0][from_field], group[-1][from_field + 1]
+                requested.update(
+                    timestamp
+                    for timestamp in frames
+                    if start_ms <= timestamp <= end_ms
+                )
+            missing = sorted(
+                timestamp
+                for timestamp in requested
+                if frames[timestamp].get("path") is None
+            )
+            if not missing:
+                continue
+            ranges = self._compute_frame_ranges(missing, frames, margin=0)
+            self.logger.info(
+                "Extracting %d missing diagnostic frame(s) for %s",
+                len(missing),
+                side.label,
+            )
+            self.frame_comparison.extract_frames(
+                side.path,
+                side.all_dir,
+                ranges,
+                frames,
+                f"Extracting discontinuity diagnostics: {side.label}",
+            )
+
+    def _report_timing_discontinuities(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        timing_discontinuities: tuple[Discontinuity, ...],
+        relation: MappingRelation,
+        debug: DebugRoutines,
+    ) -> str | None:
+        """Dump diagnostics for unsafe timestamp steps and return their path."""
+        debug.dump_matches(matching_pairs, "timing discontinuities")
+        groups = matching_analysis.group_content_discontinuities(
+            list(timing_discontinuities)
+        )
+        debug_path = debug.dump_timing_discontinuities(
+            groups,
+            lhs_label=self.lhs.label,
+            rhs_label=self.rhs.label,
+            lhs_fps=self.lhs.fps,
+            rhs_fps=self.rhs.fps,
+            prepare_frames=lambda: self._extract_discontinuity_frames(groups),
+        )
+        self.logger.warning(
+            "Matched content has continuous decoded advances but discontinuous presentation timestamps; "
+            "the candidate %s frame relation is unsafe for audio execution.", relation.value,
+        )
+        return debug_path
+
+    def _extend_boundaries(
+        self,
+        matching_pairs: list[tuple[int, int]],
+        global_linear_fit: GlobalLinearFit | None,
+        lhs_scene_ranges: list[tuple[int, int]],
+        rhs_scene_ranges: list[tuple[int, int]],
+        debug: DebugRoutines,
+    ) -> list[tuple[int, int]]:
+        """Move the mapping's first and last pairs toward the video edges."""
+        if global_linear_fit is not None:
+            # Use the certified pairs' observed span to predict shared content,
+            # extend each boundary toward the video edge, and keep the
+            # extension only where the predicted pair is content-verified (same
+            # frame, or both low-entropy black).  A genuinely different intro/outro
+            # fails verification and the boundary stays at the outermost real
+            # match — the line is never blindly projected across divergent
+            # content. No later timestamp edge-snap may bypass verification.
+            matching_pairs = self.boundary_search.extrapolate_and_verify_global_linear(
+                matching_pairs,
+            )
+            debug.dump_matches(matching_pairs, "after verified global-linear extrapolation")
+            return matching_pairs
+
+        # No global relation — fall back to the content/entropy-aware
+        # iterative boundary search.
+        matching_pairs = self._extract_and_refine_boundaries(
+            matching_pairs, lhs_scene_ranges, rhs_scene_ranges, debug,
+        )
+        # The refined pairs can reveal a linear relation the sparse
+        # initial matching could not certify.  A mapping that now passes
+        # the full global-linear detection earns the same verified
+        # boundary extension as a detected global-linear one: the fitted
+        # line predicts the edge pairs, and every extension is
+        # content-verified before being kept.  This must run before the
+        # edge snap: snapped pairs are artificial timestamps with no
+        # normalized frames behind them, while the fit and the
+        # verification may only ever see real matched pairs.
+        generic_fit = self.detect_global_linear(
+            matching_pairs, self.lhs.all_frames, self.rhs.all_frames,
+        )
+        if generic_fit is not None:
+            matching_pairs = self.boundary_search.extrapolate_and_verify_global_linear(
+                matching_pairs,
+            )
+            debug.dump_matches(matching_pairs, "after verified linear extrapolation")
+        return self.boundary_search.snap_to_edges(matching_pairs)
+
     def _extract_and_refine_boundaries(
         self,
         matching_pairs: list[tuple[int, int]],
         lhs_scene_ranges: list[tuple[int, int]],
         rhs_scene_ranges: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
         debug: DebugRoutines,
     ) -> list[tuple[int, int]]:
         """Phase 6: Extract remaining frames and refine boundary pairs."""
         self.logger.info("[6/6] Refining boundaries")
 
-        lhs_max_frame = max(int(info["frame_id"]) for info in self.lhs_all_frames.values())
-        rhs_max_frame = max(int(info["frame_id"]) for info in self.rhs_all_frames.values())
-
-        lhs_boundary_ranges = self._complement_ranges(lhs_scene_ranges, lhs_max_frame)
-        rhs_boundary_ranges = self._complement_ranges(rhs_scene_ranges, rhs_max_frame)
-
-        lhs_boundary_count = sum(e - s + 1 for s, e in lhs_boundary_ranges)
-        rhs_boundary_count = sum(e - s + 1 for s, e in rhs_boundary_ranges)
+        sides = (self.lhs, self.rhs)
+        lhs_boundary_ranges, rhs_boundary_ranges = (
+            self._complement_ranges(
+                scene_ranges,
+                max(int(info["frame_id"]) for info in side.all_frames.values()),
+            )
+            for side, scene_ranges in zip(sides, (lhs_scene_ranges, rhs_scene_ranges))
+        )
         self.logger.info(
-            f"Extracting boundary frames: {lhs_boundary_count} for {self.lhs_label}, "
-            f"{rhs_boundary_count} for {self.rhs_label}"
+            "Extracting boundary frames: %d for %s, %d for %s",
+            sum(e - s + 1 for s, e in lhs_boundary_ranges), self.lhs.label,
+            sum(e - s + 1 for s, e in rhs_boundary_ranges), self.rhs.label,
         )
 
-        video_utils.extract_frames_at_ranges(
-            self.lhs_path, self.lhs_boundary_wd, lhs_boundary_ranges, self.lhs_all_frames,
-            scale=(960, -2), format="png", interruption=self.interruption,
-            desc=f"[6/6] Extracting boundary frames: {self.lhs_label}",
-            logger=self.logger,
-        )
-        video_utils.extract_frames_at_ranges(
-            self.rhs_path, self.rhs_boundary_wd, rhs_boundary_ranges, self.rhs_all_frames,
-            scale=(960, -2), format="png", interruption=self.interruption,
-            desc=f"[6/6] Extracting boundary frames: {self.rhs_label}",
-            logger=self.logger,
-        )
-
-        # Normalize the newly extracted boundary frames and merge
-        lhs_new = {ts: info for ts, info in self.lhs_all_frames.items()
-                   if info.get("path") is not None and ts not in lhs_normalized_frames}
-        rhs_new = {ts: info for ts, info in self.rhs_all_frames.items()
-                   if info.get("path") is not None and ts not in rhs_normalized_frames}
-
-        if lhs_new:
-            lhs_boundary_normalized = self._normalize_frames(
-                lhs_new, self.lhs_normalized_wd, prefix="b_",
-                desc=f"[6/6] Normalizing boundary: {self.lhs_label}",
-            )
-            lhs_normalized_frames.update(lhs_boundary_normalized)
-
-        if rhs_new:
-            rhs_boundary_normalized = self._normalize_frames(
-                rhs_new, self.rhs_normalized_wd, prefix="b_",
-                desc=f"[6/6] Normalizing boundary: {self.rhs_label}",
-            )
-            rhs_normalized_frames.update(rhs_boundary_normalized)
-
-        matching_pairs, _, _ = self._refine_boundary_pairs(
-            matching_pairs, lhs_normalized_frames, rhs_normalized_frames, debug,
-        )
-
-        # Final boundary search on uncropped normalized frames.
-        self.logger.debug("Final boundary search (uncropped frames, with extrapolation)")
-        matching_pairs = self._final_uncropped_boundary_search(
-            matching_pairs, lhs_normalized_frames, rhs_normalized_frames, debug,
-        )
-
-        return matching_pairs
-
-    def _refine_boundary_pairs(
-        self,
-        matching_pairs: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
-        debug: DebugRoutines,
-    ) -> tuple[list[tuple[int, int]], FramesInfo, FramesInfo]:
-        """Iteratively refine boundary pairs using cropped-frame matching.
-
-        Crops both frame sets based on the current matching, searches for
-        boundaries on the cropped frames, and repeats until convergence.
-
-        Returns ``(matching_pairs, lhs_cropped, rhs_cropped)``.
-        """
-        prev_first, prev_last = None, None
-        iteration = 0
-        lhs_normalized_cropped_frames: FramesInfo = {}
-        rhs_normalized_cropped_frames: FramesInfo = {}
-        phash4normalized = PhashCache()
-
-        while True:
-            iteration += 1
-            self.logger.debug(f"Boundary refinement iteration {iteration} (cropped frames)")
-            self.interruption.check_for_stop()
-
-            lhs_normalized_cropped_frames, rhs_normalized_cropped_frames = self._crop_both_sets(
-                pairs_with_timestamps=matching_pairs,
-                lhs_frames=lhs_normalized_frames,
-                rhs_frames=rhs_normalized_frames,
-                lhs_cropped_dir=self.lhs_normalized_cropped_wd,
-                rhs_cropped_dir=self.rhs_normalized_cropped_wd,
+        for side, boundary_ranges in zip(sides, (lhs_boundary_ranges, rhs_boundary_ranges)):
+            self.frame_comparison.extract_frames(
+                side.path, side.boundary_dir, boundary_ranges, side.all_frames,
+                f"[6/6] Extracting boundary frames: {side.label}",
             )
 
-            first_lhs, first_rhs = matching_pairs[0]
-            last_lhs, last_rhs = matching_pairs[-1]
-            self.logger.debug(f"First pair: {lhs_normalized_cropped_frames[first_lhs]['path']} {rhs_normalized_cropped_frames[first_rhs]['path']}")
-            self.logger.debug(f"Last pair:  {lhs_normalized_cropped_frames[last_lhs]['path']} {rhs_normalized_cropped_frames[last_rhs]['path']}")
+        # Normalize the newly extracted boundary frames and merge.
+        for side in sides:
+            new_frames = {
+                timestamp: info
+                for timestamp, info in side.all_frames.items()
+                if info.get("path") is not None
+                and timestamp not in side.normalized_frames
+            }
+            if new_frames:
+                side.normalized_frames.update(self.frame_comparison.normalize_frames(
+                    new_frames, side.normalized_dir, prefix="b_",
+                    desc=f"[6/6] Normalizing boundary: {side.label}",
+                ))
 
-            phash4normalized = PhashCache()
-            self.logger.debug(f"Cropped and aligned:       {PairMatcher.summarize_pairs(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)}")
+        return self.boundary_search.refine_generic_boundaries(matching_pairs, debug)
 
-            cutoff = self._calculate_cutoff(phash4normalized, matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames)
-
-            first, last = self.look_for_boundaries(
-                lhs_normalized_cropped_frames, rhs_normalized_cropped_frames,
-                matching_pairs[0], matching_pairs[-1], cutoff, extrapolate=False,
-            )
-
-            if first == prev_first and last == prev_last:
-                break
-
-            if first != prev_first:
-                matching_pairs = [first, *matching_pairs]
-                prev_first = first
-            if last != prev_last:
-                matching_pairs = [*matching_pairs, last]
-                prev_last = last
-
-            debug.dump_matches(matching_pairs, "improving boundaries")
-
-        self.logger.info(f"Boundary refinement converged after {iteration} iteration(s)")
-        self.logger.debug("Status after boundaries lookup:\n")
-        self.logger.debug(PairMatcher.summarize_segments(matching_pairs, self.lhs_fps, self.rhs_fps, lhs_label=self.lhs_label, rhs_label=self.rhs_label))
-        self.logger.debug(PairMatcher.summarize_pairs(phash4normalized, matching_pairs, self.lhs_all_frames, self.rhs_all_frames, verbose=True))
-
-        return matching_pairs, lhs_normalized_cropped_frames, rhs_normalized_cropped_frames
-
-    def _final_uncropped_boundary_search(
-        self,
-        matching_pairs: list[tuple[int, int]],
-        lhs_normalized_frames: FramesInfo,
-        rhs_normalized_frames: FramesInfo,
-        debug: DebugRoutines,
+    @staticmethod
+    def _complement_ranges(
+        scene_ranges: list[tuple[int, int]], max_frame: int,
     ) -> list[tuple[int, int]]:
-        """Run a final boundary search on uncropped normalized frames."""
-        phash_uncropped = PhashCache()
-        uncropped_cutoff = self._calculate_cutoff(phash_uncropped, matching_pairs, lhs_normalized_frames, rhs_normalized_frames)
-        final_first, final_last = self.look_for_boundaries(
-            lhs_normalized_frames, rhs_normalized_frames,
-            matching_pairs[0], matching_pairs[-1],
-            uncropped_cutoff,
-        )
-        if final_first != matching_pairs[0]:
-            matching_pairs = [final_first, *matching_pairs]
-            self.logger.debug(f"Uncropped search extended first boundary to {final_first}")
-        if final_last != matching_pairs[-1]:
-            matching_pairs = [*matching_pairs, final_last]
-            self.logger.debug(f"Uncropped search extended last boundary to {final_last}")
-
-        debug.dump_matches(matching_pairs, "after uncropped boundary search")
-        self.logger.debug("Final status:\n")
-        self.logger.debug(PairMatcher.summarize_segments(matching_pairs, self.lhs_fps, self.rhs_fps, lhs_label=self.lhs_label, rhs_label=self.rhs_label))
-        self.logger.debug(PairMatcher.summarize_pairs(phash_uncropped, matching_pairs, self.lhs_all_frames, self.rhs_all_frames, verbose=True))
-
-        return matching_pairs
+        """Return frame ranges NOT covered by *scene_ranges*."""
+        merged = sorted(scene_ranges)
+        gaps: list[tuple[int, int]] = []
+        cursor = 0
+        for start, end in merged:
+            if cursor < start:
+                gaps.append((cursor, start - 1))
+            cursor = max(cursor, end + 1)
+        if cursor <= max_frame:
+            gaps.append((cursor, max_frame))
+        return gaps

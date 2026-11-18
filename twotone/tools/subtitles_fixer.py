@@ -249,6 +249,8 @@ class SubtitlesFixPlan:
                 logger.info("    tracks: %s", tracks)
 
 class FixerTool(Tool):
+    REQUIRED_TOOLS = ("ffprobe", "mkvextract", "mkvmerge")
+
     def __init__(self) -> None:
         super().__init__()
 

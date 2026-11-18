@@ -19,9 +19,12 @@ from common import (
 )
 from parameterized import parameterized
 
-from twotone.tools.melt.melt import MeltAnalyzer, MeltPerformer, StaticSource
+from twotone.tools.melt.melt_analyzer import MeltAnalyzer
+from twotone.tools.melt.melt_performer import MeltPerformer
+from twotone.tools.melt.source_aligner import AlignmentGroup
+from twotone.tools.melt.static_source import StaticSource
 from twotone.tools.melt.melt_cache import MeltCache
-from twotone.tools.melt.melt_common import AudioStreamRef, VideoStreamRef
+from twotone.tools.melt.melt_common import VideoStreamRef
 from twotone.tools.melt.pair_matcher import PairMatcher
 from twotone.tools.tool import ToolRuntimeContext
 from twotone.tools.utils import generic_utils, media_analysis, video_utils
@@ -192,22 +195,20 @@ class AudioTimelineDiscontinuityTest(TwoToneTestCase):
 
         context = ToolRuntimeContext(self.workspace, interruption, analysis)
         performer = MeltPerformer(logger=self.logger, context=context, output_dir=self.wd.path)
+        group = AlignmentGroup(
+            file_ids={base: 1, source: 2},
+            base_video=VideoStreamRef(base, 0, 0, None),
+            base_duration_ms=20000,
+        )
         # Only visual candidate selection is controlled. Probing, frame PTS,
         # fitting, discontinuity classification and performer decisions are real.
         with patch.object(PairMatcher, "_detect_scenes", return_value=(
                  [lhs for lhs, _ in pairs], [rhs for _, rhs in pairs],
              )), \
              patch.object(PairMatcher, "_match_key_frames", return_value=pairs), \
-             patch.object(performer, "_create_audio_patch_request") as request, \
-             patch.object(performer, "_execute_audio_patch") as execute, \
              self.assertRaisesRegex(RuntimeError, "Unsupported audio timeline discontinuity.*PTS step"):
-            performer._patch_mismatched_audio(
-                VideoStreamRef(base, 0, 0, None), VideoStreamRef(source, 0, 0, None),
-                AudioStreamRef(source, 1, 1, "pol"), None, 20000, None,
-                {base: 1, source: 2},
-            )
-        request.assert_not_called()
-        execute.assert_not_called()
+            performer.aligner._align_source(group, source, consumer="audio")
+        self.assertNotIn(source, group.aligned_sources)
 
 
 class AudioAlignmentTest(TwoToneTestCase):
@@ -825,8 +826,8 @@ class AudioAlignmentTest(TwoToneTestCase):
             for title, files in duplicates_raw.items()
         })
         for item in plan:
-            for group in item.get("groups", []):
-                for request in group.get("media_analysis_requests", []):
+            for group in item.groups:
+                for request in group.media_analysis_requests:
                     media_analysis_session.fulfill(request)
 
         performer = MeltPerformer(

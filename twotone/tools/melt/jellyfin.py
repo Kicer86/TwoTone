@@ -48,7 +48,7 @@ class JellyfinSource(DuplicatesSource):
             if path.startswith(pfrom):
                 fixed_path = f"{pto}{path[len(pfrom):]}"
             else:
-                self.logger.error(f"Could not replace \"{pfrom}\" in \"{path}\"")
+                self.logger.error("Could not replace \"%s\" in \"%s\"", pfrom, path)
 
         return fixed_path
 
@@ -108,9 +108,9 @@ class JellyfinSource(DuplicatesSource):
                         name = names[0]
 
                         if not all_paths_are_files:
-                            self.logger.warning(f"Some paths for title {name} are not files:")
+                            self.logger.warning("Some paths for title %s are not files:", name)
                             for path in fixed_paths:
-                                self.logger.warning(f"\t{path}")
+                                self.logger.warning("\t%s", path)
                             self.logger.warning("Skipping title")
                         else:
                             # Check if all files come from different directories.
@@ -132,18 +132,25 @@ class JellyfinSource(DuplicatesSource):
                             if len(dirs) < len(fixed_paths):
                                 if len(dirs) == 1:
                                     first_dir = next(iter(dirs))
-                                    self.logger.info(f"All files for title {name} are in the same directory: {first_dir}.\nAssuming these all variants of the same movie and skipping.")
+                                    self.logger.info(
+                                        "All files for title %s are in the same directory: %s.\n"
+                                        "Assuming these all variants of the same movie and skipping.",
+                                        name, first_dir,
+                                    )
                                 else:
-                                    self.logger.warning(f"Some files for title {name} are in the same directory:")
+                                    self.logger.warning("Some files for title %s are in the same directory:", name)
                                     for path in fixed_paths:
-                                        self.logger.warning(f"\t{path}")
+                                        self.logger.warning("\t%s", path)
                                     self.logger.warning("Skipping title, as this is not supported.")
                             else:
                                 duplicates[name] = fixed_paths
                     else:
                         names_str = '\n'.join(names)
                         paths_str = '\n'.join(fixed_paths)
-                        self.logger.warning(f"Different names for the same movie ({provider}: {id}):\n{names_str}.\nJellyfin files:\n{paths_str}\nSkipping.")
+                        self.logger.warning(
+                            "Different names for the same movie (%s: %s):\n%s.\nJellyfin files:\n%s\nSkipping.",
+                            provider, id, names_str, paths_str,
+                        )
 
         return duplicates
 
@@ -166,7 +173,7 @@ class JellyfinSource(DuplicatesSource):
         delta = now - self.last_tmdb_request
         if delta < 0.3:
             wait = 0.3 - delta
-            self.logger.warning(f"TMDB API limit reached. Waiting {wait:.2f}s.")
+            self.logger.warning("TMDB API limit reached. Waiting %.2fs.", wait)
             time.sleep(wait)
 
         response = requests.get(
@@ -176,7 +183,7 @@ class JellyfinSource(DuplicatesSource):
         self.last_tmdb_request = time.time()
 
         if response.status_code != 200:
-            self.logger.error(f"TMDB request failed for id {tmdb_id}: {response.status_code}")
+            self.logger.error("TMDB request failed for id %s: %s", tmdb_id, response.status_code)
             return {"audio_prod_lang": None}
 
         data = response.json()

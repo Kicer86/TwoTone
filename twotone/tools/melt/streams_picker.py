@@ -1,21 +1,30 @@
 import logging
-
 from collections import defaultdict
+from dataclasses import dataclass
 from functools import cmp_to_key
-from typing import Any, Generator
+from collections.abc import Callable
+from typing import Any, Generator, TypeVar
 
 from ..utils import generic_utils, language_utils
 from .duplicates_source import DuplicatesSource
 from .melt_common import AudioStreamRef, SubtitleStreamRef, VideoStreamRef
 
-
 _UNDEFINED_LANGUAGE = "undefined"
 
+_StreamRefT = TypeVar("_StreamRefT", VideoStreamRef, AudioStreamRef, SubtitleStreamRef)
+
+
+@dataclass(frozen=True)
+class _StreamCandidate:
+    path: str
+    tid: int
+    details: dict[str, Any]
+
+
 class StreamsPicker:
-    def __init__(self, logger: logging.Logger, duplicates_source: DuplicatesSource, wd: str):
+    def __init__(self, logger: logging.Logger, duplicates_source: DuplicatesSource):
         self.logger = logger
         self.duplicates_source = duplicates_source
-        self.wd = wd
 
     def pick_streams(
         self,
@@ -41,15 +50,19 @@ class StreamsPicker:
             best_file_candidate,
             ids,
             "video",
+            VideoStreamRef,
             [],
             self._video_cmp,
             get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids)
         )
-        video_streams = [video_stream for video_stream in video_streams if (video_stream[0], video_stream[1]) not in attached_pics]
+        video_streams = [
+            video_stream
+            for video_stream in video_streams
+            if (video_stream.path, video_stream.mkvmerge_track_id) not in attached_pics
+        ]
         if not video_streams:
             raise RuntimeError("Could not find any usable video stream.")
-        video_stream = video_streams[0]
-        video_stream_path = video_stream[0]
+        video_stream_path = video_streams[0].path
 
         # pick audio streams
         forced_audio_language = self._metadata_language_overrides(files_details, "audio_lang", normalize=True)
@@ -58,6 +71,7 @@ class StreamsPicker:
             video_stream_path,
             ids,
             "audio",
+            AudioStreamRef,
             ["language", "channels"],
             self._cmp_by_keys(["sample_rate"]),
             get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids, override_languages = forced_audio_language)
@@ -70,17 +84,13 @@ class StreamsPicker:
             video_stream_path,
             ids,
             "subtitle",
+            SubtitleStreamRef,
             ["language"],
             lambda a, b: 0,
             get_language = lambda stream, stream_type, file: self._get_language(stream, stream_type, file, ids, override_languages = forced_subtitle_language)
         )
 
-        # results
-        return (
-            [VideoStreamRef(*stream) for stream in video_streams],
-            [AudioStreamRef(*stream) for stream in audio_streams],
-            [SubtitleStreamRef(*stream) for stream in subtitle_streams],
-        )
+        return video_streams, audio_streams, subtitle_streams
 
     @staticmethod
     def _metadata_flag_is_enabled(value: object) -> bool:
@@ -122,15 +132,12 @@ class StreamsPicker:
         if start_key not in d:
             raise KeyError(f"{start_key} not found in dictionary")
 
-        yielded = set()
-
         # Yield the starting key first
         yield start_key, d[start_key]
-        yielded.add(start_key)
 
         # Yield the rest in order
         for k, v in d.items():
-            if k not in yielded:
+            if k != start_key:
                 yield k, v
 
     @staticmethod
@@ -157,10 +164,11 @@ class StreamsPicker:
         best_file: str,
         files_ids: dict[str, int],
         stream_type: str,
+        ref_type: Callable[[str, int, int, str | None], _StreamRefT],
         unique_keys: list[str],
         preference,
         get_language
-    ) -> list[tuple[str, int, int, str | None]]:
+    ) -> list[_StreamRefT]:
         """Pick best streams of ``stream_type`` from ``files_details``.
 
         ``unique_keys`` determines the grouping for uniqueness. ``preference`` is
@@ -170,8 +178,11 @@ class StreamsPicker:
         ``get_language`` is a functor returning language for given stream and path.
         """
 
-        stream_index: defaultdict[tuple[Any, ...], defaultdict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
-        forced_streams: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        stream_index: defaultdict[
+            tuple[Any, ...],
+            defaultdict[str, list[_StreamCandidate]],
+        ] = defaultdict(lambda: defaultdict(list))
+        forced_streams: list[tuple[tuple[Any, ...], _StreamCandidate]] = []
         forced_keys: set[tuple[Any, ...]] = set()
 
         # organize all streams by unique_key and file
@@ -207,7 +218,7 @@ class StreamsPicker:
                 # put tid into top layer for easier access
                 tid = stream_view["tid"]
 
-                current = {"file": path, "tid": tid, "details": stream_view}
+                current = _StreamCandidate(path, tid, stream_view)
                 if keep_all_audio_subtitle_streams:
                     forced_streams.append((unique_key, current))
                     forced_keys.add(unique_key)
@@ -215,7 +226,7 @@ class StreamsPicker:
                     stream_index[unique_key][path].append(current)
 
         # process collected streams
-        picked_streams: list[tuple[tuple[Any, ...], dict[str, Any]]] = list(forced_streams)
+        picked_streams: list[tuple[tuple[Any, ...], _StreamCandidate]] = list(forced_streams)
         for key, file_streams in stream_index.items():
             if key in forced_keys:
                 continue
@@ -232,38 +243,48 @@ class StreamsPicker:
                 continue
 
             # two or more files provide streams of the same uniqness. choose better ones
-            def preference_sorting(lhs: dict, rhs: dict) -> int:
-                return preference(lhs["details"], rhs["details"])
+            def preference_sorting(
+                lhs: _StreamCandidate,
+                rhs: _StreamCandidate,
+            ) -> int:
+                return preference(lhs.details, rhs.details)
 
             # sort lists of details for each file
             sorted_file_streams = {k: sorted(v, key=cmp_to_key(preference_sorting)) for k, v in file_streams.items()}
 
-            def compare_items(lhs_item: tuple[str, list[dict[str, Any]]], rhs_item: tuple[str, list[dict[str, Any]]]) -> int:
-                return preference_sorting(lhs_item[1][0], rhs_item[1][0])
-
             # pick best details
+            def compare_candidate_lists(
+                lhs: list[_StreamCandidate],
+                rhs: list[_StreamCandidate],
+            ) -> int:
+                return preference_sorting(lhs[0], rhs[0])
+
             best_file_streams = max(
-                sorted_file_streams.items(),
-                key=cmp_to_key(compare_items)
+                sorted_file_streams.values(),
+                key=cmp_to_key(compare_candidate_lists),
             )
 
-            for stream in best_file_streams[1]:
+            for stream in best_file_streams:
                 picked_streams.append((key, stream))
 
         # Flatten result
-        result: list[tuple[str, int, int, str | None]] = []
-        for unique_key, entry in picked_streams:
-            tid = entry["tid"]
-            path = entry["file"]
-            language = entry["details"].get("language")
-            ffprobe_stream_index = entry["details"].get("ffprobe_stream_index")
+        result: list[_StreamRefT] = []
+        for _unique_key, entry in picked_streams:
+            language = entry.details.get("language")
+            ffprobe_stream_index = entry.details.get("ffprobe_stream_index")
             if not isinstance(ffprobe_stream_index, int):
                 raise RuntimeError(
-                    f"Missing ffprobe stream identity for {stream_type} track #{tid} in {path}."
+                    f"Missing ffprobe stream identity for {stream_type} "
+                    f"track #{entry.tid} in {entry.path}."
                 )
             if language == _UNDEFINED_LANGUAGE:
                 language = None
-            result.append((path, tid, ffprobe_stream_index, language))
+            result.append(ref_type(
+                entry.path,
+                entry.tid,
+                ffprobe_stream_index,
+                language,
+            ))
 
         return result
 
@@ -337,7 +358,13 @@ class StreamsPicker:
             lang = override_languages[path]
             tid = stream.get("tid")
             if original_lang:
-                self.logger.info(f"Overriding {stream_type} stream #{tid} language {original_lang} with {lang} for file #{file_id}")
+                self.logger.info(
+                    "Overriding %s stream #%s language %s with %s for file #%s",
+                    stream_type, tid, original_lang, lang, file_id,
+                )
             else:
-                self.logger.info(f"Setting {stream_type} stream #{tid} language to {lang} for file #{file_id}")
+                self.logger.info(
+                    "Setting %s stream #%s language to %s for file #%s",
+                    stream_type, tid, lang, file_id,
+                )
         return lang

@@ -5,7 +5,13 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from twotone.tools.melt.melt_plan import MeltPlan
+from twotone.tools.melt.melt_common import (
+    AudioStreamRef,
+    MeltInputFiles,
+    SubtitleStreamRef,
+    VideoStreamRef,
+)
+from twotone.tools.melt.melt_plan import MeltGroupPlan, MeltPlan, MeltTitlePlan
 from twotone.tools.melt.melt_tool import MeltTool
 from twotone.tools.utils import input_validation, media_analysis
 
@@ -22,11 +28,11 @@ class MeltPlanMediaAnalysisTest(unittest.TestCase):
             label="#2",
             features=media_analysis.MediaAnalysisFeature.MATCHING,
         )
-        plan = MeltPlan(items=[{
-            "title": "Movie",
-            "groups": [{"media_analysis_requests": [included]}],
-            "skipped_groups": [{"media_analysis_requests": [skipped]}],
-        }], output_dir="/output")
+        plan = MeltPlan(items=(MeltTitlePlan(
+            title="Movie",
+            groups=(MeltGroupPlan(media_analysis_requests=(included,)),),
+            skipped_groups=(MeltGroupPlan(media_analysis_requests=(skipped,)),),
+        ),), output_dir="/output")
 
         self.assertEqual(plan.media_analysis_requests(), (included,))
         self.assertEqual(tuple(MeltTool().media_analysis_requests(plan)), (included,))
@@ -42,40 +48,41 @@ class MeltPlanInputValidationTest(unittest.TestCase):
         second_audio_ffprobe_index = 5
         first_subtitle_track_id = 3
         first_subtitle_ffprobe_index = 9
-        plan = MeltPlan(items=[{
-            "title": "Movie",
-            "groups": [{
-                "files": ["/media/first.mkv", "/media/second.mkv"],
-                "streams": {
-                    "video": [(
+        plan = MeltPlan(items=(MeltTitlePlan(
+            title="Movie",
+            groups=(MeltGroupPlan(
+                input_files=MeltInputFiles((
+                    "/media/first.mkv",
+                    "/media/second.mkv",
+                )),
+                video_streams=(VideoStreamRef(
                         "/media/second.mkv",
                         second_video_track_id,
                         second_video_ffprobe_index,
                         None,
-                    )],
-                    "audio": [
-                        (
+                    ),),
+                audio_streams=(
+                    AudioStreamRef(
                             "/media/first.mkv",
                             first_audio_track_id,
                             first_audio_ffprobe_index,
                             "eng",
                         ),
-                        (
+                    AudioStreamRef(
                             "/media/second.mkv",
                             second_audio_track_id,
                             second_audio_ffprobe_index,
                             "pol",
                         ),
-                    ],
-                    "subtitle": [(
+                ),
+                subtitle_streams=(SubtitleStreamRef(
                         "/media/first.mkv",
                         first_subtitle_track_id,
                         first_subtitle_ffprobe_index,
                         "eng",
-                    )],
-                },
-            }],
-        }], output_dir="/output")
+                    ),),
+            ),),
+        ),), output_dir="/output")
 
         self.assertEqual(plan.input_validation_targets(), (
             input_validation.InputValidationTarget(
@@ -94,10 +101,13 @@ class MeltPlanInputValidationTest(unittest.TestCase):
         ))
 
     def test_single_group_uses_the_existing_file_numbers(self):
-        plan = MeltPlan(items=[{
-            "title": "Movie",
-            "groups": [{"files": ["/media/first.mkv", "/media/second.mkv"]}],
-        }], output_dir="/output")
+        plan = MeltPlan(items=(MeltTitlePlan(
+            title="Movie",
+            groups=(MeltGroupPlan(input_files=MeltInputFiles((
+                "/media/first.mkv",
+                "/media/second.mkv",
+            ))),),
+        ),), output_dir="/output")
 
         targets = plan.input_validation_targets()
 
@@ -107,20 +117,40 @@ class MeltPlanInputValidationTest(unittest.TestCase):
         ))
         self.assertEqual(tuple(MeltTool().input_validation_targets(plan)), targets)
 
+    def test_analyzed_group_preserves_known_empty_stream_selection(self):
+        path = "/media/subtitle-only.mkv"
+        plan = MeltPlan(items=(MeltTitlePlan(
+            title="Movie",
+            groups=(MeltGroupPlan(
+                input_files=MeltInputFiles((path,)),
+                video_streams=(),
+                audio_streams=(),
+                subtitle_streams=(SubtitleStreamRef(path, 2, 4, "eng"),),
+            ),),
+        ),), output_dir="/output")
+
+        self.assertEqual(plan.input_validation_targets(), (
+            input_validation.InputValidationTarget(path, "#1", stream_indices=()),
+        ))
+
     def test_multiple_groups_add_context_to_group_local_file_numbers(self):
-        plan = MeltPlan(items=[
-            {
-                "title": "Movie",
-                "groups": [
-                    {"files": ["/media/a.mkv", "/media/b.mkv"]},
-                    {"files": ["/media/c.mkv"]},
-                ],
-            },
-            {
-                "title": "Other",
-                "groups": [{"files": ["/media/d.mkv"]}],
-            },
-        ], output_dir="/output")
+        plan = MeltPlan(items=(
+            MeltTitlePlan(
+                title="Movie",
+                groups=(
+                    MeltGroupPlan(input_files=MeltInputFiles((
+                        "/media/a.mkv", "/media/b.mkv",
+                    ))),
+                    MeltGroupPlan(input_files=MeltInputFiles(("/media/c.mkv",))),
+                ),
+            ),
+            MeltTitlePlan(
+                title="Other",
+                groups=(MeltGroupPlan(
+                    input_files=MeltInputFiles(("/media/d.mkv",)),
+                ),),
+            ),
+        ), output_dir="/output")
 
         self.assertEqual(plan.input_validation_targets(), (
             input_validation.InputValidationTarget(
@@ -140,6 +170,12 @@ class MeltPlanInputValidationTest(unittest.TestCase):
 
 
 class MeltToolContextTest(unittest.TestCase):
+    def test_required_tools_include_extracted_audio_and_subtitle_dependencies(self):
+        self.assertEqual(
+            MeltTool().required_tools(),
+            {"ffmpeg", "ffprobe", "mkvextract", "mkvmerge"},
+        )
+
     def test_parser_accepts_custom_temporary_frame_offset_limit(self):
         parser = argparse.ArgumentParser()
         MeltTool().setup_parser(parser)
@@ -229,14 +265,14 @@ class MeltPlanCollectSelectedTest(unittest.TestCase):
     """Unit tests for MeltPlan._collect_selected."""
 
     def test_collect_selected_returns_language_overrides(self):
-        group = {
-            "streams": {
-                "video": [("/a.mkv", 0, 0, None)],
-                "audio": [("/a.mkv", 1, 1, "eng"), ("/b.avi", 1, 1, "pol")],
-                "subtitle": [("/a.mkv", 2, 2, "eng")],
-            },
-            "attachments": [],
-        }
+        group = MeltGroupPlan(
+            video_streams=(VideoStreamRef("/a.mkv", 0, 0, None),),
+            audio_streams=(
+                AudioStreamRef("/a.mkv", 1, 1, "eng"),
+                AudioStreamRef("/b.avi", 1, 1, "pol"),
+            ),
+            subtitle_streams=(SubtitleStreamRef("/a.mkv", 2, 2, "eng"),),
+        )
         selected, _, lang_overrides = MeltPlan._collect_selected(group)
 
         # Basic selected IDs
@@ -248,14 +284,9 @@ class MeltPlanCollectSelectedTest(unittest.TestCase):
         self.assertEqual(lang_overrides["audio"][("/b.avi", 1)], "pol")
 
     def test_collect_selected_none_language_not_in_overrides(self):
-        group = {
-            "streams": {
-                "video": [("/a.mkv", 0, 0, None)],
-                "audio": [],
-                "subtitle": [],
-            },
-            "attachments": [],
-        }
+        group = MeltGroupPlan(
+            video_streams=(VideoStreamRef("/a.mkv", 0, 0, None),),
+        )
         _, _, lang_overrides = MeltPlan._collect_selected(group)
         self.assertEqual(lang_overrides["video"], {})
 
@@ -265,16 +296,15 @@ class MeltPlanRenderOverrideTest(unittest.TestCase):
 
     def test_render_shows_overridden_audio_language(self):
         """File #2 audio with --audio-lang pl should show 'Polish' in rendered output."""
-        group = {
-            "files": ["/a.mkv", "/b.avi"],
-            "output_name": "output",
-            "streams": {
-                "video": [("/a.mkv", 0, 0, None)],
-                "audio": [("/a.mkv", 1, 1, "eng"), ("/b.avi", 1, 1, "pol")],
-                "subtitle": [],
-            },
-            "attachments": [],
-            "files_details": {
+        group = MeltGroupPlan(
+            input_files=MeltInputFiles(("/a.mkv", "/b.avi")),
+            output_name="output",
+            video_streams=(VideoStreamRef("/a.mkv", 0, 0, None),),
+            audio_streams=(
+                AudioStreamRef("/a.mkv", 1, 1, "eng"),
+                AudioStreamRef("/b.avi", 1, 1, "pol"),
+            ),
+            files_details={
                 "/a.mkv": {
                     "tracks": {
                         "video": [{"tid": 0, "width": 1920, "height": 1080, "fps": "24000/1001"}],
@@ -292,9 +322,9 @@ class MeltPlanRenderOverrideTest(unittest.TestCase):
                     "attachments": [],
                 },
             },
-        }
+        )
         plan = MeltPlan(
-            items=[{"title": "Test Movie", "groups": [group]}],
+            items=(MeltTitlePlan(title="Test Movie", groups=(group,)),),
             output_dir="/output",
         )
         logger = logging.getLogger("test.render")

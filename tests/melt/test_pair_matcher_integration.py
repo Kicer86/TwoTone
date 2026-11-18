@@ -12,8 +12,21 @@ from parameterized import parameterized
 from common import add_to_test_dir
 
 from melt.helpers import MeltTestBase
-from twotone.tools.melt.melt import MappingRelation, PairMatcher
+from twotone.tools.melt import mapping_validation, matching_analysis
+from twotone.tools.melt.pair_matcher import MappingRelation, PairMatcher
 from twotone.tools.utils import files_utils, generic_utils, media_analysis, video_utils
+
+
+def _validate(result) -> None:
+    """Apply the default melt acceptance check to a matcher result."""
+    mapping_validation.validate_mapping(
+        result,
+        consumer="audio",
+        lhs_id=1,
+        rhs_id=2,
+        max_temporary_frame_offset=mapping_validation.DEFAULT_MAX_TEMPORARY_FRAME_OFFSET,
+        logger=logging.getLogger("test.mapping_validation"),
+    )
 
 
 class DiscontinuityContentTest(unittest.TestCase):
@@ -80,8 +93,10 @@ class DiscontinuityContentTest(unittest.TestCase):
                 self.assertEqual(result.mapping[0], (0, 0))
                 self.assertEqual(result.mapping[-1], (12000, 12000))
             else:
+                result = pm.create_segments_mapping()
+                self.assertTrue(result.content_discontinuities)
                 with self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
-                    pm.create_segments_mapping()
+                    _validate(result)
 
     @parameterized.expand(["false_match", "opposite_edits", "sparse_cut", "ambiguous_black"])
     def test_sparse_step_requires_content_evidence(self, case):
@@ -127,8 +142,10 @@ class DiscontinuityContentTest(unittest.TestCase):
                 self.assertEqual(result.mapping[0], (0, 0))
                 self.assertEqual(result.mapping[-1], (12000, 12000))
             else:
+                result = pm.create_segments_mapping()
+                self.assertTrue(result.content_discontinuities)
                 with self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
-                    pm.create_segments_mapping()
+                    _validate(result)
 
     @parameterized.expand([
         (edge, reverse, content)
@@ -171,9 +188,11 @@ class DiscontinuityContentTest(unittest.TestCase):
 
         with patch.object(pm, '_detect_scenes', return_value=([l for l, _ in pairs], [r for _, r in pairs])), \
              patch.object(pm, '_make_pairs', side_effect=seed_initial_pairs) as matching, \
-             patch('twotone.tools.melt.pair_matcher.DebugRoutines'), \
-             self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
-            pm.create_segments_mapping()
+             patch('twotone.tools.melt.pair_matcher.DebugRoutines'):
+            result = pm.create_segments_mapping()
+        self.assertTrue(result.content_discontinuities)
+        with self.assertRaisesRegex(RuntimeError, "local frame-sequence difference"):
+            _validate(result)
 
     def _make_content_matcher(self, frames, rhs_frames):
         workspace = files_utils.Workspace.temporary()
@@ -254,7 +273,7 @@ class BoundaryPredictionTest(unittest.TestCase):
         paths = (rhs, lhs) if reverse else (lhs, rhs)
         pm = PairMatcher(interruption, os.path.join(workspace.root, "matcher"), *paths, logger,
                          media_analysis_session=analysis)
-        self.assertEqual((pm.lhs_fps, pm.rhs_fps), (24.99, 25.0) if reverse else (25.0, 24.99))
+        self.assertEqual((pm.lhs.fps, pm.rhs.fps), (24.99, 25.0) if reverse else (25.0, 24.99))
         # Only candidate selection is seeded: fit, classification, extraction,
         # normalization, shared-crop calibration and boundary checks run for real.
         with patch.object(pm, '_detect_scenes', return_value=([l for l, _ in pairs], [r for _, r in pairs])), \
@@ -355,12 +374,12 @@ class PairMatcherIntegrationTest(MeltTestBase):
             self.assertGreaterEqual(mappings[i][1], mappings[i-1][1])
 
         # Both edges snapped to video boundaries. Full coverage.
-        coverage = PairMatcher.coverage_summary(
+        coverage = matching_analysis.coverage_summary(
             mappings,
             video_utils.get_video_duration(file1),
             video_utils.get_video_duration(file2),
-            lhs_fps=pair_matcher.lhs_fps,
-            rhs_fps=pair_matcher.rhs_fps,
+            lhs_fps=pair_matcher.lhs.fps,
+            rhs_fps=pair_matcher.rhs.fps,
         )
         self.assertTrue(coverage["full_coverage"])
 
@@ -385,12 +404,12 @@ class PairMatcherIntegrationTest(MeltTestBase):
         self.assertAlmostEqual(mappings[-1][0], 65337, delta=500)
         self.assertAlmostEqual(mappings[-1][1], 63433, delta=500)
 
-        coverage = PairMatcher.coverage_summary(
+        coverage = matching_analysis.coverage_summary(
             mappings,
             video_utils.get_video_duration(file1_path),
             video_utils.get_video_duration(file2_path),
-            lhs_fps=pair_matcher.lhs_fps,
-            rhs_fps=pair_matcher.rhs_fps,
+            lhs_fps=pair_matcher.lhs.fps,
+            rhs_fps=pair_matcher.rhs.fps,
         )
         self.assertTrue(coverage["full_coverage"])
 
@@ -417,12 +436,12 @@ class PairMatcherIntegrationTest(MeltTestBase):
         self.assertAlmostEqual(mappings[-1][0], 64103, delta=500)
         self.assertAlmostEqual(mappings[-1][1], 66325, delta=500)
 
-        coverage = PairMatcher.coverage_summary(
+        coverage = matching_analysis.coverage_summary(
             mappings,
             video_utils.get_video_duration(file1_path),
             video_utils.get_video_duration(file2_path),
-            lhs_fps=pair_matcher.lhs_fps,
-            rhs_fps=pair_matcher.rhs_fps,
+            lhs_fps=pair_matcher.lhs.fps,
+            rhs_fps=pair_matcher.rhs.fps,
         )
         # LHS snapped to 0, RHS inside its 6s black intro — RHS start gap < 6s.
         # Both ends reach their video boundary.
@@ -453,12 +472,12 @@ class PairMatcherIntegrationTest(MeltTestBase):
         self.assertAlmostEqual(mappings[-1][0], 65337, delta=500)
         self.assertAlmostEqual(mappings[-1][1], 63433, delta=500)
 
-        coverage = PairMatcher.coverage_summary(
+        coverage = matching_analysis.coverage_summary(
             mappings,
             video_utils.get_video_duration(file1_path),
             video_utils.get_video_duration(file2_path),
-            lhs_fps=pair_matcher.lhs_fps,
-            rhs_fps=pair_matcher.rhs_fps,
+            lhs_fps=pair_matcher.lhs.fps,
+            rhs_fps=pair_matcher.rhs.fps,
         )
         self.assertTrue(coverage["full_coverage"])
 
@@ -483,12 +502,12 @@ class PairMatcherIntegrationTest(MeltTestBase):
         self.assertAlmostEqual(mappings[-1][0], 66343, delta=500)
         self.assertAlmostEqual(mappings[-1][1], 64415, delta=500)
 
-        coverage = PairMatcher.coverage_summary(
+        coverage = matching_analysis.coverage_summary(
             mappings,
             video_utils.get_video_duration(file1_path),
             video_utils.get_video_duration(file2_path),
-            lhs_fps=pair_matcher.lhs_fps,
-            rhs_fps=pair_matcher.rhs_fps,
+            lhs_fps=pair_matcher.lhs.fps,
+            rhs_fps=pair_matcher.rhs.fps,
         )
         # Both edges snapped through black intro/outro to video boundaries.
         self.assertTrue(coverage["full_coverage"])
@@ -512,12 +531,12 @@ class PairMatcherIntegrationTest(MeltTestBase):
         self.assertAlmostEqual(mappings[-1][0], 62314, delta=500)
         self.assertAlmostEqual(mappings[-1][1], 62313, delta=500)
 
-        coverage = PairMatcher.coverage_summary(
+        coverage = matching_analysis.coverage_summary(
             mappings,
             video_utils.get_video_duration(file1_path),
             video_utils.get_video_duration(file2_path),
-            lhs_fps=pair_matcher.lhs_fps,
-            rhs_fps=pair_matcher.rhs_fps,
+            lhs_fps=pair_matcher.lhs.fps,
+            rhs_fps=pair_matcher.rhs.fps,
         )
         self.assertTrue(coverage["full_coverage"])
 
@@ -544,12 +563,12 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         self.assertEqual(result.relation, MappingRelation.GLOBAL_LINEAR)
 
-        coverage = PairMatcher.coverage_summary(
+        coverage = matching_analysis.coverage_summary(
             result.mapping,
             video_utils.get_video_duration(file1_path),
             video_utils.get_video_duration(file2_path),
-            lhs_fps=pair_matcher.lhs_fps,
-            rhs_fps=pair_matcher.rhs_fps,
+            lhs_fps=pair_matcher.lhs.fps,
+            rhs_fps=pair_matcher.rhs.fps,
         )
         self.assertTrue(coverage["full_coverage"])
 
@@ -575,12 +594,12 @@ class PairMatcherIntegrationTest(MeltTestBase):
         self.assertAlmostEqual(mappings[-1][0], 65302, delta=100)
         self.assertAlmostEqual(mappings[-1][1], 63471, delta=100)
 
-        coverage = PairMatcher.coverage_summary(
+        coverage = matching_analysis.coverage_summary(
             mappings,
             video_utils.get_video_duration(file1_path),
             video_utils.get_video_duration(file2_path),
-            lhs_fps=pair_matcher.lhs_fps,
-            rhs_fps=pair_matcher.rhs_fps,
+            lhs_fps=pair_matcher.lhs.fps,
+            rhs_fps=pair_matcher.rhs.fps,
         )
         # Both files have 3s intros (grass / atoms). Common content starts at ~3s.
         # Start gaps must match the known intro duration within 1s tolerance.
@@ -613,12 +632,12 @@ class PairMatcherIntegrationTest(MeltTestBase):
         self.assertAlmostEqual(mappings[-1][0], 64302, delta=100)
         self.assertAlmostEqual(mappings[-1][1], 65471, delta=100)
 
-        coverage = PairMatcher.coverage_summary(
+        coverage = matching_analysis.coverage_summary(
             mappings,
             video_utils.get_video_duration(file1_path),
             video_utils.get_video_duration(file2_path),
-            lhs_fps=pair_matcher.lhs_fps,
-            rhs_fps=pair_matcher.rhs_fps,
+            lhs_fps=pair_matcher.lhs.fps,
+            rhs_fps=pair_matcher.rhs.fps,
         )
         # LHS has 2s grass intro, RHS has 5s atoms intro.
         # Start gaps must match known intro durations within 1s tolerance.
@@ -650,12 +669,12 @@ class PairMatcherIntegrationTest(MeltTestBase):
         self.assertAlmostEqual(mappings[-1][0], 62103, delta=1000)
         self.assertAlmostEqual(mappings[-1][1], 60325, delta=1000)
 
-        coverage = PairMatcher.coverage_summary(
+        coverage = matching_analysis.coverage_summary(
             mappings,
             video_utils.get_video_duration(file1_path),
             video_utils.get_video_duration(file2_path),
-            lhs_fps=pair_matcher.lhs_fps,
-            rhs_fps=pair_matcher.rhs_fps,
+            lhs_fps=pair_matcher.lhs.fps,
+            rhs_fps=pair_matcher.rhs.fps,
         )
         # Start snapped to edge. Both files have 3s outros (woman / atoms) that
         # differ, so the shared range ends before them — end gaps ≈ the outro.
@@ -685,12 +704,12 @@ class PairMatcherIntegrationTest(MeltTestBase):
         self.assertAlmostEqual(mappings[0][0], 3263, delta=500)
         self.assertAlmostEqual(mappings[0][1], 3208, delta=500)
 
-        coverage = PairMatcher.coverage_summary(
+        coverage = matching_analysis.coverage_summary(
             mappings,
             video_utils.get_video_duration(file1_path),
             video_utils.get_video_duration(file2_path),
-            lhs_fps=pair_matcher.lhs_fps,
-            rhs_fps=pair_matcher.rhs_fps,
+            lhs_fps=pair_matcher.lhs.fps,
+            rhs_fps=pair_matcher.rhs.fps,
         )
         # Both files have 3s intros and 3s outros — start/end gaps expected.
         self.assertFalse(coverage["full_coverage"])
@@ -704,7 +723,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
     def test_coverage_summary_full_coverage(self):
         """Pairs touching both edges → full_coverage=True."""
         mappings = [(10, 5), (50000, 47500), (99920, 99920)]
-        result = PairMatcher.coverage_summary(
+        result = matching_analysis.coverage_summary(
             mappings, 100000, 100000, lhs_fps=25.0, rhs_fps=25.0,
         )
         self.assertTrue(result["full_coverage"])
@@ -716,7 +735,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
     def test_coverage_summary_start_mismatch(self):
         """First pair far from start → full_coverage=False, start gaps reported."""
         mappings = [(3000, 5000), (60000, 58000)]
-        result = PairMatcher.coverage_summary(
+        result = matching_analysis.coverage_summary(
             mappings, 62000, 60000, lhs_fps=25.0, rhs_fps=25.0,
         )
         self.assertFalse(result["full_coverage"])
@@ -729,7 +748,7 @@ class PairMatcherIntegrationTest(MeltTestBase):
     def test_coverage_summary_end_mismatch(self):
         """Last pair far from end → full_coverage=False, end gaps reported."""
         mappings = [(20, 15), (55000, 53000)]
-        result = PairMatcher.coverage_summary(
+        result = matching_analysis.coverage_summary(
             mappings, 62000, 60000, lhs_fps=25.0, rhs_fps=25.0,
         )
         self.assertFalse(result["full_coverage"])
@@ -746,12 +765,12 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         d1 = video_utils.get_video_duration(file1_path)
         d2 = video_utils.get_video_duration(file2_path)
-        result = PairMatcher.coverage_summary(
+        result = matching_analysis.coverage_summary(
             mappings,
             d1,
             d2,
-            lhs_fps=pair_matcher.lhs_fps,
-            rhs_fps=pair_matcher.rhs_fps,
+            lhs_fps=pair_matcher.lhs.fps,
+            rhs_fps=pair_matcher.rhs.fps,
         )
         self.assertTrue(result["full_coverage"])
 
@@ -765,12 +784,12 @@ class PairMatcherIntegrationTest(MeltTestBase):
 
         d1 = video_utils.get_video_duration(file1_path)
         d2 = video_utils.get_video_duration(file2_path)
-        result = PairMatcher.coverage_summary(
+        result = matching_analysis.coverage_summary(
             mappings,
             d1,
             d2,
-            lhs_fps=pair_matcher.lhs_fps,
-            rhs_fps=pair_matcher.rhs_fps,
+            lhs_fps=pair_matcher.lhs.fps,
+            rhs_fps=pair_matcher.rhs.fps,
         )
         # Both files have 3s intros. Start gaps must match intro duration.
         self.assertFalse(result["full_coverage"])
