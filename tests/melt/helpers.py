@@ -3,10 +3,11 @@ import logging
 import os
 import tempfile
 import types
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from functools import partial
 from itertools import permutations
 from pathlib import Path
+from typing import Any, Protocol
 
 from common import (
     FileCache,
@@ -103,10 +104,16 @@ def _build_path_to_id_map(input: dict) -> dict[str, int]:
 _FAKE_PROCESS_OK = types.SimpleNamespace(returncode=0, stdout='', stderr='')
 
 
+class _SupportsCleanup(Protocol):
+    """The part of ``unittest.TestCase`` the component factories rely on."""
+
+    def addCleanup(self, function: Callable[..., object], /, *args: Any, **kwargs: Any) -> None: ...
+
+
 class MeltComponentFactories:
     """Build isolated melt components for unit tests on a ``TestCase``."""
 
-    def _make_performer(self) -> MeltPerformer:
+    def _make_performer(self: _SupportsCleanup) -> MeltPerformer:
         output = Workspace.temporary()
         workspace = Workspace.temporary()
         self.addCleanup(output.close)
@@ -124,7 +131,7 @@ class MeltComponentFactories:
             output_dir=output.root,
         )
 
-    def _make_source_aligner(self) -> SourceAligner:
+    def _make_source_aligner(self: _SupportsCleanup) -> SourceAligner:
         workspace = Workspace.temporary()
         self.addCleanup(workspace.close)
         interruption = generic_utils.InterruptibleProcess()
@@ -138,13 +145,13 @@ class MeltComponentFactories:
         timeline = TrackTimeline(workspace, logger)
         return SourceAligner(logger, context, timeline, AudioPatcher(logger, timeline))
 
-    def _make_audio_patcher(self) -> AudioPatcher:
+    def _make_audio_patcher(self: _SupportsCleanup) -> AudioPatcher:
         workspace = Workspace.temporary()
         self.addCleanup(workspace.close)
         logger = logging.getLogger("test.AudioPatcher")
         return AudioPatcher(logger, TrackTimeline(workspace, logger))
 
-    def _make_track_timeline(self) -> TrackTimeline:
+    def _make_track_timeline(self: _SupportsCleanup) -> TrackTimeline:
         workspace = Workspace.temporary()
         self.addCleanup(workspace.close)
         return TrackTimeline(workspace, logging.getLogger("test.TrackTimeline"))
